@@ -59,6 +59,8 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
 .badge.exhausted{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
 .badge.anomaly{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border);font-style:italic}
+.badge.stat{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-weight:500}
+.badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .badge.pro{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .badge.cn{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
 .badge.global{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
@@ -351,7 +353,7 @@ function card(a){
     ? `<button class="done" disabled="disabled">使用中</button>`
     : (disabled?``:`<button class="sec" data-action="select" data-auth-index="${esc(a.auth_index)}">选用</button>`);
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
-  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(a.anomaly?`<span class="badge anomaly" title="连续失败次数已达阈值，账号暂停路由以防每次请求都被重试；每日 0 点会自动复活一次">异常</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${esc(plan)}">${esc(a.plan||"-")}</span>`;
+  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(a.anomaly?`<span class="badge anomaly" title="连续失败次数已达阈值，账号暂停路由以防每次请求都被重试；每日 0 点会自动复活一次">异常</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${esc(plan)}">${esc(a.plan||"-")}</span>`+(Number(a.success)>0||Number(a.failed)>0?`<span class="badge stat" title="CPA 认证文件累计计数">成功 ${Number(a.success)||0} · 失败 ${Number(a.failed)||0}</span>`:"")+(a.cooling&&Number(a.fail_count)>0?`<span class="badge cooling" data-cool-until="${Number(a.cool_until)||0}" data-cool-count="${Number(a.fail_count)||0}" title="本地 failover 冷却：期间路由跳过该账号">连败 ${Number(a.fail_count)} · 冷却中</span>`:(Number(a.fail_count)>0?`<span class="badge stat" title="本地连续失败计数，成功一次即清零">连败 ${Number(a.fail_count)}</span>`:""));
   const unfreezeBtn=a.anomaly?`<button class="sec" data-action="unfreeze" data-auth-index="${esc(a.auth_index)}" title="将该账号从异常池解除冻结，重新参与路由">解除冻结</button>`:"";
   const display=(a.nickname||a.label||a.name||"").replace(/^qoderwork-?/i,"");
   const nick=display||("u"+(a.uid||"").slice(-8));
@@ -363,6 +365,16 @@ function card(a){
   <div class="actions">${selectBtn}${refreshBtn}${actionHTML}${unfreezeBtn}</div>
   </div>`;
 }
+// 冷却倒计时：每秒刷新卡片上 [data-cool-until] 徽标的剩余秒数。
+// 纯前端展示，不触发整卡重绘；后端 /accounts 刷新时自带最新冷却态。
+setInterval(()=>{
+  const now=Math.floor(Date.now()/1000);
+  document.querySelectorAll("[data-cool-until]").forEach(el=>{
+    const until=Number(el.dataset.coolUntil)||0;
+    if(until<=0||until<=now){ el.remove(); return; }
+    el.textContent=`连败 ${Number(el.dataset.coolCount)||0} · 冷却 ${until-now}s`;
+  });
+},1000);
 let currentFilter="all";
 let lastAccounts=[];
 let activeAuthId="";

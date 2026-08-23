@@ -219,7 +219,8 @@ func pruneFailoverStates() {
 }
 
 // failoverStateSnapshot returns a copy of the account's failover state.
-// Test helper; never called in production paths.
+// Used by tests and by the dashboard (panel.go) to surface the consecutive
+// failure count + cooldown window in the account cards.
 func failoverStateSnapshot(authID string) (count int, cooldownUntil time.Time, ok bool) {
 	failoverMu.Lock()
 	defer failoverMu.Unlock()

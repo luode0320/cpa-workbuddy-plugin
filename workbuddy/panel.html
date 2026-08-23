@@ -70,6 +70,8 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .badge.disabled{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
 .badge.preserve{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-style:italic}
 .badge.anomaly{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border);font-style:italic}
+.badge.stat{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-weight:500}
+.badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .filter-bar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
 .ftag{background:var(--surface);border:1px solid var(--border);color:var(--mut);border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600}
 .ftag.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}
@@ -411,7 +413,12 @@ function card(a){
   const preserveBadge=a.preserve?`<span class="badge preserve" title="watchdog 检测到积分不足，账号暂停路由以保留积分别耗尽">保号</span>`:"";
   const anomalyBadge=a.anomaly?`<span class="badge anomaly" title="连续失败次数已达阈值，账号暂停路由以防每次请求都被重试；每日 0 点会自动复活一次">异常</span>`:"";
   const unfreezeBtn=a.anomaly?`<button class="sec" data-action="unfreeze" data-auth-index="${esc(a.auth_index)}" title="将该账号从异常池解除冻结，重新参与路由">解除冻结</button>`:"";
-  const badges=(disabled?`<span class="badge disabled">已禁用</span>`:"")+preserveBadge+anomalyBadge+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
+  // CPA host 累计计数（auth 文件级，跨进程保留）+ 本地 failover 连续失败/冷却（内存态）。
+  const statBadge=(Number(a.success)>0||Number(a.failed)>0)?`<span class="badge stat" title="CPA 认证文件累计计数">成功 ${Number(a.success)||0} · 失败 ${Number(a.failed)||0}</span>`:"";
+  const coolBadge=a.cooling&&Number(a.fail_count)>0
+    ? `<span class="badge cooling" data-cool-until="${Number(a.cool_until)||0}" data-cool-count="${Number(a.fail_count)||0}" title="本地 failover 冷却：期间路由跳过该账号">连败 ${Number(a.fail_count)} · 冷却中</span>`
+    : (Number(a.fail_count)>0?`<span class="badge stat" title="本地连续失败计数，成功一次即清零">连败 ${Number(a.fail_count)}</span>`:"");
+  const badges=(disabled?`<span class="badge disabled">已禁用</span>`:"")+preserveBadge+anomalyBadge+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`+statBadge+coolBadge;
   return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-nickname="${esc(a.nickname||a.label||a.name||"")}" data-label="${esc(a.label||"")}" data-name="${esc(a.name||"")}" data-uid="${esc(a.uid||"")}" data-disabled="${disabled?"1":"0"}" data-preserve="${a.preserve?"1":"0"}" data-anomaly="${a.anomaly?"1":"0"}">
   <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}</span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
@@ -420,6 +427,16 @@ function card(a){
   <div class="actions">${refreshBtn}${actionHTML}${toggleBtn}${unfreezeBtn}</div>
   </div>`;
 }
+// 冷却倒计时：每秒刷新卡片上 [data-cool-until] 徽标的剩余秒数。
+// 纯前端展示，不触发整卡重绘；后端 /accounts 刷新时自带最新冷却态。
+setInterval(()=>{
+  const now=Math.floor(Date.now()/1000);
+  document.querySelectorAll("[data-cool-until]").forEach(el=>{
+    const until=Number(el.dataset.coolUntil)||0;
+    if(until<=0||until<=now){ el.remove(); return; }
+    el.textContent=`连败 ${Number(el.dataset.coolCount)||0} · 冷却 ${until-now}s`;
+  });
+},1000);
 let currentFilter="all";
 let lastAccounts=[];
 let activeAuthId="";

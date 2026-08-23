@@ -29,6 +29,13 @@ type wbAccount struct {
 	Credits   *creditsSummary `json:"credits,omitempty"`
 	Checkin   *checkinSummary `json:"checkin,omitempty"`
 	Error     string          `json:"error,omitempty"`
+	// CPA-side cumulative counters (auth-file level, persisted by the host).
+	Success int64 `json:"success,omitempty"`
+	Failed  int64 `json:"failed,omitempty"`
+	// Local in-memory failover state (cleared on process restart).
+	FailCount int   `json:"fail_count,omitempty"`
+	Cooling   bool  `json:"cooling,omitempty"`
+	CoolUntil int64 `json:"cool_until,omitempty"` // cooldown deadline (unix secs); 0 = not cooling
 }
 
 // credits/checkin/plan fields are left empty — the panel renders skeletons
@@ -79,6 +86,8 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 				Label:     f.Label,
 				Status:    f.Status,
 				Disabled:  f.Disabled,
+				Success:   f.Success,
+				Failed:    f.Failed,
 			}
 			sa, phys, err := hostAuthGetBundle(f.AuthIndex)
 			if err != nil {
@@ -179,6 +188,15 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	for i := range out {
 		out[i].Selected = out[i].AuthID == activeID
 		out[i].Anomaly = isAnomaly(out[i].AuthID)
+		// Failover state is in-memory only; surface it so the panel can show
+		// consecutive failures + cooldown instead of the binary anomaly badge.
+		if count, until, ok := failoverStateSnapshot(out[i].AuthID); ok && count > 0 {
+			out[i].FailCount = count
+			if until.After(time.Now()) {
+				out[i].Cooling = true
+				out[i].CoolUntil = until.Unix()
+			}
+		}
 	}
 	resp := map[string]any{
 		"accounts":                out,
