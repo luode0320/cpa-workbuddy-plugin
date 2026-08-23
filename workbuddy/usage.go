@@ -79,6 +79,12 @@ func handleUsage(raw []byte) ([]byte, error) {
 // when no session signal was present (rare; pick-side sticks to the
 // panel-selected account in that case).
 func publishUsage(requestedModel, upstreamModel, authID string, started time.Time, detail usage.Detail, failed bool, statusCode int, errBody, reasoningEffort string, ttftNS uint64, accountLabel, sessionKey string) {
+	// Cumulative success/failure counter (plugin-owned, persisted). authID is
+	// the account UID at every call site (authUID / curAuthUID), so keying on
+	// it matches the scheduler / failover / counter-flush layers. Increment
+	// happens synchronously (memory only) so the counter is never lost to the
+	// fire-and-forget goroutine below.
+	recordOutcome(authID, !failed)
 	model := strings.TrimSpace(upstreamModel)
 	if model == "" {
 		model = strings.TrimSpace(requestedModel)

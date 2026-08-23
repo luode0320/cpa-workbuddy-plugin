@@ -106,6 +106,17 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 			}
 			acct.Nickname = sa.Account.Nickname
 			acct.UID = sa.Account.UID
+			// Success/Failed prefer the plugin-owned persisted cumulative
+			// counters (survive restart). The host-list values set above are
+			// the recent-window (last ~200min) numbers — kept as the fallback
+			// for UID-less legacy accounts. UID-bearing accounts always use
+			// the persisted cumulative value + any not-yet-flushed delta.
+			if strings.TrimSpace(acct.UID) != "" {
+				ps, pf := parseCountersFromAuthJSON(phys.JSON)
+				ds, df := counterPendingDelta(acct.UID)
+				acct.Success = ps + ds
+				acct.Failed = pf + df
+			}
 			acct.Region = accountRegion(sa)
 			if fetchCredits {
 				plan, ci, cr, errs := cachedAccountDetails(f.ID, sa, force)

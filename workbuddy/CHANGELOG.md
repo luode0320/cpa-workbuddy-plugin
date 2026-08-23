@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.14.10
+
+### Feat — 成功/失败计数持久化（重启不丢）
+
+面板账号卡片的「成功 N / 失败 N」原先来自 CPA 宿主的 recent 窗口（`HostAuthFileEntry.Success/Failed`），而宿主的 `Auth.Success/Failed` 是 `json:"-"` 的纯内存态，永不写盘 —— 容器重启即归零。本版本改为插件自维护累计计数并持久化到 auth 文件顶层字段。
+
+- **计数器模块**（`counter.go` 新增）：`recordOutcome(uid, success)` 内存递增（key=账号 UID，与调度 / failover / preserve / anomaly 同键）；后台 flusher（`counterFlushInterval`=10s）把增量折入物理 auth 文件顶层 `success_count` / `failed_count`（`foldCounterIntoDoc` 保留其余顶层字段）；`parseCountersFromAuthJSON` 容错读取；`startCounterFlusher` 于 `init()` 启动。
+- **埋点**（`usage.go`）：`publishUsage` 每次请求统一 `recordOutcome(authID, !failed)`，同步递增（不依赖 fire-and-forget goroutine），成功 / 失败语义与既有 usage 上报一致。
+- **面板读取**（`panel.go`）：`buildDashboardEx` 对 UID 账号改用 `parseCountersFromAuthJSON(phys.JSON)` + `counterPendingDelta` 合并的累计值；UID 缺失的 legacy 账号回退到宿主 recent 窗口（行为不变）。
+- **落盘通道**：`persistAuthDirect`（直写物理文件，非 `host.auth.save`），与 preserve / anomaly / manual_disable 同规则，避免宿主重建记录时丢弃未识别顶层字段。
+- 涉及文件：`counter.go` / `counter_test.go`（新增）、`usage.go` / `main.go` / `panel.go`。
+
 ## 0.14.9
 
 ### Feat — 账号面板异步节流刷新（去按钮 + 进入自动触发 + 幂等）

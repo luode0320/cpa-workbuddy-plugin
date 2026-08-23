@@ -129,6 +129,7 @@ func init() {
 	// restarting the goroutine (avoids the SIGSEGV risk documented in
 	// checkin.go:31 from closing stop channels during plugin teardown).
 	go preserveWatchdogLoop()
+	startCounterFlusher()
 	go func() {
 		ticker := time.NewTicker(loginStatesPruneInterval)
 		defer ticker.Stop()
@@ -336,7 +337,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.14.9"
+var version = "0.14.10"
 
 func wbRegistration() registration {
 	return registration{
