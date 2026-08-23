@@ -24,51 +24,51 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.9/workbuddy-provider_0.14.9_darwin_amd64.zip",
-            "sha256": "c0c3a96becf677f74a777bbbc7a4c26d9da3a05ad967e5f77b5056681c1a0454",
-            "size": 3043926
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.10/workbuddy-provider_0.14.10_darwin_amd64.zip",
+            "sha256": "cafa0c986679ec349d53182176b619bcf04279e9aea264bd7ee6907cb36b9b92",
+            "size": 3046322
           },
           {
             "goos": "darwin",
             "goarch": "arm64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.9/workbuddy-provider_0.14.9_darwin_arm64.zip",
-            "sha256": "789c7f348539d8b75d1cc97fc40f46d133e599b22dd089319cfb5bcc0e9848d0",
-            "size": 2807036
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.10/workbuddy-provider_0.14.10_darwin_arm64.zip",
+            "sha256": "14922d4af5a7452f706bb76b566e2e58526d438eeefbbaa62c1b82df07214175",
+            "size": 2808863
           },
           {
             "goos": "freebsd",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.9/workbuddy-provider_0.14.9_freebsd_amd64.zip",
-            "sha256": "17ef75ce777d4fa3737411ca29b3a6fb97f7e7c54118112a90f976ada331ef29",
-            "size": 3124358
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.10/workbuddy-provider_0.14.10_freebsd_amd64.zip",
+            "sha256": "ec503074e2a164bb4773b5098cff841b4445c2a2fd4717e5a95cb4d183cf8d8c",
+            "size": 3127176
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.9/workbuddy-provider_0.14.9_linux_amd64.zip",
-            "sha256": "6af4f78c566eae1bbf68046e6a8b7f13399bf58f723036cdf337ac985fcfa46c",
-            "size": 3203826
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.10/workbuddy-provider_0.14.10_linux_amd64.zip",
+            "sha256": "4478387628d6fae0dffa2e4f0a5e4040d1531888ec04fbdaac052cde5851cb2d",
+            "size": 3207184
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.9/workbuddy-provider_0.14.9_linux_arm64.zip",
-            "sha256": "44f9b76cce92482a30628c22af74b49cdc2f90f50f992044e497794ed5673e7f",
-            "size": 2908011
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.10/workbuddy-provider_0.14.10_linux_arm64.zip",
+            "sha256": "d03f71c1d053c489388bb527f056c3c7eb1d6110ec21a384c584ce3d8239d815",
+            "size": 2909772
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.9/workbuddy-provider_0.14.9_windows_amd64.zip",
-            "sha256": "18152a3002f5ddc5a41f0c98796feb0e9d25be02cff0f22293bcce9a34ecd5ce",
-            "size": 3129804
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.10/workbuddy-provider_0.14.10_windows_amd64.zip",
+            "sha256": "acbeb964a284c55f72b49776dd996a88b8d02edba9f34716edd9afc090ff699a",
+            "size": 3133965
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.9/workbuddy-provider_0.14.9_windows_arm64.zip",
-            "sha256": "3b0b2288a764d1e0de3a4dff655902319154a12ad3bbb3ffe8e706cbf60ffb7b",
-            "size": 2880875
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-provider-0.14.10/workbuddy-provider_0.14.10_windows_arm64.zip",
+            "sha256": "16e3065d861b2b04f656e133e07ab00cc0211862df48e546096ed9c56470dfa9",
+            "size": 2881826
           }
         ]
       }
