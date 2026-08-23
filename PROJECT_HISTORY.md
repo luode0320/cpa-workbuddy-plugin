@@ -4,6 +4,7 @@
 
 ## 事件
 
+- 2026-08-23：面板账号卡新增「成功/失败计数 + 连败/冷却」展示（未发版）：wbAccount 补 Success/Failed（host.auth.list 透传，断点在插件组装丢失非上游缺失）+ FailCount/Cooling/CoolUntil（failoverStateSnapshot 从测试 helper 提升为 dashboard API）；panel.html 徽标区 badge.stat/badge.cooling + 1s 冷却倒计时 ticker；qoderwork 三件套同构适配。6 文件改动，双插件 cgo-shim-build 全绿 + JS node --check 通过，停在已改动未提交状态
 - 2026-08-23：workbuddy-provider v0.14.3 发布（流式切号链 GetBody==nil 断裂修复：`rebuildRequestWithSA` 改 `GetBody()→io.ReadAll→bytes.NewReader` 重建 body，产物 GetBody 恒可用，切号链可走满 retry_on_4xx 预算；0.14.2 复测仍 2 次 429 即中断的真根因，推翻"账号池仅 2 候选"错误假设；提交链 5ae916d→e0ffce0→a03686e→9e04131→06944e7，qoderwork 代码免疫仅修滞后注释，远端 raw URL 200）
 - 2026-08-23：workbuddy-provider v0.14.2 + qoderwork-provider v0.9.1 发布（429 纳入同请求切号循环，`isAccountLevel4xx` 增 `StatusTooManyRequests` case；提交链 42b9ac3→4158a59→8a3f18c→d2d9bb9→9efc0d0，远端 raw URL 200 验证通过；0.14.1 面板 tab 补丁已由并行会话先行发布，故 429 修复独立 bump 0.14.2 不重打 tag）
 - 2026-08-23：deepseek-vision 第四插件迁移完成（02:23-02:50）后由用户决策**撤销**（02:57）：宿主未配置视觉模型、插件依赖宿主 vision 回调 → 工作区全部回退到 HEAD，三插件基线恢复
