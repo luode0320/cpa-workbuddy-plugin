@@ -259,3 +259,65 @@ sequenceDiagram
 
     Note over U,W: 两次独立请求<br/>≠ 同请求内 retry_on_4xx 切号
 ```
+
+---
+
+## 附录 A — v0.14.2 修复后仍失败的第二阶段根因（2026-08-23 15:50）
+
+### 现象
+
+用户更新 workbuddy-provider 0.14.2 并重启 CPA 后立即复测：**依旧连续
+2 次 HTTP 429 后会话报错中断**，未继续切换账号。用户澄清：**workbuddy
+池有 20 个账号**，绝不是无号可用——10 次预算内一定能切到可用号。
+上一轮"账号池仅 2 候选"的假设被证伪。
+
+### 关键日志（用户侧 CPA 错误帧）
+
+```
+upstream 429: {"error":{"data":{"code":14018,... (retry rebuild failed:
+rebuildRequestWithSA: original request has no GetBody (rebuild not possible))
+```
+
+`(retry rebuild failed: ...)` 前缀正是 `pumpUpstreamStream` 在
+`rebuildRequestWithSA` 报错时的出口（stream.go:142）——**429 已经进入
+切号循环，但第 2 次 rebuild 直接失败**。
+
+### 真根因：rebuild 产物 GetBody == nil，切号链在第 2 次断裂
+
+| # | 步骤 | GetBody 状态 |
+|---|---|---|
+| 1 | `handleExecStream`（main.go:858）用 `bytes.NewReader(body)` 构造请求 | 非 nil（Go 自动填充） |
+| 2 | `hostHTTPDoStream`（host_bridge.go:217-224）每次**读空并关闭 req.Body** | 只剩 GetBody 可取回 body |
+| 3 | 第 1 次 429 → `rebuildRequestWithSA`：`orig.GetBody()` 返回 NopCloser 包装的 `io.ReadCloser`，**静态类型非 `*bytes.Reader/*bytes.Buffer/*strings.Reader`** → `NewRequestWithContext` 不填充 GetBody | **产物 GetBody == nil** |
+| 4 | 切到账号 B，B 也 429 → 第 2 次 rebuild：`curReq.GetBody == nil` → 报 `original request has no GetBody` | **中断，切号链只走 1 次** |
+
+Go 标准库行为：`http.NewRequestWithContext` 仅在 body 参数**静态类型**
+为 `*bytes.Reader` / `*bytes.Buffer` / `*strings.Reader` 时设置 GetBody；
+透传 `GetBody()` 返回的 `io.ReadCloser`（NopCloser 包装）不命中任何
+case，产物的 GetBody 恒为 nil。
+
+### 为什么其他路径免疫
+
+- `collectUpstreamStream`（同步收集）：每次循环 `bytes.NewReader(body)`
+  从原始 `[]byte` 重建 → GetBody 恒非 nil。
+- `handleExecExecute`（非流式 execute）：每次 `doExecuteOnce(curBody,...)`
+  同样从原始 `[]byte` 重建。
+- `qoderwork` pump 路径：循环前快照 `encodedBody`（qoderwork/stream.go:
+  106-113），rebuild 用快照重建 → 免疫。
+- **只有 workbuddy `pumpUpstreamStream`（流式会话，即用户 CPA 场景）
+  复用同一 `curReq` 并在多次 rebuild 间传递，中招。**
+
+### 修复（v0.14.3）
+
+`rebuildRequestWithSA` 的 body 重建改为：
+`orig.GetBody() → io.ReadAll → bytes.NewReader(bodyBytes)`。
+`*bytes.Reader` 静态类型让 `NewRequestWithContext` 自动填充 GetBody，
+**rebuild 产物的 GetBody 恒可用**，切号链可连续走满 `retry_on_4xx` 预算
+（20 账号池最多切 10 次内必成功）。
+
+- `workbuddy/failover_retry.go`：核心修复 + 注释记录回归原因
+- `workbuddy/failover_retry_test.go`：`TestRebuildRequestWithSA_GetBodyChain`
+  （3 连 rebuild 断言 GetBody 非 nil + body 字节一致）
+- 验证：`cgo-shim-build.py workbuddy` build+vet+test 全绿（6.25s）
+- qoderwork 无需改代码（免疫）；顺带修正 qoderwork/stream.go 132-139
+  滞后注释（0.9.1 已含 429，注释仍写"仅 401/403/404/405"）
