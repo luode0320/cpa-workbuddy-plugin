@@ -4,6 +4,7 @@
 
 ## 事件
 
+- 2026-08-23：workbuddy-provider v0.14.2 + qoderwork-provider v0.9.1 发布（429 纳入同请求切号循环，`isAccountLevel4xx` 增 `StatusTooManyRequests` case；提交链 42b9ac3→4158a59→8a3f18c→d2d9bb9→9efc0d0，远端 raw URL 200 验证通过；0.14.1 面板 tab 补丁已由并行会话先行发布，故 429 修复独立 bump 0.14.2 不重打 tag）
 - 2026-08-23：deepseek-vision 第四插件迁移完成（02:23-02:50）后由用户决策**撤销**（02:57）：宿主未配置视觉模型、插件依赖宿主 vision 回调 → 工作区全部回退到 HEAD，三插件基线恢复
 
 - 2026-08-22：workbuddy-provider v0.12.0 发布，移除三池路由只留保号池（提交链 f64f35a→2cdd179→fec796e）
