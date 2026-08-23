@@ -129,11 +129,12 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 				go reconcileByUID(curAuthUID, statusCode, errPayload)
 			}
 			noteAccountFailure(curAuthID, statusCode, errPayload)
-			// Retry policy: only account-level 4xx (401/403/404/405)
-			// benefit from switching accounts. 5xx/0/429/402 are already
-			// surfaced as failures and recorded; rotating the account on
-			// 5xx inside a single request gives no guarantee the next
-			// upstream isn't also 5xx, so we don't burn budget on it (the
+			// Retry policy (v0.9.1 — 429 included): account-level 4xx
+			// (401/403/404/405) and 429 soft rate limit benefit from
+			// switching accounts. 5xx/0/402 are already surfaced as
+			// failures and recorded; rotating the account on 5xx inside
+			// a single request gives no guarantee the next upstream
+			// isn't also 5xx, so we don't burn budget on it (the
 			// cooldown mechanism handles long-term 5xx). Business 400 is
 			// request-shaped and would fail identically on every account,
 			// so we propagate it immediately.
