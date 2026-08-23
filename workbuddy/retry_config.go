@@ -3,7 +3,7 @@
 // When a request hits an account-level 4xx (401/403/404/405) the executor
 // may try the same request on the next available account up to budget
 // times before giving up. The budget is parsed from plugin.yaml's
-// `retry_on_4xx:` field on every configure()/reconfigure call, with 3 as
+// `retry_on_4xx:` field on every configure()/reconfigure call, with 10 as
 // the default. Setting it to 0 disables on-request account failover (the
 // old behavior) — useful as a kill-switch when a global outage makes
 // retries destructive.
@@ -16,16 +16,17 @@ import (
 )
 
 // retryOn4xxDefault is the default per-request retry budget when
-// `retry_on_4xx:` is absent from plugin.yaml. 3 means up to 4 total
-// attempts (initial + 3 retries) per request, across distinct accounts.
-const retryOn4xxDefault = 3
+// `retry_on_4xx:` is absent from plugin.yaml. 10 means up to 11 total
+// attempts (initial + 10 retries) per request, across distinct accounts.
+const retryOn4xxDefault = 10
 
 // retryOn4xxMin and retryOn4xxMax clamp user config to a sane range.
-// Upper bound 5 prevents a misconfiguration from spinning the request
-// forever when the upstream is universally 4xx-failing.
+// Upper bound 10 lets large account pools be walked within one request
+// while still capping a misconfiguration that could otherwise spin the
+// request forever when the upstream is universally 4xx-failing.
 const (
 	retryOn4xxMin = 0
-	retryOn4xxMax = 5
+	retryOn4xxMax = 10
 )
 
 var (
@@ -41,7 +42,7 @@ func setRetryOn4xx(n int) {
 	retryOn4xxMu.Unlock()
 }
 
-// loadedRetryOn4xx returns the currently configured budget (default 3
+// loadedRetryOn4xx returns the currently configured budget (default 10
 // when nothing has been parsed yet).
 func loadedRetryOn4xx() int {
 	retryOn4xxMu.RLock()

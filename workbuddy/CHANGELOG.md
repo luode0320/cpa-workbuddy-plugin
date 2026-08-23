@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.14.0
+
+### Feature — 异常池（anomaly pool）：连续失败的账号永久冻结 + 每日刷新
+
+新增"异常池"机制：当账号连续触发账号级 4xx（401/403/404/405）、5xx、
+429 软限流、402 硬积分或传输错误达 N 次（默认 10，可通过
+`anomaly_pool_threshold` 配置，范围 1-50），自动移入异常池、不再被路由
+层选到；面板显示"异常"过滤区和单账号/全量"解除冻结"按钮；每日本地 0 点
+自动刷新全池（可通过 `anomaly_refresh_enabled: false` 关闭）。
+
+- 新增 `anomaly.go`：内存 `anomalySet` + 物理 auth JSON 顶层布尔
+  `anomaly: true` 双镜像（仿 `preserve.go` 直写模式）；`isAnomaly` /
+  `anomalySetPut` / `anomalySetClear` / `persistAnomalyToggle` /
+  `refreshAnomalySetFromDisk` / `clearAllAnomalies`；
+  `freezeAccountForAnomaly` 在 `recordAccountFailure` 内
+  `count >= threshold` 时异步触发。
+- `anomaly_config.go`：阈值常量与 `clampAnomalyThreshold` / 解析器
+  （仿 `retry_config.go` 风格）。`setAnomalyConfig(0, _)` 不会覆盖阈值，
+  与 retry_on_4xx 同样的 kill-switch 安全惯例。
+- `accountFailover.go`：`recordAccountFailure` 在已释放 `failoverMu` 后
+  根据 `isAnomaly` + 阈值判定是否异步调用 `freezeAccountForAnomaly`，
+  不阻塞请求热路径。
+- `scheduler.go` 过滤链：`disabled → preserve → anomaly → cooldown`；
+  `pickNextAuth` / `pickActiveAuth` / `pickSessionAuth` /
+  `ensureDefaultActiveAuth` 各补 `isAccountAnomaly` 跳过。
+- `usage_config.go`：`configure()` 仿 retry_on_4xx 的 Seen 模式增加
+  `anomaly_pool_threshold` / `anomaly_refresh_enabled` 解析。
+- `main.go` ConfigFields 注册两个新配置键；`version` 0.13.1 → 0.14.0。
+- `panel.go` wbAccount 加 `Anomaly bool`；`buildDashboardEx` 加
+  `anomaly_pool_size` / `anomaly_pool_threshold` / `anomaly_refresh_enabled`。
+- `panel.html`：过滤栏新增"异常"tab；每张卡显示 `.badge.anomaly`；异常
+  卡增"解除冻结"按钮；工具栏增"全部解冻"按钮；`updateFilterCounts` /
+  `applyCardVisibility` / `accountsForFilter` / `renderSummary` 同步支持。
+- 新增管理端点 `POST /unfreeze`：body 含 `auth_index` 则清单个；空 body
+  则清全部（与每日刷新等价）。`/toggle` 同款的 host-watcher 同步语义。
+- `anomalyRefreshLoop`（init 启动）：每分钟检测本地 0 点触发
+  `clearAllAnomalies`，`lastDay` 防重入；可通过
+  `anomaly_refresh_enabled: false` 关闭。
+- 双插件同步：`qoderwork-provider` 同款改动（`accountFailover.go`
+  整文件同步；其余逐函数适配）。
+- 测试：`anomaly_config_test.go`（阈值/解析/setter 边界） +
+  `anomaly_test.go`（set 镜像/persist 解析/阈值触发/并发安全）。
+- 不在范围：自动 watchdog 积分检测解冻（每日刷新已覆盖）；跨账号聚合
+  指标；用户自定义冻结时长。
+
+### Feature — retry_on_4xx 预算上限与默认值 5/3 → 10（随本次发版）
+
+账号级 40x 同请求切号重试的预算上限由 5 提升到 10、默认值由 3 提升
+到 10：`retry_on_4xx` 配置范围从 0-5 扩展为 0-10，默认即最多连续
+切换 10 次账号（0 仍是 kill switch；`pickNextAuth` 仍跳过冷却中的
+账号，实际可切次数受账号池可用数约束）。
+
+- `retry_config.go`：`retryOn4xxMax` 5 → 10、`retryOn4xxDefault`
+  3 → 10（workbuddy / qoderwork 同步）。
+- `retry_config_test.go`：clamp 边界补 10（含）/ 11（超限），parse
+  补 `retry_on_4xx: 10` 用例（默认值断言均走常量，自动适配）。
+- `README.md`：默认值与范围描述 0-5 → 0-10（两插件同步）。
+
 ## 0.13.1
 
 ### Feature — 请求明细展示会话 ID（session_key 替换 Tier 占位列）

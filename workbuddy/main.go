@@ -336,7 +336,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.13.1"
+var version = "0.14.0"
 
 func wbRegistration() registration {
 	return registration{
@@ -357,6 +357,8 @@ func wbRegistration() registration {
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key override. Prefer auto-detect from env CPAMP_ADMIN_KEY / USAGE_REPORT_KEY or secret file /run/secrets/cpamp_admin_key."},
 				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Append per-request token usage to the shared NDJSON feed consumed by the token-usage-tracker plugin (default true)."},
 				{Name: "usage_feed_path", Type: pluginapi.ConfigFieldTypeString, Description: "Optional shared usage feed path (default <CLIProxyAPI root>/data/token-usage-feed.ndjson). Must match token-usage-tracker's usage_feed_path."},
+				{Name: "anomaly_pool_threshold", Type: pluginapi.ConfigFieldTypeString, Description: "Consecutive-failure count (1-50) at which an account is moved into the anomaly pool and kept out of routing. Default 10. Set to 0 to disable auto-quarantine entirely (kill switch). Absent key keeps the current value."},
+				{Name: "anomaly_refresh_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable the daily 00:00 local-time anomaly-pool auto-reset loop (default true). When true, every quarantined account gets another shot the next day; if it's still broken it will be re-quarantined."},
 			},
 		},
 		Capabilities: registrationCapability{

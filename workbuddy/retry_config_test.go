@@ -14,7 +14,8 @@ func TestClampRetryOn4xx(t *testing.T) {
 		{1, 1},
 		{3, 3},
 		{5, 5},
-		{6, retryOn4xxMax},
+		{10, 10}, // upper bound is inclusive
+		{11, retryOn4xxMax},
 		{99, retryOn4xxMax},
 	}
 	for _, tc := range cases {
@@ -34,6 +35,7 @@ func TestParseRetryOn4xxLine(t *testing.T) {
 		{"retry_on_4xx: 1", 1, true},
 		{"retry_on_4xx: 3", 3, true},
 		{"retry_on_4xx: 5", 5, true},
+		{"retry_on_4xx: 10", 10, true},
 		{`retry_on_4xx: "3"`, 3, true},
 		{"retry_on_4xx:   3  ", 3, true},
 		{"retry_on_4xx: 3 # hot path kill switch", 3, true},

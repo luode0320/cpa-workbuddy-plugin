@@ -148,15 +148,15 @@ plugins:
       usage_report_url: "http://cpa-manager-plus:18317/v0/management/usage/import"
       usage_report_key: ""
 
-      # Per-request account-failover budget for 40x errors (default 3,
-      # range 0-5). When a request hits an account-level 40x (401/403/
+      # Per-request account-failover budget for 40x errors (default 10,
+      # range 0-10). When a request hits an account-level 40x (401/403/
       # 404/405), the plugin retries the SAME request on a different
       # workbuddy account up to `retry_on_4xx` times before giving up.
       # Set to 0 to disable on-request account rotation (use as a kill
       # switch during global outage recovery). The failing account is
       # also recorded in the cooldown list so subsequent requests skip
       # it.
-      retry_on_4xx: 3
+      retry_on_4xx: 10
 
       # Plugin-layer management auth. When set, all mutating endpoints under
       # /v0/management/plugins/workbuddy/* require this Bearer token.
@@ -175,6 +175,19 @@ plugins:
       usage_flush_interval: "5s"
       # Max records buffered before forcing a flush (1-1000000, default 100).
       usage_flush_max_records: 100
+
+      # Anomaly pool — permanently quarantine accounts that have failed too
+      # many times in a row. When an account hits account-level 4xx
+      # (401/403/404/405), 5xx, 429 soft limit, 402 hard credit error, or
+      # a transport error N times in a row, it is moved into the anomaly
+      # set (top-level `anomaly: true` on the auth JSON file) and kept out
+      # of routing. N=0 disables auto-freeze (preserves any frozen
+      # accounts); absent key keeps the current value (kill-switch safe).
+      # The panel exposes per-account and bulk unfreeze buttons; a daily
+      # 00:00 local-time loop auto-clears every entry by default (disable
+      # via `anomaly_refresh_enabled: false`).
+      anomaly_pool_threshold: 10
+      anomaly_refresh_enabled: true
 ```
 
 Model aliases and exclusions are handled natively by CPA's

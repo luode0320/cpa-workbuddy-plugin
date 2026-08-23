@@ -78,11 +78,22 @@ func configure(raw []byte) {
 
 	// retry_on_4xx: per-request account-failover budget. Applied ONLY when
 	// the key is present in config_yaml: a valid value is clamped to
-	// [0, 5] and applied; an unparseable value resets to the default 3.
+	// [0, 10] and applied; an unparseable value resets to the default 10.
 	// An absent key keeps the current budget so an unrelated reconfigure
 	// never silently lifts a `retry_on_4xx: 0` kill switch.
 	nextRetryOn4xx := retryOn4xxDefault
 	retryOn4xxSeen := false
+
+	// anomaly_pool_threshold: consecutive-failure count at which an account
+	// is quarantined (see anomaly.go). Same Seen-pattern as
+	// retry_on_4xx — an absent key keeps the current threshold so the
+	// kill-switch `anomaly_pool_threshold: 0` survives unrelated
+	// reconfigures. anomaly_refresh_enabled: toggles the daily 00:00
+	// auto-reset loop.
+	nextAnomalyThreshold := int32(0)
+	anomalyThresholdSeen := false
+	nextAnomalyRefreshEnabled := anomalyRefreshEnabledDefault
+	anomalyRefreshSeen := false
 
 	cfgURL, cfgKey := "", ""
 	if len(raw) > 0 {
@@ -161,6 +172,18 @@ func configure(raw []byte) {
 						nextRetryOn4xx = clampRetryOn4xx(n)
 					}
 				}
+				if strings.HasPrefix(line, "anomaly_pool_threshold:") {
+					if n, ok := parseAnomalyThresholdLine(line); ok {
+						nextAnomalyThreshold = n
+						anomalyThresholdSeen = true
+					}
+				}
+				if strings.HasPrefix(line, "anomaly_refresh_enabled:") {
+					if v, ok := parseAnomalyRefreshEnabledLine(line); ok {
+						nextAnomalyRefreshEnabled = v
+						anomalyRefreshSeen = true
+					}
+				}
 			}
 		}
 	}
@@ -214,6 +237,17 @@ func configure(raw []byte) {
 	// safety).
 	if retryOn4xxSeen {
 		setRetryOn4xx(nextRetryOn4xx)
+	}
+
+	// Anomaly-pool threshold + refresh toggle. Same Seen-pattern:
+	// absent keys preserve the current running values (kill-switch safe).
+	// When present, threshold is clamped into [anomalyThresholdMin,
+	// anomalyThresholdMax]; values <= 0 disable auto-freeze entirely.
+	if anomalyThresholdSeen || anomalyRefreshSeen {
+		setAnomalyConfig(
+			clampAnomalyThreshold(nextAnomalyThreshold),
+			nextAnomalyRefreshEnabled,
+		)
 	}
 
 	// Shared usage feed for the standalone token-usage-tracker plugin.

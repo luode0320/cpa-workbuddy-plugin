@@ -55,7 +55,15 @@ policy.go         lifecycleAction decisions (pure functions) + displayNote + lab
 authfile.go       authFileNameFor/sanitizeUIDForFileName/hostAuthPersist/deleteAuth +
                   path safety checks
 
-scheduler.go      handleSchedulerPick + candidateDisabled + cachedCreditsScore
+anomaly.go        anomalySet + persistAnomalyToggle + refreshAnomalySetFromDisk +
+                  clearAllAnomalies + freezeAccountForAnomaly + anomalyRefreshLoop +
+                  handleUnfreezeAuth (anomaly pool: lifetime quarantine for
+                  consecutively-failing accounts, daily 00:00 auto-reset)
+anomaly_config.go anomalyThresholdDefault/Min/Max + clampAnomalyThreshold +
+                  parseAnomalyThresholdLine/RefreshEnabledLine
+
+scheduler.go      handleSchedulerPick + candidateDisabled + cachedCreditsScore +
+                  isAccountAnomaly (filter chain: disabled → preserve → anomaly → cooldown)
 active_auth.go    activeAuthID sticky state + pickActiveAuth + clearActiveAuthIfMatch
 
 cache.go          accountCache + accountDetailFlight singleflight + prune

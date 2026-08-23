@@ -168,7 +168,7 @@ func headerSessionPrefix(header string) string {
 // sessionKey != "" → sticky session routing:
 //   - a fresh, still-usable binding is reused unchanged (1h stickiness);
 //   - a stale binding (expired) or a binding whose account became
-//     disabled/exhausted/cooling-down is re-assigned;
+//     disabled/exhausted/cooling-down/anomalous is re-assigned;
 //   - new assignments prefer accounts with no live bindings, then round-robin
 //     across all usable accounts;
 //   - when every account is disabled/exhausted, the current pin is kept if the
@@ -189,7 +189,7 @@ func pickSessionAuth(sessionKey string, candidates []activeAuthCandidate) string
 	usableSet := make(map[string]struct{}, len(candidates))
 	for _, c := range candidates {
 		live[c.ID] = struct{}{}
-		if !c.Disabled && !c.Exhausted && !isAccountCoolingDown(c.ID) {
+		if !c.Disabled && !c.Exhausted && !isAccountCoolingDown(c.ID) && !isAccountAnomaly(c.ID) {
 			usable = append(usable, c.ID)
 			usableSet[c.ID] = struct{}{}
 		}

@@ -142,6 +142,15 @@ plugins:
       usage_flush_interval: "5s"
       # 缓冲记录数超过该值强制落盘（1-1000000，默认 100）。
       usage_flush_max_records: 100
+
+      # 异常池 — 连续失败的账号永久冻结。当账号连续 N 次触发账号级 4xx
+      #（401/403/404/405）、5xx、429 软限流、402 硬积分或传输错误时，
+      # 自动移入异常池（auth 文件顶层 anomaly: true），不再被路由层选到。
+      # N = 0 时关闭自动冻结（旧行为，保留已冻账号不动），缺省键保持
+      # 当前值（kill-switch 安全模式）。面板提供单账号/全量"解除冻结"，
+      # 默认每日 0 点自动刷新一次全池（anomaly_refresh_enabled: false 关闭）。
+      anomaly_pool_threshold: 10
+      anomaly_refresh_enabled: true
 ```
 
 模型 alias 和排除走 CPA 原生 `oauth-model-alias` 和 `oauth-excluded-models`

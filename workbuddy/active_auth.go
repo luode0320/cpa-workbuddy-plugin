@@ -52,9 +52,10 @@ type activeAuthCandidate struct {
 // pickActiveAuth chooses which workbuddy auth to use from host candidates.
 // The panel selection is sticky: it stays on the current account unless that
 // account is no longer in the candidate list (disabled/deleted by host),
-// is marked exhausted in cache, or is in failover cooldown. When switching,
-// it picks the first non-exhausted candidate and updates activeAuthID so the
-// panel reflects the change on next dashboard load.
+// is marked exhausted in cache, is in failover cooldown, or is in the
+// anomaly set (consecutive-failure trip). When switching, it picks the first
+// non-exhausted candidate and updates activeAuthID so the panel reflects
+// the change on next dashboard load.
 func pickActiveAuth(candidates []activeAuthCandidate) string {
 	if len(candidates) == 0 {
 		return ""
@@ -65,18 +66,18 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 	}
 
 	cur := getActiveAuthID()
-	// Keep current selection if it's still a live candidate AND not disabled/exhausted/cooling-down.
+	// Keep current selection if it's still a live candidate AND not disabled/exhausted/cooling-down/anomalous.
 	if cur != "" {
-		if c, ok := byID[cur]; ok && !c.Disabled && !c.Exhausted && !isAccountCoolingDown(cur) {
+		if c, ok := byID[cur]; ok && !c.Disabled && !c.Exhausted && !isAccountCoolingDown(cur) && !isAccountAnomaly(cur) {
 			return cur
 		}
 	}
 
-	// Selection is gone, disabled, exhausted or cooling down — pick next
-	// non-disabled non-exhausted non-cooling-down, else first.
+	// Selection is gone, disabled, exhausted, cooling down or anomalous — pick next
+	// non-disabled non-exhausted non-cooling-down non-anomalous, else first.
 	var next string
 	for _, c := range candidates {
-		if !c.Disabled && !c.Exhausted && !isAccountCoolingDown(c.ID) {
+		if !c.Disabled && !c.Exhausted && !isAccountCoolingDown(c.ID) && !isAccountAnomaly(c.ID) {
 			next = c.ID
 			break
 		}
@@ -100,8 +101,8 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 // Called from buildDashboardEx on every /accounts and /refresh request.
 //
 // Rules (single source of truth, same as pickActiveAuth):
-//  1. If current selection is live AND not exhausted AND not cooling down → keep it.
-//  2. If current selection is exhausted or cooling down → switch to first non-exhausted.
+//  1. If current selection is live AND not exhausted AND not cooling down AND not anomalous → keep it.
+//  2. If current selection is exhausted, cooling down, or anomalous → switch to first non-exhausted.
 //  3. If current selection is gone (disabled/deleted) → switch to first available.
 //  4. If all exhausted → keep current if alive, else first.
 //
@@ -114,14 +115,14 @@ func ensureDefaultActiveAuth(accounts []wbAccount) string {
 		live[a.AuthID] = a
 	}
 
-	// Rule 1: current selection is live AND not exhausted AND not cooling down → keep.
+	// Rule 1: current selection is live AND not exhausted AND not cooling down AND not anomalous → keep.
 	if cur != "" {
-		if a, ok := live[cur]; ok && !a.Disabled && !a.Exhausted && !isAccountCoolingDown(cur) {
+		if a, ok := live[cur]; ok && !a.Disabled && !a.Exhausted && !isAccountCoolingDown(cur) && !isAccountAnomaly(cur) {
 			return cur
 		}
 	}
 
-	// Rule 2 & 3: selection is exhausted, cooling down or gone → find next.
+	// Rule 2 & 3: selection is exhausted, cooling down, anomalous or gone → find next.
 	var firstAny, firstOK, firstReady string
 	for _, a := range accounts {
 		if firstAny == "" {
@@ -133,7 +134,7 @@ func ensureDefaultActiveAuth(accounts []wbAccount) string {
 		if firstOK == "" {
 			firstOK = a.AuthID
 		}
-		if !a.Exhausted && !isAccountCoolingDown(a.AuthID) && firstReady == "" {
+		if !a.Exhausted && !isAccountCoolingDown(a.AuthID) && !isAccountAnomaly(a.AuthID) && firstReady == "" {
 			firstReady = a.AuthID
 		}
 	}
