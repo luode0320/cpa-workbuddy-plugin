@@ -333,7 +333,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.8.2"
+var version = "0.9.0"
 
 func wbRegistration() registration {
 	return registration{
@@ -352,6 +352,8 @@ func wbRegistration() registration {
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (pick highest remaining). WARNING: when off + lifecycle_auto=false, exhausted accounts may still be routed — enable lifecycle_auto or set scheduler_mode=credits."},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional override of CPAMP usage import URL (default http://cpa-manager-plus:18317/v0/management/usage/import; also env USAGE_REPORT_URL)."},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key override. Prefer auto-detect from env CPAMP_ADMIN_KEY / USAGE_REPORT_KEY or secret file /run/secrets/cpamp_admin_key."},
+				{Name: "anomaly_pool_threshold", Type: pluginapi.ConfigFieldTypeString, Description: "Consecutive-failure count (1-50) at which an account is moved into the anomaly pool and kept out of routing. Default 10. Set to 0 to disable auto-quarantine entirely (kill switch). Absent key keeps the current value."},
+				{Name: "anomaly_refresh_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable the daily 00:00 local-time anomaly-pool auto-reset loop (default true). When true, every quarantined account gets another shot the next day; if it's still broken it will be re-quarantined."},
 			},
 		},
 		Capabilities: registrationCapability{

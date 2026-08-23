@@ -43,15 +43,15 @@ plugins:
     qoderwork:
       enabled: true
 
-      # Per-request account-failover budget for 40x errors (default 3,
-      # range 0-5). When a request hits an account-level 40x (401/403/
+      # Per-request account-failover budget for 40x errors (default 10,
+      # range 0-10). When a request hits an account-level 40x (401/403/
       # 404/405), the plugin retries the SAME request on a different
       # qoderwork account up to `retry_on_4xx` times before giving up.
       # Set to 0 to disable on-request account rotation (use as a kill
       # switch during global outage recovery). The failing account is
       # also recorded in the cooldown list so subsequent requests skip
       # it.
-      retry_on_4xx: 3
+      retry_on_4xx: 10
 
 # 模型别名（可选）
 oauth-model-alias:

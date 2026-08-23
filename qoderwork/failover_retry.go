@@ -45,8 +45,8 @@ func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *storedAuth, 
 
 	// First pass: find the first file-entry whose host-reported ID is
 	// NOT currentAuthID and passes the cheap filters (disabled,
-	// cooling down). Order is host-provided so successive retries
-	// walk the same predictable path.
+	// cooling down, anomalously quarantined). Order is host-provided so
+	// successive retries walk the same predictable path.
 	for _, f := range files {
 		id := strings.TrimSpace(f.ID)
 		if id == "" {
@@ -59,6 +59,9 @@ func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *storedAuth, 
 			continue
 		}
 		if isAccountCoolingDown(id) {
+			continue
+		}
+		if isAccountAnomaly(id) {
 			continue
 		}
 		// Skip candidates with no usable auth index — we can't load

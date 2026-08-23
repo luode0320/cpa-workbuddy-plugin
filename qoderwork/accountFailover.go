@@ -130,13 +130,20 @@ func isAccountLevel4xx(status int) bool {
 // account and extends its cooldown window using the backoff tier for the new
 // count. Returns true when the failure was counted (i.e. isAccountFailure).
 // Callers are expected to key on the same auth.ID the scheduler uses.
+//
+// When the new count crosses anomalyThreshold() (default 10, configurable
+// via `anomaly_pool_threshold:`), the account is moved into the anomaly set
+// in anomaly.go — kept out of routing until operator-driven unfreeze or the
+// daily 00:00 refresh loop clears the set. The freeze is kicked off in a
+// background goroutine because it touches host.auth.list + direct file
+// write and would otherwise stall the request hot path.
 func recordAccountFailure(authID string, status int, body string) bool {
 	if !failoverActive() || !isAccountFailure(status, body) {
 		return false
 	}
 	now := time.Now()
+	var shouldFreeze bool
 	failoverMu.Lock()
-	defer failoverMu.Unlock()
 	st := failoverStates[authID]
 	if st == nil {
 		st = &authFailoverState{}
@@ -144,6 +151,13 @@ func recordAccountFailure(authID string, status int, body string) bool {
 	}
 	st.count++
 	st.cooldownUntil = now.Add(failoverCooldownFor(st.count))
+	if threshold := int(anomalyThreshold()); threshold > 0 && st.count >= threshold && !isAnomaly(authID) {
+		shouldFreeze = true
+	}
+	failoverMu.Unlock()
+	if shouldFreeze {
+		go freezeAccountForAnomaly(authID)
+	}
 	return true
 }
 

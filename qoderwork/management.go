@@ -126,6 +126,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodPost, Path: base + "/claim-pro", Description: "Claim one-time Pro upgrade pack for one account (auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
+			{Method: http.MethodPost, Path: base + "/unfreeze", Description: "Remove one (body: {auth_index}) or all (empty body) accounts from the anomaly pool (anomaly.go)."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "QoderWork", Description: "QoderWork dashboard: credits, check-in, plan, import."},
@@ -187,6 +188,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleClaimPro(req)))
 	case req.Method == http.MethodGet && path == base+"/keepalive/status":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveStatus()))
+	case req.Method == http.MethodPost && path == base+"/unfreeze":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleUnfreezeAuth(req)))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }
@@ -316,7 +319,8 @@ func mutatingManagementPath(path string) bool {
 		base + "/import",
 		base + "/select",
 		base + "/keepalive",
-		base + "/claim-pro":
+		base + "/claim-pro",
+		base + "/unfreeze":
 		return true
 	}
 	return false

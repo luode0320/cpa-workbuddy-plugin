@@ -86,6 +86,22 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	if len(wbCandidates) == 0 {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
+	// Anomaly filter: accounts that have failed too many times in a row
+	// (see accountFailover.go → anomaly.go threshold trip) are kept out
+	// of routing entirely. Place this BEFORE the cooldown filter so a
+	// freshly-quarantined account that continues to 4xx doesn't double
+	// count (cooldown's filter still applies to the survivors). Like
+	// the cooldown filter below, when every account is anomalous we
+	// keep the full list so the picker falls back to the current pin.
+	anomalyFiltered := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
+	for _, c := range wbCandidates {
+		if !isAccountAnomaly(c.ID) {
+			anomalyFiltered = append(anomalyFiltered, c)
+		}
+	}
+	if len(anomalyFiltered) > 0 {
+		wbCandidates = anomalyFiltered
+	}
 	filtered := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
 		if !isAccountCoolingDown(c.ID) {
@@ -148,4 +164,12 @@ func cachedCreditsScore(authID string) (int64, bool) {
 		return -1, false
 	}
 	return entry.credits.TotalRemain, isCreditsExhausted(entry.credits)
+}
+
+// isAccountAnomaly reports whether the account is currently in the
+// anomaly set (consecutive-failure trip, see anomaly.go). Symmetric
+// with isAccountCoolingDown: every scheduler pick asks the same
+// predicate family.
+func isAccountAnomaly(authID string) bool {
+	return isAnomaly(authID)
 }

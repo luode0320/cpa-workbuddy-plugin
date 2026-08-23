@@ -25,6 +25,7 @@ type wbAccount struct {
 	Disabled  bool            `json:"disabled"`
 	Exhausted bool            `json:"exhausted"`
 	Selected  bool            `json:"selected"` // panel active routing card
+	Anomaly   bool            `json:"anomaly"`  // consecutive-failure trip; quarantined until daily refresh or operator unfreeze
 	Credits   *creditsSummary `json:"credits,omitempty"`
 	Checkin   *checkinSummary `json:"checkin,omitempty"`
 	Error     string          `json:"error,omitempty"`
@@ -167,20 +168,29 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	checkinAutoMu.RUnlock()
 	// Ensure default selection for panel + scheduler (first usable card).
 	activeID := ensureDefaultActiveAuth(out)
+	// Sync anomaly markers from disk the same way workbuddy does (see
+	// anomaly.go) — refreshAnomalySetFromDisk also prunes entries for
+	// accounts that no longer exist so the scheduler can't pin a session
+	// to a deleted auth.
+	anomalySize := refreshAnomalySetFromDisk()
 	// Aggregate credits for panel/API consumers (all accounts currently in out).
 	sum := summarizeCredits(out)
-	// Mark selected account in list for UI.
+	// Mark selected account in list for UI; anomaly comes from the disk mirror.
 	for i := range out {
 		out[i].Selected = out[i].AuthID == activeID
+		out[i].Anomaly = isAnomaly(out[i].AuthID)
 	}
 	resp := map[string]any{
-		"accounts":       out,
-		"active_auth":    activeID,
-		"checkin_auto":   auto,
-		"lifecycle_auto": lifecycleEnabled(),
-		"schedule":       []string{"09:00", "21:00"},
-		"server_time":    time.Now().Format("2006-01-02 15:04:05"),
-		"summary":        sum,
+		"accounts":                out,
+		"active_auth":             activeID,
+		"checkin_auto":            auto,
+		"lifecycle_auto":          lifecycleEnabled(),
+		"schedule":                []string{"09:00", "21:00"},
+		"server_time":             time.Now().Format("2006-01-02 15:04:05"),
+		"summary":                 sum,
+		"anomaly_pool_size":       anomalySize,
+		"anomaly_pool_threshold":  anomalyThreshold(),
+		"anomaly_refresh_enabled": anomalyRefreshEnabled(),
 	}
 	if len(life) > 0 {
 		resp["lifecycle"] = life
