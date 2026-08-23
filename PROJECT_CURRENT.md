@@ -8,7 +8,7 @@
 
 ## 项目概览
 
-- 状态：活跃维护中（最近发布 2026-08-23 workbuddy 0.14.9 + qoderwork 0.9.4）
+- 状态：活跃维护中（最近发布 2026-08-24 workbuddy 0.14.10 计数持久化）
 - 活动会话数：1
 - 更新时间：2026-08-23 22:59 (GMT+8)
 
@@ -28,6 +28,7 @@
 
 ## 已完成
 
+- 2026-08-24 成功/失败计数持久化（workbuddy 0.14.10，**已发布**）：面板「成功/失败」原来自 CPA 宿主 recent 窗口（`Auth.Success/Failed` 为 `json:"-"` 纯内存态，重启清零）。改为插件自维护累计计数：`counter.go` 新增 `recordOutcome`（内存递增，key=UID）+ `startCounterFlusher` 后台 10s flusher 折入 auth 文件顶层 `success_count`/`failed_count`（`foldCounterIntoDoc` 保留其余字段）+ `parseCountersFromAuthJSON` 容错读；`usage.go` `publishUsage` 统一 `recordOutcome(authID, !failed)` 埋点；`panel.go` UID 账号改读持久化累计值 + 内存未落盘 delta，legacy 无 UID 账号回退 recent 窗口。`counter_test.go` 覆盖 pending delta / parse / fold / flush-noop。cgo-shim build+vet+test 全绿（6.4s）。提交链 a525feb→b1c25ea→4df0736，CI run 32651988691 success，8 assets checksums 全 OK，registry raw 200 含 0.14.10 + 7 artifacts 远端校验待做。真实页面交互验证（容器重启后计数不归零）待做。
 - 2026-08-23 账号面板「异步节流刷新」**已发布**（workbuddy 0.14.9 + qoderwork 0.9.4）：`RefreshRunner` 单例（1s/账号节流 + pending/running/done/failed 状态机）+ `POST /refresh` 改异步 + `GET /refresh/status` + `GET /credits?track=1`；`EnqueueAll`/`EnqueueOne` 幂等（运行中则忽略，多路触发只跑一轮）；watchdog 改 `cachedCredits` 缓存读 preserve flip + 异步入队；前端删「刷新数据」按钮 + `enterPanel()` 进入自动刷新 + `pollRefreshStatus` 2s 轮询 + 卡片三态。提交链 066d079→5241607→323d56b，CI 双 run success（32646541401/32646545554），16 assets checksums 全 OK，registry raw 200 含 0.14.9/0.9.4 + 14 artifacts 远端 size/sha256 全 OK。真实页面交互验证待做；qoderwork 面板前端（去按钮 + 进入自动刷新）暂未对称同步。
 - 2026-08-23 账号面板移除「启用/禁用」手动开关 **已发布**（workbuddy 0.14.8）：前端 `panel.html` 删除 `toggleBtn` 按钮 + `toggleAuth` 函数 + 事件绑定 + 「已禁用」筛选 tab + `disabled` 徽标 + `disabledN` 计数 + `scopeLabel.disabled` 分支 + `data-disabled` 属性 + `.badge.disabled` CSS + 「可用」过滤与 `accountsForFilter` 中的 disabled 判定；后端删除 `handleToggleAuth` 函数（credits_handler.go -80 行）+ `management.go` 三处 `/toggle` 接入（注册/分发/mutating path）。保留：`disableAuth/reenableAuth` 函数（lifecycle.go/keepalive.go 仍用）、`disabled` 字段读写（认证文件管理开关依赖）、`disabled_count` 统计字段（panel.go）、`panel.html` 的 `lazyLoadCredits` 与"全部完成"判断的 disabled 过滤。提交链 81c854b→3ef57d7→5d357bc，CI run 32637348107 success，8 assets checksums 全 OK，registry raw 200 含 0.14.8 + 7 assets raw URL 全 200。真实页面交互验证待做。
 - 2026-08-23 账号面板「删除账号」功能 **已发布**（workbuddy 0.14.7）：卡片右上角 `×` + 二次确认模态框（取消/遮罩/Escape 不发请求）；后端 `POST /delete` 严格校验链（auth_index 非空 → 存在 → `isWorkbuddyAuthFileName` 归属 → 解析 → phys.AuthIndex 一致 → 路径安全 → 物理删除 → `clearDeletedAccountState` 清理 f.ID/auth_index/UID 三键）。新增 `clearFailoverStateForAuth` / `clearDeletedAccountState` / `isWorkbuddyAuthFileName` + `auth_delete_test.go`。cgo-shim build/vet/test 全绿，node --check 通过。提交链 8003ae6→a6a5527→0cabb46，CI run 32635829837 success，8 assets checksums 全 OK，registry raw 200 含 0.14.7 + 7 assets raw URL 全 200。覆盖边界：`handleDeleteAuth` 完整链路依赖 cgo `hostAPI` 无法 shim 单测，真实页面交互验证待做
@@ -45,6 +46,7 @@
 
 ## 待办
 
+- 【本轮】workbuddy 0.14.10 成功/失败计数持久化已发布（提交链 a525feb→b1c25ea→4df0736）。真实页面交互验证待做（容器重启后访问面板确认「成功/失败」为重启前累计值而非 0 起跳）。
 - 账号面板「异步节流刷新」真实页面交互验证待做（CPA 宿主打开面板 → 直接渲染缓存 → 后台逐卡渐进 done，cgo-shim 无法覆盖这条 UI 链路）
 - 账号删除功能真实页面交互验证待做（在 CPA 宿主面板点 `×` 走一遍确认/取消/失败路径，确认卡片刷新与 Toast）
 - 账号面板移除「启用/禁用」功能真实页面交互验证待做（已发布 0.14.8，确认面板卡片底部不再出现「禁用/启用」按钮，但「刷新」「已签到/领取」「解除冻结」（如有）「×删除」仍正常）
@@ -61,7 +63,7 @@
 
 ## 下一执行点
 
-- 【本轮】账号面板「异步节流刷新」已发布（workbuddy 0.14.9 + qoderwork 0.9.4）。下一步：真实页面交互验证；qoderwork 面板前端是否对称同步（去按钮 + 进入自动刷新）待用户确认
+- 【本轮】workbuddy 0.14.10 成功/失败计数持久化已发布。下一步：真实页面交互验证（容器重启后「成功/失败」不归零）；qoderwork 面板前端是否对称同步（去按钮 + 进入自动刷新）待用户确认。
 - 待确认 40x 换号重试的发版节奏（0.14.2 已含 429 切号，retry_on_4xx 预算是否上调待用户拍板）
 
 <!-- BEGIN RECENT PROJECT SESSIONS -->

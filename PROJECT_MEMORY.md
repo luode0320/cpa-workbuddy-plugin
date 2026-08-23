@@ -28,6 +28,8 @@
 - 路由（0.12.0 起）：移除三池只留保号池（watchdog 积分阈值自动归池，默认 10m 刷新、阈值 50）；存量 pool/priority 字段忽略式读取
 - 版本三轨（qoderwork）：main.go 0.8.2 / VERSION 0.4.1 / registry 0.2.x 历史双轨，发版以 registry 为准
 - 跨插件数据通道：NDJSON 文件 feed（token-usage-feed.ndjson，超 128MB 截断），不用共享 bbolt（排它锁冲突）
+- **面板「成功/失败」计数是 CPA 宿主的 recent 窗口计数，纯内存态不落盘**（2026-08-23 根因确认）：`CLIProxyAPI v7 sdk/cliproxy/auth/types.go` 里 `Auth.Success int64 json:"-"` / `Auth.Failed int64 json:"-"` / `recentRequests json:"-"`，序列化写 auth 文件时被显式跳过 → 容器重启必然清零，与挂载无关（deploy-server.yml 的 auths 目录其实挂了 `-v "${AUTH_DIR}":/root/.cli-proxy-api`，但字段本就不写盘）。workbuddy 插件只透传 `host.auth.list` 的 `HostAuthFileEntry.Success/Failed`（panel.go 注释「persisted by the host」），自己不维护。窗口约 10min×20 桶≈200 分钟，是滚动健康度指标而非全量历史累计
+- **方案 B 落地（workbuddy 0.14.10，2026-08-23）**：插件自维护累计计数并持久化到 auth 文件顶层 `success_count`/`failed_count`（**字段名刻意避开宿主的 `success`/`failed`**，避免与 HostAuthFileEntry recent 窗口形成双源歧义）。`counter.go`：`recordOutcome(uid, success)` 内存递增（key=UID，与调度/failover/preserve/anomaly 同键）→ `startCounterFlusher` 后台 10s flusher `flushCounters` 把增量经 `foldCounterIntoDoc`（保留其余顶层字段）折入物理文件 → `persistAuthDirect` 直写（非 host.auth.save）。埋点在 `publishUsage` 统一 `recordOutcome(authID, !failed)`（每请求恰好一次，authID 即 UID）。panel 读取：UID 账号用 `parseCountersFromAuthJSON(phys.JSON)` + `counterPendingDelta` 合并，legacy 无 UID 账号回退 recent 窗口
 
 ## 变更记录
 
