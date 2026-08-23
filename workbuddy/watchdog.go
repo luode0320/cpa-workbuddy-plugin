@@ -200,43 +200,36 @@ func preserveShouldFlip(remain int64, threshold int64, currentlyPreserved bool) 
 	return shouldPreserve, shouldPreserve != currentlyPreserved
 }
 
-// runPreserveWatchdogTick walks every workbuddy auth, pulls a fresh credits
-// snapshot, and flips the preserve flag based on the threshold. Failures
-// are best-effort: a single account's host RPC error doesn't stop the rest
-// of the fleet from being evaluated.
+// runPreserveWatchdogTick walks every workbuddy auth, flips the preserve flag
+// using the cached credits snapshot (no upstream fetch in-tick), and hands the
+// whole fleet to the throttled refresh runner so fresh credits arrive
+// asynchronously at one account per second.
 func runPreserveWatchdogTick() {
 	files, err := hostAuthList()
 	if err != nil {
 		return
 	}
 	threshold := preserveThreshold()
+	targets := make([]refreshTarget, 0, len(files))
 	for _, f := range files {
-		sa, err := hostAuthGet(f.AuthIndex)
-		if err != nil {
-			continue
-		}
-		// Pull fresh credits through cachedAccountDetails so concurrent
-		// dashboard fetches share the upstream call (singleflight) instead
-		// of stampeding the billing API.
-		_, _, cr, _ := cachedAccountDetails(f.ID, sa, true)
-		if cr == nil {
-			continue
-		}
-		currentlyPreserved := isPreserve(f.ID)
-		shouldPreserve, changed := preserveShouldFlip(cr.TotalRemain, threshold, currentlyPreserved)
-		if !changed {
-			continue // already in the right state, no-op (no disk write, no binding churn)
-		}
-		if shouldPreserve {
-			if err := persistPreserveToggle(f.AuthIndex, f.ID, true); err != nil {
-				continue
-			}
-			evictSessionBindingsForAuth(f.ID)
-		} else {
-			if err := persistPreserveToggle(f.AuthIndex, f.ID, false); err != nil {
-				continue
+		cr := cachedCredits(f.ID)
+		if cr != nil {
+			currentlyPreserved := isPreserve(f.ID)
+			shouldPreserve, changed := preserveShouldFlip(cr.TotalRemain, threshold, currentlyPreserved)
+			if changed {
+				if shouldPreserve {
+					if err := persistPreserveToggle(f.AuthIndex, f.ID, true); err == nil {
+						evictSessionBindingsForAuth(f.ID)
+					}
+				} else {
+					_ = persistPreserveToggle(f.AuthIndex, f.ID, false)
+				}
 			}
 		}
+		targets = append(targets, refreshTarget{AuthIndex: f.AuthIndex, AuthID: f.ID})
+	}
+	if len(targets) > 0 {
+		globalRefresh.EnqueueAll(targets, "watchdog")
 	}
 }
 

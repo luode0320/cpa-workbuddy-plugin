@@ -54,6 +54,13 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .card,.summary{background:var(--card);border:1px solid var(--border);border-radius:12px}
 .card{padding:16px}
 .card.selected{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc-ring)}
+/* 刷新三态：卡片轮廓高亮 + 状态小字 */
+.card .refresh-state{font-size:11px;color:var(--mut);display:inline-flex;align-items:center;gap:4px;margin-bottom:6px}
+.card .refresh-state.err{color:var(--err)}
+.card .refresh-state .spin{border-color:var(--mut);border-top-color:transparent}
+.card[data-refresh-state="running"]{outline:1px dashed var(--acc)}
+.card[data-refresh-state="done"]{outline:1px solid var(--ok)}
+.card[data-refresh-state="failed"]{outline:1px solid var(--err)}
 .card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center}
 .uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:12px}
 .badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
@@ -344,6 +351,17 @@ function bindCardActions(root){
     });
   });
 }
+function refreshStateText(a){
+  const s=a._refreshState||"";
+  if(s==="pending") return '排队中…';
+  if(s==="running") return '<span class="spin"></span>刷新中…';
+  if(s==="failed") return '⚠️ 刷新失败';
+  return '';
+}
+function refreshStateHTML(a){
+  const t=refreshStateText(a);
+  return t?`<div class="refresh-state${a._refreshState==="failed"?" err":""}">${t}</div>`:"";
+}
 function card(a){
   const plan=(a.plan||"unknown").toLowerCase();
   const ci=a.checkin||{}, cr=a.credits;
@@ -372,9 +390,10 @@ function card(a){
   const unfreezeBtn=a.anomaly?`<button class="sec" data-action="unfreeze" data-auth-index="${esc(a.auth_index)}" title="将该账号从异常池解除冻结，重新参与路由">解除冻结</button>`:"";
   const display=(a.nickname||a.label||a.name||"").replace(/^qoderwork-?/i,"");
   const nick=display||("u"+(a.uid||"").slice(-8));
-  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-anomaly="${a.anomaly?"1":"0"}">
+  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-anomaly="${a.anomaly?"1":"0"}" data-refresh-state="${a._refreshState||""}">
   <h2>${esc(nick)} <span style="display:flex;gap:6px;align-items:center">${badges}</span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
+  ${refreshStateHTML(a)}
   ${progressHTML(cr,a)}
   ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
   <div class="actions">${selectBtn}${refreshBtn}${actionHTML}${unfreezeBtn}</div>
@@ -395,41 +414,7 @@ let lastAccounts=[];
 let activeAuthId="";
 let authFailCount=0;
 let authFailUntil=0;
-// Lazy-load: fetch credits for all cards that lack them, concurrently.
-// Each card fetches independently; failed ones retry once after 2s.
-function lazyLoadCredits(accounts){
-  const need=accounts.filter(a=>!a.credits&&!a.error&&!a.disabled);
-  if(!need.length) return;
-  need.forEach(a=>{
-    const idx=a.auth_index;
-    api(`/credits?auth_index=${encodeURIComponent(idx)}`)
-      .then(d=>{
-        const acct=(d.accounts||[])[0]||d;
-        if(d.error){ a.error=d.error; }
-        if(acct&&acct.credits){
-          a.credits=acct.credits;
-          a.exhausted=acct.exhausted;
-          if(acct.plan) a.plan=acct.plan;
-        }
-        if(acct&&acct.error){ a.error=acct.error; }
-        updateOneCard(a);
-      })
-      .catch(()=>{
-        // Retry once after 2s.
-        setTimeout(()=>{
-          api(`/credits?auth_index=${encodeURIComponent(idx)}`)
-            .then(d=>{
-              const acct=(d.accounts||[])[0]||d;
-              if(acct&&acct.credits){ a.credits=acct.credits; a.exhausted=acct.exhausted; }
-              if(acct&&acct.plan) a.plan=acct.plan;
-              if(d.error||acct&&acct.error) a.error=d.error||acct.error;
-              updateOneCard(a);
-            })
-            .catch(()=>{ a.error="积分查询失败"; updateOneCard(a); });
-        },2000);
-      });
-  });
-}
+let pollTimer=null;
 function updateOneCard(a){
   const el=document.querySelector(`#grid .card[data-auth="${CSS.escape(a.auth_index)}"]`);
   if(!el) return;
@@ -637,23 +622,33 @@ async function load(force, btn){
     g.innerHTML='<div class="loading">请先填写 management key</div>';
     return;
   }
-  // 刷新按钮：loading 态 + 右上角 toast。原先 force 路径静默调 /refresh，
-  // 成功/失败都无反馈（签到按钮有 toast，刷新没有）。
+  // 刷新按钮：loading 态 + 右上角 toast。
   if(force){
     if(!btn) btn=document.getElementById("refreshBtn");
     busy(btn, true);
   }
   try{
-    // force 时 /refresh 已返回完整 dashboard（buildDashboard(true)），
-    // 不必再打 /accounts（之前多一次请求且吞掉 refresh 错误）。
-    const d = force
-      ? await api("/refresh", {method:"POST"})
-      : await api("/accounts");
+    // force：POST /refresh 已改为异步节流，立即返回 {started,queued}，
+    // 前端轮询 /refresh/status 渐进更新每张卡片，不再同步阻塞等全量。
+    if(force){
+      const d=await api("/refresh", {method:"POST"});
+      if(d&&d.error){ toast("刷新失败","err",d.error); return; }
+      const queued=Number(d.queued||0);
+      toast("已开始后台刷新","ok",queued+" 个账号 · 每账号约 1s");
+      (lastAccounts||[]).forEach(a=>{ a._refreshState="pending"; });
+      if(lastAccounts && lastAccounts.length){
+        g.innerHTML=accountsForFilter(lastAccounts).map(card).join("");
+        bindCardActions(g);
+        filterRegion(currentFilter, null);
+      }
+      pollRefreshStatus();
+      return;
+    }
+    const d=await api("/accounts");
     const at=document.getElementById("autoToggle"); if(at) at.checked=!!d.checkin_auto;
     const st=document.getElementById("svtime"); if(st) st.textContent=d.server_time?("服务器时间 "+d.server_time):"";
     if(d.error){
       g.innerHTML='<div class="loading">'+esc(d.error)+"</div>";
-      if(force) toast("刷新失败", "err", d.error);
       return;
     }
     const accounts=d.accounts||[];
@@ -663,26 +658,16 @@ async function load(force, btn){
     if(!accounts.length){
       g.innerHTML='<div class="loading">暂无 QoderWork 账号</div>';
       renderSummary([]);
-      if(force) toast("数据已刷新", "warn", "暂无 QoderWork 账号");
       return;
     }
     g.innerHTML=accounts.map(card).join("");
     bindCardActions(g);
     filterRegion(currentFilter, null);
     renderSummary(accounts);
-    // Lazy-load credits for cards that don't have them yet.
-    lazyLoadCredits(accounts);
-    if(force){
-      const errN=accounts.filter(a=>a.error).length;
-      const life=(d.lifecycle||[]).length;
-      let extra=accounts.length+" 个账号";
-      if(errN) extra+=" · "+errN+" 个有错误";
-      if(life) extra+=" · 生命周期 "+life+" 项";
-      if(errN) toast("数据已刷新", "warn", extra);
-      else toast("数据已刷新", "ok", extra);
-    }
+    // 打开面板仅读缓存，不再自动全量并发拉上游；
+    // 无 credits 的卡片显示"加载中…"占位，点顶部"刷新数据"触发异步节流刷新。
   }catch(e){
-    if(force) toast("刷新失败", "err", e.message||String(e));
+    if(force) toast("刷新失败","err",e.message||String(e));
     // 强制刷新失败时保留旧卡片，只 toast；首次加载仍写错误到 grid。
     if(!force || !g.querySelector(".card")){
       g.innerHTML='<div class="loading">'+esc(e.message||String(e))+"</div>";
@@ -690,6 +675,50 @@ async function load(force, btn){
   }finally{
     if(force) busy(btn, false);
   }
+}
+function stopPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null; } }
+// 每 2s 轮询 /refresh/status，按账号状态渐进更新卡片；batch 结束后停止。
+async function pollRefreshStatus(){
+  stopPolling();
+  pollTimer=setInterval(async ()=>{
+    try{
+      const d=await api("/refresh/status");
+      (d.per_account||[]).forEach(st=>{
+        if(!st.auth_index) return;
+        const a=(lastAccounts||[]).find(x=>x.auth_index===st.auth_index);
+        if(!a || a._refreshState===st.status) return;
+        a._refreshState=st.status;
+        if(st.status==="done"||st.status==="failed"){
+          if(st.status==="failed"){
+            a.error=st.error||a.error||"刷新失败";
+            updateOneCard(a);
+          }else{
+            api(`/credits?auth_index=${encodeURIComponent(st.auth_index)}`).then(d2=>{
+              const acct=(d2.accounts||[])[0]||d2;
+              if(acct&&acct.credits){ a.credits=acct.credits; a.exhausted=acct.exhausted; }
+              if(acct&&acct.plan) a.plan=acct.plan;
+              if(acct&&acct.error) a.error=acct.error;
+              updateOneCard(a);
+            }).catch(()=>{ a.error="积分查询失败"; updateOneCard(a); });
+          }
+        }else{
+          // pending/running：仅更新状态小字，不重拉数据。
+          const el=document.querySelector(`#grid .card[data-auth="${CSS.escape(a.auth_index)}"]`);
+          if(el){
+            el.dataset.refreshState=st.status;
+            const rs=el.querySelector(".refresh-state");
+            if(rs) rs.innerHTML=refreshStateText(a);
+          }
+        }
+      });
+      if(!d.running){
+        stopPolling();
+        if((d.done||0)||(d.failed||0)){
+          toast("后台刷新完成","ok",(d.done||0)+" 成功"+(d.failed?" / "+(d.failed)+" 失败":""));
+        }
+      }
+    }catch(e){}
+  },2000);
 }
 function checkinResultToast(res, who){
   const name=res.nickname||who||"账号";
@@ -745,6 +774,7 @@ async function claimPro(idx, btn){
     if(d.error){toast(name+"：领取失败","err",d.error);busy(btn,false);return}
     if(d.success){toast(name+"：领取成功","ok","Pro 升级包已领取"+(d.credits?(" · 积分 "+(d.credits.total_remain||0)):""))}
     else{toast(name+"："+(d.message||"不可领取"),"warn")}
+    busy(btn,false);
     await load(true);
   }catch(e){
     toast("领取请求失败","err",e.message);
@@ -876,7 +906,7 @@ async function unfreezeAll(btn){
     const cleared=Number(d.cleared||0);
     if(cleared===0){toast("异常池中没有需要解除的账号","warn");}
     else{toast("已解除冻结","ok",cleared+" 个账号");}
-    await load(true);
+    await load(false);
   }catch(e){
     toast("全部解除冻结失败","err",e.message||String(e));
     busy(btn,false);
@@ -905,7 +935,7 @@ async function importAuth(btn){
       toast("导入成功","ok",(d.nickname||d.uid||"")+ " → "+(d.file||d.name||""));
       document.getElementById("importPAT").value="";
       closeImportModal();
-      load(true);
+      load(false);
     }else toast("导入失败","err",d.error||"unknown");
   }catch(e){toast("导入请求失败","err",e.message)}
   busy(btn,false);

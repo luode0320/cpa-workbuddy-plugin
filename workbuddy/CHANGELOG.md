@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.14.9
+
+### Feat — 账号面板异步节流刷新（去按钮 + 进入自动触发 + 幂等）
+
+把「打开面板触发全量并发拉上游」和「刷新按钮同步阻塞」统一收敛为进程内 `RefreshRunner` 单例，1s/账号硬编码节流、异步入队即返回；并去掉手动刷新按钮，改为进入面板自动触发一次后台刷新（前端无感知）。
+
+- **打开面板不再拉上游**：仅渲染 `accountCache` / 账号 JSON 已有数据，无 credits 缓存的账号显示「加载中…」占位，绝不自动并发请求 billing API。
+- **去按钮 + 进入自动刷新**：删除「刷新数据」按钮；`init` 与 `saveKey` 走 `enterPanel()`（先 `load()` 渲染缓存 → `startBackgroundRefresh()` 静默 `POST /refresh` + `pollRefreshStatus()`），完成收尾不再 toast。
+- **刷新轮幂等**：`EnqueueAll` / `EnqueueOne` 改为「运行中则忽略」（`idx < len(batch)` 时返回 0/false，不再替换 / 追加批次），进入面板 / watchdog 10m / 单卡 track 多路并发触发只跑一轮，绝不重复一轮。
+- **后端**（`refresh_runner.go` 新增 + `refresh_runner_test.go`）：`RefreshRunner` 单例，1s/账号节流（`time.Ticker`）、`pending/running/done/failed` 状态机、generation 防串写；`POST /refresh` 改异步立即返回 `{started,queued}`、新增 `GET /refresh/status`、`GET /credits?track=1` 走队列。
+- **watchdog**（`watchdog.go`）：`runPreserveWatchdogTick` 改 `cachedCredits` 缓存读做 preserve flip + `EnqueueAll(source="watchdog")` 立即返回，不再串行 force 拉上游。
+- **前端**（`panel.html`）：`pollRefreshStatus()` 2s 轮询 + 卡片 `data-refresh-state` 三态（pending/running/done/failed）高亮。
+- 涉及文件：`refresh_runner.go` / `refresh_runner_test.go`（新增）、`management.go` / `credits_handler.go` / `watchdog.go` / `panel.html`。
+
 ## 0.14.8
 
 ### Refactor — 移除账号面板「启用/禁用」手动开关

@@ -365,7 +365,17 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 					"auth_index": authIndex, "error": "load auth: " + err.Error(),
 				}}}
 			}
-cr, err := fetchUserResource(sa)
+			if vals := req.Query["track"]; len(vals) > 0 {
+				if t := strings.TrimSpace(vals[0]); t == "1" || t == "true" {
+					globalRefresh.EnqueueOne(authIndex, f.ID, "credits")
+					return map[string]any{
+						"queued":     true,
+						"auth_index": authIndex,
+						"status":     globalRefresh.Snapshot(),
+					}
+				}
+			}
+			cr, err := fetchUserResource(sa)
 		acct := map[string]any{
 			"auth_index": authIndex,
 			"nickname":   sa.Account.Nickname,

@@ -117,7 +117,8 @@ func managementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
 			{Method: http.MethodGet, Path: base + "/accounts", Description: "List QoderWork accounts with credits, plan and check-in status."},
-			{Method: http.MethodPost, Path: base + "/refresh", Description: "Force refresh quota/cache for all accounts."},
+			{Method: http.MethodPost, Path: base + "/refresh", Description: "Enqueue an async throttled refresh of all accounts (1s per account)."},
+			{Method: http.MethodGet, Path: base + "/refresh/status", Description: "Poll the throttled refresh progress (per-account status)."},
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Manually check in one account (auth_index) or all."},
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one (auth_index query) or all accounts."},
@@ -171,7 +172,9 @@ func handleManagement(raw []byte) ([]byte, error) {
 	case req.Method == http.MethodGet && path == base+"/accounts":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardEx(false, false)))
 	case req.Method == http.MethodPost && path == base+"/refresh":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardEx(true, true)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleRefreshAsync()))
+	case req.Method == http.MethodGet && path == base+"/refresh/status":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, globalRefresh.Snapshot()))
 	case req.Method == http.MethodPost && path == base+"/checkin":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleManualCheckin(req)))
 	case req.Method == http.MethodPost && path == base+"/checkin/config":
@@ -192,6 +195,29 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleUnfreezeAuth(req)))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
+}
+
+// handleRefreshAsync enqueues a full-fleet refresh through the throttled
+// RefreshRunner and returns immediately. The panel polls GET /refresh/status
+// for per-account progress instead of blocking on the whole batch.
+func handleRefreshAsync() map[string]any {
+	files, err := hostAuthList()
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	targets := make([]refreshTarget, 0, len(files))
+	for _, f := range files {
+		if strings.TrimSpace(f.AuthIndex) == "" || strings.TrimSpace(f.ID) == "" {
+			continue
+		}
+		targets = append(targets, refreshTarget{AuthIndex: f.AuthIndex, AuthID: f.ID})
+	}
+	queued := globalRefresh.EnqueueAll(targets, "panel")
+	return map[string]any{
+		"started": queued > 0,
+		"source":  "panel",
+		"queued":  queued,
+	}
 }
 
 // -----------------------------------------------------------------------------

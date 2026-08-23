@@ -1,5 +1,15 @@
 # QoderWork Plugin Changelog
 
+## 0.9.4
+
+### Feat — 账号面板异步节流刷新（与 workbuddy-provider 0.14.9 对称）
+
+- **后端**（`refresh_runner.go` 新增 + `refresh_runner_test.go`）：`RefreshRunner` 单例，1s/账号节流 + `pending/running/done/failed` 状态机。
+- **路由**（`management.go` / `credits_handler.go`）：`POST /refresh` 改异步立即返回、新增 `GET /refresh/status`、`GET /credits?track=1` 走队列。
+- **幂等**：`EnqueueAll` / `EnqueueOne` 运行中则忽略，多路触发只跑一轮。
+- **前端**（`panel.html`）：`pollRefreshStatus` 2s 轮询 + 卡片三态。
+- qoderwork 无 preserve watchdog，该步仅 workbuddy-provider 具备。
+
 ## 0.9.1
 
 ### Fix — `retry_on_4xx` 同请求切号循环纳入 429（Too Many Requests）

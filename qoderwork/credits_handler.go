@@ -135,6 +135,10 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 	if vals := req.Query["auth_index"]; len(vals) > 0 {
 		authIndex = strings.TrimSpace(vals[0])
 	}
+	track := ""
+	if vals := req.Query["track"]; len(vals) > 0 {
+		track = strings.TrimSpace(vals[0])
+	}
 	files, err := hostAuthList()
 	if err != nil {
 		return map[string]any{"error": err.Error()}
@@ -150,6 +154,16 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 				return map[string]any{"accounts": []map[string]any{{
 					"auth_index": authIndex, "error": "load auth: " + err.Error(),
 				}}}
+			}
+			// track=1: enqueue the throttled async refresh and return
+			// immediately; the panel polls GET /refresh/status for the result.
+			if track == "1" || track == "true" {
+				globalRefresh.EnqueueOne(f.AuthIndex, f.ID, "credits")
+				return map[string]any{
+					"queued":     true,
+					"auth_index": authIndex,
+					"status":     globalRefresh.Snapshot(),
+				}
 			}
 			cr, err := fetchUserResource(sa)
 			acct := map[string]any{

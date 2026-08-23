@@ -71,6 +71,17 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .badge.anomaly{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border);font-style:italic}
 .badge.stat{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-weight:500}
 .badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
+/* 后台刷新卡片三态（data-refresh-state：pending/running/done/failed）
+   running 虚线高亮 + spinner；done 短暂绿色高亮；failed 红框 + ⚠️ 错误文本。 */
+.card[data-refresh-state="running"]{border:1px dashed var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
+.card[data-refresh-state="done"]{border-color:var(--ok);box-shadow:0 0 0 2px var(--ok-border);background:var(--ok-soft)}
+.card[data-refresh-state="failed"]{border-color:var(--err);box-shadow:0 0 0 2px var(--err-border)}
+.ref-tag{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;white-space:nowrap}
+.ref-tag.ref-running{background:var(--acc);color:var(--on-acc)}
+.ref-tag.ref-pending{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
+.ref-tag.ref-failed{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
+.ref-tag .spin{border-color:currentColor;border-top-color:transparent;margin-right:0;vertical-align:-2px}
+.ref-progress{color:var(--warn);font-size:12px}
 .filter-bar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
 .ftag{background:var(--surface);border:1px solid var(--border);color:var(--mut);border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600}
 .ftag.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}
@@ -220,7 +231,6 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   <div class="bar">
     <button class="sec" id="importBtn" onclick="openImportModal()">导入凭证</button>
     <button class="sec" id="exportBtn" onclick="exportAuth(this)" title="导出全部账号凭证为 JSON，可直接再导入">导出凭证</button>
-    <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
     <button class="sec" onclick="claimTrialAll(this)" title="仅 Global · 一次性">全部领取</button>
     <button class="sec" id="unfreezeAllBtn" onclick="unfreezeAll(this)" title="将异常池中所有账号解除冻结（每日 0 点也会自动做）">全部解冻</button>
@@ -228,6 +238,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="sec sort-btn" id="sortBtn" onclick="toggleSort(this)" title="按可用积分切换升序/降序">积分 ↕</button>
     <label class="toggle" title="仅 CN 账号 09:00 / 21:00"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到(CN)</label>
     <span class="toggle" id="svtime"></span>
+    <span class="toggle ref-progress" id="refreshProgress" style="display:none"></span>
   </div>
   <div class="filter-bar" id="filterBar">
     <button type="button" class="ftag active" data-region="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
@@ -328,7 +339,7 @@ function saveKey(){
   if(!v)return;
   sessionStorage.setItem(SS_KEY,v);
   document.getElementById("authBox").style.display="none";
-  load(false);
+  enterPanel();
 }
 function showAuth(){document.getElementById("authBox").style.display="block";const i=document.getElementById("keyInput");i&&i.focus()}
 function authHeaders(k){return k?{"Authorization":"Bearer "+k}:{}}
@@ -535,41 +546,118 @@ function applyCardVisibility(){
     c.style.display=show?"":"none";
   });
 }
-// Lazy-load: fetch credits for all cards that lack them, concurrently.
-// Each card fetches independently; failed ones retry once after 2s.
-function lazyLoadCredits(accounts){
-  const need=accounts.filter(a=>!a.credits&&!a.error&&!a.disabled);
-  if(!need.length) return;
-  need.forEach(a=>{
-    const idx=a.auth_index;
-    api(`/credits?auth_index=${encodeURIComponent(idx)}`)
-      .then(d=>{
-        const acct=(d.accounts||[])[0]||d;
-        if(d.error){ a.error=d.error; }
-        if(acct&&acct.credits){
-          a.credits=acct.credits;
-          a.exhausted=acct.exhausted;
-          if(acct.trial_claimed!=null) a.trial_claimed=acct.trial_claimed;
-          if(acct.plan) a.plan=acct.plan;
+// 拉取单个账号积分并合并进本地态 + 局部重绘（不 toast、不 busy）。
+// 供单卡刷新 refreshCredits 与后台轮询 pollRefreshStatus 共用。
+async function fetchAndPatchCredits(idx){
+  const d=await api(`/credits?auth_index=${encodeURIComponent(idx)}`);
+  const acct=(d.accounts||[])[0]||d;
+  if(d.error||(acct&&acct.error)){
+    throw new Error(d.error||(acct&&acct.error)||"未知错误");
+  }
+  const a=(lastAccounts||[]).find(x=>x.auth_index===idx);
+  if(a){
+    if(acct.credits) a.credits=acct.credits;
+    if(acct.exhausted!=null) a.exhausted=acct.exhausted;
+    if(acct.trial_claimed!=null) a.trial_claimed=acct.trial_claimed;
+    if(acct.plan) a.plan=acct.plan;
+    a.error="";
+    updateOneCard(a);
+  }
+  return acct;
+}
+// 卡片三态：通过 data-refresh-state 属性 + 顶部 ref-tag 展示后台刷新进度。
+// done 只做短暂绿色高亮；failed 红框 + ⚠️ + 错误文本；running 虚线 + spinner。
+function setCardRefreshState(idx, state, error){
+  if(idx==null||idx==="") return;
+  const el=document.querySelector(`#grid .card[data-auth="${CSS.escape(String(idx))}"]`);
+  if(!el) return;
+  if(!state){
+    delete el.dataset.refreshState;
+    const tag=el.querySelector(".ref-tag");
+    if(tag) tag.remove();
+    return;
+  }
+  el.dataset.refreshState=state;
+  let tag=el.querySelector(".ref-tag");
+  if(tag) tag.remove();
+  if(state==="running"||state==="pending"||state==="failed"){
+    tag=document.createElement("span");
+    tag.className="ref-tag ref-"+state;
+    if(state==="running") tag.innerHTML='<span class="spin"></span>刷新中…';
+    else if(state==="pending") tag.textContent="等待中…";
+    else tag.textContent="⚠️ "+(error||"刷新失败");
+    const h2=el.querySelector("h2");
+    const holder=h2?h2.querySelector("span"):null;
+    if(holder) holder.insertBefore(tag, holder.firstChild);
+    else if(h2) h2.appendChild(tag);
+  }
+}
+// 刷新收尾：done 短暂绿色高亮后消失；failed 红框 + 错误保留一段时间后清除，避免残留。
+function finalizeCardState(idx, state, error){
+  setCardRefreshState(idx, state, error);
+  if(state==="done") setTimeout(()=>setCardRefreshState(idx,null),1500);
+  else if(state==="failed") setTimeout(()=>setCardRefreshState(idx,null),8000);
+}
+// 顶部进度文本「后台刷新中 N/M」。
+function updateRefreshProgress(d){
+  const el=document.getElementById("refreshProgress");
+  if(!el) return;
+  const total=Number(d.total||0);
+  const done=Number(d.done||0);
+  const failed=Number(d.failed||0);
+  if(!total||!d.running){
+    el.style.display="none";
+    el.textContent="";
+    return;
+  }
+  el.style.display="inline-block";
+  el.textContent="后台刷新中 "+done+"/"+total+(failed?" · 失败 "+failed:"");
+}
+let refreshPollTimer=null;
+let refreshSeen={}; // 本轮已处理（done/failed）账号，内存去重，避免重复拉取
+// 后台刷新轮询：每 2s 查一次 /refresh/status，逐账号局部刷新，!running 时停止。
+function pollRefreshStatus(){
+  if(refreshPollTimer){ clearInterval(refreshPollTimer); refreshPollTimer=null; }
+  refreshSeen={};
+  const stop=()=>{
+    if(refreshPollTimer){ clearInterval(refreshPollTimer); refreshPollTimer=null; }
+    refreshSeen={};
+    updateRefreshProgress({total:0});
+  };
+  let tickBusy=false;
+  const tick=async ()=>{
+    if(tickBusy) return;
+    tickBusy=true;
+    try{
+      let d;
+      try{ d=await api("/refresh/status"); }
+      catch(e){ stop(); return; }
+      if(d.error){ stop(); toast("刷新状态查询失败","err",d.error); return; }
+      updateRefreshProgress(d);
+      (d.per_account||[]).forEach(pa=>{
+        const idx=pa.auth_index;
+        const key=String(idx);
+        const st=pa.status;
+        if(st==="done"||st==="failed"){
+          if(refreshSeen[key]) return;
+          refreshSeen[key]=true;
+          fetchAndPatchCredits(idx)
+            .catch(()=>{})
+            .then(()=>finalizeCardState(idx, st, pa.error));
+        }else if(st==="running"||st==="pending"){
+          setCardRefreshState(idx, st, pa.error);
         }
-        if(acct&&acct.error){ a.error=acct.error; }
-        updateOneCard(a);
-      })
-      .catch(()=>{
-        // Retry once after 2s.
-        setTimeout(()=>{
-          api(`/credits?auth_index=${encodeURIComponent(idx)}`)
-            .then(d=>{
-              const acct=(d.accounts||[])[0]||d;
-              if(acct&&acct.credits){ a.credits=acct.credits; a.exhausted=acct.exhausted; }
-              if(acct&&acct.plan) a.plan=acct.plan;
-              if(d.error||acct&&acct.error) a.error=d.error||acct.error;
-              updateOneCard(a);
-            })
-            .catch(()=>{ a.error="积分查询失败"; updateOneCard(a); });
-        },2000);
       });
-  });
+      if(!d.running){
+        stop();
+        // 静默收尾：逐账号 done/failed 已通过卡片三态呈现，不再弹 toast。
+      }
+    }finally{
+      tickBusy=false;
+    }
+  };
+  tick();
+  refreshPollTimer=setInterval(tick, 2000);
 }
 function updateOneCard(a){
   const el=document.querySelector(`#grid .card[data-auth="${CSS.escape(a.auth_index)}"]`);
@@ -588,34 +676,7 @@ function updateOneCard(a){
     }
     filterRegion(currentFilter, null);
   }
-  // Update summary + re-check selection when all done.
-  const all=lastAccounts||[];
-  if(all.every(x=>x.credits||x.error||x.disabled)){
-    renderSummary(all);
-    // After all lazy credits loaded, the backend cache now has fresh exhausted
-    // flags. Re-fetch /accounts (light, cache-only) so ensureDefaultActiveAuth
-    // can pick the correct card — first load may have selected an account that
-    // turned out to be exhausted.
-    api("/accounts").then(d=>{
-      if(!d||d.error) return;
-      const fresh=d.accounts||[];
-      activeAuthId=d.active_auth||activeAuthId;
-      // Merge fresh selected/exhausted into lastAccounts and re-render.
-      (fresh||[]).forEach(fa=>{
-        const idx=all.findIndex(x=>x.auth_index===fa.auth_index);
-        if(idx>=0){
-          all[idx].selected=!!fa.selected;
-          all[idx].exhausted=!!fa.exhausted;
-        }
-      });
-      const g=document.getElementById("grid");
-      if(g){
-        g.innerHTML=sortedAccounts(all).map(card).join("");
-        bindCardActions(g);
-      }
-      filterRegion(currentFilter, null);
-    }).catch(()=>{});
-  }
+  // 汇总由 renderGrid()/filterRegion() 内部同步更新，无需额外收尾。
 }
 function filterRegion(region, btn){
   currentFilter=region||"all";
@@ -807,30 +868,22 @@ async function api(path, opts={}){
     return {error:`bad JSON (HTTP ${r.status}): ${_text.slice(0,200)}`}
   }
 }
-async function load(force, btn){
+async function load(){
   const g=document.getElementById("grid");
   if(!getKey()){
     showAuth();
     g.innerHTML='<div class="loading">请先填写 management key</div>';
     return;
   }
-  // 刷新按钮：loading 态 + 右上角 toast。原先 force 路径静默调 /refresh，
-  // 成功/失败都无反馈（签到按钮有 toast，刷新没有）。
-  if(force){
-    if(!btn) btn=document.getElementById("refreshBtn");
-    busy(btn, true);
-  }
+  // 渲染缓存/账号 JSON 已有数据。无 credits 缓存的账号由 card() 的
+  // progressHTML 显示「加载中…」占位，不再自动并发拉取上游；真实刷新由
+  // startBackgroundRefresh() 异步触发（进入页面即自动，前端无感知）。
   try{
-    // force 时 /refresh 已返回完整 dashboard（buildDashboard(true)），
-    // 不必再打 /accounts（之前多一次请求且吞掉 refresh 错误）。
-    const d = force
-      ? await api("/refresh", {method:"POST"})
-      : await api("/accounts");
+    const d=await api("/accounts");
     document.getElementById("autoToggle").checked=!!d.checkin_auto;
     document.getElementById("svtime").textContent="服务器时间 "+(d.server_time||"");
     if(d.error){
       g.innerHTML='<div class="loading">'+esc(d.error)+"</div>";
-      if(force) toast("刷新失败", "err", d.error);
       return;
     }
     const accounts=d.accounts||[];
@@ -840,33 +893,30 @@ async function load(force, btn){
     if(!accounts.length){
       g.innerHTML='<div class="loading">暂无 WorkBuddy 账号</div>';
       renderSummary([]);
-      if(force) toast("数据已刷新", "warn", "暂无 WorkBuddy 账号");
       return;
     }
     g.innerHTML=sortedAccounts(accounts).map(card).join("");
     bindCardActions(g);
     filterRegion(currentFilter, null);
     renderSummary(accounts);
-    // Lazy-load credits for cards that don't have them yet.
-    lazyLoadCredits(accounts);
-    if(force){
-      const errN=accounts.filter(a=>a.error).length;
-      const life=(d.lifecycle||[]).length;
-      let extra=accounts.length+" 个账号";
-      if(errN) extra+=" · "+errN+" 个有错误";
-      if(life) extra+=" · 生命周期 "+life+" 项";
-      if(errN) toast("数据已刷新", "warn", extra);
-      else toast("数据已刷新", "ok", extra);
-    }
   }catch(e){
-    if(force) toast("刷新失败", "err", e.message||String(e));
-    // 强制刷新失败时保留旧卡片，只 toast；首次加载仍写错误到 grid。
-    if(!force || !g.querySelector(".card")){
-      g.innerHTML='<div class="loading">'+esc(e.message||String(e))+"</div>";
-    }
-  }finally{
-    if(force) busy(btn, false);
+    g.innerHTML='<div class="loading">'+esc(e.message||String(e))+"</div>";
   }
+}
+// 进入页面统一入口：先渲染缓存数据，再自动触发一次后台异步刷新。
+async function enterPanel(){
+  await load();
+  startBackgroundRefresh();
+}
+// 进入页面自动触发一次后台异步刷新（1s/账号，幂等，前端无感知）。
+// 页面已先渲染缓存数据；随后轮询 /refresh/status 逐账号局部刷新。
+// 若已有一轮刷新在跑（幂等），后端忽略本次请求，仍继续轮询展示进度。
+async function startBackgroundRefresh(){
+  try{
+    const d=await api("/refresh", {method:"POST"});
+    if(d.error) return; // 静默：后台刷新失败不打扰用户
+  }catch(e){ return; }
+  pollRefreshStatus();
 }
 function checkinResultToast(res, who){
   const name=res.nickname||who||"账号";
@@ -907,7 +957,7 @@ async function checkin(idx, btn){
       busy(btn,false);
     }
     // Await reload so card matches server; cache was cleared on backend for this account
-    await load(false);
+    await load();
   }catch(e){
     toast("签到请求失败","err",e.message);
     busy(btn,false);
@@ -943,23 +993,7 @@ async function selectAuth(idx, btn){
 async function refreshCredits(idx, btn){
   busy(btn,true);
   try{
-    const d=await api(`/credits?auth_index=${encodeURIComponent(idx)}`);
-    const acct=(d.accounts||[])[0]||d;
-    if(d.error||acct&&acct.error){
-      toast("刷新失败","err",d.error||(acct&&acct.error)||"未知错误");
-      busy(btn,false);
-      return;
-    }
-    // Update local state and re-render this card.
-    const a=(lastAccounts||[]).find(x=>x.auth_index===idx);
-    if(a){
-      if(acct.credits) a.credits=acct.credits;
-      if(acct.exhausted!=null) a.exhausted=acct.exhausted;
-      if(acct.trial_claimed!=null) a.trial_claimed=acct.trial_claimed;
-      if(acct.plan) a.plan=acct.plan;
-      if(acct.error) a.error=acct.error; else a.error="";
-      updateOneCard(a);
-    }
+    const acct=await fetchAndPatchCredits(idx);
     const remain=acct&&acct.credits?acct.credits.total_remain:"?";
     const who=acct&&acct.nickname?acct.nickname:idx;
     toast("积分已刷新","ok",who+" · 剩余 "+remain);
@@ -976,7 +1010,7 @@ async function unfreezeOne(idx, btn){
     if(d.error){toast("解除冻结失败","err",d.error);busy(btn,false);return;}
     const who=d.nickname||idx;
     toast("已解除冻结","ok",who);
-    await load(false);
+    await load();
   }catch(e){
     toast("解除冻结失败","err",e.message||String(e));
     busy(btn,false);
@@ -990,7 +1024,7 @@ async function unfreezeAll(btn){
     const cleared=Number(d.cleared||0);
     if(cleared===0){toast("异常池中没有需要解除的账号","warn");}
     else{toast("已解除冻结","ok",cleared+" 个账号");}
-    await load(true);
+    await load();
   }catch(e){
     toast("全部解除冻结失败","err",e.message||String(e));
     busy(btn,false);
@@ -1032,7 +1066,7 @@ async function confirmDeleteAuth(){
     closeDeleteModal();
     // 先从本地态移除，再软刷新以和服务端保持一致。
     lastAccounts=(lastAccounts||[]).filter(x=>x.auth_index!==idx);
-    await load(false);
+    await load();
   }catch(e){
     toast("删除失败","err",e.message||String(e));
     busy(btn,false);
@@ -1077,7 +1111,7 @@ async function checkinAll(btn){
         }
       });
     }
-    await load(false);
+    await load();
   }catch(e){toast("批量签到失败","err",e.message)}
   // load() re-renders grid; only restore toolbar button
   busy(btn,false);
@@ -1090,7 +1124,7 @@ async function claimTrial(idx, btn){
     else if(d.already_claimed){toast((d.nickname||"账号")+"：已领取过","warn",d.message||"");markTrialDone(btn);}
     else if(d.success){toast((d.nickname||"账号")+"：领取成功","ok","+250 积分 · 14天有效");markTrialDone(btn);}
     else{toast((d.nickname||"账号")+"："+(d.message||"未知"),"warn");busy(btn,false);}
-    await load(false);
+    await load();
   }catch(e){toast("领取请求失败","err",e.message);busy(btn,false);}
 }
 async function claimTrialAll(btn){
@@ -1109,7 +1143,7 @@ async function claimTrialAll(btn){
     if(fail)toast("批量领取："+ok+" 成功 / "+already+" 已领 / "+fail+" 失败","err");
     else if(ok)toast("批量领取："+ok+" 成功"+(already?" / "+already+" 已领":""),"ok");
     else toast("全部账号已领取","warn");
-    await load(false);
+    await load();
   }catch(e){toast("批量领取失败","err",e.message)}
   busy(btn,false);
 }
@@ -1155,7 +1189,7 @@ async function importAuth(btn){
     clearImportFiles();
     document.getElementById("importRaw").value="";
     closeImportModal();
-    load(true);
+    load();
   }else{
     const detail=fail.map(f=>f.name+": "+f.error).join("；");
     toast("导入完成："+ok.length+" 成功 / "+fail.length+" 失败","err",detail.slice(0,300));
@@ -1328,7 +1362,7 @@ document.addEventListener("keydown",e=>{
 /* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
 if(window.__wbThemeSync)window.__wbThemeSync();
 if(getKey()){
-  load(false);
+  enterPanel();
 }else{
   showAuth();
 }
