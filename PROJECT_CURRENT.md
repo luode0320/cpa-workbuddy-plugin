@@ -8,9 +8,9 @@
 
 ## 项目概览
 
-- 状态：活跃维护中（最近发布 2026-08-22）
+- 状态：活跃维护中（最近发布 2026-08-23 workbuddy 0.14.1）
 - 活动会话数：1
-- 更新时间：2026-08-23 00:05 (GMT+8)
+- 更新时间：2026-08-23 15:21 (GMT+8)
 
 ## 活动会话任务摘要
 
@@ -18,6 +18,7 @@
 
 ## 已完成
 
+- 2026-08-23 workbuddy v0.14.2 + qoderwork v0.9.1（同请求切号循环纳 429）：`isAccountLevel4xx` 加入 `http.StatusTooManyRequests` case，截图"切 2 个账号就不切了"经根因分析确认为"两次相邻请求各踩 1 个账号，cooldown 跨请求生效"而非 retry_on_4xx 内部切号；`cgo-shim-build.py workbuddy/qoderwork` 全绿；版本号 + CHANGELOG + README 中英文 全部落地（注：workbuddy 0.14.1 已于 15:06-15:25 由并行会话以"面板异常tab补丁"发布，故 429 修复独立 bump 到 0.14.2，不重打 0.14.1 tag），等用户授权 commit/push
 - 2026-08-22 workbuddy-provider v0.12.0 发布：移除三池路由（priority/default/fallback），只留保号池（watchdog 自动归池）；提交链 f64f35a → 2cdd179 → fec796e，远端 main=fec796e
 - 2026-08-22 40x 账号级换号重试（workbuddy + qoderwork 对称，未发版）：401/403/404/405 计入故障，`retry_on_4xx` 预算默认 3
 - 2026-08-22 项目改名 cpa-plugin → cpa-workbuddy-plugin（registry/build.yml/go.mod/module 路径全链路）
@@ -28,8 +29,7 @@
 
 ## 待办
 
-- 40x 换号重试功能（workbuddy failover_retry/retry_config + qoderwork 整批）仍为工作区未提交改动，待用户决定是否发版（建议 workbuddy 0.12.1 + qoderwork 0.3.0 同发）
-- qoderwork 版本三轨（main.go 0.8.2 / VERSION 0.4.1 / registry 0.2.x）待统一
+- workbuddy v0.14.2 + qoderwork v0.9.1（同请求切号循环纳 429）已通过 `cgo-shim-build.py` 验证（workbuddy 6.22s 绿，qoderwork 5.92s 绿），版本号/CHANGELOG/README 都已落地，**未 git add / 未 commit / 未 push**，等用户授权：注册 CI → 拉 assets → publish-assets.py → 推 registry.json → 远端 raw URL 200
 - 规则文件与四件套自举结果待提交（AGENTS.md / CLAUDE.md / .gitattributes / .editorconfig / PROJECT_*.md 为新增文件，未 git add）
 
 ## 阻断
