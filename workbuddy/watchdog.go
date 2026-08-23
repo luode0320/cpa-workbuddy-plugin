@@ -250,6 +250,9 @@ func preserveWatchdogLoop() {
 	case <-preserveTickCh:
 	default:
 	}
+	// Seed the in-memory success/failure counters from the persisted json so
+	// the panel reads restart-recovered values (memory-first; see counter.go).
+	loadCountersFromDisk()
 	runPreserveWatchdogTick()
 	for {
 		enabled := preserveWatchdogEnabled()
@@ -272,6 +275,11 @@ func preserveWatchdogLoop() {
 			}
 		case <-timer.C:
 		}
+		// Fold pending counter deltas into the auth files on the watchdog's
+		// cadence (default 10m when enabled, 30s poll when disabled). The
+		// counters are best-effort backup: the in-memory value stays the
+		// source of truth for the panel regardless of this cadence.
+		flushCounters()
 		if !preserveWatchdogEnabled() {
 			continue
 		}

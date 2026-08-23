@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-// TestRecordOutcome_PendingDelta covers the in-memory increment path: an
-// empty UID is a no-op, and successes/failures accumulate under the UID key.
-func TestRecordOutcome_PendingDelta(t *testing.T) {
+// TestRecordOutcome_InMemoryTotal covers the in-memory increment path: an
+// empty UID is a no-op, and successes/failures accumulate in the total.
+func TestRecordOutcome_InMemoryTotal(t *testing.T) {
 	clearCountersForTest()
 
 	recordOutcome("", true) // empty uid → no-op
@@ -16,17 +16,80 @@ func TestRecordOutcome_PendingDelta(t *testing.T) {
 	recordOutcome("uid-a", false)
 	recordOutcome("uid-b", false)
 
-	s, f := counterPendingDelta("uid-a")
+	s, f := counterSnapshot("uid-a")
 	if s != 2 || f != 1 {
-		t.Fatalf("uid-a delta = (%d,%d), want (2,1)", s, f)
+		t.Fatalf("uid-a total = (%d,%d), want (2,1)", s, f)
 	}
-	s, f = counterPendingDelta("uid-b")
+	s, f = counterSnapshot("uid-b")
 	if s != 0 || f != 1 {
-		t.Fatalf("uid-b delta = (%d,%d), want (0,1)", s, f)
+		t.Fatalf("uid-b total = (%d,%d), want (0,1)", s, f)
 	}
-	s, f = counterPendingDelta("")
+	s, f = counterSnapshot("")
 	if s != 0 || f != 0 {
-		t.Fatalf("empty uid delta = (%d,%d), want (0,0)", s, f)
+		t.Fatalf("empty uid total = (%d,%d), want (0,0)", s, f)
+	}
+}
+
+// TestEnsureCounterLoaded_SeedsAndMerges covers the startup seeding path: the
+// persisted json initializes the total, and any in-process increment that
+// raced ahead of the load (a request completed before the first watchdog
+// tick) is preserved on top of the persisted value. A second load is a no-op
+// (idempotent) and must not double-count.
+func TestEnsureCounterLoaded_SeedsAndMerges(t *testing.T) {
+	clearCountersForTest()
+
+	// recordOutcome fires before the first load.
+	recordOutcome("uid-a", true)
+	recordOutcome("uid-a", false)
+
+	// json holds 100 success / 5 failed from the previous process.
+	ensureCounterLoaded("uid-a", []byte(`{"success_count":100,"failed_count":5}`))
+
+	s, f := counterSnapshot("uid-a")
+	if s != 101 || f != 6 {
+		t.Fatalf("uid-a after load = (%d,%d), want (101,6)", s, f)
+	}
+
+	// Second load is a no-op — must not double-count.
+	ensureCounterLoaded("uid-a", []byte(`{"success_count":100,"failed_count":5}`))
+	s, f = counterSnapshot("uid-a")
+	if s != 101 || f != 6 {
+		t.Fatalf("uid-a after 2nd load = (%d,%d), want (101,6)", s, f)
+	}
+}
+
+// TestEnsureCounterLoaded_EmptyUIDNoop verifies an empty UID is ignored.
+func TestEnsureCounterLoaded_EmptyUIDNoop(t *testing.T) {
+	clearCountersForTest()
+	ensureCounterLoaded("", []byte(`{"success_count":1}`))
+	s, f := counterSnapshot("")
+	if s != 0 || f != 0 {
+		t.Fatalf("empty uid = (%d,%d), want (0,0)", s, f)
+	}
+}
+
+// TestCounterPendingDelta_AfterLoadAndIncrement verifies the flusher's input:
+// the not-yet-persisted delta is total - persisted, and the persisted value
+// stays at the last-loaded json value until a flush succeeds. This is the
+// exact computation flushCounters performs, asserted without host RPC (the
+// flusher itself needs host.auth.get and is covered by cgo-shim integration).
+func TestCounterPendingDelta_AfterLoadAndIncrement(t *testing.T) {
+	clearCountersForTest()
+	ensureCounterLoaded("uid-a", []byte(`{"success_count":100,"failed_count":5}`))
+	recordOutcome("uid-a", true)
+	recordOutcome("uid-a", false)
+
+	counterMu.Lock()
+	e := counterEntries["uid-a"]
+	counterMu.Unlock()
+
+	dS := e.success - e.persistedSuccess
+	dF := e.failed - e.persistedFailed
+	if dS != 1 || dF != 1 {
+		t.Fatalf("pending delta = (%d,%d), want (1,1)", dS, dF)
+	}
+	if e.persistedSuccess != 100 || e.persistedFailed != 5 {
+		t.Fatalf("persisted = (%d,%d), want (100,5)", e.persistedSuccess, e.persistedFailed)
 	}
 }
 
@@ -94,16 +157,17 @@ func TestFoldCounterIntoDoc(t *testing.T) {
 }
 
 // TestFlushCounters_NoopWhenEmpty verifies the flusher returns cleanly with an
-// empty delta map (no RPC, no panic).
+// empty counter map (no RPC, no panic).
 func TestFlushCounters_NoopWhenEmpty(t *testing.T) {
 	clearCountersForTest()
 	flushCounters() // must not panic
 }
 
-// clearCountersForTest wipes the pending delta map between tests. Mirrors
+// clearCountersForTest wipes the in-memory counter maps between tests. Mirrors
 // clearFailoverStates in accountFailover.go.
 func clearCountersForTest() {
 	counterMu.Lock()
-	counterDeltas = make(map[string]*counterDelta)
+	counterEntries = make(map[string]counterEntry)
+	counterLoaded = make(map[string]bool)
 	counterMu.Unlock()
 }

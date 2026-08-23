@@ -104,19 +104,18 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 					acct.Name = phys.Name
 				}
 			}
-			acct.Nickname = sa.Account.Nickname
-			acct.UID = sa.Account.UID
-			// Success/Failed prefer the plugin-owned persisted cumulative
-			// counters (survive restart). The host-list values set above are
-			// the recent-window (last ~200min) numbers — kept as the fallback
-			// for UID-less legacy accounts. UID-bearing accounts always use
-			// the persisted cumulative value + any not-yet-flushed delta.
-			if strings.TrimSpace(acct.UID) != "" {
-				ps, pf := parseCountersFromAuthJSON(phys.JSON)
-				ds, df := counterPendingDelta(acct.UID)
-				acct.Success = ps + ds
-				acct.Failed = pf + df
-			}
+		acct.Nickname = sa.Account.Nickname
+		acct.UID = sa.Account.UID
+		// Success/Failed prefer the plugin-owned cumulative counters (survive
+		// restart). The host-list values set above are the recent-window
+		// (last ~200min) numbers — kept as the fallback for UID-less legacy
+		// accounts. UID-bearing accounts read the in-memory cumulative value
+		// (seeded from the persisted json at startup, then memory-first; see
+		// counter.go) without re-reading json on every render.
+		if strings.TrimSpace(acct.UID) != "" {
+			ensureCounterLoaded(acct.UID, phys.JSON)
+			acct.Success, acct.Failed = counterSnapshot(acct.UID)
+		}
 			acct.Region = accountRegion(sa)
 			if fetchCredits {
 				plan, ci, cr, errs := cachedAccountDetails(f.ID, sa, force)

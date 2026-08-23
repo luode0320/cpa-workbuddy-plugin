@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.14.11
+
+### Refactor — 计数持久化改为「内存为主 + 跟随保号落盘」
+
+上一版（0.14.10）用独立的 10s 后台 flusher 折入 json，面板每次渲染都 `parseCountersFromAuthJSON` 读 json。本版按「内存累计为主、json 兜底持久化」重构：
+
+- **内存累计为真相源**（`counter.go`）：`counterEntries`（UID → `counterEntry{success,failed,persistedSuccess,persistedFailed}`）取代原 `counterDeltas`。`recordOutcome` 纯内存递增累计值；`ensureCounterLoaded` 首次从 json 初始化（合并可能先到的进程内增量，不丢）；`counterSnapshot` 供面板读取，不再每次解析 json。
+- **落盘跟随保号节奏**（`watchdog.go`）：删除独立 `startCounterFlusher` 与 `counterFlushInterval`，改为 `preserveWatchdogLoop` 启动时 `loadCountersFromDisk()` 恢复历史，并在每次醒来后 `flushCounters()`（启用时默认 10 分钟一次，禁用时 30s 兜底）。`flushCounters` 计算 `total - persisted` 增量折入 json 后回写 `persisted`，失败保留待下次重试。
+- **面板读取**（`panel.go`）：UID 账号改 `ensureCounterLoaded` + `counterSnapshot` 读内存累计值；legacy 无 UID 账号仍回退宿主 recent 窗口（行为不变）。
+- **测试**（`counter_test.go`）：覆盖内存递增、启动合并（含增量先到场景）、幂等去重、delta 计算、parse / fold 纯函数。
+- 涉及文件：`counter.go` / `counter_test.go` / `watchdog.go` / `main.go` / `panel.go`。
+
 ## 0.14.10
 
 ### Feat — 成功/失败计数持久化（重启不丢）

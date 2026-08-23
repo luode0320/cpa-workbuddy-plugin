@@ -5,19 +5,23 @@
 // Failed). Those fields are `json:"-"` in the CPA auth type — they are
 // memory-only rolling counters (10min × 20 buckets ≈ last 200 minutes), never
 // serialized to the auth file, so a container restart zeroes them. This
-// module replaces that with counters the plugin itself owns, persisted into
+// module replaces that with counters the plugin itself owns and persists into
 // the physical auth file's top-level JSON so they survive restarts.
 //
-// Persistence model:
-//   - recordOutcome increments an in-memory delta map keyed by account UID
-//     (the executor's stable account identity, same key the scheduler /
-//     failover / preserve / anomaly layers already use).
-//   - A background flusher (counterFlushInterval) folds each pending delta
-//     into the auth file's top-level `success_count` / `failed_count` fields
-//     and clears the in-memory delta.
-//   - The panel reads success_count/failed_count straight from the physical
-//     auth JSON (already fetched via hostAuthGetBundle) plus any not-yet-
-//     flushed in-memory delta, so the number is live without an extra RPC.
+// Persistence model (memory-first, JSON as best-effort backup):
+//   - recordOutcome increments an in-memory cumulative counter keyed by the
+//     account UID (the executor's stable account identity, same key the
+//     scheduler / failover / preserve / anomaly layers already use).
+//   - On startup, loadCountersFromDisk seeds the in-memory counters from the
+//     persisted success_count / failed_count, so a restart recovers the last
+//     flushed value. After that the in-memory counter is the source of truth —
+//     the panel reads it directly and does NOT re-read json on every render.
+//   - flushCounters folds each account's not-yet-persisted delta into the
+//     auth file's top-level success_count / failed_count. It runs on the
+//     preserve watchdog's tick cadence (default 10m), NOT a dedicated fast
+//     timer, because the counters are pure observability: a crash loses at
+//     most one tick's worth of deltas, which is acceptable for a best-effort
+//     backup.
 //
 // Field naming is deliberately success_count / failed_count (NOT success /
 // failed): the host's HostAuthFileEntry already exposes `success` / `failed`
@@ -37,14 +41,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 )
-
-// counterFlushInterval bounds how often pending success/failure deltas are
-// folded into the physical auth files. 10s keeps the panel's number within
-// ~10s of live while bounding write amplification under bursty traffic (each
-// flush is one direct write per dirty account, not one per request).
-const counterFlushInterval = 10 * time.Second
 
 // Top-level auth-file keys carrying the plugin-owned cumulative counters.
 const (
@@ -52,52 +49,107 @@ const (
 	counterFailedKey  = "failed_count"
 )
 
-// counterDelta is the not-yet-persisted increment for one account.
-type counterDelta struct {
-	success int64
-	failed  int64
+// counterEntry holds one account's cumulative counters. success / failed are
+// the in-memory source of truth (what the panel reads). persistedSuccess /
+// persistedFailed are the last value folded into the physical auth file, so
+// the flusher computes the pending delta as (success - persistedSuccess)
+// without re-reading the file.
+type counterEntry struct {
+	success          int64
+	failed           int64
+	persistedSuccess int64
+	persistedFailed  int64
 }
 
 var (
 	counterMu sync.Mutex
-	// counterDeltas maps account UID → pending delta. Keyed by UID so the
-	// flusher can resolve the physical file via resolveAuthIndexAndID.
-	counterDeltas = make(map[string]*counterDelta)
+	// counterEntries maps account UID → cumulative counters. Keyed by UID so
+	// the flusher can resolve the physical file via resolveAuthIndexAndID.
+	counterEntries = make(map[string]counterEntry)
+	// counterLoaded marks UIDs already seeded from the persisted json, so
+	// ensureCounterLoaded is idempotent and does not double-count.
+	counterLoaded = make(map[string]bool)
 )
 
 // recordOutcome records one completed executor request against the account.
 // uid is the account UID (empty → no-op, see package doc). success=true for a
 // served request, false for an upstream/transport failure that surfaced to
-// the caller. Increment-only and non-blocking: it never touches disk.
+// the caller. Pure in-memory increment: it never touches disk; the watchdog
+// flusher persists on its own tick cadence.
 func recordOutcome(uid string, success bool) {
 	uid = strings.TrimSpace(uid)
 	if uid == "" {
 		return
 	}
 	counterMu.Lock()
-	d := counterDeltas[uid]
-	if d == nil {
-		d = &counterDelta{}
-		counterDeltas[uid] = d
-	}
+	e := counterEntries[uid]
 	if success {
-		d.success++
+		e.success++
 	} else {
-		d.failed++
+		e.failed++
 	}
+	counterEntries[uid] = e
 	counterMu.Unlock()
 }
 
-// counterPendingDelta returns the in-memory (not yet flushed) delta for uid.
-// Used by the panel to add the live portion on top of the persisted value.
-func counterPendingDelta(uid string) (success, failed int64) {
+// ensureCounterLoaded seeds the in-memory cumulative counter for uid from the
+// physical auth JSON exactly once. If recordOutcome already incremented before
+// this ran (e.g. a request completed ahead of the first watchdog tick), the
+// in-flight delta is preserved on top of the persisted value so nothing is
+// lost. Idempotent via counterLoaded.
+func ensureCounterLoaded(uid string, physJSON []byte) {
+	uid = strings.TrimSpace(uid)
+	if uid == "" {
+		return
+	}
+	counterMu.Lock()
+	defer counterMu.Unlock()
+	if counterLoaded[uid] {
+		return
+	}
+	s, f := parseCountersFromAuthJSON(physJSON)
+	e := counterEntries[uid]
+	// e.success / e.failed already hold any in-process increment that raced
+	// ahead of this load; layer the persisted value underneath them.
+	e.success += s
+	e.failed += f
+	e.persistedSuccess = s
+	e.persistedFailed = f
+	counterEntries[uid] = e
+	counterLoaded[uid] = true
+}
+
+// counterSnapshot returns the in-memory cumulative counters for uid. Callers
+// (the panel) must ensureCounterLoaded first so the persisted history is
+// included; otherwise an account not yet seeded reads as zero.
+func counterSnapshot(uid string) (success, failed int64) {
 	uid = strings.TrimSpace(uid)
 	counterMu.Lock()
 	defer counterMu.Unlock()
-	if d := counterDeltas[uid]; d != nil {
-		return d.success, d.failed
+	e := counterEntries[uid]
+	return e.success, e.failed
+}
+
+// loadCountersFromDisk walks every workbuddy auth file and seeds the in-memory
+// counters from the persisted success_count / failed_count. Called once at
+// watchdog startup so the panel reads restart-recovered values without
+// re-reading json on every render.
+func loadCountersFromDisk() {
+	files, err := hostAuthList()
+	if err != nil {
+		return
 	}
-	return 0, 0
+	for _, f := range files {
+		sa, phys, err := hostAuthGetBundle(f.AuthIndex)
+		if err != nil || sa == nil || phys == nil {
+			continue
+		}
+		uid := strings.TrimSpace(sa.Account.UID)
+		if uid == "" {
+			continue
+		}
+		ensureCounterLoaded(uid, phys.JSON)
+	}
 }
 
 // parseCountersFromAuthJSON reads the persisted success_count / failed_count
@@ -115,52 +167,40 @@ func parseCountersFromAuthJSON(raw []byte) (success, failed int64) {
 	return m.Success, m.Failed
 }
 
-// startCounterFlusher launches the background fold loop. Started from init()
-// so it runs for the lifetime of the plugin process. The loop reads the
-// interval from a constant (not config) — counters are pure observability and
-// must never be tunable to a value that disables persistence by accident.
-func startCounterFlusher() {
-	go func() {
-		ticker := time.NewTicker(counterFlushInterval)
-		defer ticker.Stop()
-		for range ticker.C {
-			flushCounters()
-		}
-	}()
-}
-
-// flushCounters drains the pending delta map and folds each entry into its
-// account's physical auth file. It is idempotent and failure-tolerant: a
-// failed fold keeps the delta in memory so the next tick retries. Called by
-// the background flusher and exposed for tests.
+// flushCounters folds each account's pending delta (success - persistedSuccess)
+// into its physical auth file. It is idempotent and failure-tolerant: a failed
+// fold leaves persisted* unchanged so the delta is retried on the next tick.
+// Called by the watchdog loop on its tick cadence (default 10m), not a
+// dedicated fast timer.
 func flushCounters() {
-	counterMu.Lock()
-	if len(counterDeltas) == 0 {
-		counterMu.Unlock()
-		return
+	type item struct {
+		uid      string
+		dSuccess int64
+		dFailed  int64
 	}
-	// Swap the map out so the RPC+disk work below runs without holding the
-	// lock (new increments land in a fresh map, no lost updates).
-	toFlush := counterDeltas
-	counterDeltas = make(map[string]*counterDelta)
+	counterMu.Lock()
+	items := make([]item, 0, len(counterEntries))
+	for uid, e := range counterEntries {
+		dS := e.success - e.persistedSuccess
+		dF := e.failed - e.persistedFailed
+		if dS != 0 || dF != 0 {
+			items = append(items, item{uid: uid, dSuccess: dS, dFailed: dF})
+		}
+	}
 	counterMu.Unlock()
 
-	for uid, d := range toFlush {
-		if d == nil || (d.success == 0 && d.failed == 0) {
+	for _, it := range items {
+		if err := persistCounterDelta(it.uid, it.dSuccess, it.dFailed); err != nil {
+			// Leave persisted* unchanged so the next tick retries; no
+			// increment is lost.
 			continue
 		}
-		if err := persistCounterDelta(uid, d.success, d.failed); err != nil {
-			// Fold back so a later tick retries; no increment is lost.
-			counterMu.Lock()
-			cur := counterDeltas[uid]
-			if cur == nil {
-				counterDeltas[uid] = d
-			} else {
-				cur.success += d.success
-				cur.failed += d.failed
-			}
-			counterMu.Unlock()
-		}
+		counterMu.Lock()
+		e := counterEntries[it.uid]
+		e.persistedSuccess += it.dSuccess
+		e.persistedFailed += it.dFailed
+		counterEntries[it.uid] = e
+		counterMu.Unlock()
 	}
 }
 
