@@ -8,16 +8,17 @@
 
 ## 项目概览
 
-- 状态：活跃维护中（最近发布 2026-08-23 workbuddy 0.14.6 + qoderwork 0.9.3）
+- 状态：活跃维护中（最近发布 2026-08-23 workbuddy 0.14.7 + qoderwork 0.9.3）
 - 活动会话数：1
-- 更新时间：2026-08-23 19:04 (GMT+8)
+- 更新时间：2026-08-23 19:11 (GMT+8)
 
 ## 活动会话任务摘要
 
-- 本会话：为 WorkBuddy 账号面板实现「账号删除」功能——卡片右上角 `×` 删除图标 + 二次确认模态框，后端新增严格删除接口 `POST /delete`（仅信任 `auth_index`，重新校验存在性 / WorkBuddy 文件名归属 / 认证索引一致 / 路径安全后物理删除，并清理全维度内存状态）。实现与静态验证已完成，未提交、未做真实页面交互验证。
+- 本会话：为 WorkBuddy 账号面板实现「账号删除」功能并已发布 workbuddy 0.14.7——卡片右上角 `×` 删除图标 + 二次确认模态框，后端严格删除接口 `POST /delete`。发布链路已走完（bump → CI → assets → registry → 远端验证），真实页面交互验证仍待做。
 
 ## 已完成
 
+- 2026-08-23 账号面板「删除账号」功能 **已发布**（workbuddy 0.14.7）：卡片右上角 `×` + 二次确认模态框（取消/遮罩/Escape 不发请求）；后端 `POST /delete` 严格校验链（auth_index 非空 → 存在 → `isWorkbuddyAuthFileName` 归属 → 解析 → phys.AuthIndex 一致 → 路径安全 → 物理删除 → `clearDeletedAccountState` 清理 f.ID/auth_index/UID 三键）。新增 `clearFailoverStateForAuth` / `clearDeletedAccountState` / `isWorkbuddyAuthFileName` + `auth_delete_test.go`。cgo-shim build/vet/test 全绿，node --check 通过。提交链 8003ae6→a6a5527→0cabb46，CI run 32635829837 success，8 assets checksums 全 OK，registry raw 200 含 0.14.7 + 7 assets raw URL 全 200。覆盖边界：`handleDeleteAuth` 完整链路依赖 cgo `hostAPI` 无法 shim 单测，真实页面交互验证待做
 - 2026-08-23 面板账号卡新增「成功/失败计数 + 连败/冷却」展示 **已发布**（workbuddy 0.14.5 + qoderwork 0.9.2）：wbAccount 补 Success/Failed（host.auth.list 透传）+ FailCount/Cooling/CoolUntil（failoverStateSnapshot 提升为 dashboard 调用）；panel.html 徽标区加 badge.stat / badge.cooling，1s ticker 刷新冷却倒计时；qoderwork 三件套同构适配。双插件 cgo-shim-build 全绿（bump 后复验 6.26s/6.01s），JS 语法 node --check 通过。提交链 0de225e→1311366→f15bc92→6b20f0b，CI 双 run success（32630699531/32630699252），16 assets checksums 全 OK，远端 raw URL 全部 200
 - 2026-08-23 账号卡统计位置微调 **已发布**（workbuddy 0.14.6 + qoderwork 0.9.3）：workbuddy/qoderwork 的成功、失败、连败、冷却从标题徽标移入可用积分首行；首行支持换行，加载中保留「可用积分」前缀，冷却 ticker 只刷新「冷却 Ns」避免重复显示。两个面板共 4 个脚本块 `node --check` 全部通过；双插件 `cgo-shim-build.py` 的 build/vet/test 全部通过。提交链 195b2ea→a5711ee→f714598，CI 双 run success（32634002586/32634003971），16 assets checksums 全 OK，远端 raw URL 全部 200，registry raw 200 含 0.14.6/0.9.3
 - 2026-08-23 workbuddy v0.14.3 **已发布**：0.14.2 用户实测仍"2 次 429 即中断"，日志暴露 `retry rebuild failed: rebuildRequestWithSA: original request has no GetBody`。真根因：`rebuildRequestWithSA` 把 `orig.GetBody()`（NopCloser 包装的 io.ReadCloser）直接传给 `NewRequestWithContext`，Go 只在 body 静态类型为 `*bytes.Reader/*bytes.Buffer/*strings.Reader` 时填充 GetBody → **rebuild 产物 GetBody == nil → 第 2 次切号 rebuild 直接失败**（账号池 20 个，绝非无号可用）。修复：body 重建改为 `GetBody() → io.ReadAll → bytes.NewReader`，切号链可连续走满预算；新增 `TestRebuildRequestWithSA_GetBodyChain`（3 连 rebuild）；`cgo-shim-build.py workbuddy` 全绿（6.25s）。提交链 5ae916d→e0ffce0→a03686e→9e04131→06944e7，CI run 32626996555 success，8 assets checksums 全 OK，远端 raw URL 200。qoderwork 免疫（encodedBody 快照）仅修滞后注释
@@ -32,8 +33,7 @@
 
 ## 待办
 
-- 规则文件与四件套自举结果待提交（AGENTS.md / CLAUDE.md / .gitattributes / .editorconfig / PROJECT_*.md 为新增文件，未 git add）
-- 【本轮】账号删除功能已实现未提交：后端 `accountFailover.go`(clearFailoverStateForAuth) / `lifecycle.go`(clearDeletedAccountState) / `authfile.go`(isWorkbuddyAuthFileName) / `credits_handler.go`(handleDeleteAuth) / `management.go`(路由+分发+mutating 登记)，前端 `panel.html`(× 图标+二次确认模态框)，新增 `auth_delete_test.go`(纯函数单测)。静态验证全绿（cgo-shim build/vet/test + node --check），但 `handleDeleteAuth` 完整链路因 `hostCall` 依赖 cgo `hostAPI` 无法在 shim 环境单测，真实页面交互验证待做
+- 账号删除功能真实页面交互验证待做（在 CPA 宿主面板点 `×` 走一遍确认/取消/失败路径，确认卡片刷新与 Toast）
 - 待确认 40x 换号重试的发版节奏（0.14.2 已含 429 切号，retry_on_4xx 预算是否上调待用户拍板）
 
 ## 阻断
@@ -47,7 +47,7 @@
 
 ## 下一执行点
 
-- 【本轮】账号删除功能已实现并通过静态验证，下一步：① 在真实 CPA 宿主面板里点 × 图标走一遍「确认删除 / 取消不删除 / 删除失败」交互，确认卡片刷新与 Toast 符合预期；② 用户确认后决定是否发版（bump VERSION + CHANGELOG + 发布链路）
+- 【本轮】账号删除功能已发布 workbuddy 0.14.7，下一步：在真实 CPA 宿主面板点 `×` 走一遍「确认删除 / 取消不删除 / 删除失败」交互，确认卡片刷新与 Toast 符合预期；若发现问题再 bump 修复版
 - 待确认 40x 换号重试的发版节奏（0.14.2 已含 429 切号，retry_on_4xx 预算是否上调待用户拍板）
 
 <!-- BEGIN RECENT PROJECT SESSIONS -->
