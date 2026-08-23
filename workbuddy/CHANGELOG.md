@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.8
+
+### Refactor — 移除账号面板「启用/禁用」手动开关
+
+账号面板原有的「启用 / 禁用」按钮已不再需要——保号（`preserve`）机制接管了账号保护职责。本次移除面板上的手动开关及其全部显式化组件，同时严格保证「认证文件管理」页面的启用/停用能力不受影响。
+
+- **前端**（`panel.html`）：删除 `toggleBtn` 按钮、「已禁用」筛选 tab、`已禁用` 徽标、`data-disabled` 卡片属性、`toggleAuth` 函数及事件绑定、`.badge.disabled` 孤儿 CSS，以及 `applyCardVisibility` / `updateFilterCounts` / `accountsForFilter` / `renderSummary` 中所有 `disabled` 判定与「禁用 N」计数。
+- **后端**（`credits_handler.go` / `management.go`）：删除 `handleToggleAuth` 整函数，并移除 `/toggle` 的路由注册、switch 分发与 `mutatingManagementPath` 登记。
+- **保留项**：`disableAuth` / `reenableAuth`（生命周期 CN 耗尽自动禁用 / 积分恢复自动启用 / keepalive 自动禁用仍复用）、`disabled` 顶层字段持久化链路（认证文件管理开关直接写该字段）、`disabled_count` 后端统计字段。保号 / 耗尽 / 异常徽标与筛选 tab 完全未动。
+
 ## 0.14.7
 
 ### Feat — 账号面板支持删除账号（带二次确认 + 后端严格校验）

@@ -67,7 +67,6 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .badge.pro{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .badge.cn{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
 .badge.global{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
-.badge.disabled{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
 .badge.preserve{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-style:italic}
 .badge.anomaly{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border);font-style:italic}
 .badge.stat{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-weight:500}
@@ -232,11 +231,10 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   </div>
   <div class="filter-bar" id="filterBar">
     <button type="button" class="ftag active" data-region="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
-    <button type="button" class="ftag" data-region="available" onclick="filterRegion('available',this)" title="未禁用 · 未耗尽 · 未保号 · 未异常，可用积分能正常路由">可用 <span class="cnt" id="cntAvailable">0</span></button>
+    <button type="button" class="ftag" data-region="available" onclick="filterRegion('available',this)" title="未耗尽 · 未保号 · 未异常，可用积分能正常路由">可用 <span class="cnt" id="cntAvailable">0</span></button>
     <button type="button" class="ftag" data-region="cn" onclick="filterRegion('cn',this)">CN <span class="cnt" id="cntCn">0</span></button>
     <button type="button" class="ftag" data-region="global" onclick="filterRegion('global',this)">Global <span class="cnt" id="cntGlobal">0</span></button>
     <button type="button" class="ftag" data-region="exhausted" onclick="filterRegion('exhausted',this)">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
-    <button type="button" class="ftag" data-region="disabled" onclick="filterRegion('disabled',this)">已禁用 <span class="cnt" id="cntDisabled">0</span></button>
     <button type="button" class="ftag" data-region="preserve" onclick="filterRegion('preserve',this)">保号 <span class="cnt" id="cntPreserve">0</span></button>
     <button type="button" class="ftag" data-region="anomaly" onclick="filterRegion('anomaly',this)">异常 <span class="cnt" id="cntAnomaly">0</span></button>
   </div>
@@ -408,7 +406,6 @@ function bindCardActions(root){
       else if(act==="claim") claimTrial(idx, ev.currentTarget);
       else if(act==="select") selectAuth(idx, ev.currentTarget);
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
-      else if(act==="toggle") toggleAuth(idx, ev.currentTarget);
       else if(act==="unfreeze") unfreezeOne(idx, ev.currentTarget);
       else if(act==="delete") openDeleteModal(idx);
     });
@@ -420,7 +417,6 @@ function card(a){
   const exhausted=!!a.exhausted||(!!cr&&(cr.total_remain||0)===0&&((cr.total_used||0)>0||(cr.total_size||0)>0||(cr.packages&&cr.packages.length)));
   const region=a.region||"cn";
   const isGlobal=region==="global";
-  const disabled=!!a.disabled;
   const selected=!!a.selected;
   const regionBadge=`<span class="badge ${region}">${isGlobal?"Global":"CN"}</span>`;
   // CN: 签到 button; Global: 领取专家加油包 button (or 已领取 if trial_claimed)
@@ -439,22 +435,16 @@ function card(a){
     actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`;
   }
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
-  // Manual enable/disable toggle. Disabled accounts show "启用"; live accounts
-  // show a danger-styled "禁用". Disabling the active account is allowed — the
-  // dashboard re-picks a live candidate on the next reload.
-  const toggleBtn=disabled
-    ? `<button class="sec" data-action="toggle" data-auth-index="${esc(a.auth_index)}">启用</button>`
-    : `<button class="danger" data-action="toggle" data-auth-index="${esc(a.auth_index)}" title="禁用后该账号不再参与路由选择">禁用</button>`;
   const preserveBadge=a.preserve?`<span class="badge preserve" title="watchdog 检测到积分不足，账号暂停路由以保留积分别耗尽">保号</span>`:"";
   const anomalyBadge=a.anomaly?`<span class="badge anomaly" title="连续失败次数已达阈值，账号暂停路由以防每次请求都被重试；每日 0 点会自动复活一次">异常</span>`:"";
   const unfreezeBtn=a.anomaly?`<button class="sec" data-action="unfreeze" data-auth-index="${esc(a.auth_index)}" title="将该账号从异常池解除冻结，重新参与路由">解除冻结</button>`:"";
-  const badges=(disabled?`<span class="badge disabled">已禁用</span>`:"")+preserveBadge+anomalyBadge+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
-  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-nickname="${esc(a.nickname||a.label||a.name||"")}" data-label="${esc(a.label||"")}" data-name="${esc(a.name||"")}" data-uid="${esc(a.uid||"")}" data-disabled="${disabled?"1":"0"}" data-preserve="${a.preserve?"1":"0"}" data-anomaly="${a.anomaly?"1":"0"}">
+  const badges=preserveBadge+anomalyBadge+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
+  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-nickname="${esc(a.nickname||a.label||a.name||"")}" data-label="${esc(a.label||"")}" data-name="${esc(a.name||"")}" data-uid="${esc(a.uid||"")}" data-preserve="${a.preserve?"1":"0"}" data-anomaly="${a.anomaly?"1":"0"}">
   <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}<button type="button" class="card-del" data-action="delete" data-auth-index="${esc(a.auth_index)}" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
   ${progressHTML(cr,a)}
   ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
-  <div class="actions">${refreshBtn}${actionHTML}${toggleBtn}${unfreezeBtn}</div>
+  <div class="actions">${refreshBtn}${actionHTML}${unfreezeBtn}</div>
   </div>`;
 }
 // 冷却倒计时：每秒刷新积分首行中的冷却剩余秒数。
@@ -530,12 +520,11 @@ function applyCardVisibility(){
     let show=true;
     if(currentFilter==="all") show=true;
     else if(currentFilter==="available"){
-      // 可用 = 不是异常池 / 保号池 / 已禁用 / 已耗尽（积分耗尽）
-      const unavailable=c.dataset.disabled==="1"||c.dataset.preserve==="1"||c.dataset.anomaly==="1"||c.querySelector(".badge.exhausted")!=null;
+      // 可用 = 不是异常池 / 保号池 / 已耗尽（积分耗尽）
+      const unavailable=c.dataset.preserve==="1"||c.dataset.anomaly==="1"||c.querySelector(".badge.exhausted")!=null;
       show=!unavailable;
     }
     else if(currentFilter==="exhausted") show=c.querySelector(".badge.exhausted")!=null;
-    else if(currentFilter==="disabled") show=c.dataset.disabled==="1";
     else if(currentFilter==="preserve") show=c.dataset.preserve==="1";
     else if(currentFilter==="anomaly") show=c.dataset.anomaly==="1";
     else show=r===currentFilter;
@@ -641,15 +630,14 @@ function filterRegion(region, btn){
   renderSummary(lastAccounts);
 }
 function updateFilterCounts(accounts){
-  let cn=0, gl=0, ex=0, dis=0, prs=0, anom=0, ava=0;
+  let cn=0, gl=0, ex=0, prs=0, anom=0, ava=0;
   (accounts||[]).forEach(a=>{
     if((a.region||"cn")==="global") gl++; else cn++;
     if(a.exhausted||(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length)))) ex++;
-    if(a.disabled) dis++;
     if(a.preserve) prs++;
     if(a.anomaly) anom++;
-    // 可用 = 不属于异常池 / 保号池 / 禁用 / 耗尽
-    const isUnavailable=!!a.disabled||!!a.preserve||!!a.anomaly||!!a.exhausted||(!!a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length)));
+    // 可用 = 不属于异常池 / 保号池 / 耗尽
+    const isUnavailable=!!a.preserve||!!a.anomaly||!!a.exhausted||(!!a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length)));
     if(!isUnavailable) ava++;
   });
   const elAll=document.getElementById("cntAll");
@@ -657,7 +645,6 @@ function updateFilterCounts(accounts){
   const elCn=document.getElementById("cntCn");
   const elGl=document.getElementById("cntGlobal");
   const elEx=document.getElementById("cntExhausted");
-  const elDis=document.getElementById("cntDisabled");
   const elPrs=document.getElementById("cntPreserve");
   const elAno=document.getElementById("cntAnomaly");
   if(elAll) elAll.textContent=String((accounts||[]).length);
@@ -665,7 +652,6 @@ function updateFilterCounts(accounts){
   if(elCn) elCn.textContent=String(cn);
   if(elGl) elGl.textContent=String(gl);
   if(elEx) elEx.textContent=String(ex);
-  if(elDis) elDis.textContent=String(dis);
   if(elPrs) elPrs.textContent=String(prs);
   if(elAno) elAno.textContent=String(anom);
 }
@@ -673,13 +659,10 @@ function accountsForFilter(accounts){
   const list=accounts||[];
   if(currentFilter==="all") return list;
   if(currentFilter==="available"){
-    return list.filter(a=>!a.disabled&&!a.preserve&&!a.anomaly&&!a.exhausted&&!(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length))));
+    return list.filter(a=>!a.preserve&&!a.anomaly&&!a.exhausted&&!(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length))));
   }
   if(currentFilter==="exhausted"){
     return list.filter(a=>a.exhausted||(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length))));
-  }
-  if(currentFilter==="disabled"){
-    return list.filter(a=>!!a.disabled);
   }
   if(currentFilter==="preserve"){
     return list.filter(a=>!!a.preserve);
@@ -712,18 +695,17 @@ function renderSummary(accounts){
   // 5 卡片口径：剩余(可用) / 剩余(不可用) / 已用(消耗) / 额度池 / 消耗占比
   // 「剩余(可用)/已用/额度池/占比」按可用账号统计；「剩余(不可用)」独立统计不可用账号。
   // 同一组口径之间保持一致（已用÷池=占比，不会自相矛盾）。
-  let remainAvail=0, remainUnavail=0, used=0, size=0, knownN=0, disabledN=0, exhaustedN=0, preserveN=0, anomalyN=0, unavailN=0;
+  let remainAvail=0, remainUnavail=0, used=0, size=0, knownN=0, exhaustedN=0, preserveN=0, anomalyN=0, unavailN=0;
   let cnRemain=0, cnUsed=0, glRemain=0, glUsed=0;
   scoped.forEach(a=>{
     const c=creditOf(a);
-    // 不可用 = 异常池 / 保号池 / 禁用 / 耗尽（积分耗尽的等价判定）
+    // 不可用 = 异常池 / 保号池 / 耗尽（积分耗尽的等价判定）
     const isExhausted=!!a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0));
-    const isUnavailable=!!a.disabled||!!a.preserve||!!a.anomaly||isExhausted;
+    const isUnavailable=!!a.preserve||!!a.anomaly||isExhausted;
     if(c.known){
       if(isUnavailable){ remainUnavail+=c.remain; unavailN++; }
       else { remainAvail+=c.remain; used+=c.used; size+=c.size; knownN++; }
     }
-    if(a.disabled) disabledN++;
     if(isExhausted) exhaustedN++;
     if(a.preserve) preserveN++;
     if(a.anomaly) anomalyN++;
@@ -740,13 +722,13 @@ function renderSummary(accounts){
   const pct=total>0?Math.round(used/total*100):0;
   let barColor="var(--ok)"; if(pct>60)barColor="var(--warn)"; if(pct>85)barColor="var(--err)";
   // 标题文案：「可用」过滤时直接用"可用账号"；其他用通用「全部账号」
-  const scopeLabel=currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="global"?"Global 账号":(currentFilter==="cn"?"CN 账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="disabled"?"已禁用账号":(currentFilter==="preserve"?"保号账号":(currentFilter==="anomaly"?"异常账号":"全部账号")))))));
+  const scopeLabel=currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="global"?"Global 账号":(currentFilter==="cn"?"CN 账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="preserve"?"保号账号":(currentFilter==="anomaly"?"异常账号":"全部账号"))))));
   const allTotal=allSize>0?allSize:(allRemain+allUsed);
   box.style.display="block";
   box.innerHTML=`
     <div class="summary-hd">
       <div class="summary-title">用量汇总 · ${esc(scopeLabel)}</div>
-      <div class="summary-meta">${scoped.length} 个账号 · 可用 ${knownN} · 不可用 ${unavailN} · 禁用 ${disabledN} · 耗尽 ${exhaustedN} · 保号 ${preserveN} · 异常 ${anomalyN}</div>
+      <div class="summary-meta">${scoped.length} 个账号 · 可用 ${knownN} · 不可用 ${unavailN} · 耗尽 ${exhaustedN} · 保号 ${preserveN} · 异常 ${anomalyN}</div>
     </div>
     <div class="summary-grid">
       <div class="summary-item"><div class="k">剩余(可用)</div><div class="v ok">${remainAvail}</div></div>
@@ -984,29 +966,6 @@ async function refreshCredits(idx, btn){
   }catch(e){
     toast("刷新失败","err",e.message||String(e));
   }finally{
-    busy(btn,false);
-  }
-}
-async function toggleAuth(idx, btn){
-  // Target state = inverse of the card's current state. The backend receives
-  // the explicit target (not a flip) so double-clicks are idempotent.
-  const a=(lastAccounts||[]).find(x=>x.auth_index===idx);
-  const target=!a||!a.disabled;
-  busy(btn,true);
-  try{
-    const d=await api("/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx,disabled:target})});
-    if(d.error){
-      toast((d.nickname||"账号")+"：操作失败","err",d.error);
-      busy(btn,false);
-      return;
-    }
-    const who=d.nickname||idx;
-    toast(d.disabled?"已禁用":"已启用", d.disabled?"warn":"ok", who);
-    // Immediate reload: re-renders the card, re-picks active account if the
-    // disabled one was selected, and refreshes the summary counts.
-    await load(false);
-  }catch(e){
-    toast("操作失败","err",e.message||String(e));
     busy(btn,false);
   }
 }
