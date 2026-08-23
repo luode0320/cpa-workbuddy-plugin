@@ -4,6 +4,8 @@
 
 ## 事件
 
+- 2026-08-23：账号卡统计位置微调 **已发布**（workbuddy 0.14.6 + qoderwork 0.9.3）：成功、失败、连败、冷却从标题徽标区移动到可用积分首行（`progressHTML(c,a)` 增统计段），`.pb-label` 支持换行，加载中保留「可用积分」，冷却 ticker 只刷新冷却秒数。双面板 4 个脚本块 `node --check` 全部通过，双插件 `cgo-shim-build.py` 的 build/vet/test 全部通过。提交链 195b2ea→a5711ee→f714598，CI 双 run success（32634002586/32634003971），16 assets checksums 全 OK，远端 raw URL 全部 200，registry raw 200 含 0.14.6/0.9.3
+- 2026-08-23：账号卡统计位置微调 **已完成未发布**：workbuddy/qoderwork 将成功、失败、连败、冷却从标题徽标区移动到可用积分首行；`.pb-label` 支持换行，加载中保留「可用积分」，冷却 ticker 只刷新冷却秒数。双面板 4 个脚本块 `node --check` 全部通过，双插件 `cgo-shim-build.py` 的 build/vet/test 全部通过；当前仅两个 `panel.html` 有未提交改动。
 - 2026-08-23：面板账号卡「成功/失败计数 + 连败/冷却」展示 **已发布**（workbuddy 0.14.5 + qoderwork 0.9.2）：wbAccount 补 Success/Failed（host.auth.list 透传，断点在插件组装丢失非上游缺失）+ FailCount/Cooling/CoolUntil（failoverStateSnapshot 从测试 helper 提升为 dashboard API）；panel.html 徽标区 badge.stat/badge.cooling + 1s 冷却倒计时 ticker；qoderwork 三件套同构适配。提交链 0de225e→1311366→f15bc92→6b20f0b，CI 双 run success（32630699531/32630699252），16 assets checksums 全 OK，远端 raw URL 全部 200
 - 2026-08-23：workbuddy-provider v0.14.3 发布（流式切号链 GetBody==nil 断裂修复：`rebuildRequestWithSA` 改 `GetBody()→io.ReadAll→bytes.NewReader` 重建 body，产物 GetBody 恒可用，切号链可走满 retry_on_4xx 预算；0.14.2 复测仍 2 次 429 即中断的真根因，推翻"账号池仅 2 候选"错误假设；提交链 5ae916d→e0ffce0→a03686e→9e04131→06944e7，qoderwork 代码免疫仅修滞后注释，远端 raw URL 200）
 - 2026-08-23：workbuddy-provider v0.14.2 + qoderwork-provider v0.9.1 发布（429 纳入同请求切号循环，`isAccountLevel4xx` 增 `StatusTooManyRequests` case；提交链 42b9ac3→4158a59→8a3f18c→d2d9bb9→9efc0d0，远端 raw URL 200 验证通过；0.14.1 面板 tab 补丁已由并行会话先行发布，故 429 修复独立 bump 0.14.2 不重打 tag）
