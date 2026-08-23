@@ -144,7 +144,7 @@ func TestIsAccountLevel4xx_Classification(t *testing.T) {
 		{410, false},
 		{418, false},
 		{422, false},
-		{429, false}, // covered by isSoftRateLimit, not isAccountLevel4xx
+		{429, true}, // v0.14.2: same-request rotation, was false before
 		{500, false}, // covered by isAccountFailure's 5xx branch
 	}
 	for _, tc := range cases {
@@ -153,6 +153,28 @@ func TestIsAccountLevel4xx_Classification(t *testing.T) {
 				t.Fatalf("isAccountLevel4xx(%d) = %v, want %v", tc.status, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestIsAccountLevel4xx_429Rotatable locks in the v0.14.2 behavior change:
+// 429 is now recognized as account-rotatable so the same-request failover
+// loop (stream.go / main.go / collectUpstreamStream) calls pickNextAuth and
+// rebuilds the request instead of returning the upstream 429 immediately.
+// Cross-request cooldown continues to apply via isAccountFailure.
+func TestIsAccountLevel4xx_429Rotatable(t *testing.T) {
+	if !isAccountLevel4xx(429) {
+		t.Fatal("v0.14.2: isAccountLevel4xx(429) must be true so pickNextAuth is reachable on 429")
+	}
+	// Sanity: 5xx and 402 must stay excluded.
+	if isAccountLevel4xx(500) {
+		t.Fatal("5xx must remain excluded — cooldown-only")
+	}
+	if isAccountLevel4xx(402) {
+		t.Fatal("402 must remain excluded — cooldown-only")
+	}
+	// Sanity: 400 must remain excluded (request-shaped, all accounts fail).
+	if isAccountLevel4xx(400) {
+		t.Fatal("400 must remain excluded — request-shaped, can't recover via account swap")
 	}
 }
 

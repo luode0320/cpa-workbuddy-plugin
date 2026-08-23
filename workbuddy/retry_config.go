@@ -1,12 +1,19 @@
 // retry_config.go owns the per-request retry-on-4xx budget.
 //
-// When a request hits an account-level 4xx (401/403/404/405) the executor
-// may try the same request on the next available account up to budget
-// times before giving up. The budget is parsed from plugin.yaml's
-// `retry_on_4xx:` field on every configure()/reconfigure call, with 10 as
-// the default. Setting it to 0 disables on-request account failover (the
-// old behavior) — useful as a kill-switch when a global outage makes
-// retries destructive.
+// When a request hits an account-level 4xx (401/403/404/405) or 429 soft
+// rate limit, the executor may try the same request on the next available
+// account up to budget times before giving up. The budget is parsed from
+// plugin.yaml's `retry_on_4xx:` field on every configure()/reconfigure
+// call, with 10 as the default. Setting it to 0 disables on-request
+// account failover (the old behavior) — useful as a kill-switch when a
+// global outage makes retries destructive.
+//
+// Note: 429 was added in v0.14.2 to recover from per-account rate limits
+// inside one request. The cross-request cooldown tier (1/3/10 min) also
+// lifts the failing account via recordAccountFailure, so a 429 here both
+// rotates the account AND starts the cooldown clock against the original.
+// 5xx/0/402 are intentionally NOT included — they wait for the cooldown
+// layer instead.
 package main
 
 import (

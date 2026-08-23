@@ -111,14 +111,16 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			}
 			noteAccountFailure(curAuthID, statusCode, errPayload)
 
-			// Retry policy: only account-level 4xx (401/403/404/405)
-			// benefit from switching accounts. 5xx/0/429/402 are already
-			// surfaced as failures and recorded; rotating the account
-			// on 5xx inside a single request gives no guarantee the
-			// next upstream isn't also 5xx, so we don't burn budget
-			// on it (the cooldown mechanism handles long-term 5xx).
-			// Business 400 is request-shaped and would fail identically
-			// on every account, so we propagate it immediately.
+			// Retry policy (v0.14.2 — 429 included):
+			//   account-level 4xx (401/403/404/405) and 429 soft rate limit
+			//   benefit from switching accounts on the SAME request,
+			//   constrained by retry_on_4xx budget.
+			//   5xx/0/402 are still surfaced and recorded, but rotate the
+			//   account cross-request via the cooldown tier; same-request
+			//   rotation gives no guarantee the next upstream isn't also
+			//   5xx, so we don't burn budget on it.
+			//   Business 400 is request-shaped and would fail identically
+			//   on every account, so we propagate it immediately.
 			if !isAccountLevel4xx(statusCode) {
 				streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(errPayload, 200)))
 				return
@@ -196,12 +198,16 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 // non-nil, observes raw upstream chunks for usage extraction. statusCode is the
 // upstream HTTP status (0 for transport-level failures).
 //
-// On an account-level 4xx (401/403/404/405) the request body is fine — only
-// the chosen credential is broken for this endpoint. We try a
-// configured-budget number of alternate accounts before giving up. Failures
-// found by isAccountFailure (5xx, 0, 429, 402) are still surfaced as
-// errors but do NOT trigger a same-request account rotation; the
-// failover-cooldown layer handles those across requests.
+// On an account-level 4xx (401/403/404/405) or 429 soft rate limit the
+// request body is fine — only the chosen credential is broken for this
+// endpoint (or the account's quota is exhausted). We try a configured-budget
+// number of alternate accounts before giving up. Failures found by
+// isAccountFailure (5xx, 0, 402) are still surfaced as errors but do NOT
+// trigger a same-request account rotation; the failover-cooldown layer
+// handles those across requests. 429 is included here so the next attempt
+// can route around a per-account rate limit without waiting for the
+// 1/3/10 min cooldown to expire; cross-request cooldown continues to apply
+// via isAccountFailure / recordAccountFailure on the failing account.
 func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector) ([]pluginapi.ExecutorStreamChunk, int, error) {
 	budget := loadedRetryOn4xx()
 	curSA := sa

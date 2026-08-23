@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.14.2
+
+### Fix — `retry_on_4xx` 同请求切号循环纳入 429（Too Many Requests）
+
+0.14.0 设计的同请求切号循环只 cover 账号级 4xx（401/403/404/405），
+429 / 402 / 5xx / 状态 0 全部强制走 cooldown 跨请求路径。用户实测遇到
+"切了 N 个账号就不再切"的现象在 429 场景下**不是配置失效**,而是 429
+压根不进 retry 循环（截图两个账号是两次相邻请求分别踩中的，不是同一个
+请求内切号）。本次把 429 显式纳入 `isAccountLevel4xx` 的 case，让上游
+软限流（通常按账号/租户维度分配）也可以通过切下一个候选账号在**同一个
+请求**内恢复。cooldown 阶梯（1/3/10 分钟）继续作用于失败账号，与
+retry 循环并存——失败的账号既被切走也进入冷却，下次请求路径一致。
+
+- `accountFailover.go`：`isAccountLevel4xx` 增加 `http.StatusTooManyRequests`
+  case；注释说明 429 现在与 401/403/404/405 同等进入 retry 循环，并指出
+  "上游限额是全局共享时切号会烧完预算不前进"的已知风险（pickNextAuth 在
+  池耗尽时返回 ok=false）。
+- `retry_config.go`：文件头注释新增 429 说明。
+- `main.go` (handleExecExecute) / `stream.go` (pumpUpstreamStream,
+  collectUpstreamStream)：循环注释更新为"401/403/404/405 或 429"，与
+  代码同步；行为由 `isAccountLevel4xx` 集中控制，三处调用点不动。
+- `accountFailover_test.go`：`TestIsAccountLevel4xx_Classification` 中
+  429 由 false 改为 true；新增 `TestIsAccountLevel4xx_429Rotatable` 锁
+  定 v0.14.2 行为（429 进切号；500/402/400 仍排除）。
+- `README.md` / `README_CN.md`：retry_on_4xx 字段说明补齐 429 行为；
+  中文 README 原本完全没有该字段，本版一并补齐。
+- 双插件同步：`qoderwork-provider` `accountFailover.go` 整文件同步；
+  `main.go` retry 段 / `stream.go` 同步更新注释，CHANGELOG、README、
+  VERSION 同步到 v0.9.1。
+- 不在范围：429 配额感知（上游共享限流时的快速失败信号）；429 → 切换但
+  不计 cooldown 的开关（默认行为下 cooldown 一定累计）。
+
 ## 0.14.1
 
 ### Fix — 面板顶部筛选栏补充"异常"tab
