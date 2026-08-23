@@ -8,16 +8,19 @@
 
 ## 项目概览
 
-- 状态：活跃维护中（最近发布 2026-08-23 workbuddy 0.14.7 + qoderwork 0.9.3）
+- 状态：活跃维护中（最近发布 2026-08-23 workbuddy 0.14.8 + qoderwork 0.9.3）
 - 活动会话数：1
-- 更新时间：2026-08-23 19:11 (GMT+8)
+- 更新时间：2026-08-23 19:41 (GMT+8)
 
 ## 活动会话任务摘要
 
-- 本会话：为 WorkBuddy 账号面板实现「账号删除」功能并已发布 workbuddy 0.14.7——卡片右上角 `×` 删除图标 + 二次确认模态框，后端严格删除接口 `POST /delete`。发布链路已走完（bump → CI → assets → registry → 远端验证），真实页面交互验证仍待做。
+- 本会话：完成两件事
+  1. **【已发布】** WorkBuddy 账号面板「账号删除」功能（workbuddy 0.14.7）：卡片右上角 `×` 删除图标 + 二次确认模态框，后端严格删除接口 `POST /delete`。发布链路已走完（bump → CI → assets → registry → 远端验证）。
+  2. **【已发布】** 移除 WorkBuddy 面板「启用/禁用」手动开关（workbuddy 0.14.8）：有了保号机制后该功能冗余，本次把 disabled 在面板上的所有显式化（按钮/徽标/筛选tab/汇总计数/可用过滤含 disabled 判定/`scopeLabel` 的 disabled 分支/`data-disabled` 属性/CSS）一并清除；保留后端 `disableAuth/reenableAuth/parseDisabledFromAuthJSON` 与认证文件管理共享的 `disabled` 字段持久化链路（被 lifecycle / keepalive / 认证文件管理开关复用）。
 
 ## 已完成
 
+- 2026-08-23 账号面板移除「启用/禁用」手动开关 **已发布**（workbuddy 0.14.8）：前端 `panel.html` 删除 `toggleBtn` 按钮 + `toggleAuth` 函数 + 事件绑定 + 「已禁用」筛选 tab + `disabled` 徽标 + `disabledN` 计数 + `scopeLabel.disabled` 分支 + `data-disabled` 属性 + `.badge.disabled` CSS + 「可用」过滤与 `accountsForFilter` 中的 disabled 判定；后端删除 `handleToggleAuth` 函数（credits_handler.go -80 行）+ `management.go` 三处 `/toggle` 接入（注册/分发/mutating path）。保留：`disableAuth/reenableAuth` 函数（lifecycle.go/keepalive.go 仍用）、`disabled` 字段读写（认证文件管理开关依赖）、`disabled_count` 统计字段（panel.go）、`panel.html` 的 `lazyLoadCredits` 与"全部完成"判断的 disabled 过滤。提交链 81c854b→3ef57d7→5d357bc，CI run 32637348107 success，8 assets checksums 全 OK，registry raw 200 含 0.14.8 + 7 assets raw URL 全 200。真实页面交互验证待做。
 - 2026-08-23 账号面板「删除账号」功能 **已发布**（workbuddy 0.14.7）：卡片右上角 `×` + 二次确认模态框（取消/遮罩/Escape 不发请求）；后端 `POST /delete` 严格校验链（auth_index 非空 → 存在 → `isWorkbuddyAuthFileName` 归属 → 解析 → phys.AuthIndex 一致 → 路径安全 → 物理删除 → `clearDeletedAccountState` 清理 f.ID/auth_index/UID 三键）。新增 `clearFailoverStateForAuth` / `clearDeletedAccountState` / `isWorkbuddyAuthFileName` + `auth_delete_test.go`。cgo-shim build/vet/test 全绿，node --check 通过。提交链 8003ae6→a6a5527→0cabb46，CI run 32635829837 success，8 assets checksums 全 OK，registry raw 200 含 0.14.7 + 7 assets raw URL 全 200。覆盖边界：`handleDeleteAuth` 完整链路依赖 cgo `hostAPI` 无法 shim 单测，真实页面交互验证待做
 - 2026-08-23 面板账号卡新增「成功/失败计数 + 连败/冷却」展示 **已发布**（workbuddy 0.14.5 + qoderwork 0.9.2）：wbAccount 补 Success/Failed（host.auth.list 透传）+ FailCount/Cooling/CoolUntil（failoverStateSnapshot 提升为 dashboard 调用）；panel.html 徽标区加 badge.stat / badge.cooling，1s ticker 刷新冷却倒计时；qoderwork 三件套同构适配。双插件 cgo-shim-build 全绿（bump 后复验 6.26s/6.01s），JS 语法 node --check 通过。提交链 0de225e→1311366→f15bc92→6b20f0b，CI 双 run success（32630699531/32630699252），16 assets checksums 全 OK，远端 raw URL 全部 200
 - 2026-08-23 账号卡统计位置微调 **已发布**（workbuddy 0.14.6 + qoderwork 0.9.3）：workbuddy/qoderwork 的成功、失败、连败、冷却从标题徽标移入可用积分首行；首行支持换行，加载中保留「可用积分」前缀，冷却 ticker 只刷新「冷却 Ns」避免重复显示。两个面板共 4 个脚本块 `node --check` 全部通过；双插件 `cgo-shim-build.py` 的 build/vet/test 全部通过。提交链 195b2ea→a5711ee→f714598，CI 双 run success（32634002586/32634003971），16 assets checksums 全 OK，远端 raw URL 全部 200，registry raw 200 含 0.14.6/0.9.3
@@ -34,6 +37,7 @@
 ## 待办
 
 - 账号删除功能真实页面交互验证待做（在 CPA 宿主面板点 `×` 走一遍确认/取消/失败路径，确认卡片刷新与 Toast）
+- 账号面板移除「启用/禁用」功能真实页面交互验证待做（已发布 0.14.8，确认面板卡片底部不再出现「禁用/启用」按钮，但「刷新」「已签到/领取」「解除冻结」（如有）「×删除」仍正常）
 - 待确认 40x 换号重试的发版节奏（0.14.2 已含 429 切号，retry_on_4xx 预算是否上调待用户拍板）
 
 ## 阻断
@@ -47,7 +51,7 @@
 
 ## 下一执行点
 
-- 【本轮】账号删除功能已发布 workbuddy 0.14.7，下一步：在真实 CPA 宿主面板点 `×` 走一遍「确认删除 / 取消不删除 / 删除失败」交互，确认卡片刷新与 Toast 符合预期；若发现问题再 bump 修复版
+- 【本轮】账号面板移除「启用/禁用」手动开关已发布 workbuddy 0.14.8，下一步：在真实 CPA 宿主面板确认卡片底部不再出现「禁用/启用」按钮，且保号/耗尽/异常徽标 + 刷新/已签到/解除冻结/删除按钮都正常；若发现问题再 bump 修复版
 - 待确认 40x 换号重试的发版节奏（0.14.2 已含 429 切号，retry_on_4xx 预算是否上调待用户拍板）
 
 <!-- BEGIN RECENT PROJECT SESSIONS -->
