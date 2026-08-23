@@ -4,6 +4,8 @@
 
 ## 事件
 
+- 2026-08-23：deepseek-vision 第四插件迁移完成（02:23-02:50）后由用户决策**撤销**（02:57）：宿主未配置视觉模型、插件依赖宿主 vision 回调 → 工作区全部回退到 HEAD，三插件基线恢复
+
 - 2026-08-22：workbuddy-provider v0.12.0 发布，移除三池路由只留保号池（提交链 f64f35a→2cdd179→fec796e）
 - 2026-08-22：40x 账号级换号重试（401/403/404/405，retry_on_4xx 预算默认 3），workbuddy+qoderwork 对称，未发版
 - 2026-08-22：项目改名 cpa-plugin → cpa-workbuddy-plugin，registry/build.yml/go.mod 全链路同步
