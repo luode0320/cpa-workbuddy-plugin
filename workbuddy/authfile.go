@@ -61,6 +61,18 @@ func isLegacyWorkbuddyAuthName(name string) bool {
 	return strings.EqualFold(strings.TrimSpace(name), authFileName)
 }
 
+// isWorkbuddyAuthFileName reports whether a bare filename (no directory)
+// follows the workbuddy naming rule: workbuddy-<uid>.json or the legacy
+// workbuddy.json. Case-insensitive. Used by the panel delete path to assert
+// WorkBuddy ownership before touching a physical file.
+func isWorkbuddyAuthFileName(name string) bool {
+	base := strings.ToLower(strings.TrimSpace(name))
+	if base == "" || !strings.HasSuffix(base, ".json") {
+		return false
+	}
+	return strings.HasPrefix(base, "workbuddy-") || base == "workbuddy.json"
+}
+
 // resolveAuthFileTarget picks the canonical file name + path for save/delete.
 // Prefer workbuddy-<uid>.json; if the host still points at legacy workbuddy.json
 // for a UID-bearing account, rewrite to the uid name and schedule legacy removal.

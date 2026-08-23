@@ -10,11 +10,11 @@
 
 - 状态：活跃维护中（最近发布 2026-08-23 workbuddy 0.14.6 + qoderwork 0.9.3）
 - 活动会话数：1
-- 更新时间：2026-08-23 18:07 (GMT+8)
+- 更新时间：2026-08-23 19:04 (GMT+8)
 
 ## 活动会话任务摘要
 
-- 本会话：将已发布的账号统计从标题徽标区移动到可用积分首行（workbuddy + qoderwork 双插件同步），已随 0.14.6 + 0.9.3 发布完成
+- 本会话：为 WorkBuddy 账号面板实现「账号删除」功能——卡片右上角 `×` 删除图标 + 二次确认模态框，后端新增严格删除接口 `POST /delete`（仅信任 `auth_index`，重新校验存在性 / WorkBuddy 文件名归属 / 认证索引一致 / 路径安全后物理删除，并清理全维度内存状态）。实现与静态验证已完成，未提交、未做真实页面交互验证。
 
 ## 已完成
 
@@ -33,6 +33,8 @@
 ## 待办
 
 - 规则文件与四件套自举结果待提交（AGENTS.md / CLAUDE.md / .gitattributes / .editorconfig / PROJECT_*.md 为新增文件，未 git add）
+- 【本轮】账号删除功能已实现未提交：后端 `accountFailover.go`(clearFailoverStateForAuth) / `lifecycle.go`(clearDeletedAccountState) / `authfile.go`(isWorkbuddyAuthFileName) / `credits_handler.go`(handleDeleteAuth) / `management.go`(路由+分发+mutating 登记)，前端 `panel.html`(× 图标+二次确认模态框)，新增 `auth_delete_test.go`(纯函数单测)。静态验证全绿（cgo-shim build/vet/test + node --check），但 `handleDeleteAuth` 完整链路因 `hostCall` 依赖 cgo `hostAPI` 无法在 shim 环境单测，真实页面交互验证待做
+- 待确认 40x 换号重试的发版节奏（0.14.2 已含 429 切号，retry_on_4xx 预算是否上调待用户拍板）
 
 ## 阻断
 
@@ -45,7 +47,7 @@
 
 ## 下一执行点
 
-- 本轮积分首行布局调整已完成并发布（workbuddy 0.14.6 + qoderwork 0.9.3，远端 main=f714598）
+- 【本轮】账号删除功能已实现并通过静态验证，下一步：① 在真实 CPA 宿主面板里点 × 图标走一遍「确认删除 / 取消不删除 / 删除失败」交互，确认卡片刷新与 Toast 符合预期；② 用户确认后决定是否发版（bump VERSION + CHANGELOG + 发布链路）
 - 待确认 40x 换号重试的发版节奏（0.14.2 已含 429 切号，retry_on_4xx 预算是否上调待用户拍板）
 
 <!-- BEGIN RECENT PROJECT SESSIONS -->

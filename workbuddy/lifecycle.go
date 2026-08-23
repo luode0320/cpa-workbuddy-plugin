@@ -224,11 +224,30 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 			}
 		}
 	}
-	lifecycleState.Delete(authID)
-	accountCache.Delete(authID)
-	clearActiveAuthIfMatch(authID)
-	preserveSetClear(authID)
+	clearDeletedAccountState(authID, authIndex, sa.Account.UID)
 	return nil
+}
+
+// clearDeletedAccountState removes every in-memory trace of a deleted account
+// for each provided key (auth.ID, auth_index, and account UID may each have
+// been used as a key by different code paths). Covers lifecycle state, cached
+// credits/plan/checkin, active selection, preserve flag, anomaly membership,
+// failover cooldown/counter, and session bindings pinned to the account.
+// Idempotent — safe to call when maps are empty or keys already absent.
+func clearDeletedAccountState(keys ...string) {
+	for _, k := range keys {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		lifecycleState.Delete(k)
+		accountCache.Delete(k)
+		clearActiveAuthIfMatch(k)
+		preserveSetClear(k)
+		anomalySetClear(k)
+		clearFailoverStateForAuth(k)
+		evictSessionBindingsForAuth(k)
+	}
 }
 
 // peerAuthDir returns the directory of any workbuddy auth file known to the host.

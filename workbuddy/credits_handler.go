@@ -346,6 +346,79 @@ func handleToggleAuth(req pluginapi.ManagementRequest) map[string]any {
 	return map[string]any{"error": "account not found", "auth_index": authIndex}
 }
 
+// handleDeleteAuth removes one WorkBuddy account and its physical auth file.
+// This panel entry is strict (unlike lifecycle deleteAuth, which disables as a
+// fallback when no path is known): it refuses to act unless the target account
+// exists, belongs to WorkBuddy, and its physical path is safe and known. Only
+// auth_index is accepted from the body; the host's own list/get responses are
+// the sole source of truth for the delete target (never a client-supplied
+// uid/name/path).
+func handleDeleteAuth(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		AuthIndex string `json:"auth_index"`
+	}
+	_ = json.Unmarshal(req.Body, &body)
+	authIndex := strings.TrimSpace(body.AuthIndex)
+	if authIndex == "" {
+		return map[string]any{"error": "auth_index is required"}
+	}
+	files, err := hostAuthList()
+	if err != nil {
+		return map[string]any{"error": "host.auth.list: " + err.Error()}
+	}
+	for _, f := range files {
+		if f.AuthIndex != authIndex {
+			continue
+		}
+		// hostAuthList already prefix-filters on workbuddy-*, but double-check
+		// the concrete name so a legacy or mis-shaped entry can't slip through.
+		if !isWorkbuddyAuthFileName(f.Name) {
+			return map[string]any{"error": "不是 WorkBuddy 认证文件", "auth_index": authIndex}
+		}
+		sa, phys, err := hostAuthGetBundle(authIndex)
+		if err != nil {
+			return map[string]any{"error": "host.auth.get: " + err.Error(), "auth_index": authIndex}
+		}
+		if sa == nil {
+			return map[string]any{"error": "认证内容解析失败", "auth_index": authIndex}
+		}
+		if phys == nil || strings.TrimSpace(phys.AuthIndex) != authIndex {
+			return map[string]any{"error": "认证索引不一致", "auth_index": authIndex}
+		}
+		path := strings.TrimSpace(phys.Path)
+		if path == "" {
+			return map[string]any{"error": "认证文件路径缺失，无法安全删除", "auth_index": authIndex}
+		}
+		if !isSafeWorkbuddyAuthPath(path) {
+			return map[string]any{"error": "认证文件路径不安全，已拒绝删除", "auth_index": authIndex}
+		}
+		nickname := sa.Account.Nickname
+		uid := sa.Account.UID
+		// Physical delete confined to the auth directory.
+		if err := deleteAuthFileInDir(path, filepath.Dir(path)); err != nil {
+			return map[string]any{"error": "删除认证文件失败: " + err.Error(), "auth_index": authIndex}
+		}
+		// Also remove legacy workbuddy.json if this UID was dual-named historically.
+		if strings.TrimSpace(uid) != "" {
+			if dir := filepath.Dir(path); dir != "" {
+				legacy := filepath.Join(dir, authFileName)
+				if isLegacyWorkbuddyAuthName(filepath.Base(legacy)) {
+					_ = deleteAuthFileInDir(legacy, dir)
+				}
+			}
+		}
+		clearDeletedAccountState(f.ID, authIndex, uid)
+		return map[string]any{
+			"ok":         true,
+			"auth_index": authIndex,
+			"nickname":   nickname,
+			"uid":        uid,
+			"deleted":    f.Name,
+		}
+	}
+	return map[string]any{"error": "account not found", "auth_index": authIndex}
+}
+
 // handleCreditsQuery returns real-time credits for one or all accounts.
 // Pass ?auth_index=<idx> to query a single account; omit for all.
 // Single-account mode returns full account info (nickname, region, credits,

@@ -154,6 +154,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/select", Description: "Select the active account card used for chat routing (body: {auth_index})."},
 			{Method: http.MethodPost, Path: base + "/toggle", Description: "Enable or disable one account (body: {auth_index, disabled}). Disable works on the active account; enable is refused when credits are unknown or exhausted."},
 			{Method: http.MethodPost, Path: base + "/unfreeze", Description: "Remove one (body: {auth_index}) or all (empty body) accounts from the anomaly pool (anomaly.go)."},
+			{Method: http.MethodPost, Path: base + "/delete", Description: "Delete one WorkBuddy account and its physical auth file (body: {auth_index})."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
 		},
@@ -217,6 +218,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleToggleAuth(req)))
 	case req.Method == http.MethodPost && path == base+"/unfreeze":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleUnfreezeAuth(req)))
+	case req.Method == http.MethodPost && path == base+"/delete":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleDeleteAuth(req)))
 	case req.Method == http.MethodPost && path == base+"/keepalive":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveNow(req)))
 	case req.Method == http.MethodGet && path == base+"/keepalive/status":
@@ -345,6 +348,7 @@ func mutatingManagementPath(path string) bool {
 		base + "/select",
 		base + "/toggle",
 		base + "/unfreeze",
+		base + "/delete",
 		base + "/keepalive":
 		return true
 	}

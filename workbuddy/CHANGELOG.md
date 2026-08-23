@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.14.7
+
+### Feat — 账号面板支持删除账号（带二次确认 + 后端严格校验）
+
+账号卡片右上角新增 `×` 删除入口，删除前弹出二次确认，删除后刷新账号列表：
+
+- **前端**（`panel.html`）：卡片标题右侧新增 `.card-del` 删除按钮；
+  `bindCardActions` 增加 `delete` 分支打开 `#deleteModal` 确认框；取消 / 遮罩 /
+  Escape 均只关闭模态框、不发请求；确认路径先 `busy` 再 `POST /delete`，
+  失败保留卡片并 Toast，成功先本地过滤再 `load(false)` 刷新。
+- **后端**（`management.go` / `credits_handler.go`）：新增 `POST /delete`
+  管理接口，只收 `{auth_index}`，纳入 `mutatingManagementPath` 鉴权 + 限流。
+  `handleDeleteAuth` 严格校验链：`auth_index` 非空 → 账号存在 → 文件名归属
+  （`isWorkbuddyAuthFileName`）→ 内容解析 → `phys.AuthIndex` 一致 → 路径非空 →
+  `isSafeWorkbuddyAuthPath` → `deleteAuthFileInDir` 物理删除；任一不满足即拒绝，
+  不信任前端任意路径或标识。
+- **状态清理**（`lifecycle.go` / `accountFailover.go`）：新增
+  `clearDeletedAccountState(keys ...string)` 统一清理函数，删除后清除
+  lifecycleState / accountCache / activeAuthID / preserve / anomaly / failover /
+  session 路由绑定（覆盖 `auth.ID` / `auth_index` / `UID` 三键维度）；生命周期
+  `deleteAuth()` 与面板删除共用该清理。新增 `clearFailoverStateForAuth` 单账号
+  failover 清理。
+- **测试**：新增 `auth_delete_test.go`，覆盖 `isWorkbuddyAuthFileName`、
+  `clearFailoverStateForAuth`、`clearDeletedAccountState`（含空键幂等）。
+
 ## 0.14.4
 
 ### Feat — 用量汇总拆分「剩余(可用)/剩余(不可用)」+ 新增「可用」筛选标签

@@ -118,6 +118,9 @@ button.done{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-
 button.done:disabled{opacity:1}
 button.danger{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
 button.danger:hover{background:var(--err);color:#fff}
+/* 账号卡右上角删除入口：独立于普通 action，hover 转红提示危险操作 */
+.card-del{background:transparent;color:var(--mut);border:0;padding:2px 7px;font-size:16px;line-height:1;border-radius:6px;cursor:pointer;flex:none}
+.card-del:hover{background:var(--err-soft);color:var(--err)}
 .toast .t{font-weight:600;margin-bottom:3px}
 .toast .d{color:var(--mut);font-size:12px;line-height:1.45}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--on-acc);border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
@@ -264,6 +267,22 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     </div>
   </div>
 </div>
+<div class="modal-mask" id="deleteModal" onclick="onDeleteMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="deleteModalTitle">
+    <div class="modal-hd">
+      <h2 id="deleteModalTitle">删除账号</h2>
+      <button type="button" class="modal-x" onclick="closeDeleteModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint" id="deleteModalHint">确定要删除该账号吗？</p>
+      <p class="hint" style="color:var(--err)">此操作会永久删除该账号及其认证文件，且不可恢复。</p>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="closeDeleteModal()">取消</button>
+      <button type="button" class="danger" id="deleteConfirmBtn" onclick="confirmDeleteAuth()">删除</button>
+    </div>
+  </div>
+</div>
 <div class="toasts" id="toasts"></div>
 <script>
 const API = "/v0/management/plugins/workbuddy-provider";
@@ -391,6 +410,7 @@ function bindCardActions(root){
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
       else if(act==="toggle") toggleAuth(idx, ev.currentTarget);
       else if(act==="unfreeze") unfreezeOne(idx, ev.currentTarget);
+      else if(act==="delete") openDeleteModal(idx);
     });
   });
 }
@@ -430,7 +450,7 @@ function card(a){
   const unfreezeBtn=a.anomaly?`<button class="sec" data-action="unfreeze" data-auth-index="${esc(a.auth_index)}" title="将该账号从异常池解除冻结，重新参与路由">解除冻结</button>`:"";
   const badges=(disabled?`<span class="badge disabled">已禁用</span>`:"")+preserveBadge+anomalyBadge+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
   return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-nickname="${esc(a.nickname||a.label||a.name||"")}" data-label="${esc(a.label||"")}" data-name="${esc(a.name||"")}" data-uid="${esc(a.uid||"")}" data-disabled="${disabled?"1":"0"}" data-preserve="${a.preserve?"1":"0"}" data-anomaly="${a.anomaly?"1":"0"}">
-  <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}</span></h2>
+  <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}<button type="button" class="card-del" data-action="delete" data-auth-index="${esc(a.auth_index)}" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
   ${progressHTML(cr,a)}
   ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
@@ -1017,6 +1037,48 @@ async function unfreezeAll(btn){
     busy(btn,false);
   }
 }
+/* ---------- account deletion (二次确认) ----------
+   卡片右上角 × 打开确认框；取消不发送任何请求；确认后 POST /delete
+   并刷新列表。删除失败时保留卡片，仅 toast 错误。
+*/
+let pendingDeleteAuthIndex="";
+function openDeleteModal(idx){
+  const a=(lastAccounts||[]).find(x=>x.auth_index===idx);
+  const who=a?(a.nickname||a.label||a.name||a.uid||idx):idx;
+  pendingDeleteAuthIndex=idx;
+  document.getElementById("deleteModalHint").innerHTML='确定要删除账号 <b>'+esc(who)+'</b> 吗？';
+  document.getElementById("deleteModal").classList.add("show");
+}
+function closeDeleteModal(){
+  pendingDeleteAuthIndex="";
+  document.getElementById("deleteModal").classList.remove("show");
+}
+function onDeleteMaskClick(e){
+  if(e.target===document.getElementById("deleteModal")) closeDeleteModal();
+}
+async function confirmDeleteAuth(){
+  const idx=pendingDeleteAuthIndex;
+  if(!idx) return;
+  const btn=document.getElementById("deleteConfirmBtn");
+  busy(btn,true);
+  try{
+    const d=await api("/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx})});
+    if(d.error){
+      toast("删除失败","err",d.error);
+      busy(btn,false);
+      return;
+    }
+    const who=d.nickname||idx;
+    toast("已删除账号","ok",who);
+    closeDeleteModal();
+    // 先从本地态移除，再软刷新以和服务端保持一致。
+    lastAccounts=(lastAccounts||[]).filter(x=>x.auth_index!==idx);
+    await load(false);
+  }catch(e){
+    toast("删除失败","err",e.message||String(e));
+    busy(btn,false);
+  }
+}
 async function checkinAll(btn){
   busy(btn,true);
   try{
@@ -1300,7 +1362,9 @@ function queuedImportItems(rawText){
 }
 document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
 document.addEventListener("keydown",e=>{
-  if(e.key=="Escape"&&document.getElementById("importModal").classList.contains("show")) closeImportModal();
+  if(e.key!=="Escape") return;
+  if(document.getElementById("importModal").classList.contains("show")) closeImportModal();
+  if(document.getElementById("deleteModal").classList.contains("show")) closeDeleteModal();
 });
 /* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
 if(window.__wbThemeSync)window.__wbThemeSync();
