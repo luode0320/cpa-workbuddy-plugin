@@ -333,7 +333,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.0"
+var version = "0.9.1"
 
 func wbRegistration() registration {
 	return registration{
@@ -687,10 +687,13 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 
 	// Per-request account-failover loop. We try the prepared body against
 	// the configured account first; on an account-level 4xx
-	// (401/403/404/405) we rebuild against the next candidate up to
-	// retry_on_4xx times. publishUsage / resetAccountFailover / etc. must
-	// run against the credential that actually served the request, so
-	// we keep (usedSA, usedAuthID) in lockstep with the chosen account.
+	// (401/403/404/405) or 429 soft rate limit (v0.9.1) we rebuild
+	// against the next candidate up to retry_on_4xx times.
+	// publishUsage / resetAccountFailover / etc. must run against the
+	// credential that actually served the request, so we keep (usedSA,
+	// usedAuthID) in lockstep with the chosen account. 5xx/0/402 keep the
+	// cooldown-only path (cross-request rotation via recordAccountFailure)
+	// and skip this loop via isAccountLevel4xx returning false.
 	budget := loadedRetryOn4xx()
 	curSA := sa
 	var (

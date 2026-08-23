@@ -115,12 +115,25 @@ func isAccountFailure(status int, body string) bool {
 // succeeding. 400 is intentionally excluded — it almost always means the
 // request body was malformed by us and would fail identically on every
 // other account.
+//
+// 429 (Too Many Requests / soft rate limit) is INCLUDED here as of v0.9.1:
+// the upstream soft rate limit is usually per-account or per-tenant, so
+// rotating to the next candidate (filtered by cooldown + anomaly) is the
+// cheapest way to recover inside a single request. The cross-request
+// cooldown tier still applies in parallel via isAccountFailure /
+// recordAccountFailure — i.e. a 429-triggered same-request rotation also
+// lifts the failed account's 1/3/10 min cooldown so subsequent requests
+// route away from it. When the upstream limit is genuinely global (shared
+// IP/region quota across every qoderwork account), same-request rotation
+// burns the budget without progress; pickNextAuth still has to surface an
+// ok=false signal once the pool is exhausted.
 func isAccountLevel4xx(status int) bool {
 	switch status {
-	case http.StatusUnauthorized, // 401
+	case http.StatusUnauthorized,    // 401
 		http.StatusForbidden,        // 403
 		http.StatusNotFound,         // 404
-		http.StatusMethodNotAllowed: // 405
+		http.StatusMethodNotAllowed, // 405
+		http.StatusTooManyRequests:  // 429 — v0.9.1: same-request rotation
 		return true
 	}
 	return false

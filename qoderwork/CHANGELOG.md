@@ -1,5 +1,28 @@
 # QoderWork Plugin Changelog
 
+## 0.9.1
+
+### Fix — `retry_on_4xx` 同请求切号循环纳入 429（Too Many Requests）
+
+与 workbuddy-provider 0.14.2 对称：0.9.0 设计的同请求切号循环只 cover
+账号级 4xx（401/403/404/405），429 / 402 / 5xx / 状态 0 全部强制走
+cooldown 跨请求路径。`isAccountLevel4xx` 显式纳入
+`http.StatusTooManyRequests`，让上游软限流（按账号/租户维度分配）
+也可通过切下一个候选账号在**同一个请求**内恢复。cooldown 阶梯
+（1/3/10 分钟）继续作用于失败账号，与 retry 循环并存。
+
+- `accountFailover.go`：`isAccountLevel4xx` 加 `http.StatusTooManyRequests`
+  case（与 workbuddy-provider 0.14.2 同源）。
+- `retry_config.go`：文件头注释新增 429 说明。
+- `main.go` (handleExecExecute) 循环注释更新为"401/403/404/405 或
+  429"，与代码同步；行为由 `isAccountLevel4xx` 集中控制，调用点不动。
+- `accountFailover_test.go`：`TestIsAccountLevel4xx_Classification` 中
+  429 由 false 改为 true（与 workbuddy-provider 对称）。
+- 涉及文件：`accountFailover.go` / `accountFailover_test.go` /
+  `retry_config.go` / `main.go`。
+- 不在范围：429 配额感知（上游共享限流时的快速失败信号）；429 → 切换但
+  不计 cooldown 的开关（默认行为下 cooldown 一定累计）。
+
 ## 0.9.0
 
 ### Feature — 异常池（anomaly pool）：连续失败的账号永久冻结 + 每日刷新

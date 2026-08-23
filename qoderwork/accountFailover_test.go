@@ -144,7 +144,7 @@ func TestIsAccountLevel4xx_Classification(t *testing.T) {
 		{410, false},
 		{418, false},
 		{422, false},
-		{429, false}, // covered by isSoftRateLimit, not isAccountLevel4xx
+		{429, true}, // v0.9.1: same-request rotation, was false before
 		{500, false}, // covered by isAccountFailure's 5xx branch
 	}
 	for _, tc := range cases {
