@@ -67,6 +67,48 @@ func TestRebuildRequestWithSA_NoGetBody(t *testing.T) {
 	}
 }
 
+func TestRebuildRequestWithSA_GetBodyChain(t *testing.T) {
+	// Regression for v0.14.3: the same-request rotation chain must survive
+	// MULTIPLE rebuilds. Rebuild #1 consumes the original request's GetBody
+	// (populated by http.NewRequestWithContext for *bytes.Reader bodies).
+	// Rebuild #2 and onward consume the PREVIOUS rebuild's GetBody. If the
+	// rebuilt request came back with GetBody == nil, rotation #2 fails with
+	// "original request has no GetBody" — exactly the v0.14.2 user symptom
+	// (2 x HTTP 429 then stop, despite a 20-account pool).
+	payload := []byte(`{"model":"test","messages":[{"role":"user","content":"hello"}]}`)
+	orig, err := http.NewRequest(http.MethodPost, "https://example.com/v2/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if orig.GetBody == nil {
+		t.Skip("http.NewRequest with *bytes.Reader body must populate GetBody on this runtime")
+	}
+	sa := &storedAuth{}
+	cur := orig
+	for i := 1; i <= 3; i++ {
+		next, err := rebuildRequestWithSA(cur, sa)
+		if err != nil {
+			t.Fatalf("rebuild #%d: %v", i, err)
+		}
+		if next.GetBody == nil {
+			t.Fatalf("rebuild #%d: next.GetBody == nil — rotation chain broken", i)
+		}
+		rc, err := next.GetBody()
+		if err != nil {
+			t.Fatalf("rebuild #%d: GetBody() failed: %v", i, err)
+		}
+		got, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("rebuild #%d: read body: %v", i, err)
+		}
+		if !bytes.Equal(got, payload) {
+			t.Fatalf("rebuild #%d: body mismatch: got %q want %q", i, got, payload)
+		}
+		cur = next
+	}
+}
+
 type errReader struct{}
 
 func (e *errReader) Read(_ []byte) (int, error) { return 0, errors.New("simulated read error") }

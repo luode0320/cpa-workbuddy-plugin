@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.14.3
+
+### Fix — 流式路径切号链在第 2 次 rebuild 断裂（GetBody == nil）
+
+0.14.2 把 429 纳入同请求切号循环后，用户实测仍"连续 2 次 429 即中断"，
+日志暴露直接原因：`retry rebuild failed: rebuildRequestWithSA: original
+request has no GetBody (rebuild not possible)`。
+
+根因在 `rebuildRequestWithSA` 的 body 重建方式：
+
+- 首次请求由 `handleExecStream` 用 `bytes.NewReader(body)` 构造，Go 的
+  `http.NewRequestWithContext` 对 `*bytes.Reader` 静态类型自动填充
+  `GetBody`（第 1 跳安全）。
+- 第 1 次切号时 rebuild 用 `orig.GetBody()` 拿回 body——它返回的是
+  `io.NopCloser` 包装的 `io.ReadCloser`，**静态类型不是
+  `*bytes.Reader`/`*bytes.Buffer`/`*strings.Reader`**，`NewRequestWithContext`
+  不会填充 GetBody → rebuild 产物的 `GetBody == nil`。
+- 第 2 次 429（切到的下一个账号也失败）再次 rebuild 时，`curReq.GetBody`
+  已是 nil → 直接报错中断。**即使账号池有 20 个账号，切号链最多走 1 次。**
+
+只有流式 pump 路径（`pumpUpstreamStream` → `hostHTTPDoStream` 会读空并
+关闭 `req.Body`，只能靠 `GetBody` 取回 body）中招；同步 collect 路径与
+`handleExecExecute` 每次用原始 `[]byte` 重建请求，天然免疫。qoderwork
+0.9.1 在循环前快照 `encodedBody`，也免疫——本次仅 workbuddy 需要修复。
+
+修复：`rebuildRequestWithSA` 先 `io.ReadAll(orig.GetBody())` 取回字节，
+再用 `bytes.NewReader(bodyBytes)` 构造新请求，确保 rebuild 产物的
+`GetBody` 始终可用，切号链可连续走满 `retry_on_4xx` 预算。
+
+- `failover_retry.go`：`rebuildRequestWithSA` body 重建改为
+  "GetBody() → ReadAll → bytes.NewReader"；注释补充回归原因。
+- `failover_retry_test.go`：新增 `TestRebuildRequestWithSA_GetBodyChain`
+  —— 3 连 rebuild 断言每次产物 GetBody 非 nil 且 body 字节一致，锁定
+  "第 2 次切号不再断裂"的回归。
+
 ## 0.14.2
 
 ### Fix — `retry_on_4xx` 同请求切号循环纳入 429（Too Many Requests）

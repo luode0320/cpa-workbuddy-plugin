@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -88,12 +89,17 @@ func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *storedAuth, 
 // rebuildRequestWithSA returns a fresh *http.Request identical to the
 // caller-provided original except for endpoint URL (taken from the new
 // account's region/domain) and authorization headers (per-account
-// bearer/cookies). The body is re-read from orig.GetBody(), which
-// http.NewRequestWithContext populates automatically when the body is
-// bytes.Reader / bytes.Buffer / strings.Reader — the shape the caller
-// always passes (see handleExecStream). If GetBody is nil for any
-// reason we return an error and the caller falls back to surfacing the
-// original upstream error.
+// bearer/cookies). The body is re-read from orig.GetBody() and rebuilt
+// as a *bytes.Reader so the PRODUCED request also carries a working
+// GetBody.
+//
+// That last point is the v0.14.3 regression fix: http.NewRequestWithContext
+// only populates GetBody when the body argument's static type is
+// *bytes.Reader / *bytes.Buffer / *strings.Reader. Passing the raw
+// GetBody() io.ReadCloser (a NopCloser-wrapped reader) straight through
+// yields a request with GetBody == nil, which breaks the SECOND
+// account rotation ("original request has no GetBody") — the user symptom
+// of exactly 2 x HTTP 429 then stop despite a 20-account pool.
 //
 // The context, method, headers other than auth, and request body bytes
 // are preserved. Errors during rebuild are non-fatal — the caller
@@ -116,7 +122,14 @@ func rebuildRequestWithSA(orig *http.Request, sa *storedAuth) (*http.Request, er
 	if err != nil {
 		return nil, fmt.Errorf("rebuildRequestWithSA: get body: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, orig.Method, endpointChatFor(sa), bodyRC)
+	defer bodyRC.Close()
+	bodyBytes, err := io.ReadAll(bodyRC)
+	if err != nil {
+		return nil, fmt.Errorf("rebuildRequestWithSA: read body: %w", err)
+	}
+	// *bytes.Reader body → NewRequestWithContext fills in GetBody, so
+	// rotation N+1 can recover the body again from this rebuilt request.
+	req, err := http.NewRequestWithContext(ctx, orig.Method, endpointChatFor(sa), bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
 	}
