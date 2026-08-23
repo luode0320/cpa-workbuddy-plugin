@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.1
+
+### Fix — 面板顶部筛选栏补充"异常"tab
+
+修复 0.14.0 发布遗漏：filter-bar 缺渲染 `data-region="anomaly"` 的筛选
+按钮（JS 侧 `cntAnomaly` 绑定、`accountsForFilter("anomaly")` 过滤分支、
+计数统计均已就绪，仅缺 HTML 元素），导致异常账号无法通过顶部 tab 筛选。
+补齐后与 qoderwork 0.9.0 面板对称。
+
 ## 0.14.0
 
 ### Feature — 异常池（anomaly pool）：连续失败的账号永久冻结 + 每日刷新
