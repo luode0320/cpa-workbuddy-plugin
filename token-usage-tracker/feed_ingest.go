@@ -200,7 +200,16 @@ func reopenStore(cfg trackerConfig) {
 		RetentionDays:        cfg.RetentionDays,
 		FlushInterval:        cfg.FlushInterval,
 		FlushMaxRecords:      cfg.FlushMaxRecords,
-		SyncOnRecord:         true,
+		// SyncOnRecord=false: batch durability. The store actor already keeps
+		// an in-memory dirty aggregate and only needs a bbolt transaction when
+		// FlushMaxRecords (default 100) is reached or the flush ticker fires.
+		// SyncOnRecord=true forced one bbolt transaction + fsync PER record,
+		// which turned a large feed backlog into seconds of serialized disk
+		// I/O and made concurrent dashboard reads queue behind it (request
+		// aborts). With batching, the write amplification drops ~100x; the
+		// only cost is a bounded loss window (~100 records / one flush
+		// interval) on hard crash, acceptable for usage statistics.
+		SyncOnRecord:         false,
 		DerivedSessionEnabled: cfg.DerivedSessionEnabled,
 		DerivedSessionWindow:  cfg.DerivedSessionWindow,
 	})
@@ -306,6 +315,40 @@ func feedImporterLoop() {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
+		syncUsageFeed()
+	}
+}
+
+// feedSyncTriggerCh is a capacity-1 semaphore that coalesces async feed-sync
+// requests from the dashboard read path. When the page fires 6+ concurrent
+// requests, the first drops a token and the rest coalesce; a single
+// background loop performs the sync OUTSIDE the request critical path. This
+// is the fix for the "entering the dashboard aborts session requests"
+// symptom: a synchronous syncUsageFeed() on every read made each request
+// queue behind the global feedSyncMu while a large backlog was being
+// ingested line-by-line.
+var (
+	feedSyncTriggerOnce sync.Once
+	feedSyncTriggerCh   chan struct{}
+)
+
+// triggerFeedSync requests a feed sync without blocking the caller. The sync
+// runs on a background loop; concurrent triggers are merged into at most one
+// pending pass. The poll ticker remains the authoritative importer, so a
+// coalesced trigger may safely be skipped entirely.
+func triggerFeedSync() {
+	feedSyncTriggerOnce.Do(func() {
+		feedSyncTriggerCh = make(chan struct{}, 1)
+		go feedSyncTriggerLoop()
+	})
+	select {
+	case feedSyncTriggerCh <- struct{}{}:
+	default: // a sync is already pending or running; coalesce
+	}
+}
+
+func feedSyncTriggerLoop() {
+	for range feedSyncTriggerCh {
 		syncUsageFeed()
 	}
 }

@@ -159,9 +159,15 @@ func serveStatsResource(sub string, query url.Values) (pluginapi.ManagementRespo
 			"error": "usage statistics is disabled or storage is not initialized",
 		}), true
 	}
-	// Best-effort feed sync so the dashboard shows near-real-time data even
-	// between poll ticks.
-	syncUsageFeed()
+	// Async feed sync: the dashboard read path must never block behind a
+	// large feed backlog. Entering the page fires 6+ concurrent requests;
+	// a synchronous syncUsageFeed() on each made them all queue on the
+	// global feedSyncMu until the backlog was ingested (with per-record
+	// fsync) — pushing past the frontend's 10s timeout and aborting in
+	// flight session requests. The trigger coalesces into one background
+	// pass; the 5s poll ticker remains the authoritative importer, so reads
+	// serve the in-memory aggregate immediately and catch up within a tick.
+	triggerFeedSync()
 	result := usageStatsQuery(http.MethodGet, sub, query, nil, nil)
 	return managementResult(result), true
 }
