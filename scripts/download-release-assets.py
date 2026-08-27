@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Download release assets for workbuddy-provider and verify checksums.
+"""Download release assets for a plugin and verify checksums.
 
-Usage: python scripts/download-release-assets.py <version>
-Downloads into release-assets/workbuddy-provider-<version>/ using direct
+Usage: python scripts/download-release-assets.py <version> [plugin]
+Downloads into release-assets/<plugin>-<version>/ using direct
 releases/download/<tag>/<name> URLs (public repo, no auth).
+plugin defaults to workbuddy-provider for backward compatibility.
 """
 import hashlib
 import json
@@ -30,10 +31,12 @@ def http_get(url, retries=5):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("usage: download-release-assets.py <version>")
+    if len(sys.argv) not in (2, 3):
+        print("usage: download-release-assets.py <version> [plugin]")
         return 2
     version = sys.argv[1].lstrip("v")
+    if len(sys.argv) == 3:
+        PLUGIN = sys.argv[2]
     tag = f"{PLUGIN}-v{version}"
     out_dir = os.path.join("release-assets", f"{PLUGIN}-{version}")
     os.makedirs(out_dir, exist_ok=True)

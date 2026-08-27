@@ -1,5 +1,6 @@
-# Multi-arch CPA plugin build & release (3 plugins under cpa-workbuddy-plugin).
-# Plugin sources live in <src>/ (workbuddy/, qoderwork/, token-usage-tracker/);
+# Multi-arch CPA plugin build & release (4 plugins under cpa-workbuddy-plugin).
+# Plugin sources live in <src>/ (workbuddy/, qoderwork/, token-usage-tracker/,
+# traework/);
 # plugin identity (`id`) is the cpa-facing plugin id and may differ from the
 # source directory name (binary filename = <id>.<so|dylib|dll>, zip filename =
 # <id>_<version>_<goos>_<goarch>.zip).
@@ -8,6 +9,7 @@
 #   - tag 'workbuddy-provider-v*'           → release workbuddy-provider at that version
 #   - tag 'qoderwork-provider-v*'           → release qoderwork-provider at that version
 #   - tag 'workbuddy-token-usage-v*'        → release workbuddy-token-usage at that version
+#   - tag 'traework-provider-v*'            → release traework-provider at that version
 #   - workflow_dispatch                       → pick plugin + version manually
 #   - plain push/PR                          → CI builds for all (artifacts only, no release)
 #
@@ -24,13 +26,14 @@ on:
       - "workbuddy-provider-v*"
       - "qoderwork-provider-v*"
       - "workbuddy-token-usage-v*"
+      - "traework-provider-v*"
   workflow_dispatch:
     inputs:
       plugin:
         description: "Plugin to release"
         required: true
         type: choice
-        options: [workbuddy-provider, qoderwork-provider, workbuddy-token-usage]
+        options: [workbuddy-provider, qoderwork-provider, workbuddy-token-usage, traework-provider]
       version:
         description: "Version without v (empty = plugin's VERSION file)"
         required: false
@@ -50,6 +53,7 @@ jobs:
           - dir: workbuddy
           - dir: qoderwork
           - dir: token-usage-tracker
+          - dir: traework
     defaults:
       run:
         working-directory: ${{ matrix.dir }}
@@ -168,6 +172,37 @@ jobs:
             goarch: amd64
             runner: windows-2025
             ext: dll
+          # traework-provider native (sources in traework/)
+          - id: traework-provider
+            src: traework
+            goos: linux
+            goarch: amd64
+            runner: ubuntu-24.04
+            ext: so
+          - id: traework-provider
+            src: traework
+            goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+            ext: so
+          - id: traework-provider
+            src: traework
+            goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+            ext: dylib
+          - id: traework-provider
+            src: traework
+            goos: darwin
+            goarch: arm64
+            runner: macos-15
+            ext: dylib
+          - id: traework-provider
+            src: traework
+            goos: windows
+            goarch: amd64
+            runner: windows-2025
+            ext: dll
     defaults:
       run:
         shell: bash
@@ -274,6 +309,14 @@ jobs:
             src: token-usage-tracker
             target: freebsd-amd64
             ext: so
+          - id: traework-provider
+            src: traework
+            target: windows-arm64
+            ext: dll
+          - id: traework-provider
+            src: traework
+            target: freebsd-amd64
+            ext: so
     defaults:
       run:
         shell: bash
@@ -354,7 +397,8 @@ jobs:
       (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '') ||
       startsWith(github.ref, 'refs/tags/workbuddy-provider-v') ||
       startsWith(github.ref, 'refs/tags/qoderwork-provider-v') ||
-      startsWith(github.ref, 'refs/tags/workbuddy-token-usage-v')
+      startsWith(github.ref, 'refs/tags/workbuddy-token-usage-v') ||
+      startsWith(github.ref, 'refs/tags/traework-provider-v')
     needs:
       - build
       - build-cross
@@ -375,6 +419,8 @@ jobs:
             P="workbuddy-provider"; V="${GITHUB_REF_NAME#workbuddy-provider-v}"
           elif [[ "${GITHUB_REF_NAME}" == qoderwork-provider-v* ]]; then
             P="qoderwork-provider"; V="${GITHUB_REF_NAME#qoderwork-provider-v}"
+          elif [[ "${GITHUB_REF_NAME}" == traework-provider-v* ]]; then
+            P="traework-provider"; V="${GITHUB_REF_NAME#traework-provider-v}"
           else
             P="workbuddy-token-usage"; V="${GITHUB_REF_NAME#workbuddy-token-usage-v}"
           fi
@@ -444,6 +490,7 @@ jobs:
             workbuddy-provider)    DISPLAY="WorkBuddy Provider" ;;
             qoderwork-provider)    DISPLAY="QoderWork Provider" ;;
             workbuddy-token-usage) DISPLAY="WorkBuddy Token Usage" ;;
+            traework-provider)     DISPLAY="TraeWork Provider" ;;
           esac
           TITLE="${DISPLAY:-$PLUGIN} v${VERSION}"
           if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then
