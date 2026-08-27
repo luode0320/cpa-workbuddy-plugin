@@ -8,9 +8,9 @@
 
 ## 项目概览
 
-- 状态：活跃维护中（最近发布 2026-08-24 workbuddy 0.14.11 计数持久化重构：内存累计为主 + 跟随保号落盘）
+- 状态：活跃维护中（最近发布 2026-08-27 workbuddy 0.14.12 登录轮询重复账号修复）
 - 活动会话数：1
-- 更新时间：2026-08-24 01:40 (GMT+8)
+- 更新时间：2026-08-27 22:20 (GMT+8)
 
 ## 活动会话任务摘要
 
@@ -28,6 +28,7 @@
 
 ## 已完成
 
+- 2026-08-27 登录轮询重复账号修复（workbuddy 0.14.12，**已发布**）：`handlePollLogin` 成功路径 `toAuthData(sa)` 返回 ID=UID，与宿主 watcher 的 `ID=<filename>` 形成同一文件双 key → 面板重复账号。修复：`toAuthDataOpts(sa,nil,false)` + `ad.ID=""`（让宿主按文件路径 `authIDForPath` 计算 ID），与 `handleParseAuth`（main.go:633）/`toAuthDataForRefresh`（oauth.go:237）对称。cgo-shim build+vet+test 全绿。提交链 f3044fd→eff0fff→28ebe6b，CI run 33081084377 success，8 assets checksums 全 OK，registry raw 200 含 0.14.12 + 7 artifacts 远端 HEAD 全 200。qoderwork `handlePollLogin`（oauth.go:386/406/420）存在同构 bug，见待办。
 - 2026-08-24 计数持久化重构「内存为主 + 跟随保号落盘」（workbuddy 0.14.11，**已发布**）：上一版 0.14.10 用独立 10s flusher + 面板每次 parse json。本版改为：`counter.go` 用 `counterEntries`（UID→`counterEntry{success,failed,persistedSuccess,persistedFailed}`）内存累计真相源，`recordOutcome` 纯内存递增，`ensureCounterLoaded` 首次从 json 初始化（合并进程内增量不丢），`counterSnapshot` 供面板读；落盘删除独立 `startCounterFlusher`/`counterFlushInterval`，改挂 `preserveWatchdogLoop`（启动 `loadCountersFromDisk` + 每次醒来 `flushCounters`，启用默认 10min、禁用 30s 兜底）；`panel.go` 改 `ensureCounterLoaded`+`counterSnapshot` 读内存。`counter_test.go` 覆盖内存递增/启动合并/幂等/delta/parse/fold。cgo-shim build+vet+test 全绿（6.8s）。提交链 3fabc9a→e80ef2a→8def6b2，CI run 32654838377 success，8 assets checksums 全 OK，registry raw 200 含 0.14.11 + 7 artifacts 远端校验待做。真实页面交互验证（容器重启后「成功/失败」不归零、落盘跟随保号 10min 节奏）待做。
 - 2026-08-24 成功/失败计数持久化（workbuddy 0.14.10，**已发布**）：面板「成功/失败」原来自 CPA 宿主 recent 窗口（`Auth.Success/Failed` 为 `json:"-"` 纯内存态，重启清零）。改为插件自维护累计计数：`counter.go` 新增 `recordOutcome`（内存递增，key=UID）+ `startCounterFlusher` 后台 10s flusher 折入 auth 文件顶层 `success_count`/`failed_count`（`foldCounterIntoDoc` 保留其余字段）+ `parseCountersFromAuthJSON` 容错读；`usage.go` `publishUsage` 统一 `recordOutcome(authID, !failed)` 埋点；`panel.go` UID 账号改读持久化累计值 + 内存未落盘 delta，legacy 无 UID 账号回退 recent 窗口。`counter_test.go` 覆盖 pending delta / parse / fold / flush-noop。cgo-shim build+vet+test 全绿（6.4s）。提交链 a525feb→b1c25ea→4df0736，CI run 32651988691 success，8 assets checksums 全 OK，registry raw 200 含 0.14.10 + 7 artifacts 远端校验待做。真实页面交互验证（容器重启后计数不归零）待做。
 - 2026-08-23 账号面板「异步节流刷新」**已发布**（workbuddy 0.14.9 + qoderwork 0.9.4）：`RefreshRunner` 单例（1s/账号节流 + pending/running/done/failed 状态机）+ `POST /refresh` 改异步 + `GET /refresh/status` + `GET /credits?track=1`；`EnqueueAll`/`EnqueueOne` 幂等（运行中则忽略，多路触发只跑一轮）；watchdog 改 `cachedCredits` 缓存读 preserve flip + 异步入队；前端删「刷新数据」按钮 + `enterPanel()` 进入自动刷新 + `pollRefreshStatus` 2s 轮询 + 卡片三态。提交链 066d079→5241607→323d56b，CI 双 run success（32646541401/32646545554），16 assets checksums 全 OK，registry raw 200 含 0.14.9/0.9.4 + 14 artifacts 远端 size/sha256 全 OK。真实页面交互验证待做；qoderwork 面板前端（去按钮 + 进入自动刷新）暂未对称同步。
@@ -47,7 +48,9 @@
 
 ## 待办
 
-- 【本轮】workbuddy 0.14.11 计数持久化重构（内存为主 + 跟随保号落盘）已发布（提交链 3fabc9a→e80ef2a→8def6b2，CI run 32654838377）。真实页面交互验证待做（容器重启后访问面板确认「成功/失败」为重启前累计值而非 0 起跳，且落盘跟随保号 10min 节奏）。
+- 【待办】qoderwork `handlePollLogin` 同构 bug（2026-08-27 发现，用户已确认本轮只发 workbuddy）：qoderwork/oauth.go:386/406/420 三处成功路径仍直接 `toAuthData(sa)`，未做 `ad.ID=""`（其 parse/refresh 路径已修），存在与 workbuddy 0.14.12 修复前相同的重复账号风险。待用户确认后对称修复（3 处）+ cgo-shim 验证 + 发布 qoderwork 0.9.5。
+- 【本轮】workbuddy 0.14.12 登录轮询重复账号修复已发布（提交链 f3044fd→eff0fff→28ebe6b，CI run 33081084377）。真实页面交互验证待做（CPA 宿主走一遍 OAuth 登录轮询，确认面板不再出现重复账号）。
+- 【本轮】workbuddy 0.14.11 计数持久化重构已发布（提交链 3fabc9a→e80ef2a→8def6b2，CI run 32654838377）。真实页面交互验证待做（容器重启后访问面板确认「成功/失败」为重启前累计值而非 0 起跳，且落盘跟随保号 10min 节奏）。
 - 【本轮】workbuddy 0.14.10 成功/失败计数持久化已发布（提交链 a525feb→b1c25ea→4df0736）。真实页面交互验证待做（容器重启后访问面板确认「成功/失败」为重启前累计值而非 0 起跳）。
 - 账号面板「异步节流刷新」真实页面交互验证待做（CPA 宿主打开面板 → 直接渲染缓存 → 后台逐卡渐进 done，cgo-shim 无法覆盖这条 UI 链路）
 - 账号删除功能真实页面交互验证待做（在 CPA 宿主面板点 `×` 走一遍确认/取消/失败路径，确认卡片刷新与 Toast）
