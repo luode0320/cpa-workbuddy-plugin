@@ -184,6 +184,18 @@ func configure(raw []byte) {
 						anomalyRefreshSeen = true
 					}
 				}
+				if strings.HasPrefix(line, "models:") {
+					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
+					// 交给 parseModelsConfig（显式配置优先于动态获取与
+					// 静态默认，见 models.go）。
+					if j := strings.Index(line, ":"); j >= 0 {
+						rest := strings.TrimSpace(line[j+1:])
+						var v any
+						if err := json.Unmarshal([]byte(rest), &v); err == nil {
+							parseModelsConfig(v)
+						}
+					}
+				}
 			}
 		}
 	}

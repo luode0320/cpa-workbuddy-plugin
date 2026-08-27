@@ -192,13 +192,12 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	case pluginabi.MethodAuthParse:
 		return handleParseAuth(request)
 	case pluginabi.MethodAuthLoginStart:
-		// Trae has no plugin-driven device flow; credentials are pasted from
-		// the desktop client's storage.json. Return an empty (pending) login
-		// response — FrontendAuthProvider is false, so the host should never
-		// surface a login button for this plugin.
-		return okEnvelope(pluginapi.AuthLoginStartResponse{})
+		// Trae has no plugin-driven OAuth; see login.go for why we must
+		// return a valid state (empty state trips the host's
+		// "invalid oauth state" guard) plus a data: guide page.
+		return handleStartLogin(request)
 	case pluginabi.MethodAuthLoginPoll:
-		return okEnvelope(pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusError, Message: "login not supported: paste credentials from storage.json"})
+		return handlePollLogin(request)
 	case pluginabi.MethodAuthRefresh:
 		// Token refresh is a P1 follow-up (ExchangeToken currently 404s for
 		// fresh tokens); treat as no-op success.
@@ -274,7 +273,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.1.0"
+var version = "0.1.1"
 
 func wbRegistration() registration {
 	return registration{
@@ -286,16 +285,17 @@ func wbRegistration() registration {
 			GitHubRepository: "https://github.com/luode0320/cpa-workbuddy-plugin",
 			Logo:             pluginLogoURL,
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "api_host", Type: pluginapi.ConfigFieldTypeString, Description: "Upstream llm_utils_chat host (default https://trae-api-cn.mchost.guru)."},
-				{Name: "app_id", Type: pluginapi.ConfigFieldTypeString, Description: "x-app-id header value (default shared Trae client id)."},
-				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (plugin picks healthy account)."},
-				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily auto check-in at 09:00 and 21:00 local time (default true)."},
-				{Name: "retry_on_4xx", Type: pluginapi.ConfigFieldTypeString, Description: "Per-request account-failover budget on account-level 4xx (0-10, default 10)."},
-				{Name: "anomaly_pool_threshold", Type: pluginapi.ConfigFieldTypeString, Description: "Consecutive-failure count (1-50) at which an account is moved into the anomaly pool (default 10)."},
-				{Name: "anomaly_refresh_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable the daily 00:00 anomaly-pool auto-reset loop (default true)."},
-				{Name: "management_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Bearer key for mutating management endpoints (defence-in-depth; empty trusts host middleware)."},
-				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP usage import URL (NDJSON)."},
-				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key for usage import."},
+				{Name: "api_host", Type: pluginapi.ConfigFieldTypeString, Description: "上游 llm_utils_chat 服务地址（默认 https://trae-api-cn.mchost.guru）。"},
+				{Name: "app_id", Type: pluginapi.ConfigFieldTypeString, Description: "x-app-id 请求头取值（默认共享的 Trae 客户端 ID）。"},
+				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "多账号选择策略：off（交给内置逻辑，默认）或 credits（插件选择健康账号）。"},
+				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每日自动签到（本地时间 09:00 与 21:00，默认开启）。"},
+				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "可选模型列表。每个条目可为模型 id 字符串或 {id, name, ...} 对象；未配置时使用内置默认列表。"},
+				{Name: "retry_on_4xx", Type: pluginapi.ConfigFieldTypeString, Description: "账号级 4xx 时每次请求的换号重试预算（0-10，默认 10）。"},
+				{Name: "anomaly_pool_threshold", Type: pluginapi.ConfigFieldTypeString, Description: "连续失败次数阈值（1-50），达到后账号进入异常池（默认 10）。"},
+				{Name: "anomaly_refresh_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每日 00:00 异常池自动重置（默认开启）。"},
+				{Name: "management_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：管理类接口的 Bearer 密钥（纵深防御；留空则信任宿主中间件）。"},
+				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：CPAMP 用量上报地址（NDJSON）。"},
+				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：用量上报使用的 CPAMP 管理密钥。"},
 			},
 		},
 		Capabilities: registrationCapability{
