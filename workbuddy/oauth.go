@@ -156,9 +156,16 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		},
 	}
 	loginStates.Delete(state)
+	// CRITICAL: leave ID empty so the host computes it from the file path
+	// (authIDForPath). Setting ID=uid here while the watcher registers with
+	// ID=<filename> produces two in-memory keys for the same file → duplicate
+	// accounts in the panel (see CLIProxyAPI doc/4-bugs/2026-08-26-mysql-duplicate-account.md).
+	// Symmetric with handleParseAuth (main.go:633) and toAuthDataForRefresh (oauth.go:230).
+	ad := toAuthDataOpts(sa, nil, false)
+	ad.ID = ""
 	return okEnvelope(pluginapi.AuthLoginPollResponse{
 		Status: pluginapi.AuthLoginStatusSuccess,
-		Auth:   toAuthData(sa),
+		Auth:   ad,
 	})
 }
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.12
+
+### Fix — 登录轮询返回重复账号（ID 与 watcher 双 key）
+
+`handlePollLogin` 成功路径原先直接返回 `toAuthData(sa)`（ID=UID），而 CPA 宿主的 watcher 以 `ID=<filename>` 注册同一 auth 文件，导致同一文件出现两个内存 key → 面板出现重复账号。本版与 `handleParseAuth`（main.go） / `toAuthDataForRefresh`（oauth.go）对称修复：改用 `toAuthDataOpts(sa, nil, false)` 后显式 `ad.ID = ""`，让宿主按文件路径（`authIDForPath`）计算 ID，消除双 key。
+
+- 涉及文件：`oauth.go`。
+
 ## 0.14.11
 
 ### Refactor — 计数持久化改为「内存为主 + 跟随保号落盘」
