@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -120,6 +121,78 @@ func handleSelectAuth(req pluginapi.ManagementRequest) map[string]any {
 			"region":      "cn",
 			"nickname":    sa.Account.Nickname,
 			"uid":         sa.Account.UID,
+		}
+	}
+	return map[string]any{"error": "account not found", "auth_index": authIndex}
+}
+
+// handleDeleteAuth deletes one QoderWork account and its physical auth file.
+// Strict validation chain — never trusts an arbitrary frontend path/identity:
+// auth_index 非空 → 账号存在 → 文件名归属（isQoderworkAuthFileName）→ 内容
+// 解析 → phys.AuthIndex 一致 → 路径非空 → isSafeAuthPath + isPathUnder →
+// deleteAuthFileInDir 物理删除；任一不满足即拒绝。
+// （同步自 workbuddy 0.14.7 账号删除功能）
+func handleDeleteAuth(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		AuthIndex string `json:"auth_index"`
+	}
+	_ = json.Unmarshal(req.Body, &body)
+	authIndex := strings.TrimSpace(body.AuthIndex)
+	if authIndex == "" {
+		return map[string]any{"error": "auth_index is required"}
+	}
+	files, err := hostAuthList()
+	if err != nil {
+		return map[string]any{"error": "host.auth.list: " + err.Error()}
+	}
+	for _, f := range files {
+		if f.AuthIndex != authIndex {
+			continue
+		}
+		// hostAuthList already prefix-filters on qoderwork-*, but double-check
+		// the concrete name so a legacy or mis-shaped entry can't slip through.
+		if !isQoderworkAuthFileName(f.Name) {
+			return map[string]any{"error": "不是 QoderWork 认证文件", "auth_index": authIndex}
+		}
+		sa, phys, err := hostAuthGetBundle(authIndex)
+		if err != nil {
+			return map[string]any{"error": "host.auth.get: " + err.Error(), "auth_index": authIndex}
+		}
+		if sa == nil {
+			return map[string]any{"error": "认证内容解析失败", "auth_index": authIndex}
+		}
+		if phys == nil || strings.TrimSpace(phys.AuthIndex) != authIndex {
+			return map[string]any{"error": "认证索引不一致", "auth_index": authIndex}
+		}
+		path := strings.TrimSpace(phys.Path)
+		if path == "" {
+			return map[string]any{"error": "认证文件路径缺失，无法安全删除", "auth_index": authIndex}
+		}
+		if !isSafeAuthPath(path) || !isPathUnder(path, filepath.Dir(path)) {
+			return map[string]any{"error": "认证文件路径不安全，已拒绝删除", "auth_index": authIndex}
+		}
+		nickname := sa.Account.Nickname
+		uid := sa.Account.UID
+		// Physical delete confined to the auth directory.
+		if err := deleteAuthFileInDir(path, filepath.Dir(path)); err != nil {
+			return map[string]any{"error": "删除认证文件失败: " + err.Error(), "auth_index": authIndex}
+		}
+		// Also remove legacy qoderwork.json if this UID was dual-named historically.
+		if strings.TrimSpace(uid) != "" {
+			if dir := filepath.Dir(path); dir != "" {
+				legacy := filepath.Join(dir, authFileName)
+				if isLegacyAuthName(filepath.Base(legacy)) {
+					_ = deleteAuthFileInDir(legacy, dir)
+				}
+			}
+		}
+		clearDeletedAccountState(f.ID, authIndex, uid)
+		return map[string]any{
+			"ok":         true,
+			"auth_index": authIndex,
+			"nickname":   nickname,
+			"uid":        uid,
+			"deleted":    f.Name,
 		}
 	}
 	return map[string]any{"error": "account not found", "auth_index": authIndex}

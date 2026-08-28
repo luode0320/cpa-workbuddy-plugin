@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -31,6 +32,119 @@ func wbModels() []pluginapi.ModelInfo {
 		{ID: "gm51model", Name: "GLM-5.2", ContextLength: 180000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "kmodel", Name: "Kimi-K2.7-Code", ContextLength: 180000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "mmodel", Name: "MiniMax-M2.7", ContextLength: 180000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+	}
+}
+
+// configuredModels holds the config_yaml `models:` override. Empty means
+// fall back to dynamic discovery / wbModels(). Guarded by its own RWMutex:
+// configure() runs on a host RPC thread while model.static / model.for_auth
+// run on other RPC threads, so the slice must never be written/read unlocked.
+// （同步自 workbuddy-provider 0.14.13：models 配置面板化闭环）
+var (
+	configuredModels   []pluginapi.ModelInfo
+	configuredModelsMu sync.RWMutex
+)
+
+// setConfiguredModels 整体替换 config_yaml `models:` 覆盖列表。
+// [参数] models：新的模型列表（非 nil 非空）
+// [返回] 无
+// 最近修改时间 2026-08-28（新增 config_yaml models 覆盖支持）
+func setConfiguredModels(models []pluginapi.ModelInfo) {
+	configuredModelsMu.Lock()
+	configuredModels = models
+	configuredModelsMu.Unlock()
+}
+
+// clearConfiguredModels 清空覆盖，恢复动态获取 / 静态默认路径。
+// [参数] 无
+// [返回] 无
+// 最近修改时间 2026-08-28（新增 config_yaml models 覆盖支持）
+func clearConfiguredModels() {
+	configuredModelsMu.Lock()
+	configuredModels = nil
+	configuredModelsMu.Unlock()
+}
+
+// getConfiguredModels 返回当前覆盖列表的引用（调用方不得原地修改）。
+// [参数] 无
+// [返回] configuredModels 当前值，空切片语义为"未覆盖"
+// 最近修改时间 2026-08-28（新增 config_yaml models 覆盖支持）
+func getConfiguredModels() []pluginapi.ModelInfo {
+	configuredModelsMu.RLock()
+	defer configuredModelsMu.RUnlock()
+	return configuredModels
+}
+
+// parseModelsConfig decodes the config_yaml `models:` list. Items may be a
+// string (model id) or an object {id, name, alias, context, max_tokens,
+// enabled, reasoning}; enabled=false entries are skipped. An explicit empty
+// list clears the override (back to dynamic discovery / static defaults); a
+// list whose entries are all malformed leaves the current value untouched so
+// a bad edit never silently wipes a working override.
+// [参数] v：config_yaml `models:` 的 JSON 值（字符串列表或对象列表）
+// [返回] 无（内部写入 configuredModels）
+// 最近修改时间 2026-08-28（新增 config_yaml models 覆盖支持）
+func parseModelsConfig(v any) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return
+	}
+	// 显式 `models: []` 表示"停止覆盖"，恢复动态获取 / 静态默认。
+	if len(items) == 0 {
+		clearConfiguredModels()
+		return
+	}
+	var out []pluginapi.ModelInfo
+	for _, item := range items {
+		var s string
+		if err := json.Unmarshal(item, &s); err == nil && strings.TrimSpace(s) != "" {
+			out = append(out, modelInfoFromConfig(strings.TrimSpace(s), "", 0, 0))
+			continue
+		}
+		var mi struct {
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			Alias     string `json:"alias"`
+			Context   int64  `json:"context"`
+			MaxTokens int64  `json:"max_tokens"`
+			Enabled   *bool  `json:"enabled"`
+			Reasoning bool   `json:"reasoning"`
+		}
+		if err := json.Unmarshal(item, &mi); err != nil || strings.TrimSpace(mi.ID) == "" {
+			continue
+		}
+		if mi.Enabled != nil && !*mi.Enabled {
+			continue
+		}
+		out = append(out, modelInfoFromConfig(strings.TrimSpace(mi.ID), strings.TrimSpace(mi.Name), mi.Context, mi.MaxTokens))
+	}
+	if len(out) > 0 {
+		setConfiguredModels(out)
+	}
+}
+
+// modelInfoFromConfig builds a ModelInfo for a config-declared model,
+// normalizing fields to match the plugin's other model sources. alias /
+// reasoning are accepted for schema compatibility but have no ModelInfo
+// counterpart and are intentionally ignored here.
+// [参数] id：模型 ID（必填）；name：显示名（空则用 id）；ctxLen：上下文长度；maxTok：最大输出 token 数
+// [返回] 规范化后的 pluginapi.ModelInfo
+// 最近修改时间 2026-08-28（新增 config_yaml models 覆盖支持）
+func modelInfoFromConfig(id, name string, ctxLen, maxTok int64) pluginapi.ModelInfo {
+	if name == "" {
+		name = id
+	}
+	return pluginapi.ModelInfo{
+		ID:                         id,
+		Name:                       name,
+		ContextLength:              ctxLen,
+		MaxCompletionTokens:        maxTok,
+		OwnedBy:                    providerName,
+		SupportedGenerationMethods: []string{"chat"},
 	}
 }
 
@@ -86,6 +200,11 @@ func fetchDynamicModels() []pluginapi.ModelInfo {
 }
 
 func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
+	// 显式 config_yaml `models:` 覆盖优先于动态获取与静态兜底
+	// （同步自 workbuddy-provider 0.14.13）。
+	if cm := getConfiguredModels(); len(cm) > 0 {
+		return cm
+	}
 	if models, ok := cachedDynamicModels(); ok {
 		return models
 	}
@@ -321,7 +440,12 @@ func handleModelStatic(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	cacheModelAliases(req.Host)
-	models := fetchDynamicModels()
+	// config_yaml `models:` 覆盖优先；无覆盖时走 qoderwork 原有的
+	// 动态获取 + 静态兜底（同步自 workbuddy-provider 0.14.13）。
+	models := getConfiguredModels()
+	if len(models) == 0 {
+		models = fetchDynamicModels()
+	}
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }

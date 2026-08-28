@@ -200,10 +200,30 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 			}
 		}
 	}
-	lifecycleState.Delete(authID)
-	accountCache.Delete(authID)
-	clearActiveAuthIfMatch(authID)
+	clearDeletedAccountState(authID, authIndex, sa.Account.UID)
 	return nil
+}
+
+// clearDeletedAccountState removes every in-memory trace of a deleted account
+// for each provided key (auth.ID, auth_index, and account UID may each have
+// been used as a key by different code paths). Covers lifecycle state, cached
+// credits/plan/checkin, active selection, anomaly membership, and failover
+// cooldown/counter. （同步自 workbuddy 0.14.7 账号删除功能；保号池与
+// session 绑定清理随对应功能同步后在此补充）
+func clearDeletedAccountState(keys ...string) {
+	for _, k := range keys {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		lifecycleState.Delete(k)
+		accountCache.Delete(k)
+		clearActiveAuthIfMatch(k)
+		preserveSetClear(k)
+		anomalySetClear(k)
+		clearFailoverStateForAuth(k)
+		evictSessionBindingsForAuth(k)
+	}
 }
 
 // peerAuthDir returns the directory of any qoderwork auth file known to the host.
@@ -379,8 +399,8 @@ func reconcileAllAccounts(force bool) []map[string]any {
 // AuthID is normally the same auth.ID the scheduler keys on, but legacy hosts
 // may pass the account UID instead; a background resolve backfills the
 // canonical key so pick still skips the account. Returns true when the
-// failure was counted. (qoderwork has no per-session bindings, so nothing to
-// evict here — unlike the workbuddy plugin.)
+// failure was counted. Session bindings pinned to the failed account are
+// evicted so conversations re-assign on the next pick (see session_auth.go).
 func noteAccountFailure(authID string, status int, body string) bool {
 	if !failoverActive() || strings.TrimSpace(authID) == "" {
 		return false
@@ -388,12 +408,15 @@ func noteAccountFailure(authID string, status int, body string) bool {
 	if !recordAccountFailure(authID, status, body) {
 		return false
 	}
+	evictSessionBindingsForAuth(authID)
 	go func() {
 		_, id := resolveAuthIndexAndID(authID)
 		if id == "" || id == authID {
 			return
 		}
-		recordAccountFailure(id, status, body)
+		if recordAccountFailure(id, status, body) {
+			evictSessionBindingsForAuth(id)
+		}
 	}()
 	return true
 }

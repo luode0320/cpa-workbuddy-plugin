@@ -128,6 +128,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/claim-pro", Description: "Claim one-time Pro upgrade pack for one account (auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
 			{Method: http.MethodPost, Path: base + "/unfreeze", Description: "Remove one (body: {auth_index}) or all (empty body) accounts from the anomaly pool (anomaly.go)."},
+			{Method: http.MethodPost, Path: base + "/delete", Description: "Delete one QoderWork account and its physical auth file (body: {auth_index})."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "QoderWork", Description: "QoderWork dashboard: credits, check-in, plan, import."},
@@ -193,6 +194,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveStatus()))
 	case req.Method == http.MethodPost && path == base+"/unfreeze":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleUnfreezeAuth(req)))
+	case req.Method == http.MethodPost && path == base+"/delete":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleDeleteAuth(req)))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }
@@ -346,7 +349,8 @@ func mutatingManagementPath(path string) bool {
 		base + "/select",
 		base + "/keepalive",
 		base + "/claim-pro",
-		base + "/unfreeze":
+		base + "/unfreeze",
+		base + "/delete":
 		return true
 	}
 	return false

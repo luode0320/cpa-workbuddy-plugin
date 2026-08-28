@@ -66,6 +66,7 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
 .badge.exhausted{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
 .badge.anomaly{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border);font-style:italic}
+.badge.preserve{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-style:italic}
 .badge.stat{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-weight:500}
 .badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .badge.pro{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
@@ -86,6 +87,8 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .summary-item{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
 .summary-item .k{color:var(--mut);font-size:11px;margin-bottom:4px}
 .summary-item .v{font-size:18px;font-weight:700}
+/* 剩余(不可用)：灰色 + 删除线，与剩余(可用)视觉区分（同步自 workbuddy 0.14.4） */
+.summary-item .v.muted{color:var(--mut);font-weight:600;text-decoration:line-through;text-decoration-color:var(--mut-border);text-decoration-thickness:1px}
 .summary-item .v.ok{color:var(--ok)}
 .summary-item .v.warn{color:var(--warn)}
 .summary-item .v.err{color:var(--err)}
@@ -136,6 +139,11 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 .modal-ft{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border);background:var(--surface);border-radius:0 0 var(--radius-lg) var(--radius-lg)}
 .modal-ft button.sec{background:var(--btn-sec);color:var(--fg)}
 .modal-ft button.sec:hover{background:var(--btn-sec-hover)}
+/* 危险操作按钮 + 账号卡删除入口（同步自 workbuddy 0.14.7） */
+button.danger{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
+button.danger:hover{background:var(--err);color:#fff}
+.card-del{background:transparent;color:var(--mut);border:0;padding:2px 7px;font-size:16px;line-height:1;border-radius:6px;cursor:pointer;flex:none}
+.card-del:hover{background:var(--err-soft);color:var(--err)}
 </style>
 <script>
 /* Early theme sync (before body paint): mirror CPA parent data-theme when
@@ -195,7 +203,6 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   </div>
   <div class="bar">
     <button class="sec" id="importBtn" onclick="openImportModal()">导入 QoderWork 凭证</button>
-    <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
     <button class="sec" id="unfreezeAllBtn" onclick="unfreezeAll(this)" title="将异常池中所有账号解除冻结（每日 0 点也会自动做）">全部解冻</button>
 
@@ -204,10 +211,12 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   </div>
   <div class="filter-bar" id="filterBar">
     <button type="button" class="ftag active" data-region="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
+    <button type="button" class="ftag" data-region="available" onclick="filterRegion('available',this)" title="未禁用 · 未异常 · 未耗尽，可用积分能正常路由">可用 <span class="cnt" id="cntAvailable">0</span></button>
     <button type="button" class="ftag" data-region="cn" onclick="filterRegion('cn',this)">CN <span class="cnt" id="cntCn">0</span></button>
     
     <button type="button" class="ftag" data-region="exhausted" onclick="filterRegion('exhausted',this)">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
     <button type="button" class="ftag" data-region="anomaly" onclick="filterRegion('anomaly',this)">异常 <span class="cnt" id="cntAnomaly">0</span></button>
+    <button type="button" class="ftag" data-region="preserve" onclick="filterRegion('preserve',this)">保号 <span class="cnt" id="cntPreserve">0</span></button>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
@@ -226,6 +235,22 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <div class="modal-ft">
       <button type="button" class="sec" onclick="closeImportModal()">取消</button>
       <button type="button" onclick="importAuth(this)">导入并保存</button>
+    </div>
+  </div>
+</div>
+<div class="modal-mask" id="deleteModal" onclick="onDeleteMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="deleteModalTitle">
+    <div class="modal-hd">
+      <h2 id="deleteModalTitle">删除账号</h2>
+      <button type="button" class="modal-x" onclick="closeDeleteModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint" id="deleteModalHint">确定要删除该账号吗？</p>
+      <p class="hint" style="color:var(--err)">此操作会永久删除该账号及其认证文件，且不可恢复。</p>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="closeDeleteModal()">取消</button>
+      <button type="button" class="danger" id="deleteConfirmBtn" onclick="confirmDeleteAuth()">删除</button>
     </div>
   </div>
 </div>
@@ -276,7 +301,7 @@ function saveKey(){
   if(!v)return;
   sessionStorage.setItem(SS_KEY,v);
   document.getElementById("authBox").style.display="none";
-  load(false);
+  enterPanel();
 }
 function showAuth(){document.getElementById("authBox").style.display="block";const i=document.getElementById("keyInput");i&&i.focus()}
 function authHeaders(k){return k?{"Authorization":"Bearer "+k}:{}}
@@ -348,6 +373,7 @@ function bindCardActions(root){
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
       else if(act==="claim-pro") claimPro(idx, ev.currentTarget);
       else if(act==="unfreeze") unfreezeOne(idx, ev.currentTarget);
+      else if(act==="delete") openDeleteModal(idx);
     });
   });
 }
@@ -386,12 +412,12 @@ function card(a){
     ? `<button class="done" disabled="disabled">使用中</button>`
     : (disabled?``:`<button class="sec" data-action="select" data-auth-index="${esc(a.auth_index)}">选用</button>`);
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
-  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(a.anomaly?`<span class="badge anomaly" title="连续失败次数已达阈值，账号暂停路由以防每次请求都被重试；每日 0 点会自动复活一次">异常</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${esc(plan)}">${esc(a.plan||"-")}</span>`;
+  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(a.preserve?`<span class="badge preserve" title="watchdog 检测到积分不足，账号暂停路由以保留积分别耗尽">保号</span>`:"")+(a.anomaly?`<span class="badge anomaly" title="连续失败次数已达阈值，账号暂停路由以防每次请求都被重试；每日 0 点会自动复活一次">异常</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${esc(plan)}">${esc(a.plan||"-")}</span>`;
   const unfreezeBtn=a.anomaly?`<button class="sec" data-action="unfreeze" data-auth-index="${esc(a.auth_index)}" title="将该账号从异常池解除冻结，重新参与路由">解除冻结</button>`:"";
   const display=(a.nickname||a.label||a.name||"").replace(/^qoderwork-?/i,"");
   const nick=display||("u"+(a.uid||"").slice(-8));
-  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-anomaly="${a.anomaly?"1":"0"}" data-refresh-state="${a._refreshState||""}">
-  <h2>${esc(nick)} <span style="display:flex;gap:6px;align-items:center">${badges}</span></h2>
+  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-preserve="${a.preserve?"1":"0"}" data-anomaly="${a.anomaly?"1":"0"}" data-refresh-state="${a._refreshState||""}">
+  <h2>${esc(nick)} <span style="display:flex;gap:6px;align-items:center">${badges}<button type="button" class="card-del" data-action="delete" data-auth-index="${esc(a.auth_index)}" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
   ${refreshStateHTML(a)}
   ${progressHTML(cr,a)}
@@ -469,37 +495,58 @@ function filterRegion(region, btn){
     const r=c.dataset.region||"cn";
     let show=true;
     if(currentFilter==="all") show=true;
+    else if(currentFilter==="available") show=!(c.dataset.disabled==="1"||c.dataset.preserve==="1"||c.dataset.anomaly==="1"||c.querySelector(".badge.exhausted")!=null);
     else if(currentFilter==="exhausted") show=c.querySelector(".badge.exhausted")!=null;
     else if(currentFilter==="anomaly") show=c.dataset.anomaly==="1";
+    else if(currentFilter==="preserve") show=c.dataset.preserve==="1";
     else show=r===currentFilter;
     c.style.display=show?"":"none";
   });
   renderSummary(lastAccounts);
 }
 function updateFilterCounts(accounts){
-  let cn=0, ex=0, anom=0;
+  let cn=0, ex=0, prs=0, anom=0, avail=0;
   (accounts||[]).forEach(a=>{
     cn++;
     if(a.exhausted||(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length)))) ex++;
+    if(a.preserve) prs++;
     if(a.anomaly) anom++;
+    const c=creditOf(a);
+    const isExhausted=!!a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0));
+    if(!(a.disabled||a.anomaly||a.preserve||isExhausted)) avail++;
   });
   const elAll=document.getElementById("cntAll");
   const elCn=document.getElementById("cntCn");
   const elEx=document.getElementById("cntExhausted");
+  const elPrs=document.getElementById("cntPreserve");
   const elAno=document.getElementById("cntAnomaly");
+  const elAvail=document.getElementById("cntAvailable");
   if(elAll) elAll.textContent=String((accounts||[]).length);
   if(elCn) elCn.textContent=String(cn);
   if(elEx) elEx.textContent=String(ex);
+  if(elPrs) elPrs.textContent=String(prs);
   if(elAno) elAno.textContent=String(anom);
+  if(elAvail) elAvail.textContent=String(avail);
 }
 function accountsForFilter(accounts){
   const list=accounts||[];
   if(currentFilter==="all") return list;
+  if(currentFilter==="available"){
+    // 可用 = 不属于异常池 / 保号池 / 已禁用 / 已耗尽（同步自 workbuddy 0.14.4）
+    return list.filter(a=>{
+      const c=creditOf(a);
+      const isExhausted=!!a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0));
+      return !(a.disabled||a.anomaly||a.preserve||isExhausted);
+    });
+  }
   if(currentFilter==="exhausted"){
     return list.filter(a=>a.exhausted||(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length))));
   }
   if(currentFilter==="anomaly"){
     return list.filter(a=>!!a.anomaly);
+  }
+  if(currentFilter==="preserve"){
+    return list.filter(a=>!!a.preserve);
   }
   return list.filter(a=>(a.region||"cn")===currentFilter);
 }
@@ -523,13 +570,22 @@ function renderSummary(accounts){
     return;
   }
   const scoped=accountsForFilter(all);
-  let remain=0, used=0, size=0, knownN=0, disabledN=0, exhaustedN=0, anomalyN=0;
+  // 5 卡片口径：剩余(可用) / 剩余(不可用) / 已用(消耗) / 额度池 / 消耗占比
+  // 「剩余(可用)/已用/额度池/占比」按可用账号统计；「剩余(不可用)」独立统计不可用账号。
+  // 不可用 = 异常池 / 保号池 / 已禁用 / 已耗尽（同步自 workbuddy 0.14.4）
+  let remainAvail=0, remainUnavail=0, used=0, size=0, knownN=0, disabledN=0, exhaustedN=0, preserveN=0, anomalyN=0, unavailN=0;
   let cnRemain=0, cnUsed=0;
   scoped.forEach(a=>{
     const c=creditOf(a);
-    if(c.known){ remain+=c.remain; used+=c.used; size+=c.size; knownN++; }
+    const isExhausted=!!a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0));
+    const isUnavailable=!!a.disabled||!!a.preserve||!!a.anomaly||isExhausted;
+    if(c.known){
+      if(isUnavailable){ remainUnavail+=c.remain; unavailN++; }
+      else { remainAvail+=c.remain; used+=c.used; size+=c.size; knownN++; }
+    }
     if(a.disabled) disabledN++;
-    if(a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0))) exhaustedN++;
+    if(isExhausted) exhaustedN++;
+    if(a.preserve) preserveN++;
     if(a.anomaly) anomalyN++;
   });
   let allRemain=0, allUsed=0, allSize=0;
@@ -537,22 +593,23 @@ function renderSummary(accounts){
     const c=creditOf(a);
     if(!c.known) return;
     allRemain+=c.remain; allUsed+=c.used; allSize+=c.size;
-    
     cnRemain+=c.remain; cnUsed+=c.used;
   });
-  const total=size>0?size:(remain+used);
+  const total=size>0?size:(remainAvail+used);
   const pct=total>0?Math.round(used/total*100):0;
   let barColor="var(--ok)"; if(pct>60)barColor="var(--warn)"; if(pct>85)barColor="var(--err)";
-  const scopeLabel="全部账号";
+  // 标题文案：「可用」过滤时直接用"可用账号"；其他用通用「全部账号」
+  const scopeLabel=currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="cn"?"CN 账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="preserve"?"保号账号":(currentFilter==="anomaly"?"异常账号":"全部账号")))));
   const allTotal=allSize>0?allSize:(allRemain+allUsed);
   box.style.display="block";
   box.innerHTML=`
     <div class="summary-hd">
       <div class="summary-title">用量汇总 · ${esc(scopeLabel)}</div>
-      <div class="summary-meta">${scoped.length} 个账号 · 有数据 ${knownN} · 禁用 ${disabledN} · 耗尽 ${exhaustedN}</div>
+      <div class="summary-meta">${scoped.length} 个账号 · 可用 ${knownN} · 不可用 ${unavailN} · 禁用 ${disabledN} · 耗尽 ${exhaustedN} · 保号 ${preserveN} · 异常 ${anomalyN}</div>
     </div>
     <div class="summary-grid">
-      <div class="summary-item"><div class="k">剩余(可用)</div><div class="v ok">${remain}</div></div>
+      <div class="summary-item"><div class="k">剩余(可用)</div><div class="v ok">${remainAvail}</div></div>
+      <div class="summary-item"><div class="k">剩余(不可用)</div><div class="v muted">${remainUnavail}</div></div>
       <div class="summary-item"><div class="k">已用(消耗)</div><div class="v ${pct>85?"err":(pct>60?"warn":"")}">${used}</div></div>
       <div class="summary-item"><div class="k">额度池</div><div class="v">${total||"-"}</div></div>
       <div class="summary-item"><div class="k">消耗占比</div><div class="v ${pct>85?"err":(pct>60?"warn":"ok")}">${total?pct+"%":"-"}</div></div>
@@ -560,7 +617,7 @@ function renderSummary(accounts){
     <div class="pb">
       <div class="pb-label"><span>消耗进度（已用/额度池）</span><span>${total?pct+"%":"-"}</span></div>
       <div class="pb-track"><div class="pb-bar" style="width:${total?pct:0}%;background:${barColor}"></div></div>
-      <div class="pb-meta">可用 ${remain} · 已用 ${used} · 池 ${total||0}（签到加包会抬高池和可用，不等于没消耗）</div>
+      <div class="pb-meta">可用 ${remainAvail} · 已用 ${used} · 池 ${total||0}（签到加包会抬高池和可用，不等于没消耗）</div>
     </div>
     ${currentFilter==="all"?`
     <div class="pb-meta" style="margin-top:10px">CN 可用 ${cnRemain} / 已用 ${cnUsed}</div>
@@ -622,9 +679,9 @@ async function load(force, btn){
     g.innerHTML='<div class="loading">请先填写 management key</div>';
     return;
   }
-  // 刷新按钮：loading 态 + 右上角 toast。
+  // 刷新入口：loading 态 + 右上角 toast（顶部"刷新数据"按钮已移除，
+  // force 路径由操作后的 load(true) 与单卡刷新触发）。
   if(force){
-    if(!btn) btn=document.getElementById("refreshBtn");
     busy(btn, true);
   }
   try{
@@ -940,14 +997,73 @@ async function importAuth(btn){
   }catch(e){toast("导入请求失败","err",e.message)}
   busy(btn,false);
 }
+/* ---------- account deletion (二次确认，同步自 workbuddy 0.14.7) ----------
+   卡片右上角 × 打开确认框；取消不发送任何请求；确认后 POST /delete
+   并刷新列表。删除失败时保留卡片，仅 toast 错误。
+*/
+let pendingDeleteAuthIndex="";
+function openDeleteModal(idx){
+  const a=(lastAccounts||[]).find(x=>x.auth_index===idx);
+  const who=a?(a.nickname||a.label||a.name||a.uid||idx):idx;
+  pendingDeleteAuthIndex=idx;
+  document.getElementById("deleteModalHint").innerHTML='确定要删除账号 <b>'+esc(who)+'</b> 吗？';
+  document.getElementById("deleteModal").classList.add("show");
+}
+function closeDeleteModal(){
+  pendingDeleteAuthIndex="";
+  document.getElementById("deleteModal").classList.remove("show");
+}
+function onDeleteMaskClick(e){
+  if(e.target===document.getElementById("deleteModal")) closeDeleteModal();
+}
+async function confirmDeleteAuth(){
+  const idx=pendingDeleteAuthIndex;
+  if(!idx) return;
+  const btn=document.getElementById("deleteConfirmBtn");
+  busy(btn,true);
+  try{
+    const d=await api("/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx})});
+    if(d.error){
+      toast("删除失败","err",d.error);
+      busy(btn,false);
+      return;
+    }
+    const who=d.nickname||idx;
+    toast("已删除账号","ok",who);
+    closeDeleteModal();
+    // 先从本地态移除，再软刷新以和服务端保持一致。
+    lastAccounts=(lastAccounts||[]).filter(x=>x.auth_index!==idx);
+    await load();
+  }catch(e){
+    toast("删除失败","err",e.message||String(e));
+    busy(btn,false);
+  }
+}
+// 进入页面统一入口：先渲染缓存数据，再自动触发一次后台异步刷新
+// （同步自 workbuddy 0.14.9：去按钮 + 进入自动触发，前端无感知）。
+async function enterPanel(){
+  await load();
+  startBackgroundRefresh();
+}
+// 进入页面自动触发一次后台异步刷新（1s/账号，幂等，前端无感知）。
+// 页面已先渲染缓存数据；随后轮询 /refresh/status 逐账号局部刷新。
+// 若已有一轮刷新在跑（幂等），后端忽略本次请求，仍继续轮询展示进度。
+async function startBackgroundRefresh(){
+  try{
+    const d=await api("/refresh", {method:"POST"});
+    if(d.error) return; // 静默：后台刷新失败不打扰用户
+  }catch(e){ return; }
+  pollRefreshStatus();
+}
 document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
 document.addEventListener("keydown",e=>{
   if(e.key=="Escape"&&document.getElementById("importModal").classList.contains("show")) closeImportModal();
+  if(e.key=="Escape"&&document.getElementById("deleteModal").classList.contains("show")) closeDeleteModal();
 });
 /* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
 if(window.__wbThemeSync)window.__wbThemeSync();
 if(getKey()){
-  load(false);
+  enterPanel();
 }else{
   showAuth();
 }

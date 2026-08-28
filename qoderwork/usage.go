@@ -65,7 +65,25 @@ func handleUsage(raw []byte) ([]byte, error) {
 // CPA builds) still emit usage; hosts with the wiring will trigger HandleUsage
 // separately, but forwardUsageToCPAMP is idempotent at the CPAMP ingestion
 // layer (NDJSON import dedups on timestamp+auth+model+total_tokens).
-func publishUsage(requestedModel, upstreamModel, authID string, started time.Time, detail usage.Detail, failed bool, statusCode int, errBody string) {
+//
+// reasoningEffort is the reasoning_effort value actually sent upstream
+// (qoderwork currently does not rewrite/forward this field, so callers pass
+// ""); ttftNS is the time-to-first-token in nanoseconds (0 when not
+// observable). accountLabel is the qoderwork-internal account identifier
+// (sa.Account.Nickname preferred, authUID fallback) that surfaces in the
+// tracker dashboard's 来源 (source) column. sessionKey is the same
+// per-conversation key scheduler.pick used to pin the account (extracted
+// from req.Headers + req.Metadata at the executor entry), written to the
+// shared feed so the tracker dashboard can show session affinity.
+// 签名同步自 workbuddy-provider（0.14.x usage_feed 埋点）。
+func publishUsage(requestedModel, upstreamModel, authID string, started time.Time, detail usage.Detail, failed bool, statusCode int, errBody, reasoningEffort string, ttftNS uint64, accountLabel, sessionKey string) {
+	// Cumulative success/failure counter (plugin-owned, persisted). authID is
+	// the account UID at every call site, so keying on it matches the
+	// scheduler / failover / counter-flush layers. Increment happens
+	// synchronously (memory only) so the counter is never lost to the
+	// fire-and-forget goroutine below.
+	// （同步自 workbuddy 0.14.10 计数持久化）
+	recordOutcome(authID, !failed)
 	model := strings.TrimSpace(upstreamModel)
 	if model == "" {
 		model = strings.TrimSpace(requestedModel)
@@ -77,7 +95,15 @@ func publishUsage(requestedModel, upstreamModel, authID string, started time.Tim
 	// Fire-and-forget so the executor hot path never blocks on the CPAMP
 	// round-trip. handleUsage (the host-driven path) is synchronous because the
 	// host already runs it on its own goroutine after the request completes.
-	go forwardUsageToCPAMP(alias, model, authID, started, normalizeUsageDetail(detail), failed, statusCode, errBody)
+	go func() {
+		// Shared usage feed (token-usage-tracker plugin): append the same
+		// detail as one NDJSON line to <root>/data/token-usage-feed.ndjson.
+		// Same schema as workbuddy-provider's feed so the standalone tracker
+		// tails both providers uniformly. Runs inside the goroutine so a slow
+		// filesystem never stalls the executor.
+		recordUsageFeed(alias, model, authID, started, normalizeUsageDetail(detail), failed, statusCode, reasoningEffort, ttftNS, accountLabel, sessionKey)
+		forwardUsageToCPAMP(alias, model, authID, started, normalizeUsageDetail(detail), failed, statusCode, errBody)
+	}()
 }
 
 // forwardUsageToCPAMP POSTs one NDJSON line to CPAMP usage/import.
@@ -222,12 +248,19 @@ func usageDetailFromCompletion(payload []byte) usage.Detail {
 }
 
 // sseUsageCollector scans upstream SSE chunks and keeps the last "usage"
-// object seen (QoderWork emits it on the terminal chunk).
+// object seen (QoderWork emits it on the terminal chunk). firstByteAt records
+// when the first upstream data chunk arrived so callers can compute the
+// time-to-first-token (TTFT) for the dashboard's ttft_ns column.
+// firstByteAt/ttftNS 同步自 workbuddy-provider。
 type sseUsageCollector struct {
-	last map[string]any
+	last        map[string]any
+	firstByteAt time.Time
 }
 
 func (c *sseUsageCollector) feed(rawJSON string) {
+	if c.firstByteAt.IsZero() {
+		c.firstByteAt = time.Now()
+	}
 	var chunk map[string]any
 	if json.Unmarshal([]byte(rawJSON), &chunk) != nil {
 		return
@@ -239,4 +272,18 @@ func (c *sseUsageCollector) feed(rawJSON string) {
 
 func (c *sseUsageCollector) detail() usage.Detail {
 	return usageDetailFromMap(c.last)
+}
+
+// ttftNS returns the time-to-first-token in nanoseconds: the wall-clock gap
+// between the request start and the first upstream SSE data chunk. Returns 0
+// when no chunk was observed or the clock skew would make it negative.
+func (c *sseUsageCollector) ttftNS(started time.Time) uint64 {
+	if c.firstByteAt.IsZero() || started.IsZero() {
+		return 0
+	}
+	d := c.firstByteAt.Sub(started)
+	if d <= 0 {
+		return 0
+	}
+	return uint64(d)
 }

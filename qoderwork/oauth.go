@@ -381,9 +381,16 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		ui, _ := fetchUserInfo(tok.Token)
 		sa := buildStoredAuthFromJobToken(pat, tok, ui)
 		loginStates.Delete(state)
+		// CRITICAL: leave ID empty so the host computes it from the file path
+		// (authIDForPath). Setting ID=uid here while the watcher registers
+		// with ID=<filename> produces two in-memory keys for the same file →
+		// duplicate accounts in the panel. Symmetric with handleParseAuth
+		// (main.go) and toAuthDataForRefresh (oauth.go).
+		ad := toAuthDataOpts(sa, nil, false)
+		ad.ID = ""
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
 			Status: pluginapi.AuthLoginStatusSuccess,
-			Auth:   toAuthData(sa),
+			Auth:   ad,
 		})
 	}
 
@@ -401,9 +408,15 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		// by the panel on first load. PAT coalescing happens on keepalive.
 		sa := buildStoredAuthFromDeviceToken(tok, nil)
 		loginStates.Delete(state)
+		// CRITICAL: leave ID empty so the host computes it from the file path
+		// (authIDForPath). Setting ID=uid here while the watcher registers
+		// with ID=<filename> produces two in-memory keys for the same file →
+		// duplicate accounts in the panel.
+		ad := toAuthDataOpts(sa, nil, false)
+		ad.ID = ""
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
 			Status: pluginapi.AuthLoginStatusSuccess,
-			Auth:   toAuthData(sa),
+			Auth:   ad,
 		})
 	}
 
@@ -415,9 +428,15 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 				sa, err := hostAuthGet(f.AuthIndex)
 				if err == nil && sa != nil {
 					loginStates.Delete(state)
+					// CRITICAL: leave ID empty so the host computes it from
+					// the file path (authIDForPath). Setting ID=uid while the
+					// watcher registers with ID=<filename> produces two
+					// in-memory keys for the same file → duplicate accounts.
+					ad := toAuthDataOpts(sa, nil, false)
+					ad.ID = ""
 					return okEnvelope(pluginapi.AuthLoginPollResponse{
 						Status: pluginapi.AuthLoginStatusSuccess,
-						Auth:   toAuthData(sa),
+						Auth:   ad,
 					})
 				}
 			}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,9 +60,19 @@ func configure(raw []byte) {
 	// Parse config without holding any lock (fixes nested-lock hazard).
 	nextCheckinAuto := true
 	nextLifecycleAuto := true
-	nextSchedulerMode := schedulerModeOff // reset to default on reconfigure
+	// scheduler default: session (per-conversation round-robin). Explicit
+	// scheduler_mode in config_yaml overrides it; unknown values fall back to
+	// this default (NOT off) so multi-account deployments get spread routing
+	// out of the box. Mirrors workbuddy-provider.
+	nextSchedulerMode := schedulerModeSession
 	nextKeepaliveAuto := true
 	nextMgmtKey := ""
+	// preserve watchdog knobs: a credit-balance threshold below which an
+	// account is parked in the preserve set; the tick interval; and the
+	// enable/disable switch. （同步自 workbuddy-provider）
+	nextPreserveThreshold := preserveThresholdDefault
+	nextPreserveInterval := preserveWatchdogIntervalDefault
+	nextPreserveEnabled := preserveWatchdogEnabledDefault
 	// failover default: enabled. Explicit account_failover: false disables the
 	// whole cooldown mechanism (pre-failover behavior).
 	nextFailoverEnabled := true
@@ -109,6 +120,8 @@ func configure(raw []byte) {
 					v = strings.Trim(v, "\"'")
 					if v == schedulerModeCredits {
 						nextSchedulerMode = schedulerModeCredits
+					} else if v == schedulerModeSession {
+						nextSchedulerMode = schedulerModeSession
 					}
 				}
 				if strings.HasPrefix(line, "usage_report_url:") {
@@ -128,6 +141,29 @@ func configure(raw []byte) {
 					v = strings.Trim(v, "\"'")
 					nextKeepaliveAuto = v == "true" || v == "1" || v == "yes" || v == "on"
 				}
+				// Preserve watchdog knobs: a credit-balance threshold below
+				// which an account is parked in the preserve set; the tick
+				// interval (Go duration syntax, e.g. "10m"); and the
+				// enable/disable switch. （同步自 workbuddy-provider）
+				if strings.HasPrefix(line, "preserve_threshold:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "preserve_threshold:"))
+					v = strings.Trim(v, "\"'")
+					if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n >= 0 {
+						nextPreserveThreshold = n
+					}
+				}
+				if strings.HasPrefix(line, "preserve_watchdog_interval:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "preserve_watchdog_interval:"))
+					v = strings.Trim(v, "\"'")
+					if d, perr := time.ParseDuration(v); perr == nil && d > 0 {
+						nextPreserveInterval = d
+					}
+				}
+				if strings.HasPrefix(line, "preserve_watchdog_enabled:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "preserve_watchdog_enabled:"))
+					v = strings.Trim(v, "\"'")
+					nextPreserveEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
 				if strings.HasPrefix(line, "retry_on_4xx:") {
 					retryOn4xxSeen = true
 					if n, ok := parseRetryOn4xxLine(line); ok {
@@ -144,6 +180,19 @@ func configure(raw []byte) {
 					if v, ok := parseAnomalyRefreshEnabledLine(line); ok {
 						nextAnomalyRefreshEnabled = v
 						anomalyRefreshSeen = true
+					}
+				}
+				if strings.HasPrefix(line, "models:") {
+					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
+					// 交给 parseModelsConfig（显式配置优先于动态获取与
+					// 静态默认，见 models.go；同步自 workbuddy-provider
+					// 0.14.13）。
+					if j := strings.Index(line, ":"); j >= 0 {
+						rest := strings.TrimSpace(line[j+1:])
+						var v any
+						if err := json.Unmarshal([]byte(rest), &v); err == nil {
+							parseModelsConfig(v)
+						}
 					}
 				}
 			}
@@ -168,6 +217,15 @@ func configure(raw []byte) {
 	keepaliveAutoMu.Lock()
 	keepaliveAuto = nextKeepaliveAuto
 	keepaliveAutoMu.Unlock()
+
+	setPreserveConfig(nextPreserveThreshold, nextPreserveInterval, nextPreserveEnabled)
+
+	// Drop a non-blocking tick request so the freshly (re)configured
+	// threshold/interval apply immediately rather than after a full interval
+	// (closes the "register just changed something, why does the badge still
+	// show the old state?" UX gap). Reconfigure storms collapse onto one tick
+	// via requestPreserveTick's buffered chan cap 1. （同步自 workbuddy-provider）
+	requestPreserveTick()
 
 	// retry_on_4xx: per-request account-failover budget, applied under its
 	// own lock so the executor loops reading it (loadedRetryOn4xx) stay
@@ -198,6 +256,11 @@ func configure(raw []byte) {
 	managementAPIKeyMu.Unlock()
 
 	resolveUsageReport(cfgURL, cfgKey)
+	// Shared usage feed for the standalone token-usage-tracker plugin.
+	// Parses usage_feed_* fields from the same config_yaml. Non-fatal by
+	// design: a failure only disables the feed, never chat.
+	// （同步自 workbuddy-provider）
+	configureUsageFeed(raw)
 	ensureScheduler()
 }
 

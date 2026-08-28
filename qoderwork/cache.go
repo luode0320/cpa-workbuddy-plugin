@@ -136,6 +136,21 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 	return plan, ci, cr, errList
 }
 
+// cachedCredits returns the cached credits snapshot for authID, or nil when
+// absent. Used by the preserve watchdog tick (watchdog.go) to decide flag
+// flips without an upstream fetch. 同步自 workbuddy-provider。
+func cachedCredits(authID string) *creditsSummary {
+	v, ok := accountCache.Load(authID)
+	if !ok {
+		return nil
+	}
+	e, ok := v.(*accountCacheEntry)
+	if !ok || e == nil {
+		return nil
+	}
+	return e.credits
+}
+
 // accountCacheSoftCap limits concurrent cache entries (auth churn / index thrash).
 const accountCacheSoftCap = 256
 

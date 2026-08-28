@@ -14,17 +14,18 @@
 
 ## 活动会话任务摘要
 
-- 本会话：进入 2026-08-23 第三轮
-  1. **【已完成】** WorkBuddy 账号面板「账号删除」功能（workbuddy 0.14.7，已发布）：卡片右上角 `×` + 二次确认模态框
-  2. **【已完成】** 移除 WorkBuddy 面板「启用/禁用」手动开关（workbuddy 0.14.8，已发布）：保留后端 disabled 字段链路
-  3. **【已发布】** WorkBuddy + QoderWork 账号面板「异步节流刷新」（workbuddy 0.14.9 + qoderwork 0.9.4，2026-08-23 发布）：
-     - 后端：新增 `refresh_runner.go`（RefreshRunner 单例 + 1s/账号节流 + pending/running/done/failed 状态机）+ `refresh_runner_test.go`，双插件对称
-     - 路由：`POST /refresh` 改异步（EnqueueAll source=panel 立即返回）+ `GET /refresh/status`（Snapshot）+ `GET /credits?track=1` 入队
-     - watchdog：`runPreserveWatchdogTick` 改 `cachedCredits` 缓存读 preserve flip + `EnqueueAll(source=watchdog)` 立即返回
-     - 前端：双 panel.html 删 `lazyLoadCredits` 自动触发 + `pollRefreshStatus` 2s 轮询 + 卡片 `data-refresh-state` 三态 CSS
-     - **第二轮修订（本轮）**：① `EnqueueAll`/`EnqueueOne` 改「运行中则忽略」幂等（`idx < len(batch)` → 返回 0/false，不再替换/追加批次），单测 `EnqueueAllReplacesBatch`→`EnqueueAllIdempotent` + 新增 `EnqueueOneIdempotent`；② WorkBuddy 前端删除顶部「刷新数据」按钮，改 `enterPanel()`（`await load()` 渲染缓存 → `startBackgroundRefresh()` 静默 `POST /refresh` + 轮询），init/saveKey 走 enterPanel，软刷新只 `load()`，完成收尾去 toast（前端无感知）；③ qoderwork 面板前端暂不动（后端幂等已同步）
-     - 验证：双插件 cgo-shim build+vet+test 全绿 + 双 panel.html node --check 通过
-     - 设计/实施文档：`analysis/workbuddy-async-refresh-design.md`（第 0 节第二轮修订）/ `workbuddy-async-refresh-implementation-plan.md`
+- 本会话：qoderwork 全量 1-9 功能同步（对齐 workbuddy 已实现但未同步的功能；同步原则：逐函数适配、纯逻辑文件可整文件复制）
+  1. **【已完成】** 同步①登录轮询重复账号修复：qoderwork oauth.go handlePollLogin 三处成功路径改 `toAuthDataOpts` + `ad.ID=""`（对齐 workbuddy 0.14.12）
+  2. **【已完成】** 同步②models 配置面板化 + ConfigFields 中文化（对齐 workbuddy 0.14.13）
+  3. **【已完成】** 同步③面板 5 卡片 + 异步刷新前端
+  4. **【已完成】** 同步④账号删除功能
+  5. **【已完成】** 同步⑤计数持久化（挂载点最终落在 preserveWatchdogLoop：启动 loadCountersFromDisk + 每次醒来 flushCounters，与 workbuddy 对称）
+  6. **【已完成】** 同步⑥session_auth 会话粘性：scheduler.go `schedulerModeSession` 默认值 + `pickSessionAuth` 分支；session_auth.go 根文件；驱逐点 `evictSessionBindingsForAuth` 接入 noteAccountFailure（双路径）/freezeAccountForAnomaly（两分支）/clearDeletedAccountState
+  7. **【已完成】** 同步⑦usage_feed NDJSON 通道：usage_feed.go 新建 + publishUsage 8→12 参数（11 处调用点全适配，failover 后 curAccountLabel 归属同步）+ sseUsageCollector ttftNS + ConfigFields usage_feed_enabled/usage_feed_path
+  8. **【已完成】** 同步⑧保号池 + watchdog：preserve.go/watchdog.go 新建（删重复 authFileErr 系列，qoderwork anomaly.go 已有）+ cachedCredits + panel 后端三键（preserve_auto/threshold/pool_size）+ 配置解析 + scheduler preserve 过滤段 + 前端 panel.html 保号展示 8 处
+  9. **【待核对】** 同步⑨：差异盘点明细未保留在当前会话上下文（发生在更早会话），待与用户核对确认
+- 验证：cgo-shim build+vet+test 全绿（7.435s）；双 panel.html node new Function() 语法 OK（临时脚本用完即删）
+- 状态：全部改动在 qoderwork/ 工作树，**未提交、未发布**，等待用户提交授权
 
 ## 已完成
 
@@ -48,7 +49,8 @@
 
 ## 待办
 
-- 【待办】qoderwork `handlePollLogin` 同构 bug（2026-08-27 发现，用户已确认本轮只发 workbuddy）：qoderwork/oauth.go:386/406/420 三处成功路径仍直接 `toAuthData(sa)`，未做 `ad.ID=""`（其 parse/refresh 路径已修），存在与 workbuddy 0.14.12 修复前相同的重复账号风险。待用户确认后对称修复（3 处）+ cgo-shim 验证 + 发布 qoderwork 0.9.5。
+- 【已完成】qoderwork `handlePollLogin` 同构 bug（2026-08-27 发现）：qoderwork/oauth.go:386/406/420 三处成功路径直接 `toAuthData(sa)` 已随同步①改为 `toAuthDataOpts` + `ad.ID=""`（2026-08-28，工作树未提交，发布待用户拍板 qoderwork 0.9.5 节奏）
+- 【待办】qoderwork 全量 1-9 同步 ⑨ 项明细核对（差异盘点发生在更早会话，明细未保留在当前上下文；①-⑧ 已完成并通过 cgo-shim/JS 校验，全部在 qoderwork/ 工作树未提交）
 - 【本轮】workbuddy 0.14.12 登录轮询重复账号修复已发布（提交链 f3044fd→eff0fff→28ebe6b，CI run 33081084377）。真实页面交互验证待做（CPA 宿主走一遍 OAuth 登录轮询，确认面板不再出现重复账号）。
 - 【本轮】workbuddy 0.14.11 计数持久化重构已发布（提交链 3fabc9a→e80ef2a→8def6b2，CI run 32654838377）。真实页面交互验证待做（容器重启后访问面板确认「成功/失败」为重启前累计值而非 0 起跳，且落盘跟随保号 10min 节奏）。
 - 【本轮】workbuddy 0.14.10 成功/失败计数持久化已发布（提交链 a525feb→b1c25ea→4df0736）。真实页面交互验证待做（容器重启后访问面板确认「成功/失败」为重启前累计值而非 0 起跳）。
@@ -68,7 +70,7 @@
 
 ## 下一执行点
 
-- 【本轮】workbuddy 0.14.11 计数持久化重构已发布。下一步：容器重启后做页面交互验证（「成功/失败」跨重启不归零、且落盘跟随保号 10min 节奏）；qoderwork 面板前端是否对称同步待用户确认。
+- 【本轮】qoderwork 全量 1-9 同步：①-⑧ 已完成（cgo-shim 全绿 + 双 panel.html JS 语法 OK），⑨ 明细待用户核对；全部改动在 qoderwork/ 工作树未提交。下一步：等用户确认 ⑨ 内容与提交/发布节奏（qoderwork 0.9.5？）。
 - 待确认 40x 换号重试的发版节奏（0.14.2 已含 429 切号，retry_on_4xx 预算是否上调待用户拍板）
 
 <!-- BEGIN RECENT PROJECT SESSIONS -->
@@ -86,8 +88,62 @@
 {
   "version": 4,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "1970-01-01T00:00:00Z",
-  "projections": []
+  "registry_updated_at": "2026-08-28T14:15:42.628791Z",
+  "projections": [
+    {
+      "projection_id": "SESSION/04cf5eabb75248877efa7344b93256256893bb44b74a8fd5dc500807f794938f",
+      "session_id": "e886ddd6-7dfb-4771-b677-b86263a1775a",
+      "projection_origin": "persisted",
+      "synthesis_mode": "none",
+      "state": "active",
+      "plan_key": "RELEASE/traework-0.1.3",
+      "source_document": "PROJECT_CURRENT.md",
+      "plan_fingerprint": "9ea40d6eef6bb6be029161b9107c277251895a71a901661f47f6631f8619c97d",
+      "updated_at": "2026-08-28T14:12:00Z",
+      "steps": [
+        {
+          "id": "REL-01",
+          "step": "[REL-01] bump traework 版本至 0.1.3",
+          "status": "pending"
+        },
+        {
+          "id": "REL-02",
+          "step": "[REL-02] cgo-shim 验证全绿",
+          "status": "pending"
+        },
+        {
+          "id": "REL-03",
+          "step": "[REL-03] 提交并推送发布 commit",
+          "status": "pending"
+        },
+        {
+          "id": "REL-04",
+          "step": "[REL-04] CI dispatch 并轮询 success",
+          "status": "pending"
+        },
+        {
+          "id": "REL-05",
+          "step": "[REL-05] 下载 8 assets 并校验 checksum",
+          "status": "pending"
+        },
+        {
+          "id": "REL-06",
+          "step": "[REL-06] assets 提交推送",
+          "status": "pending"
+        },
+        {
+          "id": "REL-07",
+          "step": "[REL-07] publish-assets + validate-registry",
+          "status": "pending"
+        },
+        {
+          "id": "REL-08",
+          "step": "[REL-08] registry 提交推送 + 远端 raw 验证",
+          "status": "pending"
+        }
+      ]
+    }
+  ]
 }
 ```
 <!-- END TASK PLAN PROJECTION -->

@@ -301,9 +301,8 @@ func errAuthMissing() error       { return &authFileErr{msg: "auth file missing 
 // recordAccountFailure when count >= anomalyThreshold; flips the anomaly
 // flag on disk (via persistAnomalyToggle) and updates the in-memory
 // mirror. Always run off the request goroutine (host.auth.list can be
-// slow under contention). qoderwork has no preserve-style session
-// eviction (no session_auth.go) — the threshold trip just persists the
-// flag so future picks skip the account.
+// slow under contention). Session bindings pinned to the frozen account
+// are evicted so conversations re-assign on the next pick (session_auth.go).
 func freezeAccountForAnomaly(authID string) {
 	authID = strings.TrimSpace(authID)
 	if authID == "" || isAnomaly(authID) {
@@ -314,12 +313,14 @@ func freezeAccountForAnomaly(authID string) {
 		// Can't write back to disk without an auth_index; still update the
 		// in-memory mirror so the current process stops routing here.
 		anomalySetPut(authID)
+		evictSessionBindingsForAuth(authID)
 		return
 	}
 	if err := persistAnomalyToggle(idx, id, true); err != nil {
 		log.Printf("[anomaly] freeze %s: persist failed: %v", id, err)
 		return
 	}
+	evictSessionBindingsForAuth(id)
 }
 
 // clearAllAnomalies iterates the current anomaly set, removes each entry
@@ -407,11 +408,20 @@ const anomalyRefreshTickInterval = 1 * time.Minute
 // crosses 00:00 it calls clearAllAnomalies so every quarantined account
 // gets another shot. The lastDay guard ensures we run exactly once per
 // calendar day.
+//
+// 计数持久化挂载点（同步自 workbuddy 0.14.10/0.14.11，用户选定挂载本循环）：
+// 启动时 loadCountersFromDisk 从物理文件恢复历史累计值；之后每次醒来
+// flushCounters 把未落盘增量折入 auth 文件。落盘不受 anomaly_refresh_enabled
+// 开关影响——纯观测数据，关闭异常池自动重置不应连带关闭计数持久化；
+// 增量折入成本极低（每账号一次小文件写），因此按分钟级节奏执行，
+// 重启丢失窗口最多约 1 分钟（优于 workbuddy 默认 10 分钟节奏）。
 func anomalyRefreshLoop() {
 	ticker := time.NewTicker(anomalyRefreshTickInterval)
 	defer ticker.Stop()
 	lastDay := -1
+	loadCountersFromDisk()
 	for range ticker.C {
+		flushCounters()
 		if !anomalyRefreshEnabled() {
 			continue
 		}

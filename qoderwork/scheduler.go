@@ -4,6 +4,10 @@
 // domain). When the selection is exhausted/disabled/missing, randomly switch
 // to another non-exhausted qoderwork candidate. Non-qoderwork candidates are
 // always deferred so the built-in scheduler handles them.
+//
+// scheduler_mode=session additionally enables per-conversation routing: each
+// conversation is pinned to one account for up to 1h and conversations are
+// spread across accounts (see session_auth.go).
 package main
 
 import (
@@ -19,10 +23,11 @@ import (
 const (
 	schedulerModeOff     = "off"
 	schedulerModeCredits = "credits"
+	schedulerModeSession = "session"
 )
 
 var (
-	schedulerMode   = schedulerModeOff
+	schedulerMode   = schedulerModeSession
 	schedulerModeMu sync.RWMutex
 )
 
@@ -53,9 +58,13 @@ func loadedSchedulerMode() string {
 //   - "off"     → plugin does NOT handle routing; defer everything to built-in.
 //   - "credits" → plugin picks via panel-selected active account (sticky, with
 //     fallback when that account becomes exhausted/disabled).
+//   - "session" → per-conversation routing: same conversation sticks to one
+//     account for up to 1h, different conversations spread across accounts;
+//     requests without a session identity fall back to the panel-selected
+//     account (same as credits).
 //
-// Default is off (see schedulerMode init). Users opting into the plugin's
-// routing should set scheduler_mode: credits in plugin config.
+// Default is session (see schedulerMode init). Users opting into the
+// built-in routing should set scheduler_mode: off in plugin config.
 func handleSchedulerPick(raw []byte) ([]byte, error) {
 	var req pluginapi.SchedulerPickRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -64,7 +73,8 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 
 	// v0.6.31: actually honor the scheduler_mode toggle. Previously the config
 	// was parsed but never read here, so "off" silently behaved like "credits".
-	if loadedSchedulerMode() != schedulerModeCredits {
+	mode := loadedSchedulerMode()
+	if mode != schedulerModeCredits && mode != schedulerModeSession {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
 
@@ -85,6 +95,23 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	}
 	if len(wbCandidates) == 0 {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
+	}
+	// Preserve filter: accounts the watchdog flagged (credits below
+	// preserve_threshold) are kept out of routing entirely so they keep a
+	// small credit buffer. Place this BEFORE the cooldown filter so the
+	// lastNonEmpty fallback can still see preserved accounts when every
+	// qoderwork account is preserved — we don't want a fleet-wide credit
+	// reset to lock routing. Like the cooldown filter below, when every
+	// account is preserved we keep the full list so the pickers fall back to
+	// the current pin. （同步自 workbuddy-provider）
+	preserveFiltered := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
+	for _, c := range wbCandidates {
+		if !isAccountPreserved(c.ID) {
+			preserveFiltered = append(preserveFiltered, c)
+		}
+	}
+	if len(preserveFiltered) > 0 {
+		wbCandidates = preserveFiltered
 	}
 	// Anomaly filter: accounts that have failed too many times in a row
 	// (see accountFailover.go → anomaly.go threshold trip) are kept out
@@ -122,7 +149,12 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 			Exhausted: exhausted,
 		})
 	}
-	picked := pickActiveAuth(cands)
+	picked := ""
+	if mode == schedulerModeSession {
+		picked = pickSessionAuth(extractSessionKey(req), cands)
+	} else {
+		picked = pickActiveAuth(cands)
+	}
 	if picked == "" {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
@@ -164,6 +196,15 @@ func cachedCreditsScore(authID string) (int64, bool) {
 		return -1, false
 	}
 	return entry.credits.TotalRemain, isCreditsExhausted(entry.credits)
+}
+
+// isAccountPreserved reports whether the account is currently flagged by the
+// preserve watchdog and must be kept out of routing. Symmetric with
+// isAccountCoolingDown for the cooldown filter; returns true when the
+// watchdog has set the top-level preserve flag on disk and mirrored it into
+// preserveSet. （同步自 workbuddy-provider）
+func isAccountPreserved(authID string) bool {
+	return isPreserve(authID)
 }
 
 // isAccountAnomaly reports whether the account is currently in the

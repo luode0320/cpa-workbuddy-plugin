@@ -239,6 +239,19 @@ func clearFailoverStates() {
 	failoverMu.Unlock()
 }
 
+// clearFailoverStateForAuth removes failover state for a single account key.
+// Called when an account is deleted so its cooldown/counter don't leak into a
+// future auth that reuses the same auth.ID (or keep a dead entry in memory).
+// （同步自 workbuddy 0.14.7 账号删除功能）
+func clearFailoverStateForAuth(authID string) {
+	if authID == "" {
+		return
+	}
+	failoverMu.Lock()
+	delete(failoverStates, authID)
+	failoverMu.Unlock()
+}
+
 // setFailoverCooldownUntil overrides the cooldown deadline for an account.
 // Test helper (lets tests simulate cooldown expiry); never called in
 // production paths.

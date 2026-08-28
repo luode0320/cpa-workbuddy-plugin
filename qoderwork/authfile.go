@@ -49,6 +49,19 @@ func isLegacyAuthName(name string) bool {
 	return strings.EqualFold(strings.TrimSpace(name), authFileName)
 }
 
+// isQoderworkAuthFileName reports whether a bare filename (no directory)
+// follows the qoderwork naming rule: qoderwork-<uid>.json or the legacy
+// qoderwork.json. Case-insensitive. Used by the panel delete path to assert
+// QoderWork ownership before touching a physical file.
+// （同步自 workbuddy 0.14.7 账号删除功能）
+func isQoderworkAuthFileName(name string) bool {
+	base := strings.ToLower(strings.TrimSpace(name))
+	if base == "" || !strings.HasSuffix(base, ".json") {
+		return false
+	}
+	return strings.HasPrefix(base, "qoderwork-") || base == "qoderwork.json"
+}
+
 // resolveAuthFileTarget picks the canonical file name + path for save/delete.
 // Prefer qoderwork-<uid>.json; if the host still points at legacy qoderwork.json
 // for a UID-bearing account, rewrite to the uid name and schedule legacy removal.
@@ -278,4 +291,57 @@ func deleteAuthFileInDir(path, dir string) error {
 		return nil
 	}
 	return err
+}
+
+// writeAuthFileDirect atomically replaces the physical auth file at path with
+// raw, via a temp file + rename in the same directory. Refuses relative or
+// unsafe paths. （同步自 workbuddy 0.14.10 计数持久化：host.auth.save 会丢
+// 未知顶层字段，计数器/保号/异常标记落盘一律走直写通道）
+func writeAuthFileDirect(path string, raw []byte) error {
+	if !isSafeAuthPath(path) {
+		return fmt.Errorf("refusing direct write to unsafe path: %s", path)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("refusing direct write to relative path: %s", path)
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".qoderwork-write-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("replace auth file: %w", err)
+	}
+	return nil
+}
+
+// persistAuthDirect writes raw to the physical auth path (if known) and drops
+// a legacy sibling file when the canonical name differs. It fails loudly when
+// no physical path is available — callers must never fall back to host.auth.save
+// for disable/re-enable writes, since that channel re-enables the account.
+// （同步自 workbuddy 0.14.10）
+func persistAuthDirect(name, path, legacyPath string, raw []byte) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("no physical auth path for %s", name)
+	}
+	if err := writeAuthFileDirect(path, raw); err != nil {
+		return err
+	}
+	if legacyPath != "" && !strings.EqualFold(filepath.Base(legacyPath), filepath.Base(path)) {
+		_ = deleteAuthFileInDir(legacyPath, filepath.Dir(legacyPath))
+	}
+	return nil
 }

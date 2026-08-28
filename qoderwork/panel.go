@@ -26,6 +26,7 @@ type wbAccount struct {
 	Exhausted bool            `json:"exhausted"`
 	Selected  bool            `json:"selected"` // panel active routing card
 	Anomaly   bool            `json:"anomaly"`  // consecutive-failure trip; quarantined until daily refresh or operator unfreeze
+	Preserve  bool            `json:"preserve"` // watchdog parked this account; never routed
 	Credits   *creditsSummary `json:"credits,omitempty"`
 	Checkin   *checkinSummary `json:"checkin,omitempty"`
 	Error     string          `json:"error,omitempty"`
@@ -104,6 +105,17 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 			}
 			acct.Nickname = sa.Account.Nickname
 			acct.UID = sa.Account.UID
+			// Success/Failed prefer the plugin-owned cumulative counters
+			// (survive restart). The host-list values set above are the
+			// recent-window (last ~200min) numbers — kept as the fallback for
+			// UID-less legacy accounts. UID-bearing accounts read the
+			// in-memory cumulative value (seeded from the persisted json at
+			// startup, then memory-first; see counter.go) without re-reading
+			// json on every render. （同步自 workbuddy 0.14.10/0.14.11）
+			if strings.TrimSpace(acct.UID) != "" && phys != nil {
+				ensureCounterLoaded(acct.UID, phys.JSON)
+				acct.Success, acct.Failed = counterSnapshot(acct.UID)
+			}
 			acct.Region = "cn"
 			if fetchCredits {
 				plan, ci, cr, errs := cachedAccountDetails(f.ID, sa, force)
@@ -177,16 +189,33 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	checkinAutoMu.RUnlock()
 	// Ensure default selection for panel + scheduler (first usable card).
 	activeID := ensureDefaultActiveAuth(out)
+	// Sync preserve markers from the disk-backed map — single source of
+	// truth. refreshPreserveSetFromDisk also prunes entries for accounts
+	// that no longer exist so the scheduler can't pin a session to a
+	// deleted auth. （同步自 workbuddy-provider）
+	preserveSize := refreshPreserveSetFromDisk()
 	// Sync anomaly markers from disk the same way workbuddy does (see
 	// anomaly.go) — refreshAnomalySetFromDisk also prunes entries for
 	// accounts that no longer exist so the scheduler can't pin a session
 	// to a deleted auth.
 	anomalySize := refreshAnomalySetFromDisk()
+	// On force refresh, reconcile preserve flags against the already-fetched
+	// credits so the badges in THIS response are correct without waiting for
+	// the next watchdog interval. Zero extra upstream QPS — `out` carries the
+	// credits the dashboard just pulled (closes the "刷新后 badge 还是旧状态"
+	// gap caused by the first-tick init race and 10m blind window).
+	if force {
+		preserveReconcileFromAccounts(out)
+		// Re-mirror so the badge loop below sees the freshly-written disk
+		// flags instead of the pre-write in-memory snapshot.
+		preserveSize = refreshPreserveSetFromDisk()
+	}
 	// Aggregate credits for panel/API consumers (all accounts currently in out).
 	sum := summarizeCredits(out)
-	// Mark selected account in list for UI; anomaly comes from the disk mirror.
+	// Mark selected account in list for UI; preserve/anomaly come from the disk mirror.
 	for i := range out {
 		out[i].Selected = out[i].AuthID == activeID
+		out[i].Preserve = isPreserve(out[i].AuthID)
 		out[i].Anomaly = isAnomaly(out[i].AuthID)
 		// Failover state is in-memory only; surface it so the panel can show
 		// consecutive failures + cooldown instead of the binary anomaly badge.
@@ -203,9 +232,12 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 		"active_auth":             activeID,
 		"checkin_auto":            auto,
 		"lifecycle_auto":          lifecycleEnabled(),
+		"preserve_auto":           preserveWatchdogEnabled(),
+		"preserve_threshold":      preserveThreshold(),
 		"schedule":                []string{"09:00", "21:00"},
 		"server_time":             time.Now().Format("2006-01-02 15:04:05"),
 		"summary":                 sum,
+		"preserve_pool_size":      preserveSize,
 		"anomaly_pool_size":       anomalySize,
 		"anomaly_pool_threshold":  anomalyThreshold(),
 		"anomaly_refresh_enabled": anomalyRefreshEnabled(),

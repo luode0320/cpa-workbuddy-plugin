@@ -139,6 +139,11 @@ func init() {
 			})
 		}
 	}()
+	// Credits-preserve watchdog (保号池): periodic refresh + preserve flag
+	// flips on the physical auth files. Started in init() but waits for the
+	// host bridge + auth discovery before its first tick (see watchdog.go).
+	// 同步自 workbuddy-provider。
+	go preserveWatchdogLoop()
 }
 
 func main() {}
@@ -333,7 +338,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.4"
+var version = "0.9.5"
 
 func wbRegistration() registration {
 	return registration{
@@ -345,15 +350,17 @@ func wbRegistration() registration {
 			GitHubRepository: "https://github.com/luode0320/cpa-workbuddy-plugin",
 			Logo:             pluginLogoURL,
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily auto check-in at 09:00 and 21:00 local time for CN accounts (default true)."},
-				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Auto disable CN when credits exhausted; re-enable CN after check-in restores credits (default true)."},
-				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily access-token refresh at 22:00 local time to prevent Keycloak offline-session expiry (default true)."},
-				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional model list. Each item can have id, name, alias, context, max_tokens, enabled, reasoning."},
-				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (pick highest remaining). WARNING: when off + lifecycle_auto=false, exhausted accounts may still be routed — enable lifecycle_auto or set scheduler_mode=credits."},
-				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional override of CPAMP usage import URL (default http://cpa-manager-plus:18317/v0/management/usage/import; also env USAGE_REPORT_URL)."},
-				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key override. Prefer auto-detect from env CPAMP_ADMIN_KEY / USAGE_REPORT_KEY or secret file /run/secrets/cpamp_admin_key."},
-				{Name: "anomaly_pool_threshold", Type: pluginapi.ConfigFieldTypeString, Description: "Consecutive-failure count (1-50) at which an account is moved into the anomaly pool and kept out of routing. Default 10. Set to 0 to disable auto-quarantine entirely (kill switch). Absent key keeps the current value."},
-				{Name: "anomaly_refresh_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable the daily 00:00 local-time anomaly-pool auto-reset loop (default true). When true, every quarantined account gets another shot the next day; if it's still broken it will be re-quarantined."},
+				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每日自动签到（本地时间 09:00 与 21:00，CN 账号，默认开启）。"},
+				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "额度耗尽时自动禁用账号；签到恢复额度后自动重新启用（默认开启）。"},
+				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每日 22:00（本地时间）access-token 自动刷新，防止 Keycloak 离线会话过期（默认开启）。"},
+				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "可选模型列表。每个条目可包含 id、name、alias、context、max_tokens、enabled、reasoning 字段；配置后优先于自动获取的模型列表。"},
+				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeSession, schedulerModeCredits, schedulerModeOff}, Description: "多账号选择策略：session（按会话轮询，同一会话 1 小时内固定同一账号；默认）／credits（面板指定的固定账号）／off（交给内置逻辑）。注意：off 且 lifecycle_auto=false 时，额度耗尽的账号仍可能被路由——请启用 lifecycle_auto 或保持 session/credits。"},
+				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 用量上报地址（默认 http://cpa-manager-plus:18317/v0/management/usage/import；也可用环境变量 USAGE_REPORT_URL）。"},
+				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 管理密钥。优先从环境变量 CPAMP_ADMIN_KEY / USAGE_REPORT_KEY 或密钥文件 /run/secrets/cpamp_admin_key 自动探测。"},
+				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
+				{Name: "usage_feed_path", Type: pluginapi.ConfigFieldTypeString, Description: "可选：共享用量数据流路径（默认 <CLIProxyAPI 根目录>/data/token-usage-feed.ndjson）。必须与 token-usage-tracker 的 usage_feed_path 保持一致。"},
+				{Name: "anomaly_pool_threshold", Type: pluginapi.ConfigFieldTypeString, Description: "连续失败次数阈值（1-50），达到后账号进入异常池并暂停路由。默认 10。设为 0 可彻底关闭自动隔离（安全开关）。缺省该键时保持当前值。"},
+				{Name: "anomaly_refresh_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每日 00:00（本地时间）异常池自动重置（默认开启）。开启后，被隔离账号次日获得一次重试机会；仍异常则再次隔离。"},
 			},
 		},
 		Capabilities: registrationCapability{
@@ -670,17 +677,31 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	if sa.Account.UID != "" {
 		authUID = sa.Account.UID
 	}
+	// Qoderwork-internal account identifier forwarded to the tracker
+	// dashboard's "来源" (source) column so users can see which account served
+	// the request. Nickname reads best; fall back to UID when the account has
+	// no nickname.
+	accountLabel := strings.TrimSpace(sa.Account.Nickname)
+	if accountLabel == "" {
+		accountLabel = authUID
+	}
+	// Stable per-conversation key forwarded to the tracker dashboard's
+	// "会话" (session) column. Extracted from the same priority chain
+	// scheduler.pick uses (extractSessionKeyFromSources here,
+	// extractSessionKey on the scheduler side). qoderwork does not rewrite
+	// reasoning_effort, so the feed's reasoning_effort field stays "".
+	sessionKey := extractSessionKeyFromSources(req.Headers, req.Metadata)
 	// Build the QoderWork agent_chat_generation body from the OpenAI request,
 	// then QoderEncoding-encode it. The template embeds a 10657-token system
 	// prompt that the server requires for normal behaviour (KNOWLEDGE §5.2).
 	qwReq := &openAIRequest{}
 	if err := json.Unmarshal(req.Payload, qwReq); err != nil && len(req.Payload) > 0 {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error())
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error(), "", 0, accountLabel, sessionKey)
 		return nil, fmt.Errorf("payload parse: %w", err)
 	}
 	body, err := buildQoderBody(qwReq, upstreamModel, uiUserType(nil))
 	if err != nil {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "body build: "+err.Error())
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "body build: "+err.Error(), "", 0, accountLabel, sessionKey)
 		return nil, fmt.Errorf("body build: %w", err)
 	}
 	encodedBody := qoderEncode(body)
@@ -709,6 +730,14 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			usedAuthID = strings.TrimSpace(curSA.Auth.AccessToken)
 			if usedAuthID == "" {
 				usedAuthID = strings.TrimSpace(curSA.Account.UID)
+			}
+			// The account that actually served the request may differ from the
+			// initial one after failover; keep counter/feed bookkeeping in
+			// lockstep with it.
+			authUID = curSA.Account.UID
+			accountLabel = strings.TrimSpace(curSA.Account.Nickname)
+			if accountLabel == "" {
+				accountLabel = authUID
 			}
 			break
 		}
@@ -741,7 +770,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		// After exhausting retries (or a non-account-level error), mirror
 		// the historical accounting path: note the failure on the LAST
 		// account actually contacted and propagate the error.
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, parseUpstreamStatusFromErr(completionErr), completionErr.Error())
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, parseUpstreamStatusFromErr(completionErr), completionErr.Error(), "", 0, accountLabel, sessionKey)
 		reconcileAfterExecutorError(usedAuthID, parseUpstreamStatusFromErr(completionErr), completionErr.Error())
 		if parseUpstreamStatusFromErr(completionErr) == 0 {
 			noteAccountFailure(usedAuthID, 0, completionErr.Error())
@@ -750,7 +779,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	}
 	// Success path: credit invalidation + failover counter reset use
 	// the actual account that served the request.
-	publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "")
+	publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "", "", 0, accountLabel, sessionKey)
 	invalidateAccountCredits(usedAuthID, authUID)
 	resetAccountFailover(usedAuthID)
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
@@ -821,6 +850,16 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	if sa.Account.UID != "" {
 		authUID = sa.Account.UID
 	}
+	// Qoderwork-internal account identifier for the tracker dashboard's 来源
+	// column (same rule as handleExecExecute): nickname preferred, UID
+	// fallback. sessionKey is the same per-conversation key as
+	// handleExecExecute; pumped downstream into pumpUpstreamStream so SSE rows
+	// carry the session identity too.
+	accountLabel := strings.TrimSpace(sa.Account.Nickname)
+	if accountLabel == "" {
+		accountLabel = authUID
+	}
+	sessionKey := extractSessionKeyFromSources(req.Headers, req.Metadata)
 
 	// Build the QoderWork body (template-based) and QoderEncoding-encode.
 	bodyRaw := req.Payload
@@ -829,12 +868,12 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	}
 	qwReq := &openAIRequest{}
 	if err := json.Unmarshal(bodyRaw, qwReq); err != nil && len(bodyRaw) > 0 {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error())
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error(), "", 0, accountLabel, sessionKey)
 		return nil, fmt.Errorf("payload parse: %w", err)
 	}
 	body, err := buildQoderBody(qwReq, upstreamModel, uiUserType(nil))
 	if err != nil {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "body build: "+err.Error())
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "body build: "+err.Error(), "", 0, accountLabel, sessionKey)
 		return nil, fmt.Errorf("body build: %w", err)
 	}
 	encodedBody := qoderEncode(body)
@@ -847,7 +886,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		collector := &sseUsageCollector{}
 		chunks, statusCode, errCollect := collectUpstreamStreamQoder(encodedBody, sa, upstreamModel, sseFramed, collector)
 		if errCollect != nil {
-			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error())
+			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error(), "", collector.ttftNS(started), accountLabel, sessionKey)
 			// Unlike the workbuddy plugin, collectUpstreamStreamQoder does not
 			// run reconcileByUID internally — handle both cases here.
 			// statusCode==0 → transport failure, failover note only;
@@ -860,7 +899,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			}
 			return nil, errCollect
 		}
-		publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), false, 0, "")
+		publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), false, 0, "", "", collector.ttftNS(started), accountLabel, sessionKey)
 		invalidateAccountCredits(req.AuthID, authUID)
 		resetAccountFailover(req.AuthID)
 		return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
@@ -885,7 +924,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		streamClose(req.StreamID)
 		return okEnvelope(streamResponse{Headers: headers})
 	}
-	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID)
+	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, accountLabel, sessionKey)
 	return okEnvelope(streamResponse{Headers: headers})
 }
 
