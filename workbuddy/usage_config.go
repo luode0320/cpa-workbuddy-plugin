@@ -189,11 +189,18 @@ func configure(raw []byte) {
 					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
 					// 交给 parseModelsConfig（显式配置优先于动态获取与
 					// 静态默认，见 models.go）。
-					// 兼容面板/编辑器把单行 JSON 自动美化成多行 pretty-print
-					// 的场景（如 `models: [\n  {...},\n  {...}\n]`）：
-					// 单行解析失败时按括号配对收集后续行直到闭合再解析。
+					// 兼容两种面板落盘形态：
+					// ① 单行/多行 pretty-print JSON（`models: [...]` /
+					//    `models: [\n  {...},\n  {...}\n]`）——按括号配对
+					//    收集后续行直到闭合再整体解析；
+					// ② 宿主把 JSON 数组序列化回 YAML block sequence
+					//    （`models:` 换行逐行 `- key: value`）——回退到
+					//    parseModelsYAMLBlock 按缩进收集条目。
 					if j := strings.Index(line, ":"); j >= 0 {
-						if v, ok := parseModelsValue(lines, i, strings.TrimSpace(line[j+1:])); ok {
+						rest := strings.TrimSpace(line[j+1:])
+						if v, ok := parseModelsValue(lines, i, rest); ok {
+							parseModelsConfig(v)
+						} else if v, ok := parseModelsYAMLBlock(lines, i+1, indentOf(lines[i])); ok {
 							parseModelsConfig(v)
 						}
 					}
@@ -331,6 +338,122 @@ func parseModelsValue(lines []string, i int, rest string) (any, bool) {
 		return nil, false
 	}
 	return v, true
+}
+
+// parseModelsYAMLBlock 解析宿主管理面板把 JSON 数组序列化回 YAML 的 block
+// sequence 形态：
+//
+//	models:
+//	  - context: 2000000
+//	    id: hy4-preview
+//	    max_tokens: 20000
+//	    name: Hy4 preview
+//	  - context: 2000000
+//	    id: hy3
+//
+// 输出与 json.Unmarshal 到 []any 的产物同构（元素为 map[string]any，标量
+// 字段转 int64/float64/bool/string/nil），可直接交给 parseModelsConfig。
+// 无任何可识别条目时返回 ok=false（调用方保持现状）。
+// [参数] lines：config_yaml 原始分行（保留缩进）；start：models: 下一行下标；
+//
+//	baseIndent：models: 行的空格缩进数（block 内容必须更深）
+//
+// [返回] (条目列表, 是否成功)
+// 最近修改时间 2026-08-29（新增 YAML block sequence 兼容，实证宿主
+// config_store 把面板 JSON 数组序列化为该形态）
+func parseModelsYAMLBlock(lines []string, start, baseIndent int) (any, bool) {
+	var out []any
+	first := -1
+	for j := start; j < len(lines); j++ {
+		ind := indentOf(lines[j])
+		trimmed := strings.TrimSpace(lines[j])
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if ind <= baseIndent {
+			return nil, false
+		}
+		if strings.HasPrefix(trimmed, "- ") {
+			first = j
+			break
+		}
+		return nil, false
+	}
+	if first < 0 {
+		return nil, false
+	}
+	dashIndent := indentOf(lines[first])
+	cur := map[string]any{}
+	flush := func() {
+		if len(cur) > 0 {
+			out = append(out, cur)
+		}
+	}
+	for j := first; j < len(lines); j++ {
+		ind := indentOf(lines[j])
+		trimmed := strings.TrimSpace(lines[j])
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") && ind == dashIndent {
+			flush()
+			cur = map[string]any{}
+			if k, v, ok := splitYAMLPair(trimmed[2:]); ok {
+				cur[k] = parseYAMLScalar(v)
+			}
+			continue
+		}
+		if ind <= baseIndent || ind <= dashIndent {
+			break
+		}
+		if k, v, ok := splitYAMLPair(trimmed); ok {
+			cur[k] = parseYAMLScalar(v)
+		}
+	}
+	flush()
+	return out, len(out) > 0
+}
+
+// indentOf 返回行首空格数（YAML block 缩进，tab 不计入）。
+func indentOf(s string) int {
+	n := 0
+	for n < len(s) && s[n] == ' ' {
+		n++
+	}
+	return n
+}
+
+// splitYAMLPair 按第一个冒号切分 "key: value"，返回 (key, value)。
+func splitYAMLPair(s string) (string, string, bool) {
+	s = strings.TrimSpace(s)
+	j := strings.Index(s, ":")
+	if j <= 0 {
+		return "", "", false
+	}
+	return strings.TrimSpace(s[:j]), strings.TrimSpace(s[j+1:]), true
+}
+
+// parseYAMLScalar 把 YAML 标量值转为与 json.Unmarshal 同构的类型
+// （int64/float64/bool/string/nil），保证 parseModelsConfig 的 JSON 通道
+// 后续处理一致。
+func parseYAMLScalar(v string) any {
+	v = strings.TrimSpace(v)
+	if v == "" || v == "null" || v == "~" {
+		return nil
+	}
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return n
+	}
+	if f, err := strconv.ParseFloat(v, 64); err == nil {
+		return f
+	}
+	switch strings.ToLower(v) {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	return strings.Trim(v, "\"'")
 }
 
 // resolveUsageReport fills usageReportURL/key from config → env → secret files.

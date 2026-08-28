@@ -284,6 +284,96 @@ models:
 	assertModelIDs(t, got, "glm-5.2")
 }
 
+// 宿主把面板 JSON 数组序列化回 YAML block sequence 的 models 形态
+// （实测 cli-proxy-api config_store 落库形态：models: 换行逐行
+// `- context: ... / id: ...`）经 configure() 全链路生效，且字段完整映射。
+func TestConfigure_ModelsYAMLBlock(t *testing.T) {
+	resetConfiguredModels(t)
+	configure(configYAMLForTest(t, `
+checkin_auto: true
+      models:
+        - context: 2000000
+          id: hy4-preview
+          max_tokens: 20000
+          name: Hy4 preview
+        - context: 2000000
+          id: hy3
+          max_tokens: 20000
+          name: Hy3
+      enabled: true
+`))
+	got := getConfiguredModels()
+	assertModelIDs(t, got, "hy4-preview", "hy3")
+	if got[0].Name != "Hy4 preview" || got[0].ContextLength != 2000000 || got[0].MaxCompletionTokens != 20000 {
+		t.Fatalf("models[0] = %+v, want name=Hy4 preview context=2000000 max_tokens=20000", got[0])
+	}
+}
+
+// block 形态中 enabled: false 条目跳过（与 JSON 形态语义一致）。
+func TestConfigure_ModelsYAMLBlock_EnabledFalse(t *testing.T) {
+	resetConfiguredModels(t)
+	configure(configYAMLForTest(t, `
+      models:
+        - context: 2000000
+          id: hy4-preview
+          max_tokens: 20000
+          name: Hy4 preview
+        - context: 2000000
+          id: hy3
+          max_tokens: 20000
+          name: Hy3
+          enabled: false
+`))
+	got := getConfiguredModels()
+	assertModelIDs(t, got, "hy4-preview")
+}
+
+// parseModelsYAMLBlock 直接单测：缩进边界正确，enabled 等兄弟 key 不被吞入。
+func TestParseModelsYAMLBlock(t *testing.T) {
+	lines := []string{
+		"      models:",
+		"        - context: 2000000",
+		"          id: hy4-preview",
+		"          max_tokens: 20000",
+		"          name: Hy4 preview",
+		"        - context: 2000000",
+		"          id: hy3",
+		"          max_tokens: 20000",
+		"          name: Hy3",
+		"      enabled: true",
+	}
+	v, ok := parseModelsYAMLBlock(lines, 1, 6)
+	if !ok {
+		t.Fatalf("yaml block parse failed")
+	}
+	items, ok := v.([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("unexpected value: %#v", v)
+	}
+	m0, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("item[0] not map: %#v", items[0])
+	}
+	if m0["id"] != "hy4-preview" || m0["context"] != int64(2000000) || m0["max_tokens"] != int64(20000) {
+		t.Fatalf("item[0] = %#v, want id/context/max_tokens", m0)
+	}
+	if _, exists := m0["enabled"]; exists {
+		t.Fatalf("item[0] should not contain enabled, got %#v", m0)
+	}
+}
+
+// 无任何可识别条目（纯字符串列表）返回 ok=false，保持现状（回归保护）。
+func TestParseModelsYAMLBlock_StringItemsOnly(t *testing.T) {
+	lines := []string{
+		"models:",
+		"- hy4-preview",
+		"- hy3",
+	}
+	if _, ok := parseModelsYAMLBlock(lines, 1, 0); ok {
+		t.Fatalf("string-only yaml block should fail")
+	}
+}
+
 // 合并去重：同 ID 配置优先（字段以配置为准），配置没有的自动获取模型追加在后。
 func TestMergeConfiguredAndDynamic_ConfigWins(t *testing.T) {
 	configured := []pluginapi.ModelInfo{

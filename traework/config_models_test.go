@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -135,5 +136,71 @@ models:
 	got := loadedModels()
 	if len(got) != 1 || got[0].ID != "glm-5.2" {
 		t.Fatalf("loaded models = %+v, want kept [glm-5.2]", got)
+	}
+}
+
+// 宿主把面板 JSON 数组序列化回 YAML block sequence 的 models 形态
+// （实测 cli-proxy-api config_store 落库形态：models: 换行逐行
+// `- context: ... / id: ...`）经 configure() 全链路生效。
+func TestTraeConfigure_ModelsYAMLBlock(t *testing.T) {
+	resetTraeConfiguredModels(t)
+	raw, err := json.Marshal(map[string]any{"config_yaml": []byte(`
+checkin_auto: true
+      models:
+        - context: 2000000
+          id: hy4-preview
+          max_tokens: 20000
+          name: Hy4 preview
+        - context: 2000000
+          id: hy3
+          max_tokens: 20000
+          name: Hy3
+      enabled: true
+`)})
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	configure(raw)
+	got := loadedModels()
+	if len(got) != 2 || got[0].ID != "hy4-preview" || got[1].ID != "hy3" {
+		t.Fatalf("loaded models = %+v, want [hy4-preview hy3]", got)
+	}
+	if got[0].Name != "Hy4 preview" {
+		t.Fatalf("models[0].Name = %q, want Hy4 preview", got[0].Name)
+	}
+}
+
+// parseModelsYAMLBlock 直接单测：真实缩进形态 + 类型同构（数字/字符串）。
+func TestTraeParseModelsYAMLBlock(t *testing.T) {
+	lines := []string{
+		"      models:",
+		"        - context: 2000000",
+		"          id: hy4-preview",
+		"          max_tokens: 20000",
+		"          name: Hy4 preview",
+		"        - context: 2000000",
+		"          id: hy3",
+		"          max_tokens: 20000",
+		"          name: Hy3",
+		"      enabled: true",
+	}
+	v, ok := parseModelsYAMLBlock(lines, 1, 6)
+	if !ok {
+		t.Fatalf("yaml block parse failed")
+	}
+	items, ok := v.([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("unexpected value: %#v", v)
+	}
+	m0, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("item[0] not map: %#v", items[0])
+	}
+	if m0["id"] != "hy4-preview" || m0["context"] != int64(2000000) || m0["max_tokens"] != int64(20000) {
+		t.Fatalf("item[0] = %#v, want id/context/max_tokens", m0)
+	}
+	// enabled: true（缩进等于 baseIndent）必须是停止边界，不能被吞入条目。
+	if _, exists := m0["enabled"]; exists {
+		t.Fatalf("item[0] should not contain enabled, got %#v", m0)
 	}
 }

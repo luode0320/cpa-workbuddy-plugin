@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.15
+
+### Fix — models 配置支持 YAML block sequence 落库形态
+
+线上排查（服务器 config_store 取证）发现：宿主面板把用户粘贴的 JSON 数组**反序列化成 YAML block sequence** 落库下发，`models:` 下面是缩进 `- context: 2000000` / `id: ...` 逐行条目，而非 JSON。此形态对 0.14.14 的括号配对解析永不闭合 → 静默忽略 → 回退默认列表。本版新增 `parseModelsYAMLBlock`：JSON 解析失败时按缩进收集 `- key: value` 条目，输出与 `json.Unmarshal` 同构的 `[]any{map[string]any{...}}` 复用 `parseModelsConfig`。
+
+- 涉及文件：`usage_config.go`（models 分支 JSON 失败后回退 YAML block 解析）。
+- 语义保持：纯字符串 YAML 条目（`- hy4-preview`）仍不解析（非对象形态，回归保护）；JSON 形态走原路径，两套互补不重复。
+- 测试：`models_config_test.go` +4 用例（YAML block configure 全链路 / enabled:false 过滤 / 缩进收集单测 / 纯字符串条目拒绝）。
+- 实证：用服务器真实落库的 config_store 数据端到端验证，18 个模型完整解析、字段正确。
+
 ## 0.14.14
 
 ### Fix — models 配置支持多行 pretty-print JSON
