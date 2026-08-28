@@ -9,14 +9,35 @@ import (
 	"strings"
 )
 
+// traeStoragePath is the canonical Windows host path to the Trae SOLO
+// globalStorage directory shown in the panel UI. The panel's job is to teach
+// the user where their credentials live, not to detect them at runtime — the
+// plugin server may run in a Linux container, in which case APPDATA / HOME
+// would point somewhere irrelevant. Keep this in sync with the storage layout
+// expected by import.go (parseCredentialImport reads the `iCubeAuthInfo://
+// icube.cloudide` key from storage.json in this directory).
+const traeStoragePath = `C:\Users\luode\AppData\Roaming\TRAE SOLO CN\User\globalStorage`
+
 // servePanel returns the panel HTML for a resource sub-path. Unknown sub-paths
-// fall back to the main dashboard. The Trae SOLO credential directory is
-// injected at serve time so the hint / copy-path button always shows the
-// real path of the machine hosting the plugin.
+// fall back to the main dashboard. The Trae SOLO credential path is the fixed
+// Windows host path (UI hint, not server-detected) — the plugin server may run
+// in a Linux container and cannot predict the user's local Trae SOLO install
+// location, so the path is hard-coded for clarity rather than injected at
+// serve time.
+//
+// The path is injected in two forms:
+//   - __STORAGE_DIR_DISPLAY__ → raw path, rendered inside an HTML <code> hint
+//     (backslashes are fine in HTML text nodes).
+//   - __STORAGE_DIR_JSON__ → JSON-escaped string literal, assigned to the JS
+//     constant TRAE_STORAGE_PATH. JSON escaping doubles the backslashes so the
+//     JS string survives parsing (single-quoted C:\Users\... would drop every
+//     backslash as an unknown escape sequence).
 func servePanel(sub string) []byte {
 	_ = sub
-	dirJSON, _ := json.Marshal(storageGlobalDir())
-	return []byte(strings.ReplaceAll(panelHTML, "__STORAGE_DIR_JSON__", string(dirJSON)))
+	dirJSON, _ := json.Marshal(traeStoragePath)
+	out := strings.ReplaceAll(panelHTML, "__STORAGE_DIR_JSON__", string(dirJSON))
+	out = strings.ReplaceAll(out, "__STORAGE_DIR_DISPLAY__", traeStoragePath)
+	return []byte(out)
 }
 
 const panelHTML = `<!DOCTYPE html>
@@ -58,10 +79,12 @@ th{color:var(--muted);font-weight:500;white-space:nowrap}
   <button class="primary" onclick="fleetCheckin()">全部签到</button>
   <button onclick="refreshCredits()">刷新积分</button>
   <button onclick="toggleAuto()" id="autoBtn">自动签到: …</button>
-  <button class="primary" onclick="pickDir()" title="从 Trae SOLO 客户端的 storage.json 导入凭据（支持选择目录或拖入文件）">📁 导入凭据</button>
+  <button class="primary" onclick="pickFile()" title="选择 Trae SOLO 客户端导出的 storage.json 文件导入凭据">📁 导入 storage.json</button>
+  <button onclick="pickDir()" title="备选入口：从 Trae 凭据目录中挑 storage.json（仅浏览器不支持单文件选择时使用）">选择目录</button>
   <button onclick="copyStorageDir()" title="复制 Trae SOLO 凭据目录路径到剪贴板">复制路径</button>
 </div>
-<div class="hint" id="storageHint"></div>
+<div class="hint" id="storageHint">Trae SOLO 凭据目录（Windows）：<code>__STORAGE_DIR_DISPLAY__</code>。请在资源管理器中打开该目录，将 <code>storage.json</code> 拖入面板或点击「📁 导入 storage.json」选择该文件。</div>
+<input type="file" id="fileInput" accept=".json,application/json" style="display:none">
 <input type="file" id="dirInput" webkitdirectory multiple style="display:none">
 
 <div class="card">
@@ -163,25 +186,28 @@ function renderAuto(on){
 // ---------------------------------------------------------------------------
 // Credential import (Trae SOLO storage.json)
 // ---------------------------------------------------------------------------
-// STORAGE_DIR is injected at serve time (JSON-escaped absolute path of the
-// Trae SOLO globalStorage directory on the host machine).
-const STORAGE_DIR = __STORAGE_DIR_JSON__;
+// TRAE_STORAGE_PATH is the fixed Windows host path of the Trae SOLO
+// globalStorage directory (must match traeStoragePath in Go land). It is
+// surfaced to the user as a hint and as the payload of the "复制路径" button.
+// The value is injected as a JSON string literal (__STORAGE_DIR_JSON__), which
+// escapes the backslashes so they survive JS parsing.
+const TRAE_STORAGE_PATH = __STORAGE_DIR_JSON__;
 let rememberedDir = null;
 
 function copyStorageDir(){
-  const done = () => msg('凭据目录已复制：' + STORAGE_DIR);
+  const done = () => msg('凭据目录已复制：' + TRAE_STORAGE_PATH);
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(STORAGE_DIR).then(done).catch(() => fallbackCopy(done));
+    navigator.clipboard.writeText(TRAE_STORAGE_PATH).then(done).catch(() => fallbackCopy(done));
   } else {
     fallbackCopy(done);
   }
 }
 function fallbackCopy(done){
   const ta = document.createElement('textarea');
-  ta.value = STORAGE_DIR;
+  ta.value = TRAE_STORAGE_PATH;
   document.body.appendChild(ta);
   ta.select();
-  try { document.execCommand('copy'); done(); } catch(e){ msg('复制失败，请手动复制：' + STORAGE_DIR); }
+  try { document.execCommand('copy'); done(); } catch(e){ msg('复制失败，请手动复制：' + TRAE_STORAGE_PATH); }
   ta.remove();
 }
 
@@ -215,6 +241,26 @@ function idbPut(key, val){
     } catch(e){ res(false); }
   });
 }
+
+// pickFile is the primary entry point: open a single-file picker filtered to
+// .json / application/json so the user cannot accidentally pick an unrelated
+// file. The accept attribute is a hint, not a filter, so we also validate
+// the chosen filename on the change handler.
+function pickFile(){
+  document.getElementById('fileInput').click();
+}
+
+document.getElementById('fileInput').addEventListener('change', async (ev) => {
+  const f = (ev.target.files || [])[0];
+  if (!f) return;
+  if (!/\.json$/i.test(f.name) && f.type !== 'application/json') {
+    msg('请选择 .json 文件（Trae SOLO 导出的 storage.json）');
+    ev.target.value = '';
+    return;
+  }
+  await doImport(f);
+  ev.target.value = '';
+});
 
 async function pickDir(){
   // Primary path: File System Access API (Chrome/Edge). The directory handle
@@ -286,7 +332,6 @@ document.addEventListener('drop', async (e) => {
 (async function(){
   const cfg = await api('/checkin/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: true})});
   renderAuto(cfg.enabled);
-  document.getElementById('storageHint').textContent = 'Trae SOLO 凭据目录：' + STORAGE_DIR + '（首次点「📁 导入凭据」需手动定位该目录，之后将自动记住）';
   await load();
 })();
 </script>
