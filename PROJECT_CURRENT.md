@@ -8,9 +8,9 @@
 
 ## 项目概览
 
-- 状态：活跃维护中（最近发布 2026-08-28 qoderwork 0.9.5 全量 1-9 对齐 workbuddy + 同日 traework 0.1.3 面板凭据导入 json 指定 + 路径固定）
+- 状态：活跃维护中（最近发布 2026-08-28 workbuddy 0.14.14 + traework 0.1.4：models 多行 JSON 兼容 + workbuddy 合并语义）
 - 活动会话数：1
-- 更新时间：2026-08-28 22:55 (GMT+8)
+- 更新时间：2026-08-28 23:25 (GMT+8)
 
 ## 活动会话任务摘要
 
@@ -29,6 +29,7 @@
 
 ## 已完成
 
+- 2026-08-28 workbuddy 0.14.14 + traework 0.1.4 **已发布**（models 多行 JSON 兼容 + workbuddy 合并语义）：workbuddy `parseModelsValue` 括号配对跨行收集支持多行 pretty-print JSON（面板自动格式化不再吞配置）；models 合并语义（配置优先 + 自动获取补充，`mergeConfiguredAndDynamic` 按 ID 去重、配置在前；`fetchDynamicModelsFromStorage` 移除配置短路；static 入口合并基数为静态 wbModels()，for_auth 为动态列表）。traework 同款 `parseModelsValue`（config.go）+ 面板 api() 错误处理增强（空响应/非 JSON 友好报错）。测试：workbuddy +5 / traework 新建 config_models_test.go 同款 5 用例，cgo-shim 双插件全绿。提交链 6c8f009（feat）→ bd026f9（assets 16 文件）→ 5a3e815（registry），CI 双 run success（33185257399/33185264311），16 assets checksums 全 OK，registry raw 200 + 两插件 windows_amd64 zip + checksums 远端全 200。docs/models-config.md 随 6c8f009 入库。遗留：traework/favicon.png 未引用未提交；scripts/__pycache__ pyc 未提交。
 - 2026-08-28 qoderwork 0.9.5 **已发布**（全量 1-9 对齐 workbuddy-provider 0.14.13）：①登录轮询重复账号修复（handlePollLogin toAuthDataOpts + ad.ID=""）；②models 配置面板化 + ConfigFields 中文化；③面板 5 卡片 + 异步刷新前端；④账号删除；⑤计数持久化（counter.go + 挂 preserveWatchdogLoop）；⑥session_auth 会话粘性（schedulerModeSession + evictSessionBindingsForAuth 四接入点）；⑦usage_feed NDJSON（publishUsage 8→12 参数，11 处调用点）；⑧保号池 + watchdog（preserve.go/watchdog.go + 面板保号展示 8 处）。同步原则：逐函数适配、纯逻辑文件可整文件复制；SSE 嵌套解包 / COSY 签名等架构差异保留 qoderwork 原样。测试 session_auth/usage_feed/watchdog/auth_delete 同步 + 补 qoderwork 缺失 helper。提交链 64c3e70→6b9a23c→f7c5ba3，CI run 33180359855 success，8 assets checksums 全 OK，registry raw 200 含 0.9.5 + 7 artifacts 远端 HEAD 全 200。真实页面交互验证待做。
 - 2026-08-28 面板凭据导入「json 指定 + 路径固定」（traework 0.1.3，**已发布**）：主按钮改单文件 `.json` 选择（accept + JS 文件名校验），webkitdirectory 降级「选择目录」；删除 servePanel 运行时路径注入，固定 `C:\Users\luode\AppData\Roaming\TRAE SOLO CN\User\globalStorage`；双形态注入（`__STORAGE_DIR_JSON__` JSON 转义 → JS 常量 + `__STORAGE_DIR_DISPLAY__` 原始路径 → HTML hint）。**关键教训**：Windows 路径经单引号直插 JS 会被当未知转义序列丢弃全部反斜杠（`\U`/`\A`/`\T`/`\g`），必须 JSON 转义注入（`json.Marshal`），复制路径按钮实测精确匹配。提交链 ecce53d→2c962aa→3711578，CI run 33179502785 success，8 assets checksums 全 OK，registry raw 200 + 7 artifacts 远端 HEAD 全 200。
 - 2026-08-27 登录轮询重复账号修复（workbuddy 0.14.12，**已发布**）：`handlePollLogin` 成功路径 `toAuthData(sa)` 返回 ID=UID，与宿主 watcher 的 `ID=<filename>` 形成同一文件双 key → 面板重复账号。修复：`toAuthDataOpts(sa,nil,false)` + `ad.ID=""`（让宿主按文件路径 `authIDForPath` 计算 ID），与 `handleParseAuth`（main.go:633）/`toAuthDataForRefresh`（oauth.go:237）对称。cgo-shim build+vet+test 全绿。提交链 f3044fd→eff0fff→28ebe6b，CI run 33081084377 success，8 assets checksums 全 OK，registry raw 200 含 0.14.12 + 7 artifacts 远端 HEAD 全 200。qoderwork `handlePollLogin`（oauth.go:386/406/420）存在同构 bug，见待办。
