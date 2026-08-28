@@ -144,6 +144,46 @@ func modelInfoFromConfig(id, name string, ctxLen, maxTok int64) pluginapi.ModelI
 	}
 }
 
+// mergeConfiguredAndDynamic 按 ID 合并 config_yaml `models:` 覆盖列表与自动
+// 获取列表（动态发现或静态默认），配置优先：
+//   - 同 ID：保留配置条目，丢弃自动获取版本（字段以配置为准）；
+//   - 配置没有、自动获取有的：追加在配置条目之后；
+//   - 顺序：配置条目在前，自动获取补充在后。
+//
+// 返回新切片，不修改入参（自动获取列表可能来自 dynamicModelsCache 或
+// wbModels() 的共享底层数组，原地修改会污染缓存）。
+// [参数] configured：config_yaml `models:` 覆盖列表（可为空）
+//
+//	dynamic：自动获取列表（可为空）
+//
+// [返回] 合并后的新列表
+// 最近修改时间 2026-08-28（由"配置完全替换"改为"合并去重、配置优先"）
+func mergeConfiguredAndDynamic(configured, dynamic []pluginapi.ModelInfo) []pluginapi.ModelInfo {
+	seen := make(map[string]struct{}, len(configured))
+	out := make([]pluginapi.ModelInfo, 0, len(configured)+len(dynamic))
+	for _, m := range configured {
+		if m.ID == "" {
+			continue
+		}
+		if _, dup := seen[m.ID]; dup {
+			continue
+		}
+		seen[m.ID] = struct{}{}
+		out = append(out, m)
+	}
+	for _, m := range dynamic {
+		if m.ID == "" {
+			continue
+		}
+		if _, dup := seen[m.ID]; dup {
+			continue
+		}
+		seen[m.ID] = struct{}{}
+		out = append(out, m)
+	}
+	return out
+}
+
 func cachedDynamicModels() ([]pluginapi.ModelInfo, bool) {
 	dynamicModelsCache.RLock()
 	defer dynamicModelsCache.RUnlock()
@@ -161,10 +201,8 @@ func storeDynamicModels(models []pluginapi.ModelInfo) {
 }
 
 func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
-	// 显式 config_yaml `models:` 覆盖优先于动态获取与静态兜底。
-	if cm := getConfiguredModels(); len(cm) > 0 {
-		return cm
-	}
+	// 纯动态获取：配置合并由调用方（handleModelForAuth / handleModelStatic）
+	// 在拿到动态列表后执行，这里不再短路返回配置，否则合并拿不到动态基数。
 	if models, ok := cachedDynamicModels(); ok {
 		return models
 	}
@@ -506,9 +544,9 @@ func handleModelStatic(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	cacheModelAliases(req.Host)
-	models := getConfiguredModels()
-	if len(models) == 0 {
-		models = wbModels()
+	models := wbModels()
+	if cm := getConfiguredModels(); len(cm) > 0 {
+		models = mergeConfiguredAndDynamic(cm, models)
 	}
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
@@ -525,6 +563,9 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 	// auth file carries a non-canonical provider string.
 	cacheModelAliases(req.Host)
 	models := fetchDynamicModelsFromStorage(req.StorageJSON)
+	if cm := getConfiguredModels(); len(cm) > 0 {
+		models = mergeConfiguredAndDynamic(cm, models)
+	}
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }

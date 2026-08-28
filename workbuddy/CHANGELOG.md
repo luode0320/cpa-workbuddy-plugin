@@ -1,6 +1,29 @@
 # Changelog
 
-## 0.14.12
+## 0.14.14
+
+### Fix — models 配置支持多行 pretty-print JSON
+
+配置面板保存时会把单行 JSON 自动格式化（美化）成多行，而原解析是逐行扫描、只取 `models:` 行冒号后的内容，`models: [` 单独一行解析失败被**静默跳过** → 整段配置未生效、回退默认列表，且无日志。本版新增 `parseModelsValue`：单行解析失败时按**括号配对**（跳过字符串内 `{}[]`、处理转义）跨行收集直到 JSON 闭合再整体解析。
+
+- 涉及文件：`usage_config.go`。
+- 语义保持：未闭合/非法 JSON → 保持现状（不误吞后续配置行）；多行 YAML 列表（`models:` 换行逐行 `- xxx`）仍不解析。
+- 测试：`models_config_test.go` +5 用例（单行回归 / 多行解析 / 未闭合拒绝 / configure 全链路 / YAML 列表仍忽略）。
+
+### Feat — models 合并语义：配置优先 + 自动获取补充
+
+原行为：配置了非空 `models` 就**完全替换**自动获取的模型列表。现改为**合并去重、配置优先**：同 ID 用配置条目（name / context / max_tokens 以配置为准），配置没有但自动获取有的模型追加保留（配置在前）。`models: []` 仍等于纯自动获取。
+
+- 关键改动：`fetchDynamicModelsFromStorage` 移除配置短路（否则合并拿不到动态基数）；新增 `mergeConfiguredAndDynamic`（按 ID 去重、返回新切片、不污染动态缓存共享底层数组）；`handleModelStatic` / `handleModelForAuth` 先取基数再合并。
+- 边界：`model.static` 入口的 SDK 请求无 StorageJSON，其合并基数为静态默认 `wbModels()`；`model.for_auth` 才有上游动态列表。
+- 测试：更新 2 个覆盖断言 + 新增 4 个（同 ID 配置胜出 / 独有模型追加 / 入参不被修改 / 动态缓存全链路）。
+
+## 0.14.13
+
+### Feat — models 配置面板化（补记）
+
+上一版发布时未记 CHANGELOG，此处补记：models 支持 `config_yaml` 显式配置（`models:` 键，字符串或对象条目，`enabled:false` 跳过，`models: []` 显式清空），优先链 config > dynamic > static；配置面板字段全中文化。
+
 
 ### Fix — 登录轮询返回重复账号（ID 与 watcher 双 key）
 

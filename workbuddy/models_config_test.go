@@ -133,7 +133,7 @@ models: ["glm-5.2", {"id": "x-model", "context": 65536}]
 	}
 }
 
-// 配置存在时 model.static 优先返回配置列表而非静态默认。
+// 配置存在时 model.static 返回"配置 + 静态默认补充"（合并去重、配置优先）。
 func TestConfiguredModels_OverrideStaticHandler(t *testing.T) {
 	resetConfiguredModels(t)
 	parseModelsConfig([]any{"glm-5.2", "custom-a"})
@@ -142,10 +142,18 @@ func TestConfiguredModels_OverrideStaticHandler(t *testing.T) {
 		t.Fatalf("handleModelStatic: %v", err)
 	}
 	resp := decodeModelResponse(t, raw)
-	assertModelIDs(t, resp.Models, "glm-5.2", "custom-a")
+	// 配置条目在前，wbModels() 中未配置的补充在后，同 ID 以配置为准（glm-5.2 去重）。
+	var want []string
+	for _, m := range wbModels() {
+		if m.ID != "glm-5.2" {
+			want = append(want, m.ID)
+		}
+	}
+	want = append([]string{"glm-5.2", "custom-a"}, want...)
+	assertModelIDs(t, resp.Models, want...)
 }
 
-// 配置存在时 model.for_auth 在无 token 情况下也返回配置列表（配置优先）。
+// 配置存在时 model.for_auth 返回"配置 + 动态列表补充"（合并去重、配置优先）。
 func TestConfiguredModels_OverrideForAuthHandler(t *testing.T) {
 	resetConfiguredModels(t)
 	parseModelsConfig([]any{"custom-a"})
@@ -158,7 +166,13 @@ func TestConfiguredModels_OverrideForAuthHandler(t *testing.T) {
 		t.Fatalf("handleModelForAuth: %v", err)
 	}
 	resp := decodeModelResponse(t, raw)
-	assertModelIDs(t, resp.Models, "custom-a")
+	// 无 storageJSON → 动态回退 wbModels()；配置 custom-a 在前，默认列表补充在后。
+	var want []string
+	for _, m := range wbModels() {
+		want = append(want, m.ID)
+	}
+	want = append([]string{"custom-a"}, want...)
+	assertModelIDs(t, resp.Models, want...)
 }
 
 // 未配置时 model.static 回退到静态默认列表（回归保护）。
@@ -171,5 +185,167 @@ func TestNoConfiguredModels_FallsBackToStatic(t *testing.T) {
 	resp := decodeModelResponse(t, raw)
 	if len(resp.Models) != len(wbModels()) {
 		t.Fatalf("fallback model count = %d, want %d", len(resp.Models), len(wbModels()))
+	}
+}
+
+// parseModelsValue 单行 JSON：直接解析成功（回归）。
+func TestParseModelsValue_SingleLine(t *testing.T) {
+	v, ok := parseModelsValue([]string{`models: [{"id": "a"}]`}, 0, `[{"id": "a"}]`)
+	if !ok {
+		t.Fatalf("single-line parse failed")
+	}
+	items, ok := v.([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("unexpected value: %#v", v)
+	}
+}
+
+// parseModelsValue 多行 pretty-print JSON（面板/编辑器自动美化形态）：
+// 跨行收集到括号闭合后整体解析成功。
+func TestParseModelsValue_MultiLine(t *testing.T) {
+	lines := []string{
+		"models: [",
+		"  {",
+		`    "context": 2000000,`,
+		`    "id": "hy4-preview",`,
+		`    "max_tokens": 20000,`,
+		`    "name": "Hy4 preview"`,
+		"  },",
+		"  {",
+		`    "context": 2000000,`,
+		`    "id": "hy3",`,
+		`    "max_tokens": 20000,`,
+		`    "name": "Hy3"`,
+		"  }",
+		"]",
+		"checkin_auto: true",
+	}
+	v, ok := parseModelsValue(lines, 0, "[")
+	if !ok {
+		t.Fatalf("multi-line parse failed")
+	}
+	items, ok := v.([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("unexpected value: %#v", v)
+	}
+}
+
+// JSON 未闭合时返回 ok=false（保持现状，不误吞后续配置行）。
+func TestParseModelsValue_Unclosed(t *testing.T) {
+	lines := []string{
+		"models: [",
+		`  {"id": "a"},`,
+		"checkin_auto: true",
+	}
+	if _, ok := parseModelsValue(lines, 0, "["); ok {
+		t.Fatalf("unclosed JSON should fail")
+	}
+}
+
+// 面板保存自动格式化成跨行 pretty-print 后，configure() 全链路应生效
+// （修复前该形态静默失败、回退默认列表）。
+func TestConfigure_ModelsMultiLinePretty(t *testing.T) {
+	resetConfiguredModels(t)
+	configure(configYAMLForTest(t, `
+checkin_auto: true
+models: [
+  {
+    "context": 2000000,
+    "id": "hy4-preview",
+    "max_tokens": 20000,
+    "name": "Hy4 preview"
+  },
+  {
+    "context": 2000000,
+    "id": "hy3",
+    "max_tokens": 20000,
+    "name": "Hy3"
+  }
+]
+`))
+	got := getConfiguredModels()
+	assertModelIDs(t, got, "hy4-preview", "hy3")
+	if got[0].ContextLength != 2000000 || got[0].MaxCompletionTokens != 20000 {
+		t.Fatalf("hy4-preview context/max_tokens = %d/%d, want 2000000/20000",
+			got[0].ContextLength, got[0].MaxCompletionTokens)
+	}
+}
+
+// 多行 YAML 列表（models: 换行逐行 - xxx）依旧不解析，保持现状（回归保护）。
+func TestConfigure_ModelsYAMLListStillIgnored(t *testing.T) {
+	resetConfiguredModels(t)
+	parseModelsConfig([]any{"glm-5.2"})
+	configure(configYAMLForTest(t, `
+models:
+- hy4-preview
+- hy3
+`))
+	got := getConfiguredModels()
+	assertModelIDs(t, got, "glm-5.2")
+}
+
+// 合并去重：同 ID 配置优先（字段以配置为准），配置没有的自动获取模型追加在后。
+func TestMergeConfiguredAndDynamic_ConfigWins(t *testing.T) {
+	configured := []pluginapi.ModelInfo{
+		{ID: "a", Name: "ConfigA", ContextLength: 100},
+		{ID: "c", Name: "ConfigC"},
+	}
+	dynamic := []pluginapi.ModelInfo{
+		{ID: "a", Name: "DynA", ContextLength: 999},
+		{ID: "b", Name: "DynB"},
+	}
+	got := mergeConfiguredAndDynamic(configured, dynamic)
+	assertModelIDs(t, got, "a", "c", "b")
+	if got[0].Name != "ConfigA" || got[0].ContextLength != 100 {
+		t.Fatalf("configured entry should win: %+v", got[0])
+	}
+}
+
+// 自动获取独有模型追加；空配置原样返回动态列表；空动态原样返回配置。
+func TestMergeConfiguredAndDynamic_AppendsUnique(t *testing.T) {
+	configured := []pluginapi.ModelInfo{{ID: "a"}}
+	dynamic := []pluginapi.ModelInfo{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+	assertModelIDs(t, mergeConfiguredAndDynamic(configured, dynamic), "a", "b", "c")
+	assertModelIDs(t, mergeConfiguredAndDynamic(nil, dynamic), "a", "b", "c")
+	assertModelIDs(t, mergeConfiguredAndDynamic(configured, nil), "a")
+}
+
+// 合并不修改入参（保护 dynamicModelsCache / wbModels 的共享底层数组）。
+func TestMergeConfiguredAndDynamic_NoMutation(t *testing.T) {
+	configured := []pluginapi.ModelInfo{{ID: "a"}}
+	dynamic := []pluginapi.ModelInfo{{ID: "a"}, {ID: "b"}}
+	_ = mergeConfiguredAndDynamic(configured, dynamic)
+	if len(dynamic) != 2 || dynamic[0].ID != "a" || dynamic[1].ID != "b" {
+		t.Fatalf("dynamic input mutated: %+v", dynamic)
+	}
+	if len(configured) != 1 || configured[0].ID != "a" {
+		t.Fatalf("configured input mutated: %+v", configured)
+	}
+}
+
+// 全链路：预置动态缓存（模拟上游已拉取），配置存在时 for_auth 返回
+// "配置优先 + 动态独有模型补充"。
+func TestConfiguredModels_ForAuthMergesDynamicCache(t *testing.T) {
+	resetConfiguredModels(t)
+	storeDynamicModels([]pluginapi.ModelInfo{
+		{ID: "glm-5.2", Name: "Dyn GLM"},
+		{ID: "hy4-preview", Name: "Hy4 preview"},
+	})
+	t.Cleanup(func() { storeDynamicModels(nil) })
+	parseModelsConfig([]any{
+		map[string]any{"id": "glm-5.2", "name": "Cfg GLM", "context": 2000000, "max_tokens": 20000},
+	})
+	req, err := json.Marshal(pluginapi.AuthModelRequest{})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	raw, err := handleModelForAuth(req)
+	if err != nil {
+		t.Fatalf("handleModelForAuth: %v", err)
+	}
+	resp := decodeModelResponse(t, raw)
+	assertModelIDs(t, resp.Models, "glm-5.2", "hy4-preview")
+	if resp.Models[0].Name != "Cfg GLM" || resp.Models[0].ContextLength != 2000000 {
+		t.Fatalf("configured glm-5.2 should win: %+v", resp.Models[0])
 	}
 }

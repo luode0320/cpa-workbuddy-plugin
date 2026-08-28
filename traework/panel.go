@@ -102,9 +102,36 @@ th{color:var(--muted);font-weight:500;white-space:nowrap}
 
 <script>
 const base = location.pathname.replace(/\/panel.*$/, '');
+// api() always returns a parsed object, or throws a descriptive Error when
+// the body is empty / not JSON. Bare r.json() loses every signal: a fused
+// plugin handler or stale identity produces HTTP 200 with an empty body,
+// and r.json() throws a DOMException that tells the user nothing. Parsing
+// the text ourselves lets us surface the real status code and a short
+// body preview so the next panel failure is actionable.
 async function api(path, opts){
-  const r = await fetch(base + path, opts);
-  return r.json();
+  let r;
+  try { r = await fetch(base + path, opts); }
+  catch (e) { throw new Error('网络请求失败：' + (e && e.message || e)); }
+  const status = r.status;
+  const ctype = r.headers.get('content-type') || '';
+  let text = '';
+  try { text = await r.text(); } catch (e) { text = ''; }
+  if (!text) {
+    if (status >= 500) throw new Error('服务端错误 HTTP ' + status + '（响应为空）');
+    if (status === 404) throw new Error('路由未注册：' + path + '（插件可能未加载，重启宿主）');
+    if (status >= 400) throw new Error('鉴权失败 HTTP ' + status + '（响应为空，确认 management_key 配置）');
+    // 200 + empty body: plugin handler fused or identity stale on host.
+    // Surfacing as an Error makes the panel toast say "重启宿主" instead of
+    // the previous crypt DOMException ("Failed to execute 'json'...").
+    throw new Error('插件返回空响应 HTTP 200 — 插件可能未加载、已熔断或身份失效，请重启宿主');
+  }
+  if (!/json/i.test(ctype)) {
+    throw new Error('非 JSON 响应（HTTP ' + status + '）：' + text.slice(0, 200));
+  }
+  try { return JSON.parse(text); }
+  catch (e) {
+    throw new Error('无法解析 JSON（HTTP ' + status + '）：' + text.slice(0, 200));
+  }
 }
 function tag(cls, text){ return '<span class="tag ' + cls + '">' + text + '</span>'; }
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -330,9 +357,15 @@ document.addEventListener('drop', async (e) => {
 });
 
 (async function(){
-  const cfg = await api('/checkin/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: true})});
-  renderAuto(cfg.enabled);
-  await load();
+  try {
+    const cfg = await api('/checkin/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: true})});
+    renderAuto(cfg && cfg.enabled);
+  } catch (e) {
+    msg('面板初始化失败：' + (e && e.message || e));
+    return;
+  }
+  try { await load(); }
+  catch (e) { msg('账号列表加载失败：' + (e && e.message || e)); }
 })();
 </script>
 </body>

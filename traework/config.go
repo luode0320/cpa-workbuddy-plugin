@@ -110,7 +110,7 @@ func yamlLines(raw []byte) []string {
 // Unknown keys are ignored (forward compatibility); a parse failure for a
 // known key logs once and keeps the previous value.
 func applyConfigLines(cfg *traeConfig, lines []string) {
-	for _, ln := range lines {
+	for i, ln := range lines {
 		key, val, ok := splitYAMLKey(ln)
 		if !ok {
 			continue
@@ -173,10 +173,10 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 		case "models":
 			// models is a YAML list; the raw value was already stripped of
 			// quotes, so re-parse the whole line's JSON when possible.
+			// 兼容面板/编辑器把单行 JSON 自动美化成多行 pretty-print
+			// 的场景：单行解析失败时跨行收集直到括号闭合再解析。
 			if j := strings.Index(ln, ":"); j >= 0 {
-				rest := strings.TrimSpace(ln[j+1:])
-				var v any
-				if err := json.Unmarshal([]byte(rest), &v); err == nil {
+				if v, ok := parseModelsValue(lines, i, strings.TrimSpace(ln[j+1:])); ok {
 					parseModelsConfig(v)
 				}
 			}
@@ -194,6 +194,69 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 			}
 		}
 	}
+}
+
+// parseModelsValue 解析 config_yaml 中 `models:` 的 JSON 值，兼容面板/编辑器
+// 把单行 JSON 自动美化成多行 pretty-print 的场景（如
+// `models: [\n  {...},\n  {...}\n]`）。单行解析失败时按括号配对收集后续行
+// 直到 JSON 闭合，再整体解析。无法闭合或解析失败时返回 ok=false（调用方
+// 保持现状，与"全非法条目保持现状"语义一致）。
+// [参数] lines：config_yaml 全部分行；i：models: 所在行下标；
+//
+//	rest：该行冒号后的内容（已 TrimSpace）
+//
+// [返回] (解析出的 JSON 值, 是否成功)
+// 最近修改时间 2026-08-28（新增多行 JSON 兼容）
+func parseModelsValue(lines []string, i int, rest string) (any, bool) {
+	var b strings.Builder
+	b.WriteString(rest)
+	depth, inStr, esc, closed := 0, false, false, false
+	scan := func(s string) {
+		for _, r := range s {
+			if inStr {
+				if esc {
+					esc = false
+					continue
+				}
+				if r == '\\' {
+					esc = true
+					continue
+				}
+				if r == '"' {
+					inStr = false
+				}
+				continue
+			}
+			switch r {
+			case '"':
+				inStr = true
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if depth == 0 {
+					closed = true
+				}
+			}
+		}
+	}
+	scan(rest)
+	for j := i + 1; j < len(lines) && !closed; j++ {
+		line := strings.TrimSpace(lines[j])
+		if line == "" {
+			continue
+		}
+		b.WriteString(line)
+		scan(line)
+	}
+	if !closed {
+		return nil, false
+	}
+	var v any
+	if err := json.Unmarshal([]byte(b.String()), &v); err != nil {
+		return nil, false
+	}
+	return v, true
 }
 
 // splitYAMLKey splits "key: value" into (key, value). Returns ok=false for

@@ -101,7 +101,8 @@ func configure(raw []byte) {
 			ConfigYAML []byte `json:"config_yaml"`
 		}
 		if err := json.Unmarshal(raw, &req); err == nil {
-			for _, line := range strings.Split(string(req.ConfigYAML), "\n") {
+			lines := strings.Split(string(req.ConfigYAML), "\n")
+			for i, line := range lines {
 				line = strings.TrimSpace(line)
 				if strings.HasPrefix(line, "checkin_auto:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "checkin_auto:"))
@@ -188,10 +189,11 @@ func configure(raw []byte) {
 					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
 					// 交给 parseModelsConfig（显式配置优先于动态获取与
 					// 静态默认，见 models.go）。
+					// 兼容面板/编辑器把单行 JSON 自动美化成多行 pretty-print
+					// 的场景（如 `models: [\n  {...},\n  {...}\n]`）：
+					// 单行解析失败时按括号配对收集后续行直到闭合再解析。
 					if j := strings.Index(line, ":"); j >= 0 {
-						rest := strings.TrimSpace(line[j+1:])
-						var v any
-						if err := json.Unmarshal([]byte(rest), &v); err == nil {
+						if v, ok := parseModelsValue(lines, i, strings.TrimSpace(line[j+1:])); ok {
 							parseModelsConfig(v)
 						}
 					}
@@ -266,6 +268,69 @@ func configure(raw []byte) {
 	// Parses usage_feed_* fields from the same config_yaml. Non-fatal by
 	// design: a failure only disables the feed, never chat.
 	configureUsageFeed(raw)
+}
+
+// parseModelsValue 解析 config_yaml 中 `models:` 的 JSON 值，兼容面板/编辑器
+// 把单行 JSON 自动美化成多行 pretty-print 的场景（如
+// `models: [\n  {...},\n  {...}\n]`）。单行解析失败时按括号配对收集后续行
+// 直到 JSON 闭合，再整体解析。无法闭合或解析失败时返回 ok=false（调用方
+// 保持现状，与"全非法条目保持现状"语义一致）。
+// [参数] lines：config_yaml 全部分行；i：models: 所在行下标；
+//
+//	rest：该行冒号后的内容（已 TrimSpace）
+//
+// [返回] (解析出的 JSON 值, 是否成功)
+// 最近修改时间 2026-08-28（新增多行 JSON 兼容）
+func parseModelsValue(lines []string, i int, rest string) (any, bool) {
+	var b strings.Builder
+	b.WriteString(rest)
+	depth, inStr, esc, closed := 0, false, false, false
+	scan := func(s string) {
+		for _, r := range s {
+			if inStr {
+				if esc {
+					esc = false
+					continue
+				}
+				if r == '\\' {
+					esc = true
+					continue
+				}
+				if r == '"' {
+					inStr = false
+				}
+				continue
+			}
+			switch r {
+			case '"':
+				inStr = true
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if depth == 0 {
+					closed = true
+				}
+			}
+		}
+	}
+	scan(rest)
+	for j := i + 1; j < len(lines) && !closed; j++ {
+		line := strings.TrimSpace(lines[j])
+		if line == "" {
+			continue
+		}
+		b.WriteString(line)
+		scan(line)
+	}
+	if !closed {
+		return nil, false
+	}
+	var v any
+	if err := json.Unmarshal([]byte(b.String()), &v); err != nil {
+		return nil, false
+	}
+	return v, true
 }
 
 // resolveUsageReport fills usageReportURL/key from config → env → secret files.
