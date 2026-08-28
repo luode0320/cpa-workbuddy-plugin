@@ -65,6 +65,8 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/enable", Description: "Enable one (body: {auth_index}) or all (empty body) accounts."},
 			{Method: http.MethodPost, Path: base + "/disable", Description: "Disable one (body: {auth_index}) or all (empty body) accounts."},
 			{Method: http.MethodPost, Path: base + "/unfreeze", Description: "Remove one (body: {auth_index}) or all (empty body) accounts from the anomaly pool."},
+			{Method: http.MethodPost, Path: base + "/import", Description: "Import one Trae SOLO credential (body: {filename, content}); whole storage.json or raw credential value accepted."},
+			{Method: http.MethodGet, Path: base + "/storage-path", Description: "Return the detected Trae SOLO globalStorage directory for the panel hint."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "TraeWork", Description: "TraeWork dashboard: credits, check-in, enable/disable, failover status."},
@@ -118,6 +120,10 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleToggleDisabled(req, true)))
 	case req.Method == http.MethodPost && path == base+"/unfreeze":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleUnfreezeAuth(req)))
+	case req.Method == http.MethodPost && path == base+"/import":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportCredential(req)))
+	case req.Method == http.MethodGet && path == base+"/storage-path":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{"ok": true, "path": storageGlobalDir()}))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }
@@ -475,7 +481,8 @@ func mutatingManagementPath(path string) bool {
 		base + "/select",
 		base + "/enable",
 		base + "/disable",
-		base + "/unfreeze":
+		base + "/unfreeze",
+		base + "/import":
 		return true
 	}
 	return false

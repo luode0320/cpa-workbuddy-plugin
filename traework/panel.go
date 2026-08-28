@@ -1,14 +1,22 @@
 // panel.go serves the TraeWork web panel (account credits, manual check-in,
-// points refresh, enable/disable, unfreeze, failover status). It is a
-// self-contained HTML page that talks to the management API routes
-// registered in management.go.
+// points refresh, enable/disable, unfreeze, failover status, credential
+// import). It is a self-contained HTML page that talks to the management API
+// routes registered in management.go.
 package main
 
+import (
+	"encoding/json"
+	"strings"
+)
+
 // servePanel returns the panel HTML for a resource sub-path. Unknown sub-paths
-// fall back to the main dashboard.
+// fall back to the main dashboard. The Trae SOLO credential directory is
+// injected at serve time so the hint / copy-path button always shows the
+// real path of the machine hosting the plugin.
 func servePanel(sub string) []byte {
 	_ = sub
-	return []byte(panelHTML)
+	dirJSON, _ := json.Marshal(storageGlobalDir())
+	return []byte(strings.ReplaceAll(panelHTML, "__STORAGE_DIR_JSON__", string(dirJSON)))
 }
 
 const panelHTML = `<!DOCTYPE html>
@@ -38,6 +46,7 @@ th{color:var(--muted);font-weight:500;white-space:nowrap}
 .tag.warn{background:#fef3c7;color:var(--warn)}
 .tag.muted{background:#f1f5f9;color:var(--muted)}
 .empty{color:var(--muted);text-align:center;padding:24px}
+.hint{color:var(--muted);font-size:12px;margin:-8px 0 12px;word-break:break-all}
 #msg{color:var(--muted);font-size:12px;min-height:18px}
 </style>
 </head>
@@ -49,7 +58,11 @@ th{color:var(--muted);font-weight:500;white-space:nowrap}
   <button class="primary" onclick="fleetCheckin()">全部签到</button>
   <button onclick="refreshCredits()">刷新积分</button>
   <button onclick="toggleAuto()" id="autoBtn">自动签到: …</button>
+  <button class="primary" onclick="pickDir()" title="从 Trae SOLO 客户端的 storage.json 导入凭据（支持选择目录或拖入文件）">📁 导入凭据</button>
+  <button onclick="copyStorageDir()" title="复制 Trae SOLO 凭据目录路径到剪贴板">复制路径</button>
 </div>
+<div class="hint" id="storageHint"></div>
+<input type="file" id="dirInput" webkitdirectory multiple style="display:none">
 
 <div class="card">
   <table>
@@ -146,9 +159,134 @@ async function toggleAuto(){
 function renderAuto(on){
   document.getElementById('autoBtn').textContent = '自动签到: ' + (on ? '开' : '关');
 }
+
+// ---------------------------------------------------------------------------
+// Credential import (Trae SOLO storage.json)
+// ---------------------------------------------------------------------------
+// STORAGE_DIR is injected at serve time (JSON-escaped absolute path of the
+// Trae SOLO globalStorage directory on the host machine).
+const STORAGE_DIR = __STORAGE_DIR_JSON__;
+let rememberedDir = null;
+
+function copyStorageDir(){
+  const done = () => msg('凭据目录已复制：' + STORAGE_DIR);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(STORAGE_DIR).then(done).catch(() => fallbackCopy(done));
+  } else {
+    fallbackCopy(done);
+  }
+}
+function fallbackCopy(done){
+  const ta = document.createElement('textarea');
+  ta.value = STORAGE_DIR;
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); done(); } catch(e){ msg('复制失败，请手动复制：' + STORAGE_DIR); }
+  ta.remove();
+}
+
+const IDB_NAME = 'traework-panel-v1';
+function idbGet(key){
+  return new Promise((res) => {
+    try {
+      const rq = indexedDB.open(IDB_NAME, 1);
+      rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
+      rq.onsuccess = () => {
+        const g = rq.result.transaction('kv').objectStore('kv').get(key);
+        g.onsuccess = () => res(g.result);
+        g.onerror = () => res(null);
+      };
+      rq.onerror = () => res(null);
+    } catch(e){ res(null); }
+  });
+}
+function idbPut(key, val){
+  return new Promise((res) => {
+    try {
+      const rq = indexedDB.open(IDB_NAME, 1);
+      rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
+      rq.onsuccess = () => {
+        const tx = rq.result.transaction('kv', 'readwrite');
+        tx.objectStore('kv').put(val, key);
+        tx.oncomplete = () => res(true);
+        tx.onerror = () => res(false);
+      };
+      rq.onerror = () => res(false);
+    } catch(e){ res(false); }
+  });
+}
+
+async function pickDir(){
+  // Primary path: File System Access API (Chrome/Edge). The directory handle
+  // is remembered in IndexedDB, so the second click onward opens directly on
+  // the previously chosen Trae globalStorage directory.
+  if (window.showDirectoryPicker) {
+    try {
+      if (!rememberedDir) rememberedDir = await idbGet('storage-dir');
+      if (rememberedDir) {
+        try {
+          if ((await rememberedDir.queryPermission({mode:'read'})) !== 'granted') {
+            await rememberedDir.requestPermission({mode:'read'});
+          }
+        } catch(e){}
+      }
+      const opts = { id: 'trae-storage', mode: 'read' };
+      if (rememberedDir) opts.startIn = rememberedDir;
+      const handle = await window.showDirectoryPicker(opts);
+      rememberedDir = handle;
+      await idbPut('storage-dir', handle);
+      const fh = await findStorageJson(handle);
+      if (!fh) { msg('所选目录下未找到 storage.json，请确认选择的是 Trae 凭据目录'); return; }
+      await doImport(await fh.getFile());
+      return;
+    } catch(e){ if (e && e.name === 'AbortError') return; }
+  }
+  // Fallback: webkitdirectory input (still lets the user pick the folder).
+  document.getElementById('dirInput').click();
+}
+
+document.getElementById('dirInput').addEventListener('change', async (ev) => {
+  const files = Array.from(ev.target.files || []);
+  const f = files.find(x => x.name === 'storage.json') || files[0];
+  if (f) await doImport(f);
+  ev.target.value = '';
+});
+
+async function findStorageJson(dirHandle){
+  try { return await dirHandle.getFileHandle('storage.json'); } catch(e){}
+  try {
+    for await (const [, h] of dirHandle.entries()) {
+      if (h.kind === 'file' && h.name === 'storage.json') return h;
+    }
+  } catch(e){}
+  return null;
+}
+
+async function doImport(file){
+  try {
+    const text = await file.text();
+    if (!text || !text.trim()) { msg('文件内容为空'); return; }
+    msg('导入中…');
+    const r = await api('/import', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filename: file.name || 'storage.json', content: text})});
+    msg(r.message || (r.ok ? '导入成功' : '导入失败'));
+    load();
+  } catch(e){ msg('导入失败：' + (e && e.message || e)); }
+}
+
+// Drag & drop anywhere on the panel: dropping storage.json (or any .json
+// credential) triggers the same import path without any navigation.
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+  const f = files.find(x => x.name === 'storage.json') || files[0];
+  if (f) await doImport(f);
+});
+
 (async function(){
   const cfg = await api('/checkin/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: true})});
   renderAuto(cfg.enabled);
+  document.getElementById('storageHint').textContent = 'Trae SOLO 凭据目录：' + STORAGE_DIR + '（首次点「📁 导入凭据」需手动定位该目录，之后将自动记住）';
   await load();
 })();
 </script>
