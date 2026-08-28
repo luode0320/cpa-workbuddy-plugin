@@ -101,7 +101,12 @@ th{color:var(--muted);font-weight:500;white-space:nowrap}
 <div id="msg"></div>
 
 <script>
-const base = location.pathname.replace(/\/panel.*$/, '');
+// Management API prefix is the host-stable /v0/management/plugins/<p>, NOT
+// derivable from the panel URL (which lives under /v0/resource/plugins/<p>/panel):
+// location.pathname would yield the resource prefix and every POST (e.g.
+// /import) would 404 with an empty body ("路由未注册"). Matches the
+// workbuddy/qoderwork panels which hardcode the same management prefix.
+const base = "/v0/management/plugins/traework-provider";
 // api() always returns a parsed object, or throws a descriptive Error when
 // the body is empty / not JSON. Bare r.json() loses every signal: a fused
 // plugin handler or stale identity produces HTTP 200 with an empty body,
