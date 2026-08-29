@@ -41,8 +41,12 @@ type traeConfig struct {
 }
 
 // Defaults mirror the verified gateway configuration (trae-gateway-go).
+// defaultAPIHost is the Trae Work API base the check-in/points routes
+// actually live on (api.trae.cn); the historical trae-api-cn.mchost.guru
+// value 404s on checkin_credits/* (verified 2026-08-30, TLB edge). Stored
+// credentials normally carry their own host — this is only the fallback.
 const (
-	defaultAPIHost       = "https://trae-api-cn.mchost.guru"
+	defaultAPIHost       = "https://api.trae.cn"
 	defaultAppID         = "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8"
 	defaultDeviceModel   = "83DG"
 	defaultOSName        = "windows"

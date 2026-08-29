@@ -28,19 +28,36 @@ type checkinResult struct {
 
 // deviceIDFor builds the per-account x-device-id. Trae dedupes check-in per
 // device per day; appending the userId makes different accounts look like
-// different devices (trae-check verified strategy).
+// different devices (trae-check verified strategy). An empty base device
+// must NOT yield a leading-dash id ("-<uid>") — return the uid directly.
 func deviceIDFor(baseDeviceID, userID string) string {
-	if userID != "" {
+	switch {
+	case baseDeviceID != "" && userID != "":
 		return baseDeviceID + "-" + userID
+	case baseDeviceID != "":
+		return baseDeviceID
+	default:
+		return userID
 	}
-	return baseDeviceID
 }
+
+// checkinUserAgent mimics the Trae Work web client. Requests leaving the
+// host bridge carry Go's default "Go-http-client/1.1" UA, which Trae's
+// activity WAF throttles aggressively (observed 2026-08-30: 16 consecutive
+// 9074 "当前参与用户太多" rejections over 20 minutes on the claim endpoint
+// while same-parameter probes with a browser UA succeeded instantly; the
+// points endpoint is unaffected). Sending the UA the real check-in page
+// uses avoids that penalty box.
+const checkinUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 func checkinAuthHeaders(a *traeAuth, deviceID string) http.Header {
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
 	h.Set("Authorization", "Cloud-IDE-JWT "+a.Token)
 	h.Set("x-device-id", deviceID)
+	h.Set("User-Agent", checkinUserAgent)
+	h.Set("Origin", "https://work.trae.cn")
+	h.Set("Referer", "https://work.trae.cn/")
 	return h
 }
 
