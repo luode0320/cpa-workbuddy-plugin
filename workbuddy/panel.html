@@ -248,6 +248,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button type="button" class="ftag" data-region="exhausted" onclick="filterRegion('exhausted',this)">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
     <button type="button" class="ftag" data-region="preserve" onclick="filterRegion('preserve',this)">保号 <span class="cnt" id="cntPreserve">0</span></button>
     <button type="button" class="ftag" data-region="anomaly" onclick="filterRegion('anomaly',this)">异常 <span class="cnt" id="cntAnomaly">0</span></button>
+    <button type="button" class="ftag" data-region="failed" onclick="filterRegion('failed',this)" title="累计失败 > 0 或连败中（fail_count > 0）的账号；卡片上的「失败/连败/冷却」段即数据来源">失败 <span class="cnt" id="cntFailed">0</span></button>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
@@ -450,7 +451,7 @@ function card(a){
   const anomalyBadge=a.anomaly?`<span class="badge anomaly" title="连续失败次数已达阈值，账号暂停路由以防每次请求都被重试；每日 0 点会自动复活一次">异常</span>`:"";
   const unfreezeBtn=a.anomaly?`<button class="sec" data-action="unfreeze" data-auth-index="${esc(a.auth_index)}" title="将该账号从异常池解除冻结，重新参与路由">解除冻结</button>`:"";
   const badges=preserveBadge+anomalyBadge+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
-  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-nickname="${esc(a.nickname||a.label||a.name||"")}" data-label="${esc(a.label||"")}" data-name="${esc(a.name||"")}" data-uid="${esc(a.uid||"")}" data-preserve="${a.preserve?"1":"0"}" data-anomaly="${a.anomaly?"1":"0"}">
+  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-nickname="${esc(a.nickname||a.label||a.name||"")}" data-label="${esc(a.label||"")}" data-name="${esc(a.name||"")}" data-uid="${esc(a.uid||"")}" data-preserve="${a.preserve?"1":"0"}" data-anomaly="${a.anomaly?"1":"0"}" data-failed="${((Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0)?"1":"0"}">
   <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}<button type="button" class="card-del" data-action="delete" data-auth-index="${esc(a.auth_index)}" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
   ${progressHTML(cr,a)}
@@ -538,6 +539,7 @@ function applyCardVisibility(){
     else if(currentFilter==="exhausted") show=c.querySelector(".badge.exhausted")!=null;
     else if(currentFilter==="preserve") show=c.dataset.preserve==="1";
     else if(currentFilter==="anomaly") show=c.dataset.anomaly==="1";
+    else if(currentFilter==="failed") show=c.dataset.failed==="1";
     else show=r===currentFilter;
     if(show&&q){
       const hay=((c.dataset.nickname||"")+" "+(c.dataset.label||"")+" "+(c.dataset.name||"")+" "+(c.dataset.uid||"")).toLowerCase();
@@ -691,12 +693,14 @@ function filterRegion(region, btn){
   renderSummary(lastAccounts);
 }
 function updateFilterCounts(accounts){
-  let cn=0, gl=0, ex=0, prs=0, anom=0, ava=0;
+  let cn=0, gl=0, ex=0, prs=0, anom=0, ava=0, fail=0;
   (accounts||[]).forEach(a=>{
     if((a.region||"cn")==="global") gl++; else cn++;
     if(a.exhausted||(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length)))) ex++;
     if(a.preserve) prs++;
     if(a.anomaly) anom++;
+    // 失败 = 累计失败 > 0 或连败中（fail_count > 0）
+    if((Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0) fail++;
     // 可用 = 不属于异常池 / 保号池 / 耗尽
     const isUnavailable=!!a.preserve||!!a.anomaly||!!a.exhausted||(!!a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length)));
     if(!isUnavailable) ava++;
@@ -708,6 +712,7 @@ function updateFilterCounts(accounts){
   const elEx=document.getElementById("cntExhausted");
   const elPrs=document.getElementById("cntPreserve");
   const elAno=document.getElementById("cntAnomaly");
+  const elFail=document.getElementById("cntFailed");
   if(elAll) elAll.textContent=String((accounts||[]).length);
   if(elAv) elAv.textContent=String(ava);
   if(elCn) elCn.textContent=String(cn);
@@ -715,6 +720,7 @@ function updateFilterCounts(accounts){
   if(elEx) elEx.textContent=String(ex);
   if(elPrs) elPrs.textContent=String(prs);
   if(elAno) elAno.textContent=String(anom);
+  if(elFail) elFail.textContent=String(fail);
 }
 function accountsForFilter(accounts){
   const list=accounts||[];
@@ -730,6 +736,9 @@ function accountsForFilter(accounts){
   }
   if(currentFilter==="anomaly"){
     return list.filter(a=>!!a.anomaly);
+  }
+  if(currentFilter==="failed"){
+    return list.filter(a=>(Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0);
   }
   return list.filter(a=>(a.region||"cn")===currentFilter);
 }
@@ -783,7 +792,7 @@ function renderSummary(accounts){
   const pct=total>0?Math.round(used/total*100):0;
   let barColor="var(--ok)"; if(pct>60)barColor="var(--warn)"; if(pct>85)barColor="var(--err)";
   // 标题文案：「可用」过滤时直接用"可用账号"；其他用通用「全部账号」
-  const scopeLabel=currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="global"?"Global 账号":(currentFilter==="cn"?"CN 账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="preserve"?"保号账号":(currentFilter==="anomaly"?"异常账号":"全部账号"))))));
+  const scopeLabel=currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="global"?"Global 账号":(currentFilter==="cn"?"CN 账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="preserve"?"保号账号":(currentFilter==="anomaly"?"异常账号":(currentFilter==="failed"?"失败账号":"全部账号")))))));
   const allTotal=allSize>0?allSize:(allRemain+allUsed);
   box.style.display="block";
   box.innerHTML=`

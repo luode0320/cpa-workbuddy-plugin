@@ -18,7 +18,7 @@
 models: ["glm-5.2", "kimi-k2.7"]
 
 # 完整示例：对象列表
-[{"context":2000000,"id":"hy4-preview","max_tokens":20000,"name":"Hy4 preview"},{"context":2000000,"id":"hy3","max_tokens":20000,"name":"Hy3"},{"context":2000000,"id":"glm-5.3","max_tokens":20000,"name":"GLM-5.3"},{"context":2000000,"id":"glm-5.3-flash","max_tokens":20000,"name":"GLM-5.3-Flash"},{"context":2000000,"id":"glm-5.2","max_tokens":20000,"name":"GLM-5.2"},{"context":2000000,"id":"glm-5.1","max_tokens":20000,"name":"GLM-5.1"},{"context":2000000,"id":"glm-5v-turbo","max_tokens":20000,"name":"GLM-5v-Turbo"},{"context":2000000,"id":"minimax-m3","max_tokens":20000,"name":"MiniMax-M3"},{"context":2000000,"id":"kimi-k3","max_tokens":20000,"name":"Kimi-K3"},{"context":2000000,"id":"kimi-k2.7-code","max_tokens":20000,"name":"Kimi-K2.7-Code"},{"context":2000000,"id":"kimi-k2.6","max_tokens":20000,"name":"Kimi-K2.6"},{"context":2000000,"id":"deepseek-v4-flash","max_tokens":20000,"name":"Deepseek-V4-Flash"},{"context":2000000,"id":"deepseek-v4-pro","max_tokens":20000,"name":"Deepseek-V4-Pro"},{"context":2000000,"id":"seed-evolving","max_tokens":20000,"name":"Seed-Evolving"},{"context":2000000,"id":"seed-2.1-pro","max_tokens":20000,"name":"Seed-2.1-Pro"},{"context":2000000,"id":"seed-2.1-turbo","max_tokens":20000,"name":"Seed-2.1-Turbo"},{"context":2000000,"id":"qwen3.8-max","max_tokens":20000,"name":"Qwen3.8-Max"},{"context":2000000,"id":"qwen3.7-plus","max_tokens":20000,"name":"Qwen3.7-Plus"}]
+[{"context":262144,"id":"hy4-preview","max_tokens":20000,"name":"Hy4 preview"},{"context":262144,"id":"hy3","max_tokens":20000,"name":"Hy3"},{"context":262144,"id":"glm-5.3","max_tokens":20000,"name":"GLM-5.3"},{"context":262144,"id":"glm-5.3-flash","max_tokens":20000,"name":"GLM-5.3-Flash"},{"context":262144,"id":"glm-5.2","max_tokens":20000,"name":"GLM-5.2"},{"context":262144,"id":"glm-5.1","max_tokens":20000,"name":"GLM-5.1"},{"context":262144,"id":"glm-5v-turbo","max_tokens":20000,"name":"GLM-5v-Turbo"},{"context":262144,"id":"minimax-m3","max_tokens":20000,"name":"MiniMax-M3"},{"context":262144,"id":"kimi-k3","max_tokens":20000,"name":"Kimi-K3"},{"context":262144,"id":"kimi-k2.7-code","max_tokens":20000,"name":"Kimi-K2.7-Code"},{"context":262144,"id":"kimi-k2.6","max_tokens":20000,"name":"Kimi-K2.6"},{"context":262144,"id":"deepseek-v4-flash","max_tokens":20000,"name":"Deepseek-V4-Flash"},{"context":262144,"id":"deepseek-v4-pro","max_tokens":20000,"name":"Deepseek-V4-Pro"},{"context":262144,"id":"seed-evolving","max_tokens":20000,"name":"Seed-Evolving"},{"context":262144,"id":"seed-2.1-pro","max_tokens":20000,"name":"Seed-2.1-Pro"},{"context":262144,"id":"seed-2.1-turbo","max_tokens":20000,"name":"Seed-2.1-Turbo"},{"context":262144,"id":"qwen3.8-max","max_tokens":20000,"name":"Qwen3.8-Max"},{"context":262144,"id":"qwen3.7-plus","max_tokens":20000,"name":"Qwen3.7-Plus"}]
 ```
 
 ---
@@ -154,9 +154,109 @@ models: [{"id": "glm-5.2", "name": "Trae 默认模型", "description": "GLM-5.2"
 ## 五、注意事项
 
 1. **`models:` 值支持三种形态（2026-08-29 起全兼容）**：
-   - **单行 JSON**（推荐）：`models: [{"id": "glm-5.2", "context": 2000000}]`；
+   - **单行 JSON**（推荐）：`models: [{"id": "glm-5.2", "context": 262144}]`；
    - **多行 pretty-print JSON**：面板/编辑器自动格式化出的 `models: [` 换行、逐对象一行的形态——插件按括号配对跨行收集后整体解析；
-   - **YAML block sequence**：宿主管理面板把 JSON 数组序列化回 YAML 的形态（`models:` 换行、逐行 `- context: 2000000` / `id: ...`）——**实测 cli-proxy-api 的 config_store 落库形态就是这样**（2026-08-29 服务器取证确认），插件按缩进收集条目解析。纯字符串条目列表（`- hy4-preview`）不支持，保持旧值。
+   - **YAML block sequence**：宿主管理面板把 JSON 数组序列化回 YAML 的形态（`models:` 换行、逐行 `- context: 262144` / `id: ...`）——**实测 cli-proxy-api 的 config_store 落库形态就是这样**（2026-08-29 服务器取证确认），插件按缩进收集条目解析。纯字符串条目列表（`- hy4-preview`）不支持，保持旧值。
 2. **修改生效**：配置通过插件 `configure()` 在配置加载时解析，修改后需重新加载配置（面板保存 / 宿主 reload）。
 3. **workbuddy 是"合并"不是"替换"（2026-08-28 起）**：配置了非空 `models` 后，最终列表 = **配置条目（在前，优先）+ 自动获取列表（动态发现 / 静态默认）中未配置的模型（补充在后）**。同 ID 时以配置的字段为准，自动获取的版本被丢弃。例如：配置了 `glm-5.3`，自动获取也有 `glm-5.3` → 只用配置版本；配置没有但自动获取有的 `hy4-preview` → 保留追加。想要"只显示配置的模型"目前做不到（合并是唯一语义），可用 `models: []` 显式清空回到纯自动获取。
 4. **traework 的 `enabled` 是陷阱**：面板字段说明虽写了 `{id, name, ...}`，但实际 `enabled: false` 不生效，条目仍会展示；要隐藏模型请直接不要写进列表。
+
+
+# workbuddy
+
+```json
+[
+  {
+    "context": 262144,
+    "id": "hy4-preview",
+    "max_tokens": 20000,
+    "name": "Hy4 preview"
+  },
+  {
+    "context": 262144,
+    "id": "glm-5.3",
+    "max_tokens": 20000,
+    "name": "GLM-5.3"
+  },
+  {
+    "context": 262144,
+    "id": "glm-5.3-flash",
+    "max_tokens": 20000,
+    "name": "GLM-5.3-Flash"
+  },
+  {
+    "context": 262144,
+    "id": "kimi-k3",
+    "max_tokens": 20000,
+    "name": "Kimi-K3"
+  },
+  {
+    "context": 262144,
+    "id": "deepseek-v4-flash",
+    "max_tokens": 20000,
+    "name": "Deepseek-V4-Flash"
+  },
+  {
+    "context": 262144,
+    "id": "deepseek-v4-pro",
+    "max_tokens": 20000,
+    "name": "Deepseek-V4-Pro"
+  }
+]
+```
+
+
+# traework
+
+```json
+[
+  {
+    "context": 262144,
+    "id": "glm-5.3",
+    "max_tokens": 20000,
+    "name": "GLM-5.3"
+  },
+  {
+    "context": 262144,
+    "id": "kimi-k3",
+    "max_tokens": 20000,
+    "name": "Kimi-K3"
+  },
+  {
+    "context": 262144,
+    "id": "deepseek-v4-flash",
+    "max_tokens": 20000,
+    "name": "Deepseek-V4-Flash"
+  },
+  {
+    "context": 262144,
+    "id": "deepseek-v4-pro",
+    "max_tokens": 20000,
+    "name": "Deepseek-V4-Pro"
+  },
+  {
+    "context": 262144,
+    "id": "seed-evolving",
+    "max_tokens": 20000,
+    "name": "Seed-Evolving"
+  },
+  {
+    "context": 262144,
+    "id": "seed-2.1-pro",
+    "max_tokens": 20000,
+    "name": "Seed-2.1-Pro"
+  },
+  {
+    "context": 262144,
+    "id": "seed-2.1-turbo",
+    "max_tokens": 20000,
+    "name": "Seed-2.1-Turbo"
+  },
+  {
+    "context": 262144,
+    "id": "qwen3.8-max",
+    "max_tokens": 20000,
+    "name": "Qwen3.8-Max"
+  }
+]
+```

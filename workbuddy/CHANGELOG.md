@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.16
+
+### Feat — 账号面板新增「失败」筛选
+
+账号面板筛选条在「异常」后新增「失败」chip：一键筛出**累计失败 > 0 或连败中（fail_count > 0）**的账号，chip 自带计数。筛选口径与卡片上的「失败 / 连败 / 冷却」数据段同源，后端零改动（`wbAccount` 已暴露 `failed` / `fail_count`）。
+
+- 涉及文件：`panel.html`（filter-bar chip / `card()` 增加 `data-failed` / `applyCardVisibility` / `updateFilterCounts` / `accountsForFilter` / 汇总标题「失败账号」共 6 处）。
+- 边界：`fail_count` / `cooling` 为进程内存态（插件重启清零），累计 `failed` 为宿主持久计数——连败部分重启后归零属既有行为。
+- 验证：抽取全部 `<script>` 后 node `new Function()` 语法检查通过。
+
 ## 0.14.15
 
 ### Fix — models 配置支持 YAML block sequence 落库形态
