@@ -885,8 +885,8 @@ async function load(){
     return;
   }
   // 渲染缓存/账号 JSON 已有数据。无 credits 缓存的账号由 card() 的
-  // progressHTML 显示「加载中…」占位，不再自动并发拉取上游；真实刷新由
-  // startBackgroundRefresh() 异步触发（进入页面即自动，前端无感知）。
+  // progressHTML 显示「加载中…」占位；真实刷新由 10 分钟定时机制异步触发
+  //（不随进入面板触发，进面板直接读现有数据展示）。
   try{
     const d=await api("/accounts");
     document.getElementById("autoToggle").checked=!!d.checkin_auto;
@@ -912,14 +912,16 @@ async function load(){
     g.innerHTML='<div class="loading">'+esc(e.message||String(e))+"</div>";
   }
 }
-// 进入页面统一入口：先渲染缓存数据，再自动触发一次后台异步刷新。
+// 进入页面统一入口：只读取现有数据直接展示，不触发上游刷新。
+// 数据新鲜度由每 10 分钟的定时后台刷新保证（见下方 PERIODIC_REFRESH_MS）。
 async function enterPanel(){
   await load();
-  startBackgroundRefresh();
 }
-// 进入页面自动触发一次后台异步刷新（1s/账号，幂等，前端无感知）。
-// 页面已先渲染缓存数据；随后轮询 /refresh/status 逐账号局部刷新。
+// 每 10 分钟自动触发一轮后台异步刷新（1s/账号，幂等，前端无感知）。
+// 页面打开期间生效；随后轮询 /refresh/status 逐账号局部刷新。
 // 若已有一轮刷新在跑（幂等），后端忽略本次请求，仍继续轮询展示进度。
+const PERIODIC_REFRESH_MS=10*60*1000;
+setInterval(()=>{ startBackgroundRefresh(); }, PERIODIC_REFRESH_MS);
 async function startBackgroundRefresh(){
   try{
     const d=await api("/refresh", {method:"POST"});

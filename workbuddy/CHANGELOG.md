@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.14.17
+
+### Feat — 进面板不再触发异步刷新，改为每 10 分钟定时刷新
+
+账号面板打开时直接读取现有数据（`/accounts` 缓存态）渲染展示，不再进入页面就触发一轮后台异步刷新；数据新鲜度由每 10 分钟的定时机制保证。打开面板即加载、即展示，无等待。
+
+- 涉及文件：`panel.html`（`enterPanel()` 移除 `startBackgroundRefresh()` 调用；新增 `PERIODIC_REFRESH_MS=10min` + `setInterval` 定时触发；注释同步 2 处）。
+- 后端零改动：`POST /refresh` 本为幂等设计（已有一轮在跑时忽略重复请求），天然兼容定时触发。
+- 生效范围：定时器仅在页面打开期间运行，关闭面板即停止，不会在无人查看时空打上游。
+- 手动「刷新」按钮、冷却倒计时等既有交互不受影响。
+- 验证：node 提取全部 `<script>` `new Function()` 语法检查通过；`cgo-shim-build.py workbuddy` 全绿（vet + test）。
+
 ## 0.14.16
 
 ### Feat — 账号面板新增「失败」筛选
