@@ -134,14 +134,29 @@ func buildTraePayload(messages []map[string]any, model string, stream bool, maxT
 	return payload
 }
 
-// resolveModelOptions maps a client model name to the SOLO queue pool and
-// config_name. Unknown names pass through as config_name (SOLO supports them
-// directly); empty/auto falls back to the generic inline_chat pool.
+// resolveModelOptions 把客户端模型名映射到 SOLO 队列池与精确 config_name。
+// 未知名称仍按 config_name 透传，空值或 auto 使用通用 inline_chat 池；
+// 部分客户端短 ID 保持稳定，由别名表映射到 Trae 提供的品牌化 config_name。
+//
+// [参数] model: 客户端传入的模型 ID。
+// [返回] Trae 功能池与上游精确 config_name。
+// 最近修改时间：2026-08-30 02:55:11；改动原因：兼容 Seed 短 ID，同时保持精确模型 ID 和 auto 的既有语义。
 func resolveModelOptions(model string) (fn, configName string) {
 	if model == "" || model == "auto" {
 		return inlineChat, ""
 	}
+	if upstream, ok := traeConfigNameAliases[model]; ok {
+		model = upstream
+	}
 	return soloWorkLite, model
+}
+
+// traeConfigNameAliases 把稳定的客户端短 ID 映射到 get_detail_param 返回的精确 config_name。
+// Seed 短 ID 若直接发往上游，会被 SSE 业务错误 4001 以参数无效拒绝。
+var traeConfigNameAliases = map[string]string{
+	"seed-evolving":  "Doubao-Seed-Evolving",
+	"seed-2.1-pro":   "Doubao-Seed-2.1-Pro",
+	"seed-2.1-turbo": "Doubao-Seed-2.1-Turbo",
 }
 
 // apiHostFor resolves the upstream llm_utils_chat host. credential.Host is
