@@ -75,6 +75,14 @@ th{color:var(--muted);font-weight:500;white-space:nowrap}
 <h1>TraeWork 插件面板</h1>
 <div class="sub">账号额度 · 账号池 · 手动签到 · 积分查询 · 启停账号 · failover 状态</div>
 
+<div id="authBox" class="card" style="display:none;margin-bottom:16px">
+  <div style="margin-bottom:8px;color:var(--muted)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
+  <div style="display:flex;gap:8px">
+    <input id="keyInput" type="password" placeholder="management key" style="flex:1;border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:13px">
+    <button class="primary" onclick="saveKey()">连接</button>
+  </div>
+</div>
+
 <div class="toolbar">
   <button class="primary" onclick="fleetCheckin()">全部签到</button>
   <button onclick="refreshCredits()">刷新积分</button>
@@ -107,6 +115,53 @@ th{color:var(--muted);font-weight:500;white-space:nowrap}
 // /import) would 404 with an empty body ("路由未注册"). Matches the
 // workbuddy/qoderwork panels which hardcode the same management prefix.
 const base = "/v0/management/plugins/traework-provider";
+
+/* ---------- management key acquisition (3 fallbacks, zero config) ----------
+   1) CPA main panel localStorage "cli-proxy-auth" (XOR+base64, same-origin
+      iframe embed) - same approach as cpa-plugin-key-policy.
+   2) ?key= URL param (cleaned from history after read, kept in sessionStorage).
+   3) Manual input (sessionStorage only, never persisted).
+*/
+const ENC_PREFIX = "enc::v1::";
+const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
+const PANEL_STORE = "cli-proxy-auth";
+const SS_KEY = "traework-mgmt-key";
+
+function _enc(t){return new TextEncoder().encode(t)}
+function _dec(b){return new TextDecoder().decode(b)}
+function _keyBytes(){try{return _enc(SECRET_SALT+"|"+window.location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
+function _xor(d,k){const r=new Uint8Array(d.length);for(let i=0;i<d.length;i++)r[i]=d[i]^k[i%k.length];return r}
+function _b64d(s){const bin=atob(s);const b=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b}
+function deobfuscate(p){if(!p||!p.startsWith(ENC_PREFIX))return p;try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes()))}catch(e){return p}}
+function isEmbedded(){try{return window.self!==window.top}catch(e){return false}}
+
+function readPanelKey(){
+  if(!isEmbedded())return null;
+  let raw;try{raw=localStorage.getItem(PANEL_STORE)}catch(e){return null}
+  if(!raw)return null;
+  try{
+    const parsed=JSON.parse(deobfuscate(raw));
+    const st=(parsed&&parsed.state)||parsed||{};
+    return typeof st.managementKey==="string"&&st.managementKey?st.managementKey:null;
+  }catch(e){return null}
+}
+function readUrlKey(){
+  const m=new URLSearchParams(window.location.search).get("key");
+  if(m){history.replaceState(null,"",window.location.pathname)}
+  return m;
+}
+function getKey(){
+  return sessionStorage.getItem(SS_KEY)||readPanelKey()||readUrlKey();
+}
+function saveKey(){
+  const v=document.getElementById("keyInput").value.trim();
+  if(!v)return;
+  sessionStorage.setItem(SS_KEY,v);
+  document.getElementById("authBox").style.display="none";
+  enterPanel();
+}
+function showAuth(){document.getElementById("authBox").style.display="block";const i=document.getElementById("keyInput");i&&i.focus()}
+function authHeaders(k){return k?{"Authorization":"Bearer "+k}:{}}
 // api() always returns a parsed object, or throws a descriptive Error when
 // the body is empty / not JSON. Bare r.json() loses every signal: a fused
 // plugin handler or stale identity produces HTTP 200 with an empty body,
@@ -114,6 +169,9 @@ const base = "/v0/management/plugins/traework-provider";
 // the text ourselves lets us surface the real status code and a short
 // body preview so the next panel failure is actionable.
 async function api(path, opts){
+  opts = opts || {};
+  opts.credentials = 'omit';
+  opts.headers = Object.assign({}, opts.headers || {}, authHeaders(getKey()));
   let r;
   try { r = await fetch(base + path, opts); }
   catch (e) { throw new Error('网络请求失败：' + (e && e.message || e)); }
@@ -121,6 +179,11 @@ async function api(path, opts){
   const ctype = r.headers.get('content-type') || '';
   let text = '';
   try { text = await r.text(); } catch (e) { text = ''; }
+  // Host rejects plugin management API calls without a valid Bearer key with
+  // 401 (often with a JSON body). Throwing BEFORE the parse step prevents the
+  // body from being mistaken for data (which previously rendered a fake
+  // "暂无账号" empty state and a bare "导入失败").
+  if (status === 401) throw new Error('鉴权失败 HTTP 401 — management key 缺失或无效，请刷新页面重新输入，或从 CPA 主面板嵌入打开本页自动获取');
   if (!text) {
     if (status >= 500) throw new Error('服务端错误 HTTP ' + status + '（响应为空）');
     if (status === 404) throw new Error('路由未注册：' + path + '（插件可能未加载，重启宿主）');
@@ -361,17 +424,25 @@ document.addEventListener('drop', async (e) => {
   if (f) await doImport(f);
 });
 
-(async function(){
-  try {
-    const cfg = await api('/checkin/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: true})});
-    renderAuto(cfg && cfg.enabled);
-  } catch (e) {
-    msg('面板初始化失败：' + (e && e.message || e));
-    return;
-  }
-  try { await load(); }
-  catch (e) { msg('账号列表加载失败：' + (e && e.message || e)); }
-})();
+function enterPanel(){
+  (async function(){
+    try {
+      const cfg = await api('/checkin/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: true})});
+      renderAuto(cfg && cfg.enabled);
+    } catch (e) {
+      msg('面板初始化失败：' + (e && e.message || e));
+      return;
+    }
+    try { await load(); }
+    catch (e) { msg('账号列表加载失败：' + (e && e.message || e)); }
+  })();
+}
+if(getKey()){
+  enterPanel();
+}else{
+  showAuth();
+  msg('未检测到 management key — 请手动输入，或从 CPA 主面板嵌入打开本页自动获取');
+}
 </script>
 </body>
 </html>
