@@ -146,7 +146,10 @@ func resolveModelOptions(model string) (fn, configName string) {
 
 // apiHostFor resolves the upstream llm_utils_chat host. credential.Host is
 // deliberately ignored — it is an auth-domain host with no /api/agent/v3/*
-// routes (verified 404 TLB in the prototype).
+// routes (verified 404 TLB in the prototype). The config default is
+// defaultChatAPIHost (trae-api-cn.mchost.guru); do NOT point it at
+// api.trae.cn — that host only serves check-in/points routes and 404s
+// (TLB) on llm_utils_chat.
 func apiHostFor(a *traeAuth) string {
 	_ = a
 	return strings.TrimRight(loadedConfig().APIHost, "/")

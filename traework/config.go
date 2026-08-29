@@ -41,11 +41,15 @@ type traeConfig struct {
 }
 
 // Defaults mirror the verified gateway configuration (trae-gateway-go).
-// defaultAPIHost is the Trae Work API base the check-in/points routes
-// actually live on (api.trae.cn); the historical trae-api-cn.mchost.guru
-// value 404s on checkin_credits/* (verified 2026-08-30, TLB edge). Stored
-// credentials normally carry their own host — this is only the fallback.
+// The two hosts have different route sets and MUST NOT share one default:
+//   - defaultChatAPIHost: llm_utils_chat lives on trae-api-cn.mchost.guru
+//     (api.trae.cn has no /api/agent/v3/* routes — TLB 404, verified).
+//   - defaultAPIHost: check-in/points routes live on api.trae.cn
+//     (checkin_credits/* 404s on mchost.guru, verified 2026-08-30).
+// Stored credentials normally carry their own host — defaults are only the
+// fallback when neither config nor credential carries one.
 const (
+	defaultChatAPIHost   = "https://trae-api-cn.mchost.guru"
 	defaultAPIHost       = "https://api.trae.cn"
 	defaultAppID         = "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8"
 	defaultDeviceModel   = "83DG"
@@ -63,7 +67,9 @@ var (
 
 func defaultTraeConfig() *traeConfig {
 	return &traeConfig{
-		APIHost:       defaultAPIHost,
+		// APIHost is consumed only by the chat path (apiHostFor); the
+		// check-in path resolves via checkinHost() -> defaultAPIHost.
+		APIHost:       defaultChatAPIHost,
 		AppID:         defaultAppID,
 		DeviceModel:   defaultDeviceModel,
 		OSName:        defaultOSName,
