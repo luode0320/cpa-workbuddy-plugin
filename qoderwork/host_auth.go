@@ -49,7 +49,10 @@ func hostAuthList() ([]pluginapi.HostAuthFileEntry, error) {
 	// workbuddy- prefix but no type field. Filename prefix is the only
 	// reliable cross-version discriminator.
 	out := make([]pluginapi.HostAuthFileEntry, 0, len(resp.Files))
-	prefix := providerName + "-"
+	// Disk files are named qoderwork-<uid>.json (authFilePrefix), NOT
+	// providerName+"-" — filtering by "qoderwork-provider-" hides every
+	// credential from the panel (accounts always empty).
+	prefix := authFilePrefix
 	for _, f := range resp.Files {
 		if strings.HasPrefix(strings.ToLower(f.Name), prefix) {
 			out = append(out, f)

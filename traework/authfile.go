@@ -17,6 +17,17 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+// authFilePrefix is the disk filename prefix for multi-account auth files
+// (traework-<uid>.json). It is intentionally decoupled from providerName:
+// the provider id is "traework-provider" (with the -provider suffix) while
+// files on disk are named traework-*.json — the host identifies this
+// plugin's credentials by the FILE prefix. Every reader (hostAuthList
+// filter, path safety checks, import naming) must use this constant;
+// filtering by providerName+"-" makes all auth files invisible to the
+// panel (accounts list comes back empty while the host still routes
+// traffic through those files — silent breakage, see workbuddy 0.9.6).
+const authFilePrefix = "traework-"
+
 // unsafeUIDChars matches characters that must not appear in a file name.
 var unsafeUIDChars = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
 
@@ -35,7 +46,7 @@ func sanitizeUIDForFileName(uid string) string {
 func authFileNameFor(a *traeAuth) string {
 	if a != nil {
 		if uid := sanitizeUIDForFileName(a.UserID); uid != "" {
-			return "traework-" + uid + ".json"
+			return authFilePrefix + uid + ".json"
 		}
 	}
 	return authFileName
@@ -170,7 +181,7 @@ func isSafeAuthPath(path string) bool {
 	}
 	base := filepath.Base(path)
 	lower := strings.ToLower(base)
-	if !strings.HasPrefix(lower, "traework-") && lower != "traework.json" {
+	if !strings.HasPrefix(lower, authFilePrefix) && lower != "traework.json" {
 		return false
 	}
 	if !strings.HasSuffix(lower, ".json") {

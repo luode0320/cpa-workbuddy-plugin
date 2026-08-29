@@ -42,7 +42,10 @@ func hostAuthList() ([]pluginapi.HostAuthFileEntry, error) {
 	// files on disk don't carry a "type"/"provider" field, and the prefix is
 	// the only reliable cross-version discriminator.
 	out := make([]pluginapi.HostAuthFileEntry, 0, len(resp.Files))
-	prefix := providerName + "-"
+	// Disk files are named traework-<uid>.json (authFilePrefix), NOT
+	// providerName+"-" — filtering by "traework-provider-" hid every
+	// imported credential from the panel (accounts always empty).
+	prefix := authFilePrefix
 	for _, f := range resp.Files {
 		if strings.HasPrefix(strings.ToLower(f.Name), prefix) {
 			out = append(out, f)

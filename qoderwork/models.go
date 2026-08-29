@@ -177,7 +177,7 @@ func fetchDynamicModels() []pluginapi.ModelInfo {
 	// (Earlier code also matched files containing "codebuddy" anywhere, which
 	// would wrongly include workbuddy-*.json auths here and cause us to call
 	// the qoderwork models API with a workbuddy token.)
-	prefix := providerName + "-"
+	prefix := authFilePrefix
 	for _, f := range files {
 		if !strings.HasPrefix(strings.ToLower(f.Name), prefix) {
 			continue

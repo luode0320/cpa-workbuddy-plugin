@@ -17,6 +17,16 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+// authFilePrefix is the disk filename prefix for multi-account auth files
+// (qoderwork-<uid>.json). It is intentionally decoupled from providerName:
+// the provider id is "qoderwork-provider" (with the -provider suffix) while
+// files on disk are named qoderwork-*.json — the host identifies this
+// plugin's credentials by the FILE prefix. Every reader (hostAuthList
+// filter, models prefix match, path safety checks) must use this constant;
+// filtering by providerName+"-" makes all auth files invisible to the
+// panel (same silent-breakage class as traework 0.1.8 / workbuddy 0.9.6).
+const authFilePrefix = "qoderwork-"
+
 // authFileNameFor matches toAuthData naming: always qoderwork-<uid>.json when UID is known.
 // Bare "qoderwork.json" is legacy single-account only (no UID).
 var unsafeUIDChars = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
@@ -36,7 +46,7 @@ func sanitizeUIDForFileName(uid string) string {
 func authFileNameFor(sa *storedAuth) string {
 	if sa != nil {
 		if uid := sanitizeUIDForFileName(sa.Account.UID); uid != "" {
-			return "qoderwork-" + uid + ".json"
+			return authFilePrefix + uid + ".json"
 		}
 	}
 	return authFileName
@@ -59,7 +69,7 @@ func isQoderworkAuthFileName(name string) bool {
 	if base == "" || !strings.HasSuffix(base, ".json") {
 		return false
 	}
-	return strings.HasPrefix(base, "qoderwork-") || base == "qoderwork.json"
+	return strings.HasPrefix(base, authFilePrefix) || base == "qoderwork.json"
 }
 
 // resolveAuthFileTarget picks the canonical file name + path for save/delete.
@@ -237,7 +247,7 @@ func isSafeAuthPath(path string) bool {
 	}
 	base := filepath.Base(path)
 	lower := strings.ToLower(base)
-	if !strings.HasPrefix(lower, "qoderwork-") && lower != "qoderwork.json" {
+	if !strings.HasPrefix(lower, authFilePrefix) && lower != "qoderwork.json" {
 		return false
 	}
 	if !strings.HasSuffix(lower, ".json") {
