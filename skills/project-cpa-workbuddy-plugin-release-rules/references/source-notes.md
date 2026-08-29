@@ -28,3 +28,8 @@
 - **纠正自误**：2026-08-29 更新时把下载脚本参数顺序误记为 `<provider-id> <version>`，实际签名是 `<version> [plugin]`——与 publish-assets.py 的 `<plugin> <version>` **互为相反**。0.14.17 发布时传反 → tag 拼错 → Release API 404（症状与「资产未建」一致，已用 Release API 复核排除）。
 - **修正位置**：Step 9 命令示例、关键命令速查表、踩坑 item 14。
 - **经验**：沉淀脚本用法前先用 `head <script> | grep usage` 核对真实签名，不凭记忆写参数顺序。
+
+## 2026-08-30 补充：store install CDN 边缘滞后误报（traework 0.1.10 发布实测）
+
+- **新增踩坑 item 28**：registry push 后数分钟内 store install 可能报 `plugin_manifest_invalid: direct plugin version not found`（502 毫秒级返回），根因是宿主 Go 客户端命中的 raw CDN 边缘节点缓存滞后（同机 curl 反而看到新版）。宿主 FetchRegistry 无本地缓存（v7.2.129 源码实锤）。处置：等几分钟重试即成功。
+- 同时记录 0.1.10 链路「接管并行会话 run」实战：CI run 与发布内容一致时不取消、直接接管后续链路；assets/registry 提交被并行会话抢先时以内容一致为准，不再重复提交。

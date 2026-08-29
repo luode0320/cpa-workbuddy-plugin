@@ -260,6 +260,7 @@ git log --oneline -5 && git status --short | grep -cE "^ M|^\?\?"   # 并行改�
 25. **生产部署唯一路径是 plugin-store install（见 Step 13）**：docker cp .so 不触发加载、PUT config 同内容不触发 fsnotify 重载；面板「发布成功但行为没变」先查服务器实际加载的版本再排查代码。
 26. **插件内文件名前缀判断必须用独立常量（authFilePrefix 铁律，traework 0.1.9 根因）**：`providerName+"-"` 派生前缀会带上 `-provider` 后缀（`traework-provider-`），而宿主落盘文件名是 `traework-<uid>.json` → hostAuthList 恒零匹配 → 面板「暂无账号」。各插件目录已有 `authFilePrefix` 常量（`traework-`/`qoderwork-`/`workbuddy-`），新增文件过滤逻辑必须引用它。
 27. **发布前 fetch 对齐**：多 AI 会话共享同一物理工作树时，push 前 `git fetch` + 确认 remote main 未前进，避免 rebase 撞车；pull --rebase 被拒时先 commit 自己的 staged 内容再 rebase（"index contains uncommitted changes"）。
+28. **store install 报 `direct plugin version not found`（502，毫秒级返回）≠ registry 未发布（0.1.10 实测）**：registry push 后数分钟内，宿主 Go 客户端命中的 raw.githubusercontent CDN 边缘节点可能缓存滞后（同机 curl 反而看到新版——边缘节点不同）。宿主 FetchRegistry 无本地缓存（v7.2.129 源码实锤，install 每次实时拉取）。处置：等几分钟重试即成功；判定顺序=本地 raw 校验 → 服务器侧 curl → 重试。
 
 ## 权责边界与不负责事项
 
