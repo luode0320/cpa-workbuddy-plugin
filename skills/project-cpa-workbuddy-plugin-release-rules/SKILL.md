@@ -151,11 +151,12 @@ assert concl == 'success', 'CI FAILED'
 ### Step 9 · 下载 assets + 校验
 
 ```bash
-python scripts/download-release-assets.py workbuddy-provider 0.14.16
-# download-release-assets.py 已参数化：<provider-id> <version>；四插件通用
+python scripts/download-release-assets.py 0.14.17 workbuddy-provider
+# ⚠️ 参数顺序与 publish-assets.py 相反：download 是 <version> [plugin]，publish 是 <plugin> <version>
+# 传反 → tag 拼成 "0.14.17-vworkbuddy-provider" → Release API 404（易误判为资产未建/CDN 延迟）
 ```
 
-产物在 `release-assets/workbuddy-provider-0.14.16/`：7 个 zip（darwin amd64/arm64、freebsd amd64、linux amd64/arm64、windows amd64/arm64）+ checksums.txt。
+产物在 `release-assets/workbuddy-provider-0.14.17/`：7 个 zip（darwin amd64/arm64、freebsd amd64、linux amd64/arm64、windows amd64/arm64）+ checksums.txt。
 
 ### Step 10 · 提交 assets + push（0.9.7 教训：必须先 push assets 再 publish）
 
@@ -225,7 +226,7 @@ git log --oneline -5 && git status --short | grep -cE "^ M|^\?\?"   # 并行改�
 | 版本 bump | VERSION + main.go `var version` + registry.json `"version"` 三处 |
 | 本地验证 | `python scripts/cgo-shim-build.py <plugin>`（需先移走并行文件模拟 CI） |
 | push | `git push origin main`（SSH remote，直接推；HTTPS+askpass 仅作 SSH 失效时的回退） |
-| 下载资产 | `python scripts/download-release-assets.py <provider-id> <VER>` |
+| 下载资产 | `python scripts/download-release-assets.py <VER> <provider-id>`（⚠️ 与 publish 参数顺序相反） |
 | 发布 registry | `python scripts/publish-assets.py <PLUGIN> <VER>` |
 | 生产部署 | `curl -X POST -H "Authorization: Bearer $KEY" "http://127.0.0.1:8317/v0/management/plugin-store/<provider-id>/install?version=<VER>"` |
 | registry 校验 | `python scripts/validate-registry.py` |
@@ -245,7 +246,7 @@ git log --oneline -5 && git status --short | grep -cE "^ M|^\?\?"   # 并行改�
 11. **gofmt CRLF 假象**：历史 tracked 文件 CRLF 时 `gofmt -l` 全量列出；只确认自己新写/新改的文件不在列表。
 12. **qoderwork 已全量对齐 workbuddy（2026-08-28 完成 1-9 同步）**：此前是老版（publishUsage 8 参数、无 preserve watchdog、无 session_auth），现仅存少量 HEAD 基线差异；同步改动仍只能逐函数适配，不能整体覆盖文件。
 13. **Windows rm -rf cpa-shim-\***：go 子进程/杀软持句柄会挂起，`ls -d cpa-shim-*` 确认后 rmdir 逐删。
-14. ~~**qoderwork 下载脚本硬编码**~~（已修复）：`download-release-assets.py` 已参数化为 `<provider-id> <version>`，四插件通用。
+14. ~~**qoderwork 下载脚本硬编码**~~（已修复）：`download-release-assets.py` 已参数化，四插件通用；但参数顺序是 `<version> [plugin]`，与 publish-assets.py 的 `<plugin> <version>` **互为相反**（0.14.17 实测传反 → 404）。
 15. **验证一律前台跑**：cgo-shim 验证用 `run_in_background` + `| tail` 时 qoderwork 曾挂 23 分钟无输出（后台 bash 环境/残留 shim 目录问题），前台跑 ~6s 秒过；挂起先 TaskStop 再前台重跑，不要死等。
 16. **GitHub API 列表缓存延迟**：push/dispatch 后 `actions/runs` 与 `releases` 列表可能仍显示旧条目，须按 `head_sha` / `releases/tags/<tag>` 精确查询为准。
 17. **分离发布边界**：仅当「工作树存在与发布内容无关的并行 go 改动」时才需要移走分离；纯规则文件（AGENTS.md/PROJECT_*/skills 等非 go 文件）不参与编译，无需分离，直接验证即可（0.13.0 发布内容即并行批本身，未分离一次通过）。

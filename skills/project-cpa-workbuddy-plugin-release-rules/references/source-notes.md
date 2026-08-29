@@ -22,3 +22,9 @@
   - 踩坑清单追加 21-27：TLS 备用通道、authFilePrefix 铁律（traework 面板「暂无账号」第三层根因）、多会话共享工作树 fetch 对齐
   - 插件清单更新为四插件 + 当前版本带（workbuddy 0.14.x / qoderwork 0.9.x / traework 0.1.x / token-usage 0.2.x）
 - **验证**：全文回读无过时残留；版本示例统一为 0.14.16
+
+## 2026-08-30 修正：download-release-assets.py 参数顺序（0.14.17 发布实测）
+
+- **纠正自误**：2026-08-29 更新时把下载脚本参数顺序误记为 `<provider-id> <version>`，实际签名是 `<version> [plugin]`——与 publish-assets.py 的 `<plugin> <version>` **互为相反**。0.14.17 发布时传反 → tag 拼错 → Release API 404（症状与「资产未建」一致，已用 Release API 复核排除）。
+- **修正位置**：Step 9 命令示例、关键命令速查表、踩坑 item 14。
+- **经验**：沉淀脚本用法前先用 `head <script> | grep usage` 核对真实签名，不凭记忆写参数顺序。
