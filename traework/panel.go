@@ -241,13 +241,29 @@ async function load(){
 async function checkin(authIndex){
   msg('签到中…');
   const r = await api('/checkin', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({auth_index: authIndex})});
-  msg((r.message || (r.ok ? '签到成功' : '签到失败')) + (r.points ? ' +' + r.points + ' 积分' : ''));
+  let line = (r.message || (r.ok ? '签到成功' : '签到失败')) + (r.points ? ' +' + r.points + ' 积分' : '');
+  if (r.retry_scheduled) {
+    line += '（失败已加入重试队列：每 1 分钟重试，最多 60 次）';
+  }
+  msg(line);
   load();
 }
 async function fleetCheckin(){
   msg('全部账号签到中…');
   const r = await api('/checkin', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'});
-  msg('完成，成功 ' + (r.checked_in || 0) + ' 个');
+  const list = r.results || [];
+  const bad = list.filter(function(x){ return !x.ok; });
+  let detail = '';
+  if (list.length > 0 && bad.length === 0) {
+    detail = '，全部成功';
+  } else if (bad.length > 0) {
+    detail = '；失败：' + bad.slice(0, 3).map(function(x){ return (x.uid || x.auth_id || '账号') + ' ' + (x.message || ''); }).join(' / ');
+  }
+  const retried = r.retries_scheduled || 0;
+  if (retried > 0) {
+    detail += '；' + retried + ' 个失败账号已加入重试队列（每 1 分钟重试，最多 60 次）';
+  }
+  msg('完成，成功 ' + (r.checked_in || 0) + ' / ' + list.length + ' 个' + detail);
   load();
 }
 async function refreshCredits(){

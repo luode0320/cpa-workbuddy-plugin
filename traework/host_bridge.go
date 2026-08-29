@@ -150,19 +150,68 @@ func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 	if err != nil {
 		return hostHTTPDoDirect(req, bodyBytes)
 	}
+	return decodeBridgeHTTPResponse(result)
+}
+
+// decodeBridgeHTTPResponse decodes the host.http.do result envelope with a
+// tolerant status extraction: host versions differ in the JSON key used for
+// the upstream status (status_code / statusCode / status / code), and an
+// unrecognized key silently decoded as StatusCode 0, which callers treated
+// as a hard HTTP failure even when the body was intact — traework check-in
+// and points broke exactly this way on Linux (bridge path) while the Windows
+// direct path kept working, hiding the bug in dev.
+func decodeBridgeHTTPResponse(result json.RawMessage) (*hostHTTPResponse, error) {
 	var resp struct {
-		StatusCode int                 `json:"status_code"`
-		Headers    map[string][]string `json:"headers,omitempty"`
-		Body       []byte              `json:"body,omitempty"`
+		StatusCode      int                 `json:"status_code"`
+		StatusCodeCamel int                 `json:"statusCode"`
+		Status          json.RawMessage     `json:"status"`
+		Code            json.RawMessage     `json:"code"`
+		Headers         map[string][]string `json:"headers,omitempty"`
+		Body            []byte              `json:"body,omitempty"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
 		return nil, fmt.Errorf("decode host.http.do response: %w", err)
 	}
+	status := resp.StatusCode
+	if status == 0 {
+		status = resp.StatusCodeCamel
+	}
+	if status == 0 {
+		if n, ok := bridgeJSONInt(resp.Status); ok {
+			status = int(n)
+		}
+	}
+	if status == 0 {
+		if n, ok := bridgeJSONInt(resp.Code); ok {
+			status = int(n)
+		}
+	}
 	return &hostHTTPResponse{
-		StatusCode: resp.StatusCode,
+		StatusCode: status,
 		Headers:    http.Header(resp.Headers),
 		Body:       resp.Body,
 	}, nil
+}
+
+// bridgeJSONInt extracts an integer from a raw JSON value (number or numeric
+// string); ok=false when absent or non-numeric. Used by the tolerant status
+// decode below.
+func bridgeJSONInt(raw json.RawMessage) (int64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n, true
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		var v int64
+		if _, err := fmt.Sscanf(s, "%d", &v); err == nil {
+			return v, true
+		}
+	}
+	return 0, false
 }
 
 // hostHTTPDoDirect executes the request via the plugin's own http.Client.

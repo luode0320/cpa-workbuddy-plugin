@@ -44,6 +44,22 @@ func checkinAuthHeaders(a *traeAuth, deviceID string) http.Header {
 	return h
 }
 
+// isDefiniteHTTPFailure reports whether the bridge status code is a definite
+// non-200. Status 0 means the bridge status was undecodable (host wire drift)
+// — Trae answers HTTP 200 with a business code inside the JSON body, so an
+// undecodable status with a non-empty body must NOT be treated as failure
+// (that bug broke check-in and points on Linux while Windows direct calls
+// kept working, hiding it in dev).
+func isDefiniteHTTPFailure(status int) bool {
+	return status != http.StatusOK && status != 0
+}
+
+// isBusyThrottleMsg matches Trae's transient peak-hour throttling message
+// (business code 9074: "当前参与用户太多，请稍后再试").
+func isBusyThrottleMsg(msg string) bool {
+	return strings.Contains(msg, "太多") || strings.Contains(msg, "稍后再试")
+}
+
 // checkinAccount performs one claim for a parsed account.
 func checkinAccount(a *traeAuth) checkinResult {
 	if a == nil || !a.hasToken() {
@@ -51,34 +67,44 @@ func checkinAccount(a *traeAuth) checkinResult {
 	}
 	host := a.checkinHost()
 	deviceID := deviceIDFor(a.DeviceID, a.UserID)
-	req, err := http.NewRequest(http.MethodPost, host+claimPath, bytes.NewReader([]byte("{}")))
-	if err != nil {
-		return checkinResult{OK: false, Message: err.Error()}
+	// One deferred retry absorbs Trae's transient peak-hour throttle window.
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequest(http.MethodPost, host+claimPath, bytes.NewReader([]byte("{}")))
+		if err != nil {
+			return checkinResult{OK: false, Message: err.Error()}
+		}
+		req.Header = checkinAuthHeaders(a, deviceID)
+		resp, err := hostHTTPDo(req)
+		if err != nil {
+			return checkinResult{OK: false, Message: "checkin request: " + err.Error()}
+		}
+		body := string(resp.Body)
+		if isDefiniteHTTPFailure(resp.StatusCode) {
+			return checkinResult{OK: false, Message: fmt.Sprintf("HTTP %d %s", resp.StatusCode, truncateRedacted(body, 160))}
+		}
+		if len(body) == 0 {
+			return checkinResult{OK: false, Message: fmt.Sprintf("HTTP %d empty response", resp.StatusCode)}
+		}
+		var data map[string]any
+		if err := json.Unmarshal([]byte(body), &data); err != nil {
+			return checkinResult{OK: false, Message: "decode: " + err.Error()}
+		}
+		if apiSucceeded(data) {
+			return checkinResult{OK: true, Message: msgOf(data, "签到成功"), Points: pointsOf(data)}
+		}
+		msg := msgOf(data, "签到失败")
+		if AlreadyCheckedIn(msg) {
+			return checkinResult{OK: true, Message: "今日已签到"}
+		}
+		if DeviceBlocked(msg) {
+			return checkinResult{OK: false, Message: msg + "（设备级拦截，稍后重试）"}
+		}
+		if attempt == 0 && isBusyThrottleMsg(msg) {
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		return checkinResult{OK: false, Message: msg}
 	}
-	req.Header = checkinAuthHeaders(a, deviceID)
-	resp, err := hostHTTPDo(req)
-	if err != nil {
-		return checkinResult{OK: false, Message: "checkin request: " + err.Error()}
-	}
-	body := string(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return checkinResult{OK: false, Message: fmt.Sprintf("HTTP %d %s", resp.StatusCode, truncateRedacted(body, 160))}
-	}
-	var data map[string]any
-	if err := json.Unmarshal([]byte(body), &data); err != nil {
-		return checkinResult{OK: false, Message: "decode: " + err.Error()}
-	}
-	if apiSucceeded(data) {
-		return checkinResult{OK: true, Message: msgOf(data, "签到成功"), Points: pointsOf(data)}
-	}
-	msg := msgOf(data, "签到失败")
-	if AlreadyCheckedIn(msg) {
-		return checkinResult{OK: true, Message: "今日已签到"}
-	}
-	if DeviceBlocked(msg) {
-		return checkinResult{OK: false, Message: msg + "（设备级拦截，稍后重试）"}
-	}
-	return checkinResult{OK: false, Message: msg}
 }
 
 // accountPoints queries the account's remaining credits and caches them.
@@ -98,8 +124,11 @@ func accountPoints(a *traeAuth) (int64, error) {
 		return 0, err
 	}
 	raw := resp.Body
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("points HTTP %d", resp.StatusCode)
+	if isDefiniteHTTPFailure(resp.StatusCode) {
+		return 0, fmt.Errorf("points HTTP %d: %s", resp.StatusCode, truncateRedacted(string(raw), 120))
+	}
+	if len(raw) == 0 {
+		return 0, fmt.Errorf("points HTTP %d: empty response", resp.StatusCode)
 	}
 	var data map[string]any
 	if err := json.Unmarshal(raw, &data); err != nil {
@@ -181,30 +210,57 @@ func init() {
 }
 
 // runFleetCheckin iterates every traework account and claims check-in.
-func runFleetCheckin(source string) int {
+// Returns the success count plus per-account results so the panel can show
+// WHY an account failed (throttle / device block / credential problems)
+// instead of a bare "成功 0 个". Retryable failures are pushed into the
+// persistent retry queue (1-minute cadence, up to checkinRetryMax attempts);
+// the third return value counts accounts newly added to that queue.
+func runFleetCheckin(source string) (int, []map[string]any, int) {
 	files, err := hostAuthList()
 	if err != nil {
-		return 0
+		return 0, nil, 0
 	}
 	okCount := 0
+	scheduled := 0
+	results := make([]map[string]any, 0, len(files))
 	for _, f := range files {
 		if strings.TrimSpace(f.AuthIndex) == "" || strings.TrimSpace(f.ID) == "" {
 			continue
 		}
 		a, err := hostAuthGet(f.AuthIndex)
 		if err != nil || a == nil {
+			results = append(results, map[string]any{"auth_id": f.ID, "uid": a2UID(a), "ok": false, "message": "凭据加载失败"})
 			continue
 		}
 		res := checkinAccount(a)
 		if res.OK {
 			okCount++
+			// A late success (retry queue or earlier failed run) clears
+			// any pending retry entry for this account.
+			cancelCheckinRetry(f.AuthIndex)
+		} else if scheduleCheckinRetry(f.AuthIndex, f.ID, a.UserID, res.Message) {
+			scheduled++
+			results = append(results, map[string]any{
+				"auth_id": f.ID, "uid": a.UserID, "ok": false, "message": res.Message,
+				"retry_scheduled": true,
+			})
+			continue
 		}
+		results = append(results, map[string]any{"auth_id": f.ID, "uid": a.UserID, "ok": res.OK, "message": res.Message})
 		// Refresh the credits cache after a successful claim.
 		if res.OK && res.Points > 0 {
 			cacheCredits(f.ID, &traeCredits{TotalRemain: res.Points, FetchedAt: time.Now().Format(time.RFC3339)})
 		}
 	}
-	return okCount
+	return okCount, results, scheduled
+}
+
+// a2UID safely reads the UserID of a possibly-nil auth (fleet error entries).
+func a2UID(a *traeAuth) string {
+	if a == nil {
+		return ""
+	}
+	return a.UserID
 }
 
 // -----------------------------------------------------------------------------

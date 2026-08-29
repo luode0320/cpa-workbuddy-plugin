@@ -60,6 +60,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: base + "/accounts", Description: "List TraeWork accounts with credits, check-in and failover status."},
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Manually check in one account (auth_index) or all."},
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
+			{Method: http.MethodGet, Path: base + "/checkin/retries", Description: "Snapshot of the check-in retry queue (1-minute cadence, max 60 attempts)."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one (auth_index query) or all accounts."},
 			{Method: http.MethodPost, Path: base + "/select", Description: "Select the active account card used for chat routing (body: {auth_index})."},
 			{Method: http.MethodPost, Path: base + "/enable", Description: "Enable one (body: {auth_index}) or all (empty body) accounts."},
@@ -110,6 +111,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleManualCheckin(req)))
 	case req.Method == http.MethodPost && path == base+"/checkin/config":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinConfig(req)))
+	case req.Method == http.MethodGet && path == base+"/checkin/retries":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinRetries()))
 	case req.Method == http.MethodGet && path == base+"/credits":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCreditsQuery(req)))
 	case req.Method == http.MethodPost && path == base+"/select":
@@ -184,7 +187,11 @@ func handleAccounts() map[string]any {
 	}
 }
 
-// handleManualCheckin checks in one account (auth_index) or all.
+// handleManualCheckin checks in one account (auth_index) or all. Failed
+// accounts whose failures are retryable are added to the persistent retry
+// queue (1-minute cadence, up to checkinRetryMax attempts); the response
+// reports how many accounts were newly queued so the panel can tell the
+// user the failure is being worked on in the background.
 func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
@@ -192,8 +199,11 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	_ = json.Unmarshal(req.Body, &body)
 	authIndex := strings.TrimSpace(body.AuthIndex)
 	if authIndex == "" {
-		okCount := runFleetCheckin("manual")
-		return map[string]any{"ok": true, "checked_in": okCount}
+		okCount, results, scheduled := runFleetCheckin("manual")
+		return map[string]any{
+			"ok": true, "checked_in": okCount, "results": results,
+			"retries_scheduled": scheduled,
+		}
 	}
 	a, err := hostAuthGet(authIndex)
 	if err != nil || a == nil {
@@ -204,19 +214,43 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	if res.Points > 0 {
 		out["points"] = res.Points
 	}
-	// Refresh credits cache for the panel.
+	if res.OK {
+		cancelCheckinRetry(authIndex)
+	}
+	// Locate the auth file ID once — used for retry queuing and the
+	// credits cache refresh below.
+	var fileID string
 	if files, lerr := hostAuthList(); lerr == nil {
 		for _, f := range files {
 			if f.AuthIndex == authIndex {
-				if remain, qerr := accountPoints(a); qerr == nil {
-					cacheCredits(f.ID, &traeCredits{TotalRemain: remain, FetchedAt: time.Now().Format(time.RFC3339)})
-					out["remain"] = remain
-				}
+				fileID = f.ID
 				break
 			}
 		}
 	}
+	if !res.OK && scheduleCheckinRetry(authIndex, fileID, a.UserID, res.Message) {
+		out["retry_scheduled"] = true
+	}
+	// Refresh credits cache for the panel.
+	if fileID != "" {
+		if remain, qerr := accountPoints(a); qerr == nil {
+			cacheCredits(fileID, &traeCredits{TotalRemain: remain, FetchedAt: time.Now().Format(time.RFC3339)})
+			out["remain"] = remain
+		}
+	}
 	return out
+}
+
+// handleCheckinRetries returns the pending check-in retry queue snapshot.
+func handleCheckinRetries() map[string]any {
+	snapshot := checkinRetrySnapshot()
+	return map[string]any{
+		"ok":       true,
+		"interval": checkinRetryInterval.String(),
+		"max":      checkinRetryMax,
+		"pending":  len(snapshot),
+		"retries":  snapshot,
+	}
 }
 
 // handleCheckinConfig toggles the daily auto check-in loop.
