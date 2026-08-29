@@ -232,51 +232,51 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.12/traework-provider_0.1.12_darwin_amd64.zip",
-            "sha256": "b0a1f9288ba9b8bcb6a2ac961102d1a5f1eaa48145efb9e557959816f09849c3",
-            "size": 2908238
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.13/traework-provider_0.1.13_darwin_amd64.zip",
+            "sha256": "70179b106d7eb4297debd3dc3d442791b321ef43b98a01ea6679400cdfbdc349",
+            "size": 2908269
           },
           {
             "goos": "darwin",
             "goarch": "arm64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.12/traework-provider_0.1.12_darwin_arm64.zip",
-            "sha256": "2f2346476493f5f229c36d6c6018a47e7de677b955b04a4f29639817579cc21f",
-            "size": 2687161
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.13/traework-provider_0.1.13_darwin_arm64.zip",
+            "sha256": "28bd2b57392196a91cb142434e4833f77b2f504a09d29d24d11295c3af7b0edf",
+            "size": 2687208
           },
           {
             "goos": "freebsd",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.12/traework-provider_0.1.12_freebsd_amd64.zip",
-            "sha256": "a081aed7a32d29ecd8839df6ddc48532862034006ae18f59fe8485c77d3c60ee",
-            "size": 2985779
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.13/traework-provider_0.1.13_freebsd_amd64.zip",
+            "sha256": "9bc6d1e6082d1297f3237ca934a4c9df89549239d734d038b54f117280cd8ade",
+            "size": 2985867
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.12/traework-provider_0.1.12_linux_amd64.zip",
-            "sha256": "0506d9516bc7a493fa92de45ea2f1fe84f731f4fccc5c05ffb02d30e1045aa91",
-            "size": 3062788
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.13/traework-provider_0.1.13_linux_amd64.zip",
+            "sha256": "ca2e813761b3f30dc6a1aa0cf9b045a1434d9912458c54688beabae26adf8a6f",
+            "size": 3062800
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.12/traework-provider_0.1.12_linux_arm64.zip",
-            "sha256": "6faf644453ca7ce8f391d1aa6cf3d736f4245af2f13052e5a1f99ef9e0e31904",
-            "size": 2783385
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.13/traework-provider_0.1.13_linux_arm64.zip",
+            "sha256": "0f45ab8f3c26a7e16a4af3820bcd3fd3d56fb17b4a07e62f70e4dd0f1cfa680e",
+            "size": 2783420
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.12/traework-provider_0.1.12_windows_amd64.zip",
-            "sha256": "b67102236385421f1d6a8e421470cfdc1de0c7c6034cbc6de7b28ec826458195",
-            "size": 2986366
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.13/traework-provider_0.1.13_windows_amd64.zip",
+            "sha256": "e9fae687f9e8bd32c76ed627dd596649dc69ea17eaf7097fd7cc56e44c74583e",
+            "size": 2986402
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.12/traework-provider_0.1.12_windows_arm64.zip",
-            "sha256": "7edc62e5e118316a4fccb7ddf2c59cddc5d16c973697e222317539f8b753b7b5",
-            "size": 2757672
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/traework-provider-0.1.13/traework-provider_0.1.13_windows_arm64.zip",
+            "sha256": "34945a0e7d651d4ca096b682187c94689f4ff9caaf84d096c4308e6266b06694",
+            "size": 2757622
           }
         ]
       }
