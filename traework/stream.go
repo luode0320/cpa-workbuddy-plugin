@@ -241,31 +241,39 @@ type openAIRequest struct {
 	TopP        *float64         `json:"top_p"`
 }
 
-// toTraeMessages normalizes OpenAI messages into the Trae messages shape
-// ({role, content:string}). Multi-part content arrays are flattened to their
-// text parts.
+// toTraeMessages normalizes OpenAI messages into the Trae messages shape.
+// The upstream LLMRawMessage expects messages[].content as a content-parts
+// array ([{"type":"text","text":...}]) — a plain string fails with 4001
+// "cannot unmarshal string into ... []*LLMRawMessageContent". Multi-part
+// content arrays are mapped 1:1 onto text parts.
 func toTraeMessages(msgs []map[string]any) []map[string]any {
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
 		role, _ := m["role"].(string)
 		switch c := m["content"].(type) {
 		case string:
-			out = append(out, map[string]any{"role": role, "content": c})
+			out = append(out, map[string]any{"role": role, "content": textParts(c)})
 		case []any:
-			var parts []string
+			var parts []map[string]any
 			for _, item := range c {
 				if part, ok := item.(map[string]any); ok {
 					if txt, ok := part["text"].(string); ok && txt != "" {
-						parts = append(parts, txt)
+						parts = append(parts, map[string]any{"type": "text", "text": txt})
 					}
 				}
 			}
 			if len(parts) > 0 {
-				out = append(out, map[string]any{"role": role, "content": strings.Join(parts, "\n")})
+				out = append(out, map[string]any{"role": role, "content": parts})
 			}
 		default:
 			// Skip malformed messages rather than failing the whole request.
 		}
 	}
 	return out
+}
+
+// textParts wraps plain text into the single-part content array the upstream
+// LLMRawMessage contract requires.
+func textParts(s string) []map[string]any {
+	return []map[string]any{{"type": "text", "text": s}}
 }
