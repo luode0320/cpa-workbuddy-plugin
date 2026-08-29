@@ -126,11 +126,11 @@ func handleImportCredential(req pluginapi.ManagementRequest) map[string]any {
 		Content  string `json:"content"`
 	}
 	if err := json.Unmarshal(req.Body, &body); err != nil || trimSpace(body.Content) == "" {
-		return map[string]any{"error": "body {filename, content} required"}
+		return map[string]any{"ok": false, "error": "body {filename, content} required", "message": "body {filename, content} required"}
 	}
 	a, err := parseCredentialImport([]byte(body.Content))
 	if err != nil {
-		return map[string]any{"error": "invalid trae credential: " + err.Error()}
+		return map[string]any{"ok": false, "error": "invalid trae credential: " + err.Error(), "message": "凭据解析失败：" + err.Error()}
 	}
 	// Deduplicate by UserID: importing the same account twice must not
 	// create a second auth record. hostAuthList failures are tolerated
@@ -167,10 +167,10 @@ func handleImportCredential(req pluginapi.ManagementRequest) map[string]any {
 	name := authFileNameFor(a)
 	raw, berr := buildAuthFileJSON(a, false, "imported via panel", nil)
 	if berr != nil {
-		return map[string]any{"error": berr.Error()}
+		return map[string]any{"ok": false, "error": berr.Error(), "message": "凭据文件构建失败：" + berr.Error()}
 	}
 	if serr := hostAuthSaveJSON(name, raw); serr != nil {
-		return map[string]any{"error": serr.Error()}
+		return map[string]any{"ok": false, "error": serr.Error(), "message": "凭据保存失败：" + serr.Error()}
 	}
 	return map[string]any{
 		"ok": true, "duplicate": false, "file_name": name,

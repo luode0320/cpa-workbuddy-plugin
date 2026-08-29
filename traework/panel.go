@@ -346,7 +346,7 @@ async function doImport(file){
     if (!text || !text.trim()) { msg('文件内容为空'); return; }
     msg('导入中…');
     const r = await api('/import', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filename: file.name || 'storage.json', content: text})});
-    msg(r.message || (r.ok ? '导入成功' : '导入失败'));
+    msg(r.message || r.error || (r.ok ? '导入成功' : '导入失败（响应无错误详情）'));
     load();
   } catch(e){ msg('导入失败：' + (e && e.message || e)); }
 }
