@@ -77,15 +77,16 @@ func (c *traeCredential) accountName() string {
 //	token/refreshToken/uid/nickname/host: decrypted at load time (runtime).
 //	deviceId/machineId: optional client fingerprint (check-in de-dupe).
 type traeAuth struct {
-	CredentialRaw string `json:"credential,omitempty"`
-	Token         string `json:"token,omitempty"`
-	RefreshToken  string `json:"refreshToken,omitempty"`
-	ExpiredAt     string `json:"expiredAt,omitempty"`
-	UserID        string `json:"uid,omitempty"`
-	Nickname      string `json:"nickname,omitempty"`
-	Host          string `json:"host,omitempty"`
-	DeviceID      string `json:"deviceId,omitempty"`
-	MachineID     string `json:"machineId,omitempty"`
+	CredentialRaw    string `json:"credential,omitempty"`
+	Token            string `json:"token,omitempty"`
+	RefreshToken     string `json:"refreshToken,omitempty"`
+	ExpiredAt        string `json:"expiredAt,omitempty"`
+	RefreshExpiredAt string `json:"refreshExpiredAt,omitempty"`
+	UserID           string `json:"uid,omitempty"`
+	Nickname         string `json:"nickname,omitempty"`
+	Host             string `json:"host,omitempty"`
+	DeviceID         string `json:"deviceId,omitempty"`
+	MachineID        string `json:"machineId,omitempty"`
 }
 
 // hasToken reports whether the auth carries a usable access token.
@@ -275,7 +276,13 @@ func parseTraeAuth(raw []byte) (*traeAuth, error) {
 		if err != nil {
 			return nil, fmt.Errorf("credential_error: %w", err)
 		}
-		if cred.Token != "" {
+		// Runtime fields written by keepalive (token/refreshToken/expiredAt on
+		// the top level) MUST win over the static credential blob: the blob is
+		// the client-encrypted snapshot at import time, and a plugin-side
+		// token refresh (keepalive.go) updates the top level only. Without
+		// this priority the refreshed access token would be silently reverted
+		// to the (possibly dead) credential value on every load.
+		if a.Token == "" && cred.Token != "" {
 			a.Token = cred.Token
 		}
 		if a.RefreshToken == "" {
@@ -283,6 +290,9 @@ func parseTraeAuth(raw []byte) (*traeAuth, error) {
 		}
 		if a.ExpiredAt == "" {
 			a.ExpiredAt = cred.ExpiredAt
+		}
+		if a.RefreshExpiredAt == "" {
+			a.RefreshExpiredAt = cred.RefreshExpiredAt
 		}
 		if a.UserID == "" {
 			a.UserID = cred.UserID

@@ -95,6 +95,9 @@ type traeAccountView struct {
 	Exhausted     bool   `json:"exhausted"`
 	Disabled      bool   `json:"disabled"`
 	Anomaly       bool   `json:"anomaly"`
+	Preserved     bool   `json:"preserved"`
+	SuccessCount  int64  `json:"success_count,omitempty"`
+	FailedCount   int64  `json:"failed_count,omitempty"`
 	CoolingDown   bool   `json:"cooling_down"`
 	FailCount     int    `json:"fail_count"`
 	CooldownUntil string `json:"cooldown_until,omitempty"`

@@ -48,7 +48,7 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	if loadedSchedulerMode() != schedulerModeCredits {
+	if loadedSchedulerMode() != schedulerModeCredits && loadedSchedulerMode() != schedulerModeSession {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
 
@@ -67,6 +67,21 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	}
 	if len(wbCandidates) == 0 {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
+	}
+	// Preserve filter: accounts the watchdog flagged (credits below
+	// preserve_threshold) are kept out of routing entirely so they keep a
+	// small credit buffer. Place this BEFORE the anomaly filter so the
+	// lastNonEmpty fallback can still see preserved accounts when every
+	// traework account is preserved — we don't want a fleet-wide credit
+	// reset to lock routing.
+	preserveFiltered := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
+	for _, c := range wbCandidates {
+		if !isAccountPreserved(c.ID) {
+			preserveFiltered = append(preserveFiltered, c)
+		}
+	}
+	if len(preserveFiltered) > 0 {
+		wbCandidates = preserveFiltered
 	}
 	anomalyFiltered := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
@@ -96,7 +111,12 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 			Exhausted: exhausted,
 		})
 	}
-	picked := pickActiveAuth(cands)
+	var picked string
+	if loadedSchedulerMode() == schedulerModeSession {
+		picked = pickSessionAuth(extractSessionKey(req), cands)
+	} else {
+		picked = pickActiveAuth(cands)
+	}
 	if picked == "" {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
@@ -128,4 +148,12 @@ func candidateDisabled(c pluginapi.SchedulerAuthCandidate) bool {
 // isAccountAnomaly reports whether the account is in the anomaly set.
 func isAccountAnomaly(authID string) bool {
 	return isAnomaly(authID)
+}
+
+// isAccountPreserved reports whether the account is currently flagged by the
+// preserve watchdog and must be kept out of routing. Symmetric with
+// isAccountAnomaly / isAccountCoolingDown: every scheduler pick asks the
+// same predicate family.
+func isAccountPreserved(authID string) bool {
+	return isPreserve(authID)
 }

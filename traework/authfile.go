@@ -212,6 +212,66 @@ func isPathUnder(path, dir string) bool {
 	return rel != "." && !strings.HasPrefix(rel, "..") && !strings.Contains(rel, string(filepath.Separator)+"..")
 }
 
+// writeAuthFileDirect writes raw JSON to a physical auth file via atomic
+// temp-then-rename. This is the direct-write channel used by preserve /
+// counter / lifecycle / keepalive: host.auth.save rebuilds the auth record
+// and DROPS top-level fields the host doesn't recognize (preserve /
+// success_count / etc.), so any plugin-owned top-level flag MUST go through
+// this path and let the host's file watcher re-synthesize the record with
+// the unknown fields intact. Confined to isSafeAuthPath + absolute paths.
+//
+// Generalized from anomaly.go's writeAnomalyFileDirect (same temp+rename
+// algorithm) so all direct-write callers share one audited implementation.
+func writeAuthFileDirect(path string, raw []byte) error {
+	if !isSafeAuthPath(path) {
+		return fmt.Errorf("refusing direct write to unsafe path: %s", path)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("refusing direct write to relative path: %s", path)
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".traework-auth-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("replace auth file: %w", err)
+	}
+	return nil
+}
+
+// persistAuthDirect is the high-level direct-write helper: it writes raw to
+// the physical path and optionally removes a legacy single-file auth when the
+// account migrated to a per-UID file (legacyPath non-empty and different).
+// Mirrors workbuddy's persistAuthDirect contract (name used only for error
+// messages). All plugin-owned top-level flag writers use this instead of
+// host.auth.save.
+func persistAuthDirect(name, path, legacyPath string, raw []byte) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("no physical auth path for %s", name)
+	}
+	if err := writeAuthFileDirect(path, raw); err != nil {
+		return err
+	}
+	if legacyPath != "" && !strings.EqualFold(filepath.Base(legacyPath), filepath.Base(path)) {
+		_ = deleteAuthFileInDir(legacyPath, filepath.Dir(legacyPath))
+	}
+	return nil
+}
+
 // deleteAuthFileInDir removes a physical auth file, requiring the path to be
 // absolute, safe, and (when dir is non-empty) inside dir.
 func deleteAuthFileInDir(path, dir string) error {

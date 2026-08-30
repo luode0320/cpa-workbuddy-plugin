@@ -58,6 +58,8 @@ func managementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
 			{Method: http.MethodGet, Path: base + "/accounts", Description: "List TraeWork accounts with credits, check-in and failover status."},
+			{Method: http.MethodPost, Path: base + "/refresh", Description: "Force refresh points/cache for all accounts (async, throttled)."},
+			{Method: http.MethodGet, Path: base + "/refresh/status", Description: "Async refresh progress snapshot."},
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Manually check in one account (auth_index) or all."},
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
 			{Method: http.MethodGet, Path: base + "/checkin/retries", Description: "Snapshot of the check-in retry queue (1-minute cadence, max 60 attempts)."},
@@ -68,6 +70,9 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/unfreeze", Description: "Remove one (body: {auth_index}) or all (empty body) accounts from the anomaly pool."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import one Trae SOLO credential (body: {filename, content}); whole storage.json or raw credential value accepted."},
 			{Method: http.MethodGet, Path: base + "/storage-path", Description: "Return the detected Trae SOLO globalStorage directory for the panel hint."},
+			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
+			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
+			{Method: http.MethodGet, Path: base + "/lifecycle", Description: "Lifecycle (auto-disable exhausted) toggle state."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "TraeWork", Description: "TraeWork dashboard: credits, check-in, enable/disable, failover status."},
@@ -127,6 +132,16 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportCredential(req)))
 	case req.Method == http.MethodGet && path == base+"/storage-path":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{"ok": true, "path": storageGlobalDir()}))
+	case req.Method == http.MethodPost && path == base+"/refresh":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleRefreshAll()))
+	case req.Method == http.MethodGet && path == base+"/refresh/status":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleRefreshStatus()))
+	case req.Method == http.MethodPost && path == base+"/keepalive":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveNow(req)))
+	case req.Method == http.MethodGet && path == base+"/keepalive/status":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveStatus()))
+	case req.Method == http.MethodGet && path == base+"/lifecycle":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleLifecycleStatus()))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }
@@ -155,6 +170,12 @@ func handleAccounts() map[string]any {
 			UID:       a.UserID,
 			Disabled:  phys.Disabled || f.Disabled,
 			Anomaly:   isAnomaly(f.ID),
+			Preserved: isPreserve(f.ID),
+		}
+		// Cumulative success/failed counters (plugin-owned, survive restart).
+		if strings.TrimSpace(a.UserID) != "" {
+			ensureCounterLoaded(a.UserID, phys.JSON)
+			view.SuccessCount, view.FailedCount = counterSnapshot(a.UserID)
 		}
 		// Credits: cached snapshot first; live query when missing.
 		cr, cached := cachedCredits(f.ID)
@@ -184,7 +205,48 @@ func handleAccounts() map[string]any {
 		"accounts":          views,
 		"active_id":         active,
 		"anomaly_pool_size": len(anomalySnapshot()),
+		"checkin_auto":      autoCheckinEnabled(),
+		"server_time":       time.Now().Format("2006-01-02 15:04:05"),
+		// Plugin subsystem state for the panel header (watchdog / keepalive /
+		// lifecycle toggles + their config). Kept in one /accounts payload so
+		// the panel renders with a single fetch.
+		"preserve": map[string]any{
+			"threshold":        preserveThreshold(),
+			"interval_seconds": int64(preserveWatchdogInterval().Seconds()),
+			"enabled":          preserveWatchdogEnabled(),
+			"pool_size":        len(preserveSnapshot()),
+		},
+		"lifecycle": map[string]any{
+			"enabled": lifecycleEnabled(),
+		},
+		"keepalive": map[string]any{
+			"enabled":  keepaliveEnabled(),
+			"schedule": keepaliveHours,
+			"last_run": getLastKeepalive(),
+		},
 	}
+}
+
+// handleRefreshAll enqueues a full-fleet points refresh into the throttled
+// runner and returns immediately (async). The panel polls /refresh/status
+// and updates cards incrementally instead of blocking on N round-trips.
+func handleRefreshAll() map[string]any {
+	files, err := hostAuthList()
+	if err != nil {
+		return map[string]any{"started": false, "error": err.Error()}
+	}
+	targets := make([]refreshTarget, 0, len(files))
+	for _, f := range files {
+		targets = append(targets, refreshTarget{AuthIndex: f.AuthIndex, AuthID: f.ID})
+	}
+	n := globalRefresh.EnqueueAll(targets, "panel")
+	return map[string]any{"started": n > 0, "source": "panel", "queued": n}
+}
+
+// handleRefreshStatus returns the async refresh progress snapshot for the
+// panel's incremental card updates.
+func handleRefreshStatus() map[string]any {
+	return map[string]any{"refresh": globalRefresh.Snapshot()}
 }
 
 // handleManualCheckin checks in one account (auth_index) or all. Failed

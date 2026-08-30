@@ -273,7 +273,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.1.15"
+var version = "0.1.16"
 
 func wbRegistration() registration {
 	return registration{
@@ -287,7 +287,7 @@ func wbRegistration() registration {
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "api_host", Type: pluginapi.ConfigFieldTypeString, Description: "上游 llm_utils_chat 服务地址（默认 https://trae-api-cn.mchost.guru）。"},
 				{Name: "app_id", Type: pluginapi.ConfigFieldTypeString, Description: "x-app-id 请求头取值（默认共享的 Trae 客户端 ID）。"},
-				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "多账号选择策略：off（交给内置逻辑，默认）或 credits（插件选择健康账号）。"},
+				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits, schedulerModeSession}, Description: "多账号选择策略：off（交给内置逻辑，默认）、credits（插件按面板活跃账号选择健康账号）或 session（会话级粘性路由，同一会话固定同一账号 1 小时，失败自动换号）。"},
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每日自动签到（本地时间 09:00 与 21:00，默认开启）。"},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "可选模型列表。每个条目可为模型 id 字符串或 {id, name, ...} 对象；未配置时使用内置默认列表。"},
 				{Name: "retry_on_4xx", Type: pluginapi.ConfigFieldTypeString, Description: "账号级 4xx 时每次请求的换号重试预算（0-10，默认 10）。"},
@@ -298,6 +298,11 @@ func wbRegistration() registration {
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：用量上报使用的 CPAMP 管理密钥。"},
 				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
 				{Name: "usage_feed_path", Type: pluginapi.ConfigFieldTypeString, Description: "可选：共享用量数据流路径（默认 <CLIProxyAPI 根目录>/data/token-usage-feed.ndjson）。必须与 token-usage-tracker 的 usage_feed_path 保持一致。"},
+				{Name: "preserve_threshold", Type: pluginapi.ConfigFieldTypeString, Description: "保号池积分阈值（1-500，默认 50）：可用积分低于该值的账号自动进入保号池，仅在无其它可用账号时兜底路由。"},
+				{Name: "preserve_watchdog_interval", Type: pluginapi.ConfigFieldTypeString, Description: "保号看护（watchdog）检查间隔（分钟，默认 10）：周期性刷新积分快照并更新保号池归属。"},
+				{Name: "preserve_watchdog_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用保号看护循环（默认开启）：关闭后保号池不再自动维护，仅保留手动路由。"},
+				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每日 token 保号刷新（本地时间 22:00，默认开启）：access token 临近过期时通过 ExchangeToken 自动续期；刷新令牌失效的账号自动标记禁用待重新导入。"},
+				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用积分生命周期自动停用（默认开启）：账号积分耗尽（remain<=0）后自动禁用，避免浪费请求；不自动复活，需面板手动启用或重新导入。"},
 			},
 		},
 		Capabilities: registrationCapability{

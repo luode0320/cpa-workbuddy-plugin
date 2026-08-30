@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TraeWork 面板</title>
+<style>
+/* Theme tokens aligned with CPA management panel: default :root = light;
+   data-theme=white | dark; embedded iframe syncs parent (mirrors workbuddy). */
+:root{
+  --bg:#faf9f5;--card:#ffffff;--border:#e3e1db;--fg:#2d2a26;--mut:#6d6760;
+  --acc:#0f766e;--on-acc:#ffffff;--ok:#10b981;--warn:#e0aa14;--err:#c65746;
+  --surface:#f0eee8;--surface-muted:#e9e6df;--btn-sec:#eef1f6;--btn-sec-hover:#e4e8ef;
+  --input-bg:#ffffff;--code-bg:#f3f4f6;--code-fg:#374151;--placeholder:rgba(109,103,96,.55);
+  --ok-soft:rgba(16,185,129,.10);--ok-border:rgba(16,185,129,.30);
+  --warn-soft:rgba(224,170,20,.12);--warn-border:rgba(224,170,20,.32);
+  --err-soft:rgba(198,87,70,.10);--err-border:rgba(198,87,70,.30);
+  --mut-soft:rgba(109,103,96,.12);--mut-border:rgba(109,103,96,.28);
+  --scrim:rgba(45,42,38,.35);--toast-shadow:0 10px 28px rgba(0,0,0,.12),0 0 0 1px rgba(0,0,0,.04);
+  --acc-ring:rgba(15,118,110,.18);--radius-md:12px;--radius-lg:16px;
+  color-scheme:light
+}
+:root[data-theme="white"]{
+  --bg:#f5f5f5;--card:#ffffff;--border:#e6e6e6;--fg:#1f1f1f;--mut:#707070;
+  --surface:#fafafa;--surface-muted:#efefef;--btn-sec:#f0f0f0;--btn-sec-hover:#e8e8e8;
+  --input-bg:#ffffff;--code-bg:#f3f4f6;--code-fg:#374151;--placeholder:rgba(112,112,112,.55);
+  --scrim:rgba(0,0,0,.32);--toast-shadow:0 10px 28px rgba(0,0,0,.10),0 0 0 1px rgba(0,0,0,.04);
+  color-scheme:light
+}
+:root[data-theme="dark"]{
+  --bg:#1e1d1b;--card:#26241f;--border:#3a3833;--fg:#ede9e3;--mut:#9a948c;
+  --acc:#4c8dff;--on-acc:#ffffff;--ok:#34d399;--warn:#f0c050;--err:#e07a6a;
+  --surface:#2f2d28;--surface-muted:#35332e;--btn-sec:#35332e;--btn-sec-hover:#3f3c36;
+  --input-bg:#1e1d1b;--code-bg:#35332e;--code-fg:#d6d1c9;--placeholder:rgba(154,148,140,.55);
+  --ok-soft:rgba(52,211,153,.12);--ok-border:rgba(52,211,153,.38);
+  --warn-soft:rgba(240,192,80,.14);--warn-border:rgba(240,192,80,.38);
+  --err-soft:rgba(224,122,106,.12);--err-border:rgba(224,122,106,.38);
+  --mut-soft:rgba(154,148,140,.16);--mut-border:rgba(154,148,140,.32);
+  --scrim:rgba(0,0,0,.55);--toast-shadow:0 10px 28px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.03);
+  --acc-ring:rgba(76,141,255,.28);
+  color-scheme:dark
+}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1400px;margin:0 auto;padding:24px 20px}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);font-size:13px;margin-bottom:20px}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+button{background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
+button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background:var(--btn-sec-hover)}button:disabled{opacity:.5;cursor:default}
+button.done{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border);cursor:default;opacity:1}
+button.done:disabled{opacity:1}
+button.danger{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
+button.danger:hover{background:var(--err);color:#fff}
+.toggle{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:13px}
+.bar .search{max-width:210px;flex:0 1 210px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--fg);font-size:13px;outline:none}
+.bar .search:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
+.bar .search::placeholder{color:var(--placeholder)}
+.grid{display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:16px}
+.card,.summary{background:var(--card);border:1px solid var(--border);border-radius:12px}
+.card{padding:16px}
+.card.selected{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc-ring)}
+.card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:12px}
+.badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border);white-space:nowrap}
+.badge.exhausted{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
+.badge.preserve{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-style:italic}
+.badge.anomaly{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border);font-style:italic}
+.badge.disabled{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
+.badge.stat{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-weight:500}
+.badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
+.badge.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}
+/* 后台刷新卡片三态 */
+.card[data-refresh-state="running"]{border:1px dashed var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
+.card[data-refresh-state="done"]{border-color:var(--ok);box-shadow:0 0 0 2px var(--ok-border);background:var(--ok-soft)}
+.card[data-refresh-state="failed"]{border-color:var(--err);box-shadow:0 0 0 2px var(--err-border)}
+.ref-tag{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;white-space:nowrap}
+.ref-tag.ref-running{background:var(--acc);color:var(--on-acc)}
+.ref-tag.ref-pending{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
+.ref-tag.ref-failed{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
+.ref-tag .spin{border-color:currentColor;border-top-color:transparent;margin-right:0;vertical-align:-2px}
+.ref-progress{color:var(--warn);font-size:12px}
+.filter-bar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.ftag{background:var(--surface);border:1px solid var(--border);color:var(--mut);border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600}
+.ftag.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}
+.ftag .cnt{font-size:10px;opacity:.75;margin-left:4px}
+.summary{padding:16px;margin-bottom:14px}
+.summary-hd{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.summary-title{font-weight:700;font-size:14px}
+.summary-meta{color:var(--mut);font-size:12px}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.summary-item{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.summary-item .k{color:var(--mut);font-size:11px;margin-bottom:4px}
+.summary-item .v{font-size:16px;font-weight:700}
+.summary-item .v.ok{color:var(--ok)}.summary-item .v.warn{color:var(--warn)}.summary-item .v.err{color:var(--err)}.summary-item .v.muted{color:var(--mut)}
+.summary-item .d{color:var(--mut);font-size:11px;margin-top:3px;word-break:break-all}
+.row{display:flex;justify-content:space-between;padding:5px 0;border-top:1px dashed var(--border)}
+.row:first-of-type{border-top:0}.k{color:var(--mut)}.v{font-weight:600}
+.v.ok{color:var(--ok)}.v.warn{color:var(--warn)}.v.err{color:var(--err)}
+.metric-line{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px}
+.metric-line .m{color:var(--mut);font-size:12px}
+.metric-line .m b{color:var(--fg);font-weight:600}
+.actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
+.actions button{font-size:12px;padding:6px 10px}
+.field-input{flex:1;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--fg)}
+.toasts{position:fixed;top:16px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:9999;max-width:360px}
+.toast{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--acc);border-radius:var(--radius-md);padding:14px 18px;font-size:13px;box-shadow:var(--toast-shadow);transform:translateX(120%);opacity:0;transition:transform .3s cubic-bezier(.2,.9,.3,1.1),opacity .25s;cursor:pointer;word-break:break-all}
+.toast.show{transform:translateX(0);opacity:1}
+.toast.ok{border-left-color:var(--ok);background:var(--ok-soft)}
+.toast.warn{border-left-color:var(--warn);background:var(--warn-soft)}
+.toast.err{border-left-color:var(--err);background:var(--err-soft)}
+.toast .t{font-weight:600;margin-bottom:3px}
+.toast .d{color:var(--mut);font-size:12px;line-height:1.45}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--on-acc);border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
+button .spin{border-color:var(--on-acc);border-top-color:transparent}
+.loading{color:var(--mut);text-align:center;padding:40px}
+.empty{color:var(--mut);text-align:center;padding:40px}
+.hint{color:var(--mut);font-size:12px;margin:0 0 12px;word-break:break-all;line-height:1.6}
+.hint code{background:var(--code-bg);color:var(--code-fg);padding:1px 5px;border-radius:4px;font-size:11px}
+#msg{color:var(--mut);font-size:12px;min-height:18px;margin-top:10px}
+</style>
+<script>
+/* Early theme sync (before body paint): mirror CPA parent data-theme when
+   embedded; standalone falls back to prefers-color-scheme. */
+(function(){
+  var ATTR="data-theme";
+  function embedded(){try{return window.self!==window.top}catch(e){return false}}
+  function apply(t){
+    var el=document.documentElement;
+    if(t==="white"||t==="dark")el.setAttribute(ATTR,t);
+    else el.removeAttribute(ATTR);
+  }
+  function parentTheme(){
+    if(!embedded())return null;
+    try{
+      var raw=window.parent.document.documentElement.getAttribute(ATTR);
+      if(raw==="white"||raw==="dark")return raw;
+      return "light";
+    }catch(e){return null}
+  }
+  function systemTheme(){
+    try{return window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}catch(e){return "light"}
+  }
+  function sync(){apply(parentTheme()||systemTheme())}
+  sync();
+  window.__traeThemeSync=function(){
+    sync();
+    if(!embedded()){
+      try{
+        var mq=window.matchMedia("(prefers-color-scheme: dark)");
+        var on=function(){sync()};
+        if(mq.addEventListener)mq.addEventListener("change",on);
+        else if(mq.addListener)mq.addListener(on);
+      }catch(e){}
+      return;
+    }
+    try{
+      var parentEl=window.parent.document.documentElement;
+      new MutationObserver(sync).observe(parentEl,{attributes:true,attributeFilter:[ATTR]});
+      window.addEventListener("storage",function(e){if(e.key==="cli-proxy-theme")sync()});
+    }catch(e){}
+  };
+})();
+</script>
+</head>
+<body>
+<div class="wrap">
+  <h1>TraeWork 账号面板</h1>
+  <div class="sub">积分余额 · 每日签到（09:00/21:00）· 保号池 · 失败计数 · 会话路由 · 生命周期</div>
+  <div id="authBox" class="card" style="display:none;margin-bottom:16px">
+    <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
+    <div style="display:flex;gap:8px">
+      <input id="keyInput" type="password" placeholder="management key" class="field-input">
+      <button onclick="saveKey()">连接</button>
+    </div>
+  </div>
+  <div class="bar">
+    <button class="sec" onclick="pickFile()" title="选择 Trae SOLO 客户端导出的 storage.json 文件导入凭据">📁 导入 storage.json</button>
+    <button class="sec" onclick="pickDir()" title="备选入口：从 Trae 凭据目录中挑 storage.json（仅浏览器不支持单文件选择时使用）">选择目录</button>
+    <button class="sec" onclick="copyStorageDir()" title="复制 Trae SOLO 凭据目录路径到剪贴板">复制路径</button>
+    <button class="sec" onclick="fleetCheckin(this)" title="所有账号立即签到一次">全部签到</button>
+    <button class="sec" onclick="unfreezeAll(this)" title="将异常池中所有账号解除冻结（每日 0 点也会自动做）">全部解冻</button>
+    <button class="sec" onclick="runKeepalive(this)" title="手动刷新全部账号的 access token（临近过期才刷新）">保号刷新</button>
+    <input id="searchInput" class="search" type="search" placeholder="搜索 nickname / UID" oninput="onSearchChange(this.value)" autocomplete="off">
+    <label class="toggle" title="本地时间 09:00 / 21:00 自动签到"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到</label>
+    <span class="toggle" id="svtime"></span>
+    <span class="toggle ref-progress" id="refreshProgress" style="display:none"></span>
+  </div>
+  <div class="filter-bar" id="filterBar">
+    <button type="button" class="ftag active" data-f="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
+    <button type="button" class="ftag" data-f="available" onclick="filterRegion('available',this)" title="未禁用 · 未保号 · 未异常 · 未耗尽，可正常路由">可用 <span class="cnt" id="cntAvailable">0</span></button>
+    <button type="button" class="ftag" data-f="preserve" onclick="filterRegion('preserve',this)" title="积分低于保号阈值，watchdog 自动隔离兜底">保号 <span class="cnt" id="cntPreserve">0</span></button>
+    <button type="button" class="ftag" data-f="anomaly" onclick="filterRegion('anomaly',this)" title="连续失败达阈值，已冻结待 0 点复活或手动解冻">异常 <span class="cnt" id="cntAnomaly">0</span></button>
+    <button type="button" class="ftag" data-f="exhausted" onclick="filterRegion('exhausted',this)" title="积分耗尽（remain &lt;= 0），lifecycle 自动停用">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
+    <button type="button" class="ftag" data-f="failed" onclick="filterRegion('failed',this)" title="累计失败 &gt; 0 或连败中（fail_count &gt; 0）的账号">失败 <span class="cnt" id="cntFailed">0</span></button>
+    <button type="button" class="ftag" data-f="disabled" onclick="filterRegion('disabled',this)" title="手动停用或 refresh token 失效被标记的账号">停用 <span class="cnt" id="cntDisabled">0</span></button>
+  </div>
+  <div class="summary card" id="summaryBox" style="display:none"></div>
+  <div id="grid" class="grid"><div class="loading">加载中…</div></div>
+  <div class="hint" id="storageHint" style="margin-top:14px">Trae SOLO 凭据目录（Windows）：<code>__STORAGE_DIR_DISPLAY__</code>。请在资源管理器中打开该目录，将 <code>storage.json</code> 拖入面板或点击「📁 导入 storage.json」选择该文件。</div>
+  <div id="msg"></div>
+</div>
+<input type="file" id="fileInput" accept=".json,application/json" style="display:none">
+<input type="file" id="dirInput" webkitdirectory multiple style="display:none">
+<div class="toasts" id="toasts"></div>
+
+<script>
+// Management API prefix is the host-stable /v0/management/plugins/<p>, NOT
+// derivable from the panel URL (which lives under /v0/resource/plugins/<p>/panel):
+// location.pathname would yield the resource prefix and every POST would 404.
+const base = "/v0/management/plugins/traework-provider";
+
+/* ---------- management key acquisition (3 fallbacks, zero config) ----------
+   1) CPA main panel localStorage "cli-proxy-auth" (XOR+base64, same-origin iframe embed).
+   2) ?key= URL param (cleaned from history after read, kept in sessionStorage).
+   3) Manual input (sessionStorage only, never persisted).
+   getKey() 解析成功后统一落 sessionStorage（0.14.18 修复：避免 URL key 一次性消费
+   导致后续请求全部 401）；401 累计 3 次才清 key + 退避，避免偶发 401 永久打回鉴权态。 */
+const ENC_PREFIX = "enc::v1::";
+const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
+const PANEL_STORE = "cli-proxy-auth";
+const SS_KEY = "traework-mgmt-key";
+
+function _enc(t){return new TextEncoder().encode(t)}
+function _dec(b){return new TextDecoder().decode(b)}
+function _keyBytes(){try{return _enc(SECRET_SALT+"|"+window.location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
+function _xor(d,k){const r=new Uint8Array(d.length);for(let i=0;i<d.length;i++)r[i]=d[i]^k[i%k.length];return r}
+function _b64d(s){const bin=atob(s);const b=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b}
+function deobfuscate(p){if(!p||!p.startsWith(ENC_PREFIX))return p;try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes()))}catch(e){return p}}
+function isEmbedded(){try{return window.self!==window.top}catch(e){return false}}
+
+function persistKey(k){try{sessionStorage.setItem(SS_KEY,k)}catch(e){}}
+function readPanelKey(){
+  if(!isEmbedded())return null;
+  let raw;try{raw=localStorage.getItem(PANEL_STORE)}catch(e){return null}
+  if(!raw)return null;
+  try{
+    const parsed=JSON.parse(deobfuscate(raw));
+    const st=(parsed&&parsed.state)||parsed||{};
+    return typeof st.managementKey==="string"&&st.managementKey?st.managementKey:null;
+  }catch(e){return null}
+}
+function readUrlKey(){
+  const usp=new URLSearchParams(window.location.search);
+  const m=usp.get("key");
+  if(m){usp.delete("key");const qs=usp.toString();history.replaceState(null,"",window.location.pathname+(qs?"?"+qs:""))}
+  return m;
+}
+function getKey(){
+  let k=null;try{k=sessionStorage.getItem(SS_KEY)}catch(e){}
+  if(k)return k;
+  k=readPanelKey()||readUrlKey();
+  if(k)persistKey(k);
+  return k;
+}
+function saveKey(){
+  const v=document.getElementById("keyInput").value.trim();
+  if(!v)return;
+  persistKey(v);
+  document.getElementById("authBox").style.display="none";
+  enterPanel();
+}
+function showAuth(){document.getElementById("authBox").style.display="block";const i=document.getElementById("keyInput");i&&i.focus()}
+function authHeaders(k){return k?{"Authorization":"Bearer "+k}:{}}
+
+/* 401 处理：累计 3 次才清 key + 退避，避免偶发 401 永久打回鉴权态。
+   __silent 请求（后台刷新/轮询链路）不参与计数、不清 key、不弹框。 */
+let authFailCount=0;
+let authFailUntil=0;
+function api(path, opts){
+  opts=opts||{};
+  opts.credentials="omit";
+  opts.headers=Object.assign({},opts.headers||{},authHeaders(getKey()));
+  return fetch(base+path,opts).then(r=>{
+    const status=r.status;
+    const ctype=r.headers.get("content-type")||"";
+    return r.text().then(text=>{
+      if(status===401){
+        if(!opts.__silent){
+          authFailCount++;
+          if(authFailCount>=3&&Date.now()>authFailUntil){
+            authFailUntil=Date.now()+60*1000;
+            authFailCount=0;
+            try{sessionStorage.removeItem(SS_KEY)}catch(e){}
+            showAuth();
+          }
+        }
+        throw new Error("鉴权失败 HTTP 401 — management key 缺失或无效，请刷新页面重新输入，或从 CPA 主面板嵌入打开本页自动获取");
+      }
+      if(!text){
+        if(status>=500)throw new Error("服务端错误 HTTP "+status+"（响应为空）");
+        if(status===404)throw new Error("路由未注册："+path+"（插件可能未加载，重启宿主）");
+        if(status>=400)throw new Error("鉴权失败 HTTP "+status+"（响应为空，确认 management_key 配置）");
+        throw new Error("插件返回空响应 HTTP 200 — 插件可能未加载、已熔断或身份失效，请重启宿主");
+      }
+      if(!/json/i.test(ctype)){
+        throw new Error("非 JSON 响应（HTTP "+status+"）："+text.slice(0,200));
+      }
+      try{return JSON.parse(text)}
+      catch(e){throw new Error("无法解析 JSON（HTTP "+status+"）："+text.slice(0,200))}
+    });
+  }).catch(e=>{
+    if(e instanceof Error)throw e;
+    throw new Error("网络请求失败："+String(e));
+  });
+}
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function msg(s){const el=document.getElementById("msg");if(el)el.textContent=s}
+function toast(title,kind,detail){
+  const box=document.getElementById("toasts");
+  const t=document.createElement("div");
+  t.className="toast "+(kind||"");
+  t.innerHTML="<div class='t'>"+esc(title)+"</div>"+(detail?"<div class='d'>"+esc(detail)+"</div>":"");
+  box.appendChild(t);
+  requestAnimationFrame(()=>t.classList.add("show"));
+  setTimeout(()=>{t.classList.remove("show");setTimeout(()=>t.remove(),350)},4200);
+  t.addEventListener("click",()=>{t.classList.remove("show");setTimeout(()=>t.remove(),350)});
+}
+function busy(btn,on){
+  if(!btn)return;
+  if(on){
+    btn.dataset.prevHtml=btn.innerHTML;
+    btn.disabled=true;
+    btn.innerHTML='<span class="spin"></span>…';
+  }else{
+    btn.disabled=false;
+    if(btn.dataset.prevHtml)btn.innerHTML=btn.dataset.prevHtml;
+  }
+}
+
+/* ---------- 账号卡渲染 ---------- */
+let lastAccounts=[];
+let activeAuthId="";
+let currentFilter="all";
+let query="";
+
+function tag(cls,text){return '<span class="badge '+cls+'">'+text+"</span>"}
+function card(a){
+  const badges=[];
+  if(a.active)badges.push(tag("active","活跃"));
+  if(a.disabled)badges.push(tag("disabled","停用"));
+  if(a.exhausted)badges.push(tag("exhausted","耗尽"));
+  if(a.preserved)badges.push(tag("preserve","保号"));
+  if(a.anomaly)badges.push(tag("anomaly","异常冻结"));
+  if(!badges.length)badges.push(tag("stat","正常"));
+  const cool=a.cooling_down
+    ? tag("cooling","冷却中("+(a.fail_count||0)+"次)")
+    : (a.fail_count?tag("stat","失败"+a.fail_count+"次"):"");
+  const stats=
+    '<div class="metric-line">'+
+      '<span class="m">积分 <b>'+(a.remain!=null?a.remain:"?")+"</b></span>"+
+      '<span class="m">成功 <b>'+ (a.success_count||0)+"</b></span>"+
+      '<span class="m">失败 <b>'+(a.failed_count||0)+"</b></span>"+
+    "</div>";
+  const acts=
+    '<button class="sec" onclick="checkin(\''+esc(a.auth_index)+"',this)\">签到</button>"+
+    '<button class="sec" onclick="selectAuth(\''+esc(a.auth_index)+"',this)\">设为活跃</button>"+
+    '<button class="sec" onclick="toggleDisabled(\''+esc(a.auth_index)+"',"+(!a.disabled)+",this)\">"+(a.disabled?"启用":"停用")+"</button>"+
+    (a.anomaly?'<button class="sec" onclick="unfreeze(\''+esc(a.auth_index)+"',this)\">解冻</button>":"")+
+    '<button class="sec" onclick="refreshCredits(\''+esc(a.auth_index)+"',this)\">刷新</button>";
+  return '<div class="card'+(a.active?" selected":"")+'" data-auth="'+esc(a.auth_index)+'" data-f="'+filterClass(a)+'" data-nickname="'+esc(a.nickname||"")+'" data-uid="'+esc(a.uid||"")+'">'+
+    "<h2>"+esc(a.nickname||a.uid||a.auth_index)+"</h2>"+
+    "<div class='uid'>"+esc(a.uid||"")+"</div>"+
+    "<div>"+badges.join(" ")+(cool?" "+cool:"")+"</div>"+
+    stats+
+    '<div class="actions">'+acts+"</div>"+
+    "</div>";
+}
+function filterClass(a){
+  if(a.disabled)return "disabled";
+  if(a.anomaly)return "anomaly";
+  if(a.preserved)return "preserve";
+  if(a.exhausted)return "exhausted";
+  return "available";
+}
+function sortedAccounts(list){
+  return list.slice().sort((x,y)=>{
+    const ax=x.disabled?1e12:(x.anomaly?1e9:(x.preserved?1e6:(x.exhausted?1e3:0)));
+    const ay=y.disabled?1e12:(y.anomaly?1e9:(y.preserved?1e6:(y.exhausted?1e3:0)));
+    if(ax!==ay)return ax-ay;
+    return (y.remain||0)-(x.remain||0);
+  });
+}
+function filterRegion(f,btn){
+  currentFilter=f;
+  if(btn){
+    document.querySelectorAll("#filterBar .ftag").forEach(x=>x.classList.remove("active"));
+    btn.classList.add("active");
+  }
+  document.querySelectorAll("#grid .card").forEach(c=>{
+    let show=(f==="all"||c.dataset.f===f);
+    if(f==="failed"){
+      const a=(lastAccounts||[]).find(x=>x.auth_index===c.dataset.auth);
+      show=!!(a&&((a.failed_count||0)>0||(a.fail_count||0)>0));
+    }
+    if(show&&query){
+      const hay=((c.dataset.nickname||"")+" "+(c.dataset.uid||"")).toLowerCase();
+      show=hay.includes(query);
+    }
+    c.style.display=show?"":"none";
+  });
+}
+function onSearchChange(v){query=String(v||"").trim().toLowerCase();filterRegion(currentFilter,null)}
+function updateFilterCounts(accounts){
+  const cnt={all:accounts.length,available:0,preserve:0,anomaly:0,exhausted:0,failed:0,disabled:0};
+  accounts.forEach(a=>{
+    if(a.disabled)cnt.disabled++;
+    else if(a.anomaly)cnt.anomaly++;
+    else if(a.preserved)cnt.preserve++;
+    else if(a.exhausted)cnt.exhausted++;
+    else cnt.available++;
+    if((a.failed_count||0)>0||(a.fail_count||0)>0)cnt.failed++;
+  });
+  ["all","available","preserve","anomaly","exhausted","failed","disabled"].forEach(k=>{
+    const el=document.getElementById("cnt"+k.charAt(0).toUpperCase()+k.slice(1));
+    if(el)el.textContent=cnt[k];
+  });
+}
+
+/* ---------- 汇总卡：保号池 / keepalive / lifecycle ---------- */
+function renderSummary(d){
+  const box=document.getElementById("summaryBox");
+  if(!box)return;
+  const p=d.preserve||{};
+  const lc=d.lifecycle||{};
+  const ka=d.keepalive||{};
+  const last=ka.last_run||{};
+  const rows=(last.results||[]).map(r=>{
+    const stMap={refreshed:"ok",skipped:"muted",failed:"err","session-dead":"err",error:"err"};
+    return '<div class="row"><span class="k">'+esc(r.nickname||r.auth_index)+'</span><span class="v '+ (stMap[r.status]||"muted")+'">'+esc(r.status||"")+"</span></div>";
+  }).join("");
+  box.style.display="block";
+  box.innerHTML=
+    '<div class="summary-hd"><span class="summary-title">系统状态</span>'+
+    '<span class="summary-meta">服务器时间 '+(d.server_time||"")+"</span></div>"+
+    '<div class="summary-grid">'+
+      '<div class="summary-item"><div class="k">保号池 watchdog</div><div class="v '+(p.enabled?"ok":"muted")+'">'+(p.enabled?"运行中":"已关闭")+'</div>'+
+        '<div class="d">阈值 '+esc(String(p.threshold))+" · 间隔 "+(p.interval_seconds||600)/60+" 分钟 · 当前 "+esc(String(p.pool_size||0))+" 个</div></div>"+
+      '<div class="summary-item"><div class="k">Token 保号 keepalive</div><div class="v '+(ka.enabled?"ok":"muted")+'">'+(ka.enabled?"开启":"关闭")+'</div>'+
+        '<div class="d">每日 '+(ka.schedule||[]).join("/")+" 时 · 上次 "+(last.when?esc(String(last.when).slice(0,16)):"-")+"</div></div>"+
+      '<div class="summary-item"><div class="k">生命周期 auto-disable</div><div class="v '+(lc.enabled?"ok":"muted")+'">'+(lc.enabled?"开启":"关闭")+'</div>'+
+        '<div class="d">积分耗尽自动停用，不自动复活</div></div>'+
+      '<div class="summary-item"><div class="k">异常池</div><div class="v '+(d.anomaly_pool_size?"warn":"ok")+'">'+esc(String(d.anomaly_pool_size||0))+"</div>"+
+        '<div class="d">每日 00:00 自动复活</div></div>'+
+    "</div>"+
+    (rows?'<div class="summary-hd" style="margin-top:12px"><span class="summary-title">上次保号刷新</span></div>'+rows:"");
+}
+
+/* ---------- 数据加载 ---------- */
+async function load(){
+  const g=document.getElementById("grid");
+  if(!getKey()){
+    showAuth();
+    if(!lastAccounts.length)g.innerHTML='<div class="loading">请先填写 management key</div>';
+    return;
+  }
+  try{
+    const d=await api("/accounts");
+    document.getElementById("autoToggle").checked=!!d.checkin_auto;
+    document.getElementById("svtime").textContent="服务器时间 "+(d.server_time||"");
+    if(d.error){
+      if(!lastAccounts.length)g.innerHTML='<div class="loading">'+esc(d.error)+"</div>";
+      else toast("加载账号失败，已保留上次数据","err",String(d.error||""));
+      return;
+    }
+    const accounts=d.accounts||[];
+    if(!accounts.length&&lastAccounts.length){
+      toast("账号列表暂时为空，已保留上次数据","err","");
+      return;
+    }
+    lastAccounts=accounts;
+    activeAuthId=d.active_id||"";
+    updateFilterCounts(accounts);
+    renderSummary(d);
+    if(!accounts.length){
+      g.innerHTML='<div class="empty">暂无账号 — 在插件配置中添加 traework 凭据，或从「📁 导入 storage.json」导入后刷新。</div>';
+      return;
+    }
+    g.innerHTML=sortedAccounts(accounts).map(card).join("");
+    filterRegion(currentFilter,null);
+  }catch(e){
+    const m=e&&e.message?e.message:String(e);
+    if(!lastAccounts.length)g.innerHTML='<div class="loading">'+esc(m)+"</div>";
+    else toast("加载账号失败，已保留上次数据","err",m);
+  }
+}
+
+/* ---------- 账号操作 ---------- */
+async function checkin(authIndex,btn){
+  busy(btn,true);
+  try{
+    const r=await api("/checkin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:authIndex})});
+    if(r.error){toast("签到失败","err",r.error);busy(btn,false);return;}
+    let line=(r.message||(r.ok?"签到成功":"签到失败"))+(r.points?" +"+r.points+" 积分":"");
+    if(r.retry_scheduled)line+="（失败已加入重试队列：每 1 分钟重试，最多 60 次）";
+    toast(authIndex,"ok",line);
+    await load();
+  }catch(e){toast("签到请求失败","err",e.message);busy(btn,false);}
+}
+async function fleetCheckin(btn){
+  busy(btn,true);
+  try{
+    const r=await api("/checkin",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    if(r.error){toast("签到失败","err",r.error);busy(btn,false);return;}
+    const list=r.results||[];
+    const bad=list.filter(x=>!x.ok);
+    let detail="";
+    if(list.length>0&&bad.length===0)detail="，全部成功";
+    else if(bad.length>0)detail="；失败："+bad.slice(0,3).map(x=>esc((x.uid||x.auth_id||"账号")+" "+(x.message||""))).join(" / ");
+    const retried=r.retries_scheduled||0;
+    if(retried>0)detail+="；"+retried+" 个失败账号已加入重试队列（每 1 分钟重试，最多 60 次）";
+    toast("完成","ok","成功 "+(r.checked_in||0)+" / "+list.length+" 个"+detail);
+    await load();
+  }catch(e){toast("签到请求失败","err",e.message)}finally{busy(btn,false)}
+}
+async function toggleAuto(on){
+  try{
+    const r=await api("/checkin/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});
+    if(r.error)toast("设置失败","err",r.error);
+    else toast("自动签到","ok",on?"已开启（09:00/21:00）":"已关闭");
+  }catch(e){toast("设置失败","err",e.message);document.getElementById("autoToggle").checked=!on;}
+}
+async function selectAuth(authIndex,btn){
+  busy(btn,true);
+  try{
+    const r=await api("/select",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:authIndex})});
+    if(r.error){toast("选用失败","err",r.error);busy(btn,false);return;}
+    activeAuthId=r.id||authIndex;
+    toast("已设为活跃","ok",r.auth_index||authIndex);
+    await load();
+  }catch(e){toast("选用失败","err",e.message)}finally{busy(btn,false)}
+}
+async function toggleDisabled(authIndex,disable,btn){
+  busy(btn,true);
+  try{
+    const r=await api(disable?"/disable":"/enable",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:authIndex})});
+    if(r.error){toast("操作失败","err",r.error);busy(btn,false);return;}
+    toast(disable?"已停用":"已启用","ok",r.auth_index||authIndex);
+    await load();
+  }catch(e){toast("操作失败","err",e.message)}finally{busy(btn,false)}
+}
+async function unfreeze(authIndex,btn){
+  busy(btn,true);
+  try{
+    const r=await api("/unfreeze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:authIndex})});
+    if(r.error){toast("解冻失败","err",r.error);busy(btn,false);return;}
+    toast("已解除冻结","ok",r.auth_index||authIndex);
+    await load();
+  }catch(e){toast("解冻失败","err",e.message)}finally{busy(btn,false)}
+}
+async function unfreezeAll(btn){
+  busy(btn,true);
+  try{
+    const r=await api("/unfreeze",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    if(r.error){toast("解冻失败","err",r.error);busy(btn,false);return;}
+    toast("已解除全部异常","ok",String((r.count!=null?r.count:r.unfrozen)||""));
+    await load();
+  }catch(e){toast("解冻失败","err",e.message)}finally{busy(btn,false)}
+}
+async function refreshCredits(authIndex,btn){
+  busy(btn,true);
+  try{
+    const r=await api("/credits?auth_index="+encodeURIComponent(authIndex));
+    if(r.error){toast("刷新失败","err",r.error);busy(btn,false);return;}
+    toast("积分已刷新","ok","剩余 "+(r.remain!=null?r.remain:"?"));
+    await load();
+  }catch(e){toast("刷新失败","err",e.message)}finally{busy(btn,false)}
+}
+
+/* ---------- keepalive 保号刷新 ---------- */
+async function runKeepalive(btn){
+  busy(btn,true);
+  try{
+    const r=await api("/keepalive",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    if(r.error){toast("保号刷新失败","err",r.error);busy(btn,false);return;}
+    const rows=r.results||[];
+    const okN=rows.filter(x=>x.status==="refreshed").length;
+    const deadN=rows.filter(x=>x.status==="session-dead").length;
+    const failN=rows.filter(x=>x.status==="failed"||x.status==="error").length;
+    toast("保号刷新完成","ok","刷新 "+okN+" · 失败 "+failN+(deadN?" · 会话失效 "+deadN:""));
+    await load();
+  }catch(e){toast("保号刷新失败","err",e.message)}finally{busy(btn,false)}
+}
+
+/* ---------- 异步刷新（进面板自动 + 10 分钟定时） ---------- */
+const PERIODIC_REFRESH_MS=10*60*1000;
+setInterval(()=>{startBackgroundRefresh()},PERIODIC_REFRESH_MS);
+let bgRateLimitRetry=0;
+async function startBackgroundRefresh(){
+  let d;
+  try{d=await api("/refresh",{method:"POST",__silent:true})}
+  catch(e){return}
+  if(d&&d.error){
+    if(/rate limit/i.test(String(d.error))&&bgRateLimitRetry<2){
+      bgRateLimitRetry++;
+      setTimeout(()=>{startBackgroundRefresh()},15000);
+    }else{bgRateLimitRetry=0}
+    return;
+  }
+  bgRateLimitRetry=0;
+  pollRefreshStatus();
+}
+function updateRefreshProgress(d){
+  const el=document.getElementById("refreshProgress");
+  if(!el)return;
+  const total=Number(d.total||0);
+  const done=Number(d.done||0);
+  const failed=Number(d.failed||0);
+  if(!total||!d.running){el.style.display="none";el.textContent="";return}
+  el.style.display="inline-block";
+  el.textContent="后台刷新中 "+done+"/"+total+(failed?" · 失败 "+failed:"");
+}
+function setCardRefreshState(idx,state,error){
+  if(idx==null||idx==="")return;
+  const el=document.querySelector('#grid .card[data-auth="'+CSS.escape(String(idx))+'"]');
+  if(!el)return;
+  if(!state){
+    delete el.dataset.refreshState;
+    const tagEl=el.querySelector(".ref-tag");
+    if(tagEl)tagEl.remove();
+    return;
+  }
+  el.dataset.refreshState=state;
+  let tagEl=el.querySelector(".ref-tag");
+  if(tagEl)tagEl.remove();
+  if(state==="running"||state==="pending"||state==="failed"){
+    tagEl=document.createElement("span");
+    tagEl.className="ref-tag ref-"+state;
+    if(state==="running")tagEl.innerHTML='<span class="spin"></span>刷新中…';
+    else if(state==="pending")tagEl.textContent="等待中…";
+    else tagEl.textContent="⚠️ "+(error||"刷新失败");
+    const h2=el.querySelector("h2");
+    if(h2)h2.appendChild(tagEl);
+  }
+}
+function finalizeCardState(idx,state,error){
+  setCardRefreshState(idx,state,error);
+  if(state==="done")setTimeout(()=>setCardRefreshState(idx,null),1500);
+  else if(state==="failed")setTimeout(()=>setCardRefreshState(idx,null),8000);
+}
+let refreshPollTimer=null;
+let refreshSeen={};
+function pollRefreshStatus(){
+  if(refreshPollTimer){clearInterval(refreshPollTimer);refreshPollTimer=null}
+  refreshSeen={};
+  const stop=()=>{
+    if(refreshPollTimer){clearInterval(refreshPollTimer);refreshPollTimer=null}
+    refreshSeen={};
+    updateRefreshProgress({total:0});
+  };
+  let tickBusy=false;
+  const tick=async()=>{
+    if(tickBusy)return;
+    tickBusy=true;
+    try{
+      let d;
+      try{d=await api("/refresh/status",{__silent:true})}
+      catch(e){stop();return}
+      if(d.error){stop();toast("刷新状态查询失败","err",d.error);return}
+      updateRefreshProgress(d);
+      (d.per_account||[]).forEach(pa=>{
+        const idx=pa.auth_index;
+        const key=String(idx);
+        const st=pa.status;
+        if(st==="done"||st==="failed"){
+          if(refreshSeen[key])return;
+          refreshSeen[key]=true;
+          api("/credits?auth_index="+encodeURIComponent(idx),{__silent:true})
+            .catch(()=>{})
+            .then(()=>finalizeCardState(idx,st,pa.error));
+        }else if(st==="running"||st==="pending"){
+          setCardRefreshState(idx,st,pa.error);
+        }
+      });
+      if(!d.running)stop();
+    }finally{tickBusy=false}
+  };
+  tick();
+  refreshPollTimer=setInterval(tick,2000);
+}
+
+/* ---------- 凭据导入（Trae SOLO storage.json） ---------- */
+const TRAE_STORAGE_PATH = __STORAGE_DIR_JSON__;
+let rememberedDir=null;
+function copyStorageDir(){
+  const done=()=>toast("凭据目录已复制","ok",TRAE_STORAGE_PATH);
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(TRAE_STORAGE_PATH).then(done).catch(()=>fallbackCopy(done));
+  }else{fallbackCopy(done)}
+}
+function fallbackCopy(done){
+  const ta=document.createElement("textarea");
+  ta.value=TRAE_STORAGE_PATH;
+  document.body.appendChild(ta);
+  ta.select();
+  try{document.execCommand("copy");done()}catch(e){toast("复制失败","err","请手动复制："+TRAE_STORAGE_PATH)}
+  ta.remove();
+}
+const IDB_NAME="traework-panel-v1";
+function idbGet(key){
+  return new Promise((res)=>{
+    try{
+      const rq=indexedDB.open(IDB_NAME,1);
+      rq.onupgradeneeded=()=>rq.result.createObjectStore("kv");
+      rq.onsuccess=()=>{
+        const g=rq.result.transaction("kv").objectStore("kv").get(key);
+        g.onsuccess=()=>res(g.result);
+        g.onerror=()=>res(null);
+      };
+      rq.onerror=()=>res(null);
+    }catch(e){res(null)}
+  });
+}
+function idbPut(key,val){
+  return new Promise((res)=>{
+    try{
+      const rq=indexedDB.open(IDB_NAME,1);
+      rq.onupgradeneeded=()=>rq.result.createObjectStore("kv");
+      rq.onsuccess=()=>{
+        const tx=rq.result.transaction("kv","readwrite");
+        tx.objectStore("kv").put(val,key);
+        tx.oncomplete=()=>res(true);
+        tx.onerror=()=>res(false);
+      };
+      rq.onerror=()=>res(false);
+    }catch(e){res(false)}
+  });
+}
+function pickFile(){document.getElementById("fileInput").click()}
+document.getElementById("fileInput").addEventListener("change",async(ev)=>{
+  const f=(ev.target.files||[])[0];
+  if(!f)return;
+  if(!/\.json$/i.test(f.name)&&f.type!=="application/json"){
+    toast("请选择 .json 文件","err","Trae SOLO 导出的 storage.json");
+    ev.target.value="";
+    return;
+  }
+  await doImport(f);
+  ev.target.value="";
+});
+async function pickDir(){
+  if(window.showDirectoryPicker){
+    try{
+      if(!rememberedDir)rememberedDir=await idbGet("storage-dir");
+      if(rememberedDir){
+        try{
+          if((await rememberedDir.queryPermission({mode:"read"}))!=="granted"){
+            await rememberedDir.requestPermission({mode:"read"});
+          }
+        }catch(e){}
+      }
+      const opts={id:"trae-storage",mode:"read"};
+      if(rememberedDir)opts.startIn=rememberedDir;
+      const handle=await window.showDirectoryPicker(opts);
+      rememberedDir=handle;
+      await idbPut("storage-dir",handle);
+      const fh=await findStorageJson(handle);
+      if(!fh){toast("未找到 storage.json","err","请确认选择的是 Trae 凭据目录");return}
+      await doImport(await fh.getFile());
+      return;
+    }catch(e){if(e&&e.name==="AbortError")return}
+  }
+  document.getElementById("dirInput").click();
+}
+document.getElementById("dirInput").addEventListener("change",async(ev)=>{
+  const files=Array.from(ev.target.files||[]);
+  const f=files.find(x=>x.name==="storage.json")||files[0];
+  if(f)await doImport(f);
+  ev.target.value="";
+});
+async function findStorageJson(dirHandle){
+  try{return await dirHandle.getFileHandle("storage.json")}catch(e){}
+  try{
+    for await(const [,h] of dirHandle.entries()){
+      if(h.kind==="file"&&h.name==="storage.json")return h;
+    }
+  }catch(e){}
+  return null;
+}
+async function doImport(file){
+  try{
+    const text=await file.text();
+    if(!text||!text.trim()){toast("文件内容为空","err","");return}
+    toast("导入中…","","");
+    const r=await api("/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:file.name||"storage.json",content:text})});
+    toast(r.message||r.error||(r.ok?"导入成功":"导入失败（响应无错误详情）"),r.ok?"ok":"err","");
+    await load();
+  }catch(e){toast("导入失败","err",e&&e.message||String(e))}
+}
+document.addEventListener("dragover",e=>e.preventDefault());
+document.addEventListener("drop",async e=>{
+  e.preventDefault();
+  const files=Array.from((e.dataTransfer&&e.dataTransfer.files)||[]);
+  const f=files.find(x=>x.name==="storage.json")||files[0];
+  if(f)await doImport(f);
+});
+
+/* ---------- 入口 ---------- */
+async function enterPanel(){
+  await load();
+  // 进面板触发一轮异步积分刷新（幂等），随后 2s 轮询逐卡更新。
+  startBackgroundRefresh();
+}
+if(getKey()){
+  enterPanel();
+}else{
+  showAuth();
+  msg("未检测到 management key — 请手动输入，或从 CPA 主面板嵌入打开本页自动获取");
+}
+</script>
+</body>
+</html>

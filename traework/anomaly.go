@@ -39,10 +39,7 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -198,43 +195,12 @@ func parseAnomalyFromAuthJSON(raw []byte) bool {
 	return m.Anomaly
 }
 
-// writeAnomalyFileDirect is a traework-local copy of workbuddy's
-// writeAuthFileDirect. Inlined here because authfile.go intentionally routes
-// every credential write through host.auth.save (preserves the
-// no-direct-write architecture). We still need a direct-write path for the
-// anomaly top-level flag because the host may drop unrecognized fields when
-// it rebuilds the auth record.
-//
-// Confined to paths matching isSafeAuthPath and absolute. Atomic via
+// writeAnomalyFileDirect is kept as a thin alias over the shared
+// writeAuthFileDirect (authfile.go) so existing anomaly call sites stay
+// untouched. Same safety contract: isSafeAuthPath + absolute + atomic
 // temp-then-rename.
 func writeAnomalyFileDirect(path string, raw []byte) error {
-	if !isSafeAuthPath(path) {
-		return fmt.Errorf("refusing direct write to unsafe path: %s", path)
-	}
-	if !filepath.IsAbs(path) {
-		return fmt.Errorf("refusing direct write to relative path: %s", path)
-	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".traework-anomaly-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(raw); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp file: %w", err)
-	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		return fmt.Errorf("chmod temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("replace auth file: %w", err)
-	}
-	return nil
+	return writeAuthFileDirect(path, raw)
 }
 
 // persistAnomalyToggle writes the anomaly flag to the physical auth file.
@@ -299,9 +265,9 @@ func errAuthMissing() error       { return &authFileErr{msg: "auth file missing 
 // recordAccountFailure when count >= anomalyThreshold; flips the anomaly
 // flag on disk (via persistAnomalyToggle) and updates the in-memory
 // mirror. Always run off the request goroutine (host.auth.list can be
-// slow under contention). traework has no preserve-style session
-// eviction (no session_auth.go) — the threshold trip just persists the
-// flag so future picks skip the account.
+// slow under contention). Also evicts any sticky session binding pinned to
+// this account (session_auth.go) so conversations are re-assigned on the
+// next pick instead of continuing to fail.
 func freezeAccountForAnomaly(authID string) {
 	authID = strings.TrimSpace(authID)
 	if authID == "" || isAnomaly(authID) {
@@ -312,12 +278,14 @@ func freezeAccountForAnomaly(authID string) {
 		// Can't write back to disk without an auth_index; still update the
 		// in-memory mirror so the current process stops routing here.
 		anomalySetPut(authID)
+		evictSessionBindingsForAuth(authID)
 		return
 	}
 	if err := persistAnomalyToggle(idx, id, true); err != nil {
 		log.Printf("[anomaly] freeze %s: persist failed: %v", id, err)
 		return
 	}
+	evictSessionBindingsForAuth(id)
 }
 
 // clearAllAnomalies iterates the current anomaly set, removes each entry
