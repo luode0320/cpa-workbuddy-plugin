@@ -170,9 +170,10 @@ func apiHostFor(a *traeAuth) string {
 	return strings.TrimRight(loadedConfig().APIHost, "/")
 }
 
-// callLLM performs the raw llm_utils_chat call through the host HTTP bridge.
-// On success the caller owns resp. Failures are recorded via
-// noteAccountFailure by status.
+// callLLM 通过宿主普通 HTTP 桥执行需要完整响应体的 llm_utils_chat 请求。
+// [参数] a: Trae 账号；payload: 上游请求体；authID: 故障核算使用的账号标识。
+// [返回] hostHTTPResponse: 完整缓冲响应；error: 请求构造、传输或 HTTP 状态错误。
+// 最近修改时间：2026-08-30 23:40:18；改动原因：同步路径不再凭 HTTP 2xx 提前复位账号，业务成功改由 SSE done 确认。
 func callLLM(a *traeAuth, payload map[string]any, authID string) (*hostHTTPResponse, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -195,8 +196,44 @@ func callLLM(a *traeAuth, payload map[string]any, authID string) (*hostHTTPRespo
 		noteAccountFailure(authID, resp.StatusCode, string(resp.Body))
 		return nil, &UpstreamError{Status: resp.StatusCode, Body: body}
 	}
-	resetAccountFailover(authID)
+	// HTTP 2xx 只代表传输成功，SSE 业务终止必须由调用方收到 done 后确认。
 	return resp, nil
+}
+
+// callLLMStream 通过宿主流桥打开 llm_utils_chat，并保留响应体的实时读取能力。
+// [参数] a: Trae 账号；payload: 上游请求体；authID: 故障核算使用的账号标识；hostCallbackID: CPA 异步执行的 callback 标识。
+// [返回] hostHTTPStream: 实时响应流；statusCode: HTTP 状态码；error: 请求构造、传输或非 2xx 错误。
+// 最近修改时间：2026-08-30 23:40:18；改动原因：异步聊天透传 callback context，并边读边下发，避免长回答期间客户端收不到分片。
+func callLLMStream(a *traeAuth, payload map[string]any, authID, hostCallbackID string) (*hostHTTPStream, int, error) {
+	// 1. 复用同步路径的请求体和认证头构造，确保两条路径只在响应读取方式上不同。
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, 0, fmt.Errorf("marshal payload: %w", err)
+	}
+	url := apiHostFor(a) + llmUtilsChatPath
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header = buildTraeAuthHeaders(a)
+
+	// 2. 非 2xx 响应读取有限正文后关闭流，沿用现有账号故障分类与脱敏错误结构。
+	stream, statusCode, _, err := hostHTTPDoStream(req, hostCallbackID)
+	if err != nil {
+		noteAccountFailure(authID, 0, err.Error())
+		return nil, 0, fmt.Errorf("llm_utils_chat stream transport: %w", err)
+	}
+	if statusCode < 200 || statusCode >= 300 {
+		defer stream.Close()
+		body, readErr := io.ReadAll(io.LimitReader(newHostStreamReader(stream), maxBodyBytes))
+		if readErr != nil {
+			noteAccountFailure(authID, statusCode, readErr.Error())
+			return nil, statusCode, fmt.Errorf("read llm_utils_chat error body: %w", readErr)
+		}
+		noteAccountFailure(authID, statusCode, string(body))
+		return nil, statusCode, &UpstreamError{Status: statusCode, Body: truncateRedacted(string(body), 300)}
+	}
+	return stream, statusCode, nil
 }
 
 // ---------- SSE scanning (ported from the prototype) ----------
@@ -207,45 +244,55 @@ type sseEvent struct {
 	Data  string
 }
 
-// scanSSE reads an SSE stream line-by-line, invoking fn for every data line
-// (the event name is carried from the preceding event: line, defaulting to
-// "message"). A trailing [DONE] marker yields an event with Data=="[DONE]".
+// scanSSE 逐行扫描 SSE 流，并把 event 字段关联到后续 data 字段。
+//
+// [参数] r: 上游 SSE 字节流；fn: 每条 data 事件的处理函数。
+// [返回] error: 读取失败或事件处理失败时返回错误。
+// 最近修改时间：2026-08-31 00:24:32；改动原因：在 EOF 时补齐无换行尾帧，避免丢失最后一个 done 或 output 事件。
 func scanSSE(r io.Reader, fn func(ev sseEvent) error) error {
 	buf := make([]byte, 0, 4096)
 	chunk := make([]byte, 16*1024)
 	event := ""
 	for {
+		// 1. 累积任意读取分片；EOF 前的残留字节按最后一条完整行处理，避免终止事件因缺少换行被丢弃。
 		n, err := r.Read(chunk)
 		if n > 0 {
 			buf = append(buf, chunk[:n]...)
-			for {
-				idx := bytes.IndexByte(buf, '\n')
-				if idx < 0 {
-					break
+		}
+		if err == io.EOF && len(buf) > 0 {
+			buf = append(buf, '\n')
+		}
+
+		// 2. 逐行解析 event 与 data；只有 data 行才会触发回调，孤立 event 残片不会伪造业务事件。
+		for {
+			idx := bytes.IndexByte(buf, '\n')
+			if idx < 0 {
+				break
+			}
+			line := strings.TrimRight(string(buf[:idx]), "\r")
+			buf = buf[idx+1:]
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			switch {
+			case strings.HasPrefix(line, "event:"):
+				event = strings.TrimSpace(line[len("event:"):])
+			case strings.HasPrefix(line, "data:"):
+				data := strings.TrimSpace(line[len("data:"):])
+				ev := sseEvent{Event: event, Data: data}
+				if event == "" {
+					ev.Event = "message"
 				}
-				line := strings.TrimRight(string(buf[:idx]), "\r")
-				buf = buf[idx+1:]
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
+				if err := fn(ev); err != nil {
+					return err
 				}
-				switch {
-				case strings.HasPrefix(line, "event:"):
-					event = strings.TrimSpace(line[len("event:"):])
-				case strings.HasPrefix(line, "data:"):
-					data := strings.TrimSpace(line[len("data:"):])
-					ev := sseEvent{Event: event, Data: data}
-					if event == "" {
-						ev.Event = "message"
-					}
-					if err := fn(ev); err != nil {
-						return err
-					}
-				default:
-					// comment / retry / id lines: ignore
-				}
+			default:
+				// 注释、retry 和 id 行不参与当前业务事件转换。
 			}
 		}
+
+		// 3. 完成当前读取批次后再处理终止或读取错误，确保 n > 0 与 EOF 同时返回时不会丢数据。
 		if err == io.EOF {
 			return nil
 		}

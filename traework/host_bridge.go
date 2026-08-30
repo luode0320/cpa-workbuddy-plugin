@@ -51,12 +51,11 @@ type hostHTTPResponse struct {
 	Body       []byte
 }
 
-// rpcHostHTTPRequestWire mirrors internal/pluginhost/host_callbacks.go's
-// rpcHostHTTPRequest on the wire. The "request" sub-object is the actual HTTP
-// call; the flat method/url/headers/body fields are an alternate form we don't
-// use (host prefers Request when present).
+// rpcHostHTTPRequestWire 对齐宿主偏好的嵌套 HTTP 请求协议。
+// HostCallbackID 位于外层，用于恢复异步请求上下文；Request 承载实际 HTTP 请求。
 type rpcHostHTTPRequestWire struct {
-	Request *rpcHostHTTPInner `json:"request,omitempty"`
+	HostCallbackID string            `json:"host_callback_id,omitempty"` // 关联 CPA 异步执行的 callback context。
+	Request        *rpcHostHTTPInner `json:"request,omitempty"`          // 承载方法、地址、请求头和请求体。
 }
 
 type rpcHostHTTPInner struct {
@@ -252,13 +251,11 @@ type hostHTTPStream struct {
 	directAt int
 }
 
-// hostHTTPDoStream opens a streaming call via the host bridge. The host owns
-// the actual http.Response body; we pull chunks via hostHTTPStreamRead.
-//
-// Falls back to direct http.Client.Do when the bridge is unavailable (tests).
-// In that case the returned hostHTTPStream wraps an in-memory copy of the
-// full response body so Read/Close have the same shape.
-func hostHTTPDoStream(req *http.Request) (*hostHTTPStream, int, http.Header, error) {
+// hostHTTPDoStream 通过宿主流桥打开上游请求，并把异步执行的 callback context 传给宿主。
+// [参数] req: 上游 HTTP 请求；hostCallbackID: CPA 为当前异步执行注册的 callback 标识。
+// [返回] hostHTTPStream: 可按块读取的响应流；int: HTTP 状态码；http.Header: 响应头；error: 打开流失败。
+// 最近修改时间：2026-08-30 23:40:18；改动原因：透传长生命周期 callback context，使客户端取消能够传递到上游流。
+func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream, int, http.Header, error) {
 	if req == nil {
 		return nil, 0, nil, fmt.Errorf("nil request")
 	}
@@ -275,6 +272,7 @@ func hostHTTPDoStream(req *http.Request) (*hostHTTPStream, int, http.Header, err
 		return hostHTTPDoStreamDirect(req, bodyBytes)
 	}
 	wire := rpcHostHTTPRequestWire{
+		HostCallbackID: hostCallbackID, // 绑定 CPA 异步执行保留到输出流结束的 callback context。
 		Request: &rpcHostHTTPInner{
 			Method:  req.Method,
 			URL:     req.URL.String(),

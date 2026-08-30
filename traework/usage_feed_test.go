@@ -151,11 +151,11 @@ func TestRecordUsageFeedAppendsNDJSON(t *testing.T) {
 	}
 }
 
-// TestPumpTraeStreamPublishesUsage 验证异步流在正常结束后写入一次成功用量。
+// TestPumpTraeStreamPublishesFailureWhenStopEmitFails 验证最终 stop 无法下发时写入失败用量。
 // [参数] t: 当前测试。
 // [返回] 无；断言失败时由 testing 终止用例。
-// 最近修改时间：2026-08-30 17:37:24；改动原因：覆盖 WorkBuddy 异步流响应成功但 feed 漏记的回归路径。
-func TestPumpTraeStreamPublishesUsage(t *testing.T) {
+// 最近修改时间：2026-08-30 20:22:38；改动原因：防止客户端未收到终止分片时仍复位账号并记录成功。
+func TestPumpTraeStreamPublishesFailureWhenStopEmitFails(t *testing.T) {
 	// 1. 隔离共享 feed 配置，确保用例只写临时目录。
 	feedPath := filepath.Join(t.TempDir(), "feed.ndjson")
 	usageFeedMu.Lock()
@@ -169,7 +169,7 @@ func TestPumpTraeStreamPublishesUsage(t *testing.T) {
 		usageFeedMu.Unlock()
 	}()
 
-	// 2. 使用无输出的正常结束事件，避免测试依赖真实宿主流回调。
+	// 2. 使用无输出的 done 事件；测试环境没有宿主回调，因此最终 stop 必须下发失败。
 	started := time.Now().Add(-time.Second)
 	pumpTraeStream(strings.NewReader("event: done\ndata: {}\n\n"), traeStreamPumpContext{
 		StreamID:      "stream-test",     // 使用不可用的宿主流，验证 feed 不依赖回调成功。
@@ -210,7 +210,7 @@ func TestPumpTraeStreamPublishesUsage(t *testing.T) {
 	if rec.Alias != "qwen-max-latest" || rec.Model != "qwen3.8-max" || rec.Provider != providerName || rec.AuthIndex != "uid-1" {
 		t.Fatalf("feed record = %+v", rec)
 	}
-	if rec.Failed || rec.StatusCode != 0 {
+	if !rec.Failed || rec.StatusCode != 200 {
 		t.Fatalf("feed outcome = failed:%v status:%d", rec.Failed, rec.StatusCode)
 	}
 }

@@ -135,15 +135,18 @@ func (t *traeSSETerminal) recordDone() {
 	t.hasDone = true
 }
 
-// validate 确认扫描结果包含有效输出或明确完成事件。
+// validate 确认扫描结果收到明确完成事件，区分业务完成与传输层提前 EOF。
 // [参数] statusCode: 上游 HTTP 状态码。
-// [返回] error: 缺少有效业务事件时返回协议错误，否则为 nil。
-// 最近修改时间：2026-08-30 21:01:25；改动原因：拒绝 HTTP 200 下未识别响应形成的空成功。
+// [返回] error: 缺少 done 时返回协议截断错误，否则为 nil。
+// 最近修改时间：2026-08-30 20:22:38；改动原因：部分 output 后无 done 仍是不完整响应，禁止被补成正常 stop。
 func (t traeSSETerminal) validate(statusCode int) error {
-	if t.hasOutput || t.hasDone {
+	if t.hasDone {
 		return nil
 	}
-	return fmt.Errorf("upstream %d: invalid SSE response: missing output or done event", statusCode)
+	if t.hasOutput {
+		return fmt.Errorf("upstream %d: truncated SSE response: output received without done event", statusCode)
+	}
+	return fmt.Errorf("upstream %d: invalid SSE response: missing output and done event", statusCode)
 }
 
 // collectTraeStream reads the upstream SSE stream, converts every output
@@ -151,8 +154,8 @@ func (t traeSSETerminal) validate(statusCode int) error {
 // event:error it surfaces the upstream message via fmt.Errorf with the
 // canonical "upstream N:" prefix when status is known.
 // [参数] r: 上游 SSE 响应；model: 客户端模型；statusCode: 上游 HTTP 状态码。
-// [返回] chunks: 转换后的分片；error: 上游错误或无有效终止事件时的协议错误。
-// 最近修改时间：2026-08-30 21:01:25；改动原因：仅允许有效 output 或 done 结束同步流，避免空 stop 伪成功。
+// [返回] chunks: 转换后的分片；error: 上游错误、缺少 done 或传输截断时的协议错误。
+// 最近修改时间：2026-08-30 23:40:18；改动原因：业务成功必须收到 done，部分 output 后 EOF 不得补成正常 stop。
 func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.ExecutorStreamChunk, error) {
 	requestID := randomUUID()
 	var chunks []pluginapi.ExecutorStreamChunk
@@ -194,8 +197,8 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 // aggregateTraeCompletion reads the upstream SSE stream and folds all output
 // events into one chat.completion aggregate (non-streaming path).
 // [参数] r: 上游 SSE 响应；model: 客户端模型；statusCode: 上游 HTTP 状态码。
-// [返回] []byte: OpenAI 完成响应；error: 上游错误或无有效终止事件时的协议错误。
-// 最近修改时间：2026-08-30 21:01:25；改动原因：仅允许有效 output 或 done 结束非流式响应，避免构造空 completion。
+// [返回] []byte: OpenAI 完成响应；error: 上游错误、缺少 done 或传输截断时的协议错误。
+// 最近修改时间：2026-08-30 23:40:18；改动原因：聚合响应必须收到 done，避免把部分输出后的 EOF 误判为完整完成。
 func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte, error) {
 	requestID := randomUUID()
 	var text, reasoning strings.Builder
@@ -242,7 +245,7 @@ type traeStreamPumpContext struct {
 // pumpTraeStream 读取 Trae 上游 SSE，向宿主推送分片，并在流结束时发布一次用量结果。
 // [参数] r: 上游 SSE；ctx: 异步流下发、账号核算与用量发布上下文。
 // [返回] 无；分片与错误通过宿主流通道发送，用量通过共享发布路径异步落地。
-// 最近修改时间：2026-08-30 21:01:25；改动原因：接入有效终止校验，避免 HTTP 200 异常正文触发成功复位与成功记账。
+// 最近修改时间：2026-08-30 23:40:18；改动原因：补齐 done 终止校验与最终 stop 下发失败核算，客户端未完整收尾时禁止记成功。
 func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	// 1. 转换并推送上游分片，同时保留已成功生成的标准分片用于估算输出 token。
 	requestID := randomUUID()
@@ -290,7 +293,13 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	// 3. 正常结束时下发 stop 分片、关闭宿主流，并发布成功用量。
 	raw, _ := chunkDelta(requestID, ctx.Model, "", "", "stop")
 	if raw != nil {
-		_ = streamEmit(ctx.StreamID, raw)
+		if emitErr := streamEmit(ctx.StreamID, raw); emitErr != nil {
+			// stop 下发失败表示客户端没有收到完整终止信号，不能继续复位账号或记成功。
+			reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, emitErr.Error())
+			streamEmitError(ctx.StreamID, emitErr.Error())
+			publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), true, ctx.StatusCode, emitErr.Error())
+			return
+		}
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
 	}
 	streamClose(ctx.StreamID)

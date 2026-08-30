@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"io"
+	"strings"
 	"testing"
 )
 
@@ -71,5 +73,149 @@ func TestIsBusyThrottleMsg(t *testing.T) {
 	}
 	if isBusyThrottleMsg("签到成功") {
 		t.Fatalf("success message must not match throttle")
+	}
+}
+
+// TestRPCHostHTTPRequestWireCarriesCallbackID 锁定异步流请求必须把 CPA callback 标识放在外层 wire。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-08-30 20:22:38；改动原因：防止宿主流桥退回短生命周期 fallback context。
+func TestRPCHostHTTPRequestWireCarriesCallbackID(t *testing.T) {
+	wire := rpcHostHTTPRequestWire{
+		HostCallbackID: "callback-1",
+		Request: &rpcHostHTTPInner{
+			Method: "POST",
+			URL:    "https://example.invalid/chat",
+		},
+	}
+	raw, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatalf("marshal wire: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode wire: %v", err)
+	}
+	if decoded["host_callback_id"] != "callback-1" {
+		t.Fatalf("host_callback_id = %v", decoded["host_callback_id"])
+	}
+}
+
+// TestScanSSEReassemblesHostChunks 验证宿主任意分片不会破坏 SSE 行重组。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-08-30 20:22:38；改动原因：覆盖实时流桥按块读取时的跨 chunk SSE 边界。
+func TestScanSSEReassemblesHostChunks(t *testing.T) {
+	reader := &chunkReader{chunks: [][]byte{
+		[]byte(`event: output
+data: {"response":"第一段"}
+
+ eve`),
+		[]byte(`nt: done
+data: {}
+
+`),
+	}}
+	var events []sseEvent
+	if err := scanSSE(reader, func(event sseEvent) error {
+		events = append(events, event)
+		return nil
+	}); err != nil {
+		t.Fatalf("scanSSE: %v", err)
+	}
+	if len(events) != 2 || events[0].Event != "output" || events[1].Event != "done" {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+// TestScanSSEFlushesEOFWithoutNewline 验证 EOF 前没有换行的最后一帧仍会被解析。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-08-31 00:24:32；改动原因：覆盖无换行 done、output 和残缺尾帧边界。
+func TestScanSSEFlushesEOFWithoutNewline(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		wantEvent string
+		wantData  string
+	}{
+		{
+			name:      "done",
+			input:     "event: done\ndata: {}",
+			wantEvent: "done",
+			wantData:  "{}",
+		},
+		{
+			name: "output",
+			input: `event: output
+data: {"response":"尾帧"}`,
+			wantEvent: "output",
+			wantData:  `{"response":"尾帧"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var events []sseEvent
+			if err := scanSSE(strings.NewReader(tc.input), func(event sseEvent) error {
+				events = append(events, event)
+				return nil
+			}); err != nil {
+				t.Fatalf("scanSSE: %v", err)
+			}
+			if len(events) != 1 || events[0].Event != tc.wantEvent || events[0].Data != tc.wantData {
+				t.Fatalf("events = %+v", events)
+			}
+		})
+	}
+
+	// 只有 event 行而没有 data 行时不能伪造业务事件。
+	var events []sseEvent
+	if err := scanSSE(strings.NewReader("event: done"), func(event sseEvent) error {
+		events = append(events, event)
+		return nil
+	}); err != nil {
+		t.Fatalf("scanSSE incomplete tail: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("incomplete tail events = %+v", events)
+	}
+}
+
+// chunkReader 按预设边界逐块返回字节，用于模拟宿主流桥的任意分片。
+type chunkReader struct {
+	chunks [][]byte // 依次返回的宿主分片。
+	index  int      // 下一分片下标。
+}
+
+// Read 返回一个预设宿主分片，所有分片读完后返回 EOF。
+// [参数] p: 调用方提供的目标缓冲区。
+// [返回] n: 本次复制的字节数；error: 分片耗尽时为 io.EOF。
+// 最近修改时间：2026-08-30 23:40:18；改动原因：为跨宿主 chunk 的 SSE 重组测试提供可控读取边界。
+func (r *chunkReader) Read(p []byte) (int, error) {
+	// 1. 分片耗尽后显式返回 EOF，模拟宿主流读取完成。
+	if r.index >= len(r.chunks) {
+		return 0, io.EOF
+	}
+	// 2. 每次只返回一个预设分片，确保扫描器必须跨 Read 调用重组 SSE 行。
+	n := copy(p, r.chunks[r.index])
+	r.index++
+	return n, nil
+}
+
+// TestCollectTraeStreamRejectsOutputWithoutDone 锁定部分 output 后 EOF 不能伪装为正常 stop。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-08-30 20:22:38；改动原因：防止不完整长回答被当作成功响应。
+func TestCollectTraeStreamRejectsOutputWithoutDone(t *testing.T) {
+	_, err := collectTraeStream(strings.NewReader(`event: output
+data: {"response":"未完成"}
+
+`), "qwen3.8-max", 200)
+	if err == nil || !strings.Contains(err.Error(), "truncated SSE response") {
+		t.Fatalf("error = %v, want truncated SSE response", err)
 	}
 }

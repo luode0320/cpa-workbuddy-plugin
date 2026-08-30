@@ -120,7 +120,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 // handleExecStream 执行流式聊天补全；有 StreamID 时异步推送分片，否则同步收集后返回。
 // [参数] raw: 宿主传入的流式执行请求 JSON。
 // [返回] 响应 envelope JSON；请求解析或上游调用失败时返回错误。
-// 最近修改时间：2026-08-30 17:37:24；改动原因：向异步流泵传递完整用量上下文，补齐流式请求统计。
+// 最近修改时间：2026-08-30 23:40:18；改动原因：异步路径改用宿主流桥实时读取并透传 callback context，避免长回答被全量缓冲。
 func handleExecStream(raw []byte) ([]byte, error) {
 	// 1. 解析请求、账号与模型，构造 Trae 流式上游负载。
 	var req executorStreamRequest
@@ -207,24 +207,40 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		return nil, errFinal
 	}
 
-	// 3. 有异步流标识时先返回响应头，再由流泵推送分片并在终点统一发布用量。
-	resp, callErr := callLLM(a, payload, usedAuthID)
+	// 3. 有异步流标识时打开宿主流桥并立即返回响应头，由流泵实时拉取和下发上游分片。
+	upstreamStream, statusCode, callErr := callLLMStream(a, payload, usedAuthID, req.HostCallbackID)
 	if callErr != nil {
-		statusCode := parseUpstreamStatusFromErr(callErr)
+		if statusCode == 0 {
+			statusCode = parseUpstreamStatusFromErr(callErr)
+		}
 		reconcileAfterExecutorError(usedAuthID, statusCode, callErr.Error())
 		streamEmitError(req.StreamID, callErr.Error())
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error())
 		return okEnvelope(streamResponse{Headers: headers})
 	}
-	go pumpTraeStream(bytes.NewReader(resp.Body), traeStreamPumpContext{
-		StreamID:      req.StreamID,    // 绑定当前宿主异步流。
-		Model:         req.Model,       // 保留客户端请求模型作为统计别名。
-		UpstreamModel: upstreamModel,   // 记录 Trae 实际请求模型。
-		StatusCode:    resp.StatusCode, // 供 SSE 错误核算使用。
-		AuthID:        usedAuthID,      // 供故障退避与恢复使用。
-		AuthUID:       authUID,         // 供账号用量维度使用。
-		Started:       started,         // 计算请求总延迟。
-	})
+	go func() {
+		// 3.1 后台流泵统一关闭上游句柄，并把非预期 panic 转成可见失败，避免穿透插件运行时。
+		defer upstreamStream.Close()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				panicErr := fmt.Errorf("Trae stream pump panic: %v", recovered)
+				reconcileAfterExecutorError(usedAuthID, statusCode, panicErr.Error())
+				streamEmitError(req.StreamID, panicErr.Error())
+				publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, panicErr.Error())
+			}
+		}()
+
+		// 3.2 宿主流桥按需拉取任意大小分片，SSE 扫描器负责跨分片重组事件行。
+		pumpTraeStream(newHostStreamReader(upstreamStream), traeStreamPumpContext{
+			StreamID:      req.StreamID,  // 绑定当前宿主异步流。
+			Model:         req.Model,     // 保留客户端请求模型作为统计别名。
+			UpstreamModel: upstreamModel, // 记录 Trae 实际请求模型。
+			StatusCode:    statusCode,    // 供 SSE 错误核算使用。
+			AuthID:        usedAuthID,    // 供故障退避与恢复使用。
+			AuthUID:       authUID,       // 供账号用量维度使用。
+			Started:       started,       // 计算请求总延迟。
+		})
+	}()
 	return okEnvelope(streamResponse{Headers: headers})
 }
 

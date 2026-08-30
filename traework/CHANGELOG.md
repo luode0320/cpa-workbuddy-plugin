@@ -1,5 +1,19 @@
 # TraeWork Plugin Changelog
 
+## 0.1.21
+
+### Fix — 异步流改走宿主流桥实时读取，业务成功严格依赖 done 终止
+
+修复 Trae 异步流式请求把完整上游响应体全量缓冲后才下发，长回答期间客户端长时间收不到分片；并收紧流协议判定，部分 `output` 后未收到 `done` 即结束的不完整响应不再被补成正常 stop。
+
+1. `traework/upstream.go` 新增 `callLLMStream`，异步聊天改走宿主流桥实时读取，并透传 CPA 异步执行的 `host_callback_id`，客户端取消可传递到上游流。
+2. `traework/host_bridge.go` 的 `rpcHostHTTPRequestWire` 新增外层 `host_callback_id` 字段，异步请求保留长生命周期 callback context；`hostHTTPDoStream` 增加 `hostCallbackID` 参数。
+3. `traework/stream.go` 收紧 `validate`：业务成功必须收到明确 `done`；部分 `output` 后 EOF 返回 `truncated SSE response`，不再补成空 stop 伪成功；最终 stop 下发失败时走失败核算，不再复位账号或记成功用量。
+4. `traework/stream.go` 的 `scanSSE` 在 EOF 前补齐无换行尾帧，避免最后一个 `done` 或 `output` 因缺少换行被丢弃；孤立 `event` 残片不伪造业务事件。
+5. `traework/executor.go` 异步路径统一关闭上游流句柄，非预期 panic 转成可见失败，避免穿透插件运行时。
+
+验证：cgo shim build、vet、test 全绿；新增 `host_callback_id` 透传、SSE 跨分片重组、无换行尾帧解析等回归用例通过。真实 Trae/Qwen 上游请求尚未在本地自动化环境发起。
+
 ## 0.1.20
 
 ### Fix — 拒绝 HTTP 200 异常响应形成空成功
