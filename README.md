@@ -195,3 +195,4 @@ Windows 无 C 工具链时可先用 `scripts/cgo-shim-build.py` 生成 shim 验�
 2026-08-30 21:42:16 fix: [TraeWork 流协议] 修复 HTTP 200 异常响应空成功
 2026-08-30 21:43:00 docs: [TraeWork 流协议] 补充 HTTP 200 空成功修复记录
 2026-08-30 21:54:01 chore: [TraeWork 发布资产] 添加 0.1.20 多平台构建产物
+2026-08-30 21:54:01 chore: [TraeWork 注册表] 发布 0.1.20 资产索引
