@@ -1,5 +1,25 @@
 # TraeWork Plugin Changelog
 
+## 0.1.18
+
+### Feat — 面板删除账号 + 修复 trae 账户模型请求异常（SSE 业务错误换号）
+
+用户实测：走 trae 插件账户的 doubao / deepseek 模型明显出问题，而 workbuddy 插件正常。
+根因：Trae 上游 `llm_utils_chat` 把业务失败（4011 限流 / 14018 额度用尽）藏在 **HTTP 200 + SSE `event:error`** 里返回，而 traework 的换号重试只看 HTTP 状态码层——SSE 层账号级错误不触发换号，坏账号被反复命中；workbuddy 上游失败在 HTTP 层且流式路径有换号循环，所以不受影响。
+
+1. **【P0】SSE 业务错误纳入账号换号**（`traework/executor.go` / `stream.go`）：
+   - 非流式：`aggregateTraeCompletion` 的 SSE 错误若判定为账号级（`isAccountFailure`，覆盖 4011 / 14018 等）→ 同请求 `pickNextAuth` 换号重试。
+   - 流式同步收集：重构为与 workbuddy 同款换号循环（HTTP 4xx 与 SSE 业务错误均换号）。
+   - 流式异步 pump：`pumpTraeStream` 增加 authID 参数，SSE 错误计入 failover 冷却（原缺口：pump 内 SSE 错误不记冷却，坏账号不会被隔离）。已 emit 的部分 chunk 无法换号，靠冷却保证下一次请求绕开。
+   - 业务码分类（`accountFailover_test.go` 新增 5 用例）：4011 / 14018（含 json 形态）→ 账号级；4001 / 4023 → 保守不换号（参数/模型名问题换号无益）。
+
+2. **【Feat】面板删除账号**（对齐 workbuddy 0.14.7）：
+   - 后端 `POST /delete`（`traework/management.go` `handleDeleteAuth`）：严格校验链（auth_index 非空 → host 列表存在 → `isTraeworkAuthFileName` 归属 → `hostAuthGetBundle` → 物理索引一致 → `isSafeAuthPath` → `deleteAuthFileInDir` 物理删除 → `clearDeletedAccountState` 清理 6 类内存态）。
+   - 前端（`traework/panel.html`）：账号卡右上角 `×` + 二次确认模态框（取消 / 遮罩 / Escape 均不发请求），确认后 `POST /delete` 并刷新列表。
+   - 新增 `isTraeworkAuthFileName`（`authfile.go`）+ `clearDeletedAccountState` / `clearFailoverStateForAuth` + `auth_delete_test.go` 4 用例。
+
+3. **验证**：cgo-shim build + vet + test 全绿；panel.html 占位符替换后两个 script 块 `node --check` 全 PASS。
+
 ## 0.1.17
 
 ### Fix — 全部签到后积分被本次奖励覆盖 + 面板"系统状态"标题错位

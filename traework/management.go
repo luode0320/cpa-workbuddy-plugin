@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +74,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
 			{Method: http.MethodGet, Path: base + "/lifecycle", Description: "Lifecycle (auto-disable exhausted) toggle state."},
+			{Method: http.MethodPost, Path: base + "/delete", Description: "Delete one TraeWork account and its physical auth file (body: {auth_index})."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "TraeWork", Description: "TraeWork dashboard: credits, check-in, enable/disable, failover status."},
@@ -142,6 +144,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveStatus()))
 	case req.Method == http.MethodGet && path == base+"/lifecycle":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleLifecycleStatus()))
+	case req.Method == http.MethodPost && path == base+"/delete":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleDeleteAuth(req)))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }
@@ -578,7 +582,8 @@ func mutatingManagementPath(path string) bool {
 		base + "/enable",
 		base + "/disable",
 		base + "/unfreeze",
-		base + "/import":
+		base + "/import",
+		base + "/delete":
 		return true
 	}
 	return false
@@ -595,4 +600,101 @@ func mgmtHTMLResponse(body []byte) pluginapi.ManagementResponse {
 	h := http.Header{}
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	return pluginapi.ManagementResponse{StatusCode: http.StatusOK, Headers: h, Body: body}
+}
+
+// handleDeleteAuth removes one TraeWork account and its physical auth file.
+// This panel entry is strict (unlike lifecycle disableAuth, which only
+// disables): it refuses to act unless the target account exists, belongs to
+// TraeWork, and its physical path is safe and known. Only auth_index is
+// accepted from the body; the host's own list/get responses are the sole
+// source of truth for the delete target (never a client-supplied
+// uid/name/path). Ported from workbuddy's handleDeleteAuth (0.14.7) with the
+// authFilePrefix/name helpers adapted to the traework namespace.
+func handleDeleteAuth(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		AuthIndex string `json:"auth_index"`
+	}
+	_ = json.Unmarshal(req.Body, &body)
+	authIndex := strings.TrimSpace(body.AuthIndex)
+	if authIndex == "" {
+		return map[string]any{"error": "auth_index is required"}
+	}
+	files, err := hostAuthList()
+	if err != nil {
+		return map[string]any{"error": "host.auth.list: " + err.Error()}
+	}
+	for _, f := range files {
+		if f.AuthIndex != authIndex {
+			continue
+		}
+		// hostAuthList already prefix-filters on traework-*, but double-check
+		// the concrete name so a legacy or mis-shaped entry can't slip through.
+		if !isTraeworkAuthFileName(f.Name) {
+			return map[string]any{"error": "不是 TraeWork 认证文件", "auth_index": authIndex}
+		}
+		sa, phys, err := hostAuthGetBundle(authIndex)
+		if err != nil {
+			return map[string]any{"error": "host.auth.get: " + err.Error(), "auth_index": authIndex}
+		}
+		if sa == nil {
+			return map[string]any{"error": "认证内容解析失败", "auth_index": authIndex}
+		}
+		if phys == nil || strings.TrimSpace(phys.AuthIndex) != authIndex {
+			return map[string]any{"error": "认证索引不一致", "auth_index": authIndex}
+		}
+		path := strings.TrimSpace(phys.Path)
+		if path == "" {
+			return map[string]any{"error": "认证文件路径缺失，无法安全删除", "auth_index": authIndex}
+		}
+		if !isSafeAuthPath(path) {
+			return map[string]any{"error": "认证文件路径不安全，已拒绝删除", "auth_index": authIndex}
+		}
+		nickname := sa.Nickname
+		uid := sa.UserID
+		// Physical delete confined to the auth directory.
+		if err := deleteAuthFileInDir(path, filepath.Dir(path)); err != nil {
+			return map[string]any{"error": "删除认证文件失败: " + err.Error(), "auth_index": authIndex}
+		}
+		clearDeletedAccountState(f.ID, authIndex, uid)
+		return map[string]any{
+			"ok":         true,
+			"auth_index": authIndex,
+			"nickname":   nickname,
+			"uid":        uid,
+			"deleted":    f.Name,
+		}
+	}
+	return map[string]any{"error": "account not found", "auth_index": authIndex}
+}
+
+// clearDeletedAccountState removes every in-memory trace of a deleted account
+// for each provided key (auth.ID, auth_index, and account UID may each have
+// been used as a key by different code paths). Covers cached credits/plan,
+// active selection, preserve flag, anomaly membership, failover
+// cooldown/counter, and session bindings pinned to the account. Idempotent —
+// safe to call when maps are empty or keys already absent.
+func clearDeletedAccountState(keys ...string) {
+	for _, k := range keys {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		accountCache.Delete(k)
+		clearActiveAuthIfMatch(k)
+		preserveSetClear(k)
+		anomalySetClear(k)
+		clearFailoverStateForAuth(k)
+		evictSessionBindingsForAuth(k)
+	}
+}
+
+// clearFailoverStateForAuth drops one account's failover cooldown/counter
+// state (the account no longer exists, so the entry is dead weight).
+func clearFailoverStateForAuth(authID string) {
+	if authID == "" {
+		return
+	}
+	failoverMu.Lock()
+	delete(failoverStates, authID)
+	failoverMu.Unlock()
 }

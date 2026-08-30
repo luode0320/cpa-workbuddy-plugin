@@ -56,6 +56,21 @@ func isLegacyAuthName(name string) bool {
 	return strings.EqualFold(strings.TrimSpace(name), authFileName)
 }
 
+// isTraeworkAuthFileName reports whether a bare filename (no directory)
+// belongs to this plugin's credential namespace (traework-<uid>.json or the
+// legacy traework.json). The delete path uses it to refuse acting on any
+// auth file that is not ours — the host's list filter and isSafeAuthPath
+// already check the prefix, but the concrete name is double-checked here so
+// a legacy or mis-shaped entry can never slip through (mirrors workbuddy's
+// isWorkbuddyAuthFileName).
+func isTraeworkAuthFileName(name string) bool {
+	base := strings.ToLower(strings.TrimSpace(name))
+	if base == "" || !strings.HasSuffix(base, ".json") {
+		return false
+	}
+	return strings.HasPrefix(base, authFilePrefix) || base == authFileName
+}
+
 // hostAuthPhysical is the plugin-side view of one host auth record.
 type hostAuthPhysical struct {
 	AuthIndex string

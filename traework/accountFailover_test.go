@@ -193,6 +193,16 @@ func TestIsAccountFailure_Classification(t *testing.T) {
 		{"business 400", 400, "bad request", false},
 		{"business 422", 422, "validation failed", false},
 		{"success", 200, "ok", false},
+		// SSE-layer business errors: the Trae llm_utils_chat upstream returns
+		// HTTP 200 + event:error. Account-class markers (4011 rate limit,
+		// 14018 quota exhausted) must count as failures so the executor's
+		// SSE-rotate path can switch accounts; pure request-shape errors
+		// (4001 params, 4023 model unknown) stay non-account-level.
+		{"sse 4011 rate limit (HTTP 200)", 200, "upstream 200: 4011: exceeded the rate limit", true},
+		{"sse 14018 quota exhausted (HTTP 200)", 200, "upstream 200: 14018: 额度已用尽", true},
+		{"sse quota marker json", 200, `{"code":"14018","message":"余额不足"}`, true},
+		{"sse 4001 bad params (HTTP 200)", 200, "upstream 200: 4001: cannot unmarshal", false},
+		{"sse 4023 model unknown (HTTP 200)", 200, "upstream 200: 4023: model is unknown", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

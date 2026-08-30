@@ -176,8 +176,11 @@ func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte,
 
 // pumpTraeStream is the async streaming pump: it reads the upstream SSE
 // stream in a goroutine and emits each chunk via host.stream.emit. Called
-// after handleExecStream returns the header-only envelope.
-func pumpTraeStream(r io.Reader, streamID string, model string, statusCode int) {
+// after handleExecStream returns the header-only envelope. authID is used to
+// record SSE-layer business errors (4011/14018/...) into the failover
+// cooldown — chunks already emitted cannot be retried mid-stream, so the
+// cooldown is what keeps the NEXT request off a failing account.
+func pumpTraeStream(r io.Reader, streamID string, model string, statusCode int, authID string) {
 	requestID := randomUUID()
 	scanErr := scanSSE(r, func(ev sseEvent) error {
 		switch ev.Event {
@@ -200,6 +203,7 @@ func pumpTraeStream(r io.Reader, streamID string, model string, statusCode int) 
 		return nil
 	})
 	if scanErr != nil {
+		reconcileAfterExecutorError(authID, statusCode, scanErr.Error())
 		streamEmitError(streamID, scanErr.Error())
 		return
 	}

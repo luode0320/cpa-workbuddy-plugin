@@ -70,14 +70,30 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		resp, callErr := callLLM(curSA, payload, usedAuthID)
 		if callErr == nil {
 			completion, aggErr := aggregateTraeCompletion(bytes.NewReader(resp.Body), req.Model, resp.StatusCode)
-			if aggErr != nil {
+			if aggErr == nil {
+				resetAccountFailover(usedAuthID)
+				publishUsage(req.Model, upstreamModel, authUID, started, estimateUsageFromCompletion(completion), false, 0, "")
+				return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
+			}
+			// SSE-layer business errors: the Trae llm_utils_chat upstream returns
+			// HTTP 200 + event:error (4011 rate-limit, 14018 quota exhausted,
+			// ...), so callLLM succeeded and the account-level failure only
+			// surfaces here. When the error classifies as account-level, rotate
+			// to the next candidate on the SAME request (mirrors the HTTP 4xx
+			// branch below); otherwise surface it immediately.
+			if !isAccountFailure(resp.StatusCode, aggErr.Error()) || attempt >= budget || curSA == nil {
 				reconcileAfterExecutorError(usedAuthID, resp.StatusCode, aggErr.Error())
 				publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, resp.StatusCode, aggErr.Error())
 				return nil, aggErr
 			}
-			resetAccountFailover(usedAuthID)
-			publishUsage(req.Model, upstreamModel, authUID, started, estimateUsageFromCompletion(completion), false, 0, "")
-			return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
+			reconcileAfterExecutorError(usedAuthID, resp.StatusCode, aggErr.Error())
+			nextAuthID, nextSA, hasNext := pickNextAuth(usedAuthID)
+			if !hasNext || nextSA == nil {
+				return nil, aggErr
+			}
+			curSA = nextSA
+			usedAuthID = nextAuthID
+			continue
 		}
 
 		statusCode := parseUpstreamStatusFromErr(callErr)
@@ -138,27 +154,58 @@ func handleExecStream(raw []byte) ([]byte, error) {
 
 	usedAuthID := authIDFor(a, req.AuthID)
 
-	// No async stream id → synchronous chunk collection.
+	// No async stream id → synchronous chunk collection. Account-level
+	// failures (HTTP 4xx OR SSE event:error) rotate accounts on the same
+	// request, bounded by the retry_on_4xx budget.
 	if req.StreamID == "" {
-		resp, callErr := callLLM(a, payload, usedAuthID)
-		if callErr != nil {
-			statusCode := parseUpstreamStatusFromErr(callErr)
-			reconcileAfterExecutorError(usedAuthID, statusCode, callErr.Error())
-			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error())
-			return nil, callErr
+		budget := loadedRetryOn4xx()
+		curSA := a
+		curAuthID := usedAuthID
+		for attempt := 0; attempt <= budget; attempt++ {
+			resp, callErr := callLLM(curSA, payload, curAuthID)
+			if callErr != nil {
+				statusCode := parseUpstreamStatusFromErr(callErr)
+				if !isAccountLevel4xx(statusCode) || attempt >= budget || curSA == nil {
+					reconcileAfterExecutorError(curAuthID, statusCode, callErr.Error())
+					publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error())
+					return nil, callErr
+				}
+				nextAuthID, nextSA, hasNext := pickNextAuth(curAuthID)
+				if !hasNext || nextSA == nil {
+					break
+				}
+				curSA = nextSA
+				curAuthID = nextAuthID
+				continue
+			}
+			chunks, collectErr := collectTraeStream(bytes.NewReader(resp.Body), req.Model, resp.StatusCode)
+			if collectErr == nil {
+				resetAccountFailover(curAuthID)
+				publishUsage(req.Model, upstreamModel, authUID, started, estimateUsageFromChunks(chunks), false, 0, "")
+				if sseFramed {
+					return okEnvelope(streamResponse{Headers: headers, Chunks: sseFrameChunks(chunks)})
+				}
+				return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
+			}
+			// SSE-layer business error on a 200 response: rotate accounts
+			// when it classifies as account-level (4011/14018/...).
+			if !isAccountFailure(resp.StatusCode, collectErr.Error()) || attempt >= budget || curSA == nil {
+				reconcileAfterExecutorError(curAuthID, resp.StatusCode, collectErr.Error())
+				publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, resp.StatusCode, collectErr.Error())
+				return nil, collectErr
+			}
+			reconcileAfterExecutorError(curAuthID, resp.StatusCode, collectErr.Error())
+			nextAuthID, nextSA, hasNext := pickNextAuth(curAuthID)
+			if !hasNext || nextSA == nil {
+				return nil, collectErr
+			}
+			curSA = nextSA
+			curAuthID = nextAuthID
 		}
-		chunks, collectErr := collectTraeStream(bytes.NewReader(resp.Body), req.Model, resp.StatusCode)
-		if collectErr != nil {
-			reconcileAfterExecutorError(usedAuthID, resp.StatusCode, collectErr.Error())
-			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, resp.StatusCode, collectErr.Error())
-			return nil, collectErr
-		}
-		resetAccountFailover(usedAuthID)
-		publishUsage(req.Model, upstreamModel, authUID, started, estimateUsageFromChunks(chunks), false, 0, "")
-		if sseFramed {
-			return okEnvelope(streamResponse{Headers: headers, Chunks: sseFrameChunks(chunks)})
-		}
-		return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
+		errFinal := fmt.Errorf("upstream account pool exhausted after %d attempt(s)", budget+1)
+		reconcileAfterExecutorError(curAuthID, 0, errFinal.Error())
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, errFinal.Error())
+		return nil, errFinal
 	}
 
 	// Async: return immediately with empty chunks; a goroutine pumps the
@@ -171,7 +218,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error())
 		return okEnvelope(streamResponse{Headers: headers})
 	}
-	go pumpTraeStream(bytes.NewReader(resp.Body), req.StreamID, req.Model, resp.StatusCode)
+	go pumpTraeStream(bytes.NewReader(resp.Body), req.StreamID, req.Model, resp.StatusCode, usedAuthID)
 	return okEnvelope(streamResponse{Headers: headers})
 }
 
