@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.14.18
+
+### Fix — 面板定时刷新的稳定性：不再清空数据、不再中断请求
+
+0.14.17 引入每 10 分钟定时后台刷新后暴露两类故障：定时刷新偶发不生效；偶发出现面板数据被清空、随后所有请求被中断。根因全部位于前端状态机，后端刷新队列（`refresh_runner.go`）与缓存（`cache.go`）经复核无缺陷。
+
+- **URL key 一次性消费**（所有请求中断主因）：`readUrlKey()` 读取 `?key=` 后立刻用 `history.replaceState` 抹掉该参数，但 key 不落 `sessionStorage`（仅手工输入才写）。首次 `getKey()` 之后即永久返回空，`api()` 抛「需要管理密钥」并弹鉴权框，面板所有后续请求被拦断。新增 `persistKey()`，三条来源解析成功后统一落盘；同时改为只删除 `key` 参数，不再连带抹掉其它 query。
+- **401 无条件清 key**：`api()` 401 分支直接 `removeItem(SS_KEY)` + `showAuth()`，单次偶发 401（宿主层 key 轮换 / 重启中，插件层对 GET 不鉴权但宿主 middleware 会）即把面板永久打回鉴权态。改为累计 3 次才清 key 并退避 60s；`sessionStorage` 读写全部包 try/catch（iframe opaque origin 会抛）。
+- **高频轮询放大熔断**：`/refresh/status` 每 2s 轮询，其失败共享全局 `authFailCount`，连续 3 次即触发全局熔断 —— 6 秒内把一次局部故障升级成整站不可用。`api()` 新增 `__silent` 选项：后台静默请求（`/refresh`、`/refresh/status`、轮询链路 `/credits`）不累加失败计数、不清 key、不弹鉴权框；403 `IP banned` 仍强制退避（属全局事实）。
+- **`load()` 全量覆盖网格**（数据被清空）：`d.error`、`accounts.length===0`、`catch` 三个分支都无条件 `g.innerHTML=`，一次偶发失败或刷新期空返回即抹掉整个面板。改为有 `lastAccounts` 时保留网格并 toast 提示，仅无历史数据时才显示占位。
+- **限流静默丢弃整轮**（定时刷新不生效）：`POST /refresh` 属 mutating 端点，走每 IP 令牌桶（burst 5、1 token/6s），与手动操作撞窗口返回 429 时前端直接 return 且无提示。改为退避 15s 重试，最多 2 次。
+- 涉及文件：`panel.html`（`persistKey()` / `readUrlKey()` / `getKey()` / `api()` / `load()` / `fetchAndPatchCredits()` / `startBackgroundRefresh()` 共 7 处）。后端零改动。
+- 验证：两段内联 `<script>` node `new Function()` 解析通过；`cgo-shim-build.py workbuddy` 的 build / vet / test 全绿。
+
 ## 0.14.17
 
 ### Feat — 进面板不再触发异步刷新，改为每 10 分钟定时刷新

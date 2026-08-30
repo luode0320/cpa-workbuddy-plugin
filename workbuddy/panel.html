@@ -329,11 +329,28 @@ function readPanelKey(){
 }
 function readUrlKey(){
   const m=new URLSearchParams(window.location.search).get("key");
-  if(m){history.replaceState(null,"",window.location.pathname)}
+  if(m){
+    // 只剔除 key 参数，保留 theme 等其它 query，避免连带抹掉上下文。
+    try{
+      const u=new URL(window.location.href);
+      u.searchParams.delete("key");
+      history.replaceState(null,"",u.pathname+u.search+u.hash);
+    }catch(e){ /* 历史接口不可用时忽略，key 已落 sessionStorage */ }
+  }
   return m;
 }
+// 把解析到的 key 固化到 sessionStorage。
+// 关键：readUrlKey() 会立刻把 key 从 URL 上抹掉，而 readPanelKey() 依赖
+// 父窗口的 localStorage（iframe 隔离 / 父页清理时会失效）。若解析后不落盘，
+// 首次调用之后 getKey() 将永远返回空 —— 表现为面板首屏正常、随后所有请求
+// 被「需要管理密钥」拦断。因此这里统一做一次持久化兜底。
+function persistKey(k){
+  if(!k) return k;
+  try{ sessionStorage.setItem(SS_KEY,k); }catch(e){}
+  return k;
+}
 function getKey(){
-  return sessionStorage.getItem(SS_KEY)||readPanelKey()||readUrlKey();
+  return sessionStorage.getItem(SS_KEY)||persistKey(readPanelKey())||persistKey(readUrlKey());
 }
 function saveKey(){
   const v=document.getElementById("keyInput").value.trim();
@@ -550,8 +567,8 @@ function applyCardVisibility(){
 }
 // 拉取单个账号积分并合并进本地态 + 局部重绘（不 toast、不 busy）。
 // 供单卡刷新 refreshCredits 与后台轮询 pollRefreshStatus 共用。
-async function fetchAndPatchCredits(idx){
-  const d=await api(`/credits?auth_index=${encodeURIComponent(idx)}`);
+async function fetchAndPatchCredits(idx, opts={}){
+  const d=await api(`/credits?auth_index=${encodeURIComponent(idx)}`, opts);
   const acct=(d.accounts||[])[0]||d;
   if(d.error||(acct&&acct.error)){
     throw new Error(d.error||(acct&&acct.error)||"未知错误");
@@ -632,7 +649,7 @@ function pollRefreshStatus(){
     tickBusy=true;
     try{
       let d;
-      try{ d=await api("/refresh/status"); }
+      try{ d=await api("/refresh/status", {__silent:true}); }
       catch(e){ stop(); return; }
       if(d.error){ stop(); toast("刷新状态查询失败","err",d.error); return; }
       updateRefreshProgress(d);
@@ -643,7 +660,8 @@ function pollRefreshStatus(){
         if(st==="done"||st==="failed"){
           if(refreshSeen[key]) return;
           refreshSeen[key]=true;
-          fetchAndPatchCredits(idx)
+          // __silent：轮询链路的失败不参与全局熔断计数，避免高频轮询放大故障。
+          fetchAndPatchCredits(idx, {__silent:true})
             .catch(()=>{})
             .then(()=>finalizeCardState(idx, st, pa.error));
         }else if(st==="running"||st==="pending"){
@@ -820,32 +838,42 @@ function renderSummary(accounts){
   `;
 }
 async function api(path, opts={}){
+  // __silent：后台静默请求（定时刷新 / 状态轮询）。失败不得累加全局失败计数、
+  // 不得清 key、不得弹鉴权框 —— 否则 2s 一次的 /refresh/status 轮询会在几秒内
+  // 打满阈值，把一次局部故障放大成「所有请求中断 60s」。
+  const silent=!!opts.__silent;
+  const fetchOpts={...opts};
+  delete fetchOpts.__silent; // 不能透传给 fetch
   const k=getKey();
   if(!k){
-    showAuth();
+    if(!silent) showAuth();
     throw new Error("需要管理密钥");
   }
   if(Date.now()<authFailUntil){
     throw new Error("认证多次失败，请稍后重试（防 IP 封禁）");
   }
-  const r=await fetch(API+path,{...opts,credentials:'omit',headers:{...(opts.headers||{}),...authHeaders(k)}});
+  const r=await fetch(API+path,{...fetchOpts,credentials:'omit',headers:{...(opts.headers||{}),...authHeaders(k)}});
   if(r.status===401){
+    if(silent) throw new Error("management key 无效或缺失");
     authFailCount++;
-    sessionStorage.removeItem(SS_KEY);
-    showAuth();
+    // 401 可能来自宿主层中间件（key 轮换、重启中）而非插件层鉴权，属可自愈的
+    // 瞬时状态。历史实现在这里无条件 removeItem + showAuth，导致单次偶发 401
+    // 即把面板永久打回鉴权态、后续所有请求被拦断。改为累计到阈值才清 key。
     if(authFailCount>=3){
+      try{ sessionStorage.removeItem(SS_KEY); }catch(_e){}
       authFailUntil=Date.now()+60000;
       authFailCount=0;
+      showAuth();
       throw new Error("认证多次失败，请检查管理密钥后 60s 再试");
     }
-    throw new Error("management key 无效或缺失");
+    throw new Error("management key 无效或缺失（将自动重试）");
   }
   if(r.status===403){
-    authFailCount++;
     let body="";
     try{body=await r.text()}catch(_){}
     if(/IP banned|too many failed/i.test(body)){
       // Prefer upstream wait window (e.g. "Try again in 27m10s") when present.
+      // IP 封禁是全局事实：静默后台请求同样必须退避，否则持续轮询会延长封禁。
       let waitMs=60000;
       const m=body.match(/(\d+)\s*m(?:in(?:ute)?s?)?\s*(\d+)\s*s/i)||body.match(/(\d+)\s*m/i);
       if(m){
@@ -856,13 +884,15 @@ async function api(path, opts={}){
       authFailUntil=Date.now()+waitMs;
       throw new Error(body.trim()||"IP 被封禁，请稍后再试");
     }
+    if(silent) throw new Error(body.trim()||"禁止访问 (403)");
+    authFailCount++;
     if(authFailCount>=3){
       authFailUntil=Date.now()+60000;
       authFailCount=0;
     }
     throw new Error(body.trim()||"禁止访问 (403)");
   }
-  authFailCount=0;
+  if(!silent) authFailCount=0;
   /* Robust JSON decode: empty / non-JSON / parse-failure must NOT throw
      SyntaxError to the caller — return a structured {error: ...} so the
      batch import (and other loops) can surface the real HTTP status &
@@ -881,7 +911,8 @@ async function load(){
   const g=document.getElementById("grid");
   if(!getKey()){
     showAuth();
-    g.innerHTML='<div class="loading">请先填写 management key</div>';
+    // 已有卡片时保留网格：鉴权浮层本身已足够提示，抹掉网格会让用户误以为数据丢失。
+    if(!lastAccounts.length) g.innerHTML='<div class="loading">请先填写 management key</div>';
     return;
   }
   // 渲染缓存/账号 JSON 已有数据。无 credits 缓存的账号由 card() 的
@@ -892,10 +923,17 @@ async function load(){
     document.getElementById("autoToggle").checked=!!d.checkin_auto;
     document.getElementById("svtime").textContent="服务器时间 "+(d.server_time||"");
     if(d.error){
-      g.innerHTML='<div class="loading">'+esc(d.error)+"</div>";
+      // 单次偶发失败不得清空面板：保留上一次渲染结果，仅顶部提示。
+      if(!lastAccounts.length) g.innerHTML='<div class="loading">'+esc(d.error)+"</div>";
+      else toast("加载账号失败，已保留上次数据","err",String(d.error||""));
       return;
     }
     const accounts=d.accounts||[];
+    // 后台刷新期间后端可能瞬时返回空列表；此时抹掉网格会被用户感知为「数据被清空」。
+    if(!accounts.length&&lastAccounts.length){
+      toast("账号列表暂时为空，已保留上次数据","err","");
+      return;
+    }
     lastAccounts=accounts;
     activeAuthId=d.active_auth||"";
     updateFilterCounts(accounts);
@@ -909,7 +947,9 @@ async function load(){
     filterRegion(currentFilter, null);
     renderSummary(accounts);
   }catch(e){
-    g.innerHTML='<div class="loading">'+esc(e.message||String(e))+"</div>";
+    const msg=e&&e.message?e.message:String(e);
+    if(!lastAccounts.length) g.innerHTML='<div class="loading">'+esc(msg)+"</div>";
+    else toast("加载账号失败，已保留上次数据","err",msg);
   }
 }
 // 进入页面统一入口：只读取现有数据直接展示，不触发上游刷新。
@@ -922,11 +962,26 @@ async function enterPanel(){
 // 若已有一轮刷新在跑（幂等），后端忽略本次请求，仍继续轮询展示进度。
 const PERIODIC_REFRESH_MS=10*60*1000;
 setInterval(()=>{ startBackgroundRefresh(); }, PERIODIC_REFRESH_MS);
+// POST /refresh 属于 mutating 端点，走每 IP 令牌桶（burst 5，1 token/6s）。
+// 手动操作（选中/删除/签到）与定时刷新撞在同一窗口时会返回 429，历史实现直接
+// 丢弃整轮，表现为「定时刷新有时候不刷新」。这里对限流做有限次退避重试：
+// 15s 后令牌桶必然回充出余量，最多补 2 次，仍失败才放弃本轮。
+let bgRateLimitRetry=0;
 async function startBackgroundRefresh(){
+  let d;
   try{
-    const d=await api("/refresh", {method:"POST"});
-    if(d.error) return; // 静默：后台刷新失败不打扰用户
-  }catch(e){ return; }
+    d=await api("/refresh", {method:"POST", __silent:true});
+  }catch(e){ return; } // 静默：后台刷新失败不打扰用户
+  if(d&&d.error){
+    if(/rate limit/i.test(String(d.error))&&bgRateLimitRetry<2){
+      bgRateLimitRetry++;
+      setTimeout(()=>{ startBackgroundRefresh(); }, 15000);
+    }else{
+      bgRateLimitRetry=0;
+    }
+    return;
+  }
+  bgRateLimitRetry=0;
   pollRefreshStatus();
 }
 function checkinResultToast(res, who){
