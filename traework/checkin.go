@@ -264,9 +264,15 @@ func runFleetCheckin(source string) (int, []map[string]any, int) {
 			continue
 		}
 		results = append(results, map[string]any{"auth_id": f.ID, "uid": a.UserID, "ok": res.OK, "message": res.Message})
-		// Refresh the credits cache after a successful claim.
-		if res.OK && res.Points > 0 {
-			cacheCredits(f.ID, &traeCredits{TotalRemain: res.Points, FetchedAt: time.Now().Format(time.RFC3339)})
+		// Refresh the credits cache after a successful claim. Use a live
+		// accountPoints query — res.Points is THIS checkin's reward (could be
+		// 200), NOT the account's total remaining quota. Writing the reward
+		// as TotalRemain would corrupt the panel and leave it pinned to the
+		// last check-in reward amount.
+		if res.OK {
+			if remain, qerr := accountPoints(a); qerr == nil {
+				cacheCredits(f.ID, &traeCredits{TotalRemain: remain, FetchedAt: time.Now().Format(time.RFC3339)})
+			}
 		}
 	}
 	return okCount, results, scheduled

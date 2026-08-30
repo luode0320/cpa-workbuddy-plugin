@@ -430,7 +430,7 @@ function renderSummary(d){
   }).join("");
   box.style.display="block";
   box.innerHTML=
-    '<div class="summary-hd"><span class="summary-title">系统状态</span>'+
+    '<div class="summary-hd"><span class="summary-title">用量汇总 · 全部账号</span>'+
     '<span class="summary-meta">服务器时间 '+(d.server_time||"")+"</span></div>"+
     '<div class="summary-grid">'+
       '<div class="summary-item"><div class="k">保号池 watchdog</div><div class="v '+(p.enabled?"ok":"muted")+'">'+(p.enabled?"运行中":"已关闭")+'</div>'+
