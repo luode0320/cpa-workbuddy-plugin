@@ -105,6 +105,11 @@ func configure(raw []byte) {
 	// 互补不重复）。
 	parseModelsYAMLConfig(req.ConfigYAML)
 
+	// 共享 usage feed（token-usage-tracker 插件消费）。解析 usage_feed_*
+	// 字段，与 workbuddy 侧对齐；非致命：失败只禁用 feed，不影响聊天。
+	// 自带 usageFeedMu 锁，必须在 cfgMu.Lock() 之外调用，避免锁序死锁。
+	configureUsageFeed(req.ConfigYAML)
+
 	cfgMu.Lock()
 	defer cfgMu.Unlock()
 	applyConfigLines(traeCfg, lines)

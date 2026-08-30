@@ -70,7 +70,8 @@ func handleUsage(raw []byte) ([]byte, error) {
 }
 
 // publishUsage is the executor-side compatibility path. It is fire-and-forget
-// so the executor hot path never blocks on the CPAMP round-trip.
+// so the executor hot path never blocks on the CPAMP round-trip or a slow
+// feed filesystem.
 func publishUsage(requestedModel, upstreamModel, authID string, started time.Time, detail usage.Detail, failed bool, statusCode int, errBody string) {
 	model := strings.TrimSpace(upstreamModel)
 	if model == "" {
@@ -80,7 +81,17 @@ func publishUsage(requestedModel, upstreamModel, authID string, started time.Tim
 	if alias == "" {
 		alias = model
 	}
-	go forwardUsageToCPAMP(alias, model, authID, started, normalizeUsageDetail(detail), failed, statusCode, errBody)
+	go func() {
+		// Shared usage feed (token-usage-tracker plugin): append the same
+		// detail as one NDJSON line to <root>/data/token-usage-feed.ndjson.
+		// The standalone token-usage-tracker plugin tails this file into its
+		// own bbolt database and serves the dashboard — this is the only
+		// cross-plugin data path for plugin executors (host UsagePlugin
+		// broadcast never fires for plugin executors). Runs inside the
+		// goroutine so a slow filesystem never stalls the executor.
+		recordUsageFeed(alias, model, authID, started, normalizeUsageDetail(detail), failed, statusCode)
+		forwardUsageToCPAMP(alias, model, authID, started, normalizeUsageDetail(detail), failed, statusCode, errBody)
+	}()
 }
 
 // forwardUsageToCPAMP POSTs one NDJSON line to the CPAMP usage/import

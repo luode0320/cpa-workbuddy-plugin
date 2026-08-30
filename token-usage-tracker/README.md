@@ -1,12 +1,12 @@
 # token-usage-tracker
 
 本项目（`cpa-workbuddy-plugin`）的**第三个插件**（与 `workbuddy`、`qoderwork` 并列）：
-记录并可视化 **workbuddy 账户的真实 token 消耗**（实盘数据）。
+记录并可视化 **workbuddy / traework 账户的真实 token 消耗**（实盘数据）。
 
 ## 数据链路
 
 ```
-workbuddy 插件                        token-usage-tracker 插件
+workbuddy / traework 插件               token-usage-tracker 插件
 ┌─────────────────────────┐          ┌──────────────────────────┐
 │ 每次请求完成后          │  NDJSON  │ 轮询读取（默认 5s）        │
 │ publishUsage 汇聚点 ─────┼──append──▶ 共享 feed 文件            │
@@ -17,12 +17,15 @@ workbuddy 插件                        token-usage-tracker 插件
 ```
 
 - **共享 feed**：`<CLIProxyAPI root>/data/token-usage-feed.ndjson`（默认），
-  与 workbuddy 的 `usage_feed_path` 保持一致即可互相发现。
+  与 workbuddy / traework 的 `usage_feed_path` 保持一致即可互相发现。
 - **为什么是文件 feed**：CPA 宿主的 `UsagePlugin` 广播对插件 executor 恒为
   空；bbolt 排它文件锁不允许两个长驻进程共享同一个数据库文件。追加写
   NDJSON 文件是唯一干净的跨插件数据通道（无锁、可回放、可轮转）。
-- **写入方只有 workbuddy，读取方只有本插件**：本插件是唯一打开 bbolt 库
-  的进程，不会出现文件锁冲突。
+- **写入方为 workbuddy 与 traework（双写入方）**：两个插件均在每次请求
+  完成后向同一 feed 追加一行（`provider` 字段区分 `workbuddy-provider` /
+  `traework-provider`）；本插件是唯一打开 bbolt 库的进程，不会出现文件锁
+  冲突。feed 行结构由消费方（`usage_stats/feed_import.go`）定义，写入方只
+  负责对齐该结构。
 - 统计核心（`usage_stats/` 子包）移植自社区插件
   [AITNR/cap-token-usage-tracker](https://github.com/AITNR/cap-token-usage-tracker)，
   感谢原作者。
@@ -31,8 +34,8 @@ workbuddy 插件                        token-usage-tracker 插件
 
 从插件商店（registry 源
 `https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/registry.json`）
-搜索 **token-usage-tracker** 安装即可。与 workbuddy 同时安装后开箱即用：
-dashboard 读接口与写接口全部在注册表中显式声明，不会出现 404。
+搜索 **token-usage-tracker** 安装即可。与 workbuddy / traework 同时安装后
+开箱即用：dashboard 读接口与写接口全部在注册表中显式声明，不会出现 404。
 
 ## 配置（config_yaml，均可选）
 

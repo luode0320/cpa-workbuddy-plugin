@@ -273,7 +273,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.1.14"
+var version = "0.1.15"
 
 func wbRegistration() registration {
 	return registration{
@@ -296,6 +296,8 @@ func wbRegistration() registration {
 				{Name: "management_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：管理类接口的 Bearer 密钥（纵深防御；留空则信任宿主中间件）。"},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：CPAMP 用量上报地址（NDJSON）。"},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：用量上报使用的 CPAMP 管理密钥。"},
+				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
+				{Name: "usage_feed_path", Type: pluginapi.ConfigFieldTypeString, Description: "可选：共享用量数据流路径（默认 <CLIProxyAPI 根目录>/data/token-usage-feed.ndjson）。必须与 token-usage-tracker 的 usage_feed_path 保持一致。"},
 			},
 		},
 		Capabilities: registrationCapability{
