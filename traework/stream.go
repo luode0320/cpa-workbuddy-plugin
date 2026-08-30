@@ -174,22 +174,38 @@ func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte,
 	return completionAggregate(requestID, model, text.String(), reasoning.String())
 }
 
-// pumpTraeStream is the async streaming pump: it reads the upstream SSE
-// stream in a goroutine and emits each chunk via host.stream.emit. Called
-// after handleExecStream returns the header-only envelope. authID is used to
-// record SSE-layer business errors (4011/14018/...) into the failover
-// cooldown — chunks already emitted cannot be retried mid-stream, so the
-// cooldown is what keeps the NEXT request off a failing account.
-func pumpTraeStream(r io.Reader, streamID string, model string, statusCode int, authID string) {
+// traeStreamPumpContext 保存异步流下发与用量发布共享的请求上下文。
+type traeStreamPumpContext struct {
+	StreamID      string    // 宿主流标识。
+	Model         string    // 客户端请求模型。
+	UpstreamModel string    // Trae 上游实际模型。
+	StatusCode    int       // 上游 HTTP 状态码。
+	AuthID        string    // 调度与故障核算使用的账号标识。
+	AuthUID       string    // 用量维度使用的 Trae 账号 UID。
+	Started       time.Time // 请求开始时间。
+}
+
+// pumpTraeStream 读取 Trae 上游 SSE，向宿主推送分片，并在流结束时发布一次用量结果。
+// [参数] r: 上游 SSE；ctx: 异步流下发、账号核算与用量发布上下文。
+// [返回] 无；分片与错误通过宿主流通道发送，用量通过共享发布路径异步落地。
+// 最近修改时间：2026-08-30 17:37:24；改动原因：补齐异步流成功与失败终点的用量发布，避免 WorkBuddy 流式对话漏记。
+func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
+	// 1. 转换并推送上游分片，同时保留已成功生成的标准分片用于估算输出 token。
 	requestID := randomUUID()
+	var chunks []pluginapi.ExecutorStreamChunk
 	scanErr := scanSSE(r, func(ev sseEvent) error {
 		switch ev.Event {
 		case "output":
 			text, reasoning, _ := normalizeOutput(ev.Data)
-			if raw, err := chunkDelta(requestID, model, text, reasoning, ""); err == nil && raw != nil {
-				if eerr := streamEmit(streamID, raw); eerr != nil {
-					return eerr
+			raw, err := chunkDelta(requestID, ctx.Model, text, reasoning, "")
+			if err != nil {
+				return err
+			}
+			if raw != nil {
+				if emitErr := streamEmit(ctx.StreamID, raw); emitErr != nil {
+					return emitErr
 				}
+				chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
 			}
 		case "done":
 			return nil
@@ -198,20 +214,27 @@ func pumpTraeStream(r io.Reader, streamID string, model string, statusCode int, 
 			if msg == "" {
 				msg = ev.Data
 			}
-			return fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(msg, 200))
+			return fmt.Errorf("upstream %d: %s", ctx.StatusCode, truncateRedacted(msg, 200))
 		}
 		return nil
 	})
+	// 2. 扫描或下发失败时关闭流并发布失败用量；已输出分片仍纳入统计。
 	if scanErr != nil {
-		reconcileAfterExecutorError(authID, statusCode, scanErr.Error())
-		streamEmitError(streamID, scanErr.Error())
+		reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, scanErr.Error())
+		streamEmitError(ctx.StreamID, scanErr.Error())
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), true, ctx.StatusCode, scanErr.Error())
 		return
 	}
-	raw, _ := chunkDelta(requestID, model, "", "", "stop")
+
+	// 3. 正常结束时下发 stop 分片、关闭宿主流，并发布成功用量。
+	raw, _ := chunkDelta(requestID, ctx.Model, "", "", "stop")
 	if raw != nil {
-		_ = streamEmit(streamID, raw)
+		_ = streamEmit(ctx.StreamID, raw)
+		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
 	}
-	streamClose(streamID)
+	streamClose(ctx.StreamID)
+	resetAccountFailover(ctx.AuthID)
+	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, 0, "")
 }
 
 // clientNeedsSSEFrame reports whether the client expects raw SSE framing in

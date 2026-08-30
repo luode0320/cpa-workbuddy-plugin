@@ -117,11 +117,12 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	return nil, errFinal
 }
 
-// handleExecStream performs a streaming chat completion. With a host
-// StreamID it returns immediately and pumps chunks via host.stream.emit;
-// without one it collects chunks synchronously and returns them in the
-// response envelope.
+// handleExecStream 执行流式聊天补全；有 StreamID 时异步推送分片，否则同步收集后返回。
+// [参数] raw: 宿主传入的流式执行请求 JSON。
+// [返回] 响应 envelope JSON；请求解析或上游调用失败时返回错误。
+// 最近修改时间：2026-08-30 17:37:24；改动原因：向异步流泵传递完整用量上下文，补齐流式请求统计。
 func handleExecStream(raw []byte) ([]byte, error) {
+	// 1. 解析请求、账号与模型，构造 Trae 流式上游负载。
 	var req executorStreamRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
@@ -154,9 +155,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 
 	usedAuthID := authIDFor(a, req.AuthID)
 
-	// No async stream id → synchronous chunk collection. Account-level
-	// failures (HTTP 4xx OR SSE event:error) rotate accounts on the same
-	// request, bounded by the retry_on_4xx budget.
+	// 2. 无异步流标识时同步收集分片；账号级失败在同一请求内按预算换号重试。
 	if req.StreamID == "" {
 		budget := loadedRetryOn4xx()
 		curSA := a
@@ -208,8 +207,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		return nil, errFinal
 	}
 
-	// Async: return immediately with empty chunks; a goroutine pumps the
-	// upstream and emits each chunk via host.stream.emit.
+	// 3. 有异步流标识时先返回响应头，再由流泵推送分片并在终点统一发布用量。
 	resp, callErr := callLLM(a, payload, usedAuthID)
 	if callErr != nil {
 		statusCode := parseUpstreamStatusFromErr(callErr)
@@ -218,7 +216,15 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error())
 		return okEnvelope(streamResponse{Headers: headers})
 	}
-	go pumpTraeStream(bytes.NewReader(resp.Body), req.StreamID, req.Model, resp.StatusCode, usedAuthID)
+	go pumpTraeStream(bytes.NewReader(resp.Body), traeStreamPumpContext{
+		StreamID:      req.StreamID,    // 绑定当前宿主异步流。
+		Model:         req.Model,       // 保留客户端请求模型作为统计别名。
+		UpstreamModel: upstreamModel,   // 记录 Trae 实际请求模型。
+		StatusCode:    resp.StatusCode, // 供 SSE 错误核算使用。
+		AuthID:        usedAuthID,      // 供故障退避与恢复使用。
+		AuthUID:       authUID,         // 供账号用量维度使用。
+		Started:       started,         // 计算请求总延迟。
+	})
 	return okEnvelope(streamResponse{Headers: headers})
 }
 

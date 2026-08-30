@@ -1,5 +1,18 @@
 # TraeWork Plugin Changelog
 
+## 0.1.19
+
+### Fix — 异步流式请求补齐 Token 用量统计
+
+修复 Trae 异步流式请求虽然能够正常返回响应，但请求结束后没有写入共享 usage feed，导致 `workbuddy-token-usage` 无法在 Token 用量统计面板展示记录的问题。
+
+1. `handleExecStream` 向后台 `pumpTraeStream` 传递完整用量上下文，包括客户端模型别名、Trae 上游模型、账号 UID、HTTP 状态和请求开始时间。
+2. `pumpTraeStream` 累计已经发送的标准流式分片，在异步流成功结束时统一发布一次用量。
+3. SSE 扫描失败或分片转换失败时，统一发布一次失败用量；保留原有错误通知、账号故障恢复、`streamClose` 和 stop chunk 行为。
+4. 继续使用 `estimateUsageFromChunks` 估算输出与总 Token，并保留 `alias=qwen-max-latest`、`model=qwen3.8-max` 的统计维度。
+
+验证：cgo-shim build、vet、test 全绿；异步流回归测试确认成功请求只写入一条 `traework-provider` usage feed 记录。
+
 ## 0.1.18
 
 ### Feat — 面板删除账号 + 修复 trae 账户模型请求异常（SSE 业务错误换号）

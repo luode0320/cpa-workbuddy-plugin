@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,6 +148,70 @@ func TestRecordUsageFeedAppendsNDJSON(t *testing.T) {
 	// Timestamp format must be parseable RFC3339Nano (the tracker imports it).
 	if _, err := time.Parse(time.RFC3339Nano, rec.Timestamp); err != nil {
 		t.Fatalf("timestamp %q not RFC3339Nano: %v", rec.Timestamp, err)
+	}
+}
+
+// TestPumpTraeStreamPublishesUsage 验证异步流在正常结束后写入一次成功用量。
+// [参数] t: 当前测试。
+// [返回] 无；断言失败时由 testing 终止用例。
+// 最近修改时间：2026-08-30 17:37:24；改动原因：覆盖 WorkBuddy 异步流响应成功但 feed 漏记的回归路径。
+func TestPumpTraeStreamPublishesUsage(t *testing.T) {
+	// 1. 隔离共享 feed 配置，确保用例只写临时目录。
+	feedPath := filepath.Join(t.TempDir(), "feed.ndjson")
+	usageFeedMu.Lock()
+	usageFeedEnabled = true
+	usageFeedPath = feedPath
+	usageFeedMu.Unlock()
+	defer func() {
+		usageFeedMu.Lock()
+		usageFeedEnabled = true
+		usageFeedPath = ""
+		usageFeedMu.Unlock()
+	}()
+
+	// 2. 使用无输出的正常结束事件，避免测试依赖真实宿主流回调。
+	started := time.Now().Add(-time.Second)
+	pumpTraeStream(strings.NewReader("event: done\ndata: {}\n\n"), traeStreamPumpContext{
+		StreamID:      "stream-test",     // 使用不可用的宿主流，验证 feed 不依赖回调成功。
+		Model:         "qwen-max-latest", // 客户端模型别名。
+		UpstreamModel: "qwen3.8-max",     // Trae 上游实际模型。
+		StatusCode:    200,               // 正常上游状态。
+		AuthID:        "uid-1",           // 调度账号标识。
+		AuthUID:       "uid-1",           // 统计账号维度。
+		Started:       started,           // 固定为一秒前以生成正延迟。
+	})
+
+	// 3. 等待 publishUsage 的异步写入完成，再核对 feed 结果。
+	deadline := time.Now().Add(time.Second)
+	var raw []byte
+	for time.Now().Before(deadline) {
+		var err error
+		raw, err = os.ReadFile(feedPath)
+		if err == nil && len(raw) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	lines := splitLines(string(raw))
+	if len(lines) != 1 {
+		t.Fatalf("feed lines = %d, want 1; content=%q", len(lines), raw)
+	}
+	var rec struct {
+		Alias      string `json:"alias"`
+		Model      string `json:"model"`
+		Provider   string `json:"provider"`
+		AuthIndex  string `json:"auth_index"`
+		Failed     bool   `json:"failed"`
+		StatusCode int    `json:"status_code"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
+		t.Fatalf("decode feed: %v", err)
+	}
+	if rec.Alias != "qwen-max-latest" || rec.Model != "qwen3.8-max" || rec.Provider != providerName || rec.AuthIndex != "uid-1" {
+		t.Fatalf("feed record = %+v", rec)
+	}
+	if rec.Failed || rec.StatusCode != 0 {
+		t.Fatalf("feed outcome = failed:%v status:%d", rec.Failed, rec.StatusCode)
 	}
 }
 
