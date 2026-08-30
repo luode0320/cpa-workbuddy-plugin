@@ -1,5 +1,18 @@
 # TraeWork Plugin Changelog
 
+## 0.1.20
+
+### Fix — 拒绝 HTTP 200 异常响应形成空成功
+
+修复 Trae 上游在 HTTP 200 下返回普通 JSON、HTML、未知 SSE 事件、无换行尾帧或空 `output` 时，插件可能将无有效业务事件的响应收束为空 completion 或空 stop 分片的问题。
+
+1. `traework/stream.go` 新增 `traeSSETerminal`，仅在出现可转换的 output 或明确 done 时允许成功结束。
+2. 同步非流式和同步流式在无有效终止时返回 `invalid SSE response`，不再生成空成功响应。
+3. 异步流式改走失败出口，不再成功复位账号状态或写入成功用量。
+4. 保持既有 `event:error` 解析、账号失败分类及异步流不跨账号重放策略不变。
+
+验证：cgo shim build、vet、test 全绿；代码格式、差异检查与生产代码测试污染扫描通过。真实 Trae/Qwen 上游请求尚未在本地自动化环境发起。
+
 ## 0.1.19
 
 ### Fix — 异步流式请求补齐 Token 用量统计

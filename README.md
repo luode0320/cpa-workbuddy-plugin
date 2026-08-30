@@ -189,3 +189,7 @@ Windows 无 C 工具链时可先用 `scripts/cgo-shim-build.py` 生成 shim 验�
 | [analysis/](analysis/) | 关键决策分析：OAuth 方案、token-tracker 拆分/合并、升级排障等 |
 
 各插件目录内另有独立 README（workbuddy 提供中英双语版）。
+
+## 改动日志
+
+2026-08-30 21:42:16 fix: [TraeWork 流协议] 修复 HTTP 200 异常响应空成功

@@ -108,25 +108,67 @@ func completionAggregate(requestID, model, text, reasoning string) ([]byte, erro
 	return json.Marshal(out)
 }
 
+// traeSSETerminal 记录本次 SSE 是否以可验证的业务事件结束。
+type traeSSETerminal struct {
+	hasOutput bool
+	hasDone   bool
+}
+
+// recordOutput 解析输出事件，并只在可转换为客户端内容时将其标记为有效输出。
+// [参数] data: output 事件的原始 JSON 数据。
+// [返回] text: 正文片段；reasoning: 推理片段；ok: 是否为有效输出。
+// 最近修改时间：2026-08-30 21:01:25；改动原因：统一三条响应路径的有效输出判定，阻止异常正文被当作空成功。
+func (t *traeSSETerminal) recordOutput(data string) (text, reasoning string, ok bool) {
+	text, reasoning, _ = normalizeOutput(data)
+	if text == "" && reasoning == "" {
+		return "", "", false
+	}
+	t.hasOutput = true
+	return text, reasoning, true
+}
+
+// recordDone 标记上游已明确发送完成事件。
+// [参数] 无。
+// [返回] 无。
+// 最近修改时间：2026-08-30 21:01:25；改动原因：统一三条响应路径的有效终止判定。
+func (t *traeSSETerminal) recordDone() {
+	t.hasDone = true
+}
+
+// validate 确认扫描结果包含有效输出或明确完成事件。
+// [参数] statusCode: 上游 HTTP 状态码。
+// [返回] error: 缺少有效业务事件时返回协议错误，否则为 nil。
+// 最近修改时间：2026-08-30 21:01:25；改动原因：拒绝 HTTP 200 下未识别响应形成的空成功。
+func (t traeSSETerminal) validate(statusCode int) error {
+	if t.hasOutput || t.hasDone {
+		return nil
+	}
+	return fmt.Errorf("upstream %d: invalid SSE response: missing output or done event", statusCode)
+}
+
 // collectTraeStream reads the upstream SSE stream, converts every output
 // event into a chat.completion.chunk, and returns the chunks. On an
 // event:error it surfaces the upstream message via fmt.Errorf with the
 // canonical "upstream N:" prefix when status is known.
+// [参数] r: 上游 SSE 响应；model: 客户端模型；statusCode: 上游 HTTP 状态码。
+// [返回] chunks: 转换后的分片；error: 上游错误或无有效终止事件时的协议错误。
+// 最近修改时间：2026-08-30 21:01:25；改动原因：仅允许有效 output 或 done 结束同步流，避免空 stop 伪成功。
 func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.ExecutorStreamChunk, error) {
 	requestID := randomUUID()
 	var chunks []pluginapi.ExecutorStreamChunk
+	var terminal traeSSETerminal
 	err := scanSSE(r, func(ev sseEvent) error {
 		switch ev.Event {
 		case "output":
-			text, reasoning, _ := normalizeOutput(ev.Data)
+			text, reasoning, ok := terminal.recordOutput(ev.Data)
+			if !ok {
+				return nil
+			}
 			if raw, err := chunkDelta(requestID, model, text, reasoning, ""); err == nil && raw != nil {
 				chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
 			}
 		case "done":
-			raw, _ := chunkDelta(requestID, model, "", "", "stop")
-			if raw != nil {
-				chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
-			}
+			terminal.recordDone()
 		case "error":
 			msg := streamErrData(ev.Data)
 			if msg == "" {
@@ -139,6 +181,9 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 	if err != nil {
 		return nil, err
 	}
+	if err := terminal.validate(statusCode); err != nil {
+		return nil, err
+	}
 	raw, _ := chunkDelta(requestID, model, "", "", "stop")
 	if raw != nil {
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
@@ -148,17 +193,23 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 
 // aggregateTraeCompletion reads the upstream SSE stream and folds all output
 // events into one chat.completion aggregate (non-streaming path).
+// [参数] r: 上游 SSE 响应；model: 客户端模型；statusCode: 上游 HTTP 状态码。
+// [返回] []byte: OpenAI 完成响应；error: 上游错误或无有效终止事件时的协议错误。
+// 最近修改时间：2026-08-30 21:01:25；改动原因：仅允许有效 output 或 done 结束非流式响应，避免构造空 completion。
 func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte, error) {
 	requestID := randomUUID()
 	var text, reasoning strings.Builder
+	var terminal traeSSETerminal
 	err := scanSSE(r, func(ev sseEvent) error {
 		switch ev.Event {
 		case "output":
-			t, rz, _ := normalizeOutput(ev.Data)
-			text.WriteString(t)
-			reasoning.WriteString(rz)
+			t, rz, ok := terminal.recordOutput(ev.Data)
+			if ok {
+				text.WriteString(t)
+				reasoning.WriteString(rz)
+			}
 		case "done":
-			return nil
+			terminal.recordDone()
 		case "error":
 			msg := streamErrData(ev.Data)
 			if msg == "" {
@@ -169,6 +220,9 @@ func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte,
 		return nil
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := terminal.validate(statusCode); err != nil {
 		return nil, err
 	}
 	return completionAggregate(requestID, model, text.String(), reasoning.String())
@@ -188,15 +242,19 @@ type traeStreamPumpContext struct {
 // pumpTraeStream 读取 Trae 上游 SSE，向宿主推送分片，并在流结束时发布一次用量结果。
 // [参数] r: 上游 SSE；ctx: 异步流下发、账号核算与用量发布上下文。
 // [返回] 无；分片与错误通过宿主流通道发送，用量通过共享发布路径异步落地。
-// 最近修改时间：2026-08-30 17:37:24；改动原因：补齐异步流成功与失败终点的用量发布，避免 WorkBuddy 流式对话漏记。
+// 最近修改时间：2026-08-30 21:01:25；改动原因：接入有效终止校验，避免 HTTP 200 异常正文触发成功复位与成功记账。
 func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	// 1. 转换并推送上游分片，同时保留已成功生成的标准分片用于估算输出 token。
 	requestID := randomUUID()
 	var chunks []pluginapi.ExecutorStreamChunk
+	var terminal traeSSETerminal
 	scanErr := scanSSE(r, func(ev sseEvent) error {
 		switch ev.Event {
 		case "output":
-			text, reasoning, _ := normalizeOutput(ev.Data)
+			text, reasoning, ok := terminal.recordOutput(ev.Data)
+			if !ok {
+				return nil
+			}
 			raw, err := chunkDelta(requestID, ctx.Model, text, reasoning, "")
 			if err != nil {
 				return err
@@ -208,7 +266,7 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 				chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
 			}
 		case "done":
-			return nil
+			terminal.recordDone()
 		case "error":
 			msg := streamErrData(ev.Data)
 			if msg == "" {
@@ -218,7 +276,10 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 		}
 		return nil
 	})
-	// 2. 扫描或下发失败时关闭流并发布失败用量；已输出分片仍纳入统计。
+	if scanErr == nil {
+		scanErr = terminal.validate(ctx.StatusCode)
+	}
+	// 2. 扫描、协议校验或下发失败时关闭流并发布失败用量；已输出分片仍纳入统计。
 	if scanErr != nil {
 		reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, scanErr.Error())
 		streamEmitError(ctx.StreamID, scanErr.Error())
