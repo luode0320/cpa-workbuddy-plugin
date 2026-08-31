@@ -1,5 +1,20 @@
 # TraeWork Plugin Changelog
 
+## 0.1.22
+
+### Fix — 上游长回答中途断流兜底收尾，不再中断报错
+
+0.1.21 收紧流协议后，上游 Trae 长回答在生成中途 EOF（有部分 `output` 但未收到 `done`）时会被当作 `truncated SSE response` 致命错误处理，插件中断流并向 IDE 下发 error，用户表现为"生成中途停止、无下文"。
+
+本次修复区分三种终结类别：业务完整（有 `done`）、上游中途断流（有部分 `output` 但 EOF 无 `done`）、空响应（无 `output` 无 `done`）：
+
+1. `traework/stream.go` 将 `validate` 改为 `classify`，返回 `traeStreamTermination` 终结类别；仅空响应才报 `invalid SSE response`（保留 0.1.20 防空成功回归），部分 `output` 后 EOF 归为可兜底的中途断流。
+2. 三条响应路径（同步非流式聚合、同步流式、异步流式）对中途断流统一补 `finish_reason="length"` 正常收尾，保留已生成内容，不再中断或报错。
+3. `pumpTraeStream` 断流收尾时不清零账号故障、不记成功用量，以"不完整"标记落一条用量记录供面板识别；上游显式 `event:error`、下发失败或空响应仍走原失败出口。
+4. **补齐读错误型断流兜底**：上一步的三态兜底只在 `scanSSE` 返回 `nil` 时生效，而 `scanSSE` 仅对干净 `io.EOF` 返回 `nil`；真实上游断流多表现为读错误（对端 RST / unexpected EOF / 宿主流桥 `Error` 非空），此时 `scanSSE` 原样返回 err，`pumpTraeStream` 判为致命失败并向 IDE 下发 error，0.1.22 前三步对该形态无效。`traework/upstream.go` 的 `scanSSE` 新增 `hasPayload` 判定参数：读错误时只要已累积可交付业务内容就按截断正常收尾（交由 `classify` 补 `length`、保留已生成内容），零内容才让读错误致命；`stream.go` 的 `traeSSETerminal` 新增 `hasPayload()`，三条响应路径接入该判定。
+
+验证：cgo shim build、vet、test 全绿；新增 `collectTraeStream` 断流补 length、空响应仍报错、`pumpTraeStream` 断流不清零账号故障等回归用例；本次另增 `collectTraeStream` 读错误后补 length、零内容读错误仍致命、`aggregateTraeCompletion` 读错误补 length 并保留正文三个用例（含真实进编译哨兵验证）。
+
 ## 0.1.21
 
 ### Fix — 异步流改走宿主流桥实时读取，业务成功严格依赖 done 终止

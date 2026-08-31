@@ -246,10 +246,10 @@ type sseEvent struct {
 
 // scanSSE 逐行扫描 SSE 流，并把 event 字段关联到后续 data 字段。
 //
-// [参数] r: 上游 SSE 字节流；fn: 每条 data 事件的处理函数。
-// [返回] error: 读取失败或事件处理失败时返回错误。
-// 最近修改时间：2026-08-31 00:24:32；改动原因：在 EOF 时补齐无换行尾帧，避免丢失最后一个 done 或 output 事件。
-func scanSSE(r io.Reader, fn func(ev sseEvent) error) error {
+// [参数] r: 上游 SSE 字节流；fn: 每条 data 事件的处理函数；hasPayload: 报告当前是否已累积可交付业务事件的判定函数（可为 nil）。
+// [返回] error: 事件处理失败、零内容空响应或无可交付内容时返回错误；已有可交付内容的上游断流按截断正常返回 nil。
+// 最近修改时间：2026-08-31 15:20:00；改动原因：读错误型断流（RST/unexpected EOF）若已有可交付内容，应与干净 EOF 同款兜底收尾，不再中断并丢弃已生成内容。
+func scanSSE(r io.Reader, fn func(ev sseEvent) error, hasPayload func() bool) error {
 	buf := make([]byte, 0, 4096)
 	chunk := make([]byte, 16*1024)
 	event := ""
@@ -297,6 +297,12 @@ func scanSSE(r io.Reader, fn func(ev sseEvent) error) error {
 			return nil
 		}
 		if err != nil {
+			// 上游中途断流：读错误（RST / unexpected EOF / 桥接错误）时，只要已经收到可交付
+			// 的业务内容，就按截断正常收尾——保留已生成内容，交由 classify 补 length 结束，
+			// 而不是把内容连同错误一起丢弃导致 IDE 侧中断且无下文。零内容才让读错误致命。
+			if hasPayload != nil && hasPayload() {
+				return nil
+			}
 			return err
 		}
 	}

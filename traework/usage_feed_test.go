@@ -254,3 +254,62 @@ func splitLines(s string) []string {
 	}
 	return out
 }
+
+// TestPumpTraeStreamOutputWithoutDoneDoesNotResetFailover 锁定上游中途断流（部分 output 无 done）
+// 不清零账号故障：断流收尾走失败/收尾出口而非成功复位，避免把可兜底的中断误判为账号成功。
+//
+// [参数] t: 当前测试。
+// [返回] 无；断言失败时由 testing 终止用例。
+// 最近修改时间：2026-08-31 02:10:00；改动原因：0.1.21 对部分 output 无 done 一律报 truncated 中断，
+// 修复后改为补 length 收尾；本用例验证断流不会误复位账号故障状态。
+func TestPumpTraeStreamOutputWithoutDoneDoesNotResetFailover(t *testing.T) {
+	// 1. 隔离共享 feed 配置，确保用例只写临时目录。
+	feedPath := filepath.Join(t.TempDir(), "feed.ndjson")
+	usageFeedMu.Lock()
+	usageFeedEnabled = true
+	usageFeedPath = feedPath
+	usageFeedMu.Unlock()
+	defer func() {
+		usageFeedMu.Lock()
+		usageFeedEnabled = true
+		usageFeedPath = ""
+		usageFeedMu.Unlock()
+	}()
+
+	// 2. 给账号记一次故障，使其进入冷却；断流不应把它清零。
+	resetFailover(t)
+	recordAccountFailure("uid-1", 429, "rate limit")
+	if !isAccountCoolingDown("uid-1") {
+		t.Fatal("precondition: account should be cooling down")
+	}
+
+	// 3. 部分 output 后 EOF（无 done）：上游中途断流。测试环境宿主回调不可用，
+	//    首个分片下发失败会走失败出口，但必须走失败/收尾，而非复位账号。
+	started := time.Now().Add(-time.Second)
+	pumpTraeStream(strings.NewReader(`event: output
+data: {"response":"部分内容"}
+
+`), traeStreamPumpContext{
+		StreamID:      "stream-trunc",
+		Model:         "qwen-max-latest",
+		UpstreamModel: "qwen3.8-max",
+		StatusCode:    200,
+		AuthID:        "uid-1",
+		AuthUID:       "uid-1",
+		Started:       started,
+	})
+
+	// 4. 断流收尾不清零账号故障：cooldown 应保持（而非被 reset 清空）。
+	deadline := time.Now().Add(time.Second)
+	ok := false
+	for time.Now().Before(deadline) {
+		if isAccountCoolingDown("uid-1") {
+			ok = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ok {
+		t.Fatal("upstream truncation must not reset account failover (cooldown cleared)")
+	}
+}

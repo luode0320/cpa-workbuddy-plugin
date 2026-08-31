@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -122,7 +123,7 @@ data: {}
 	if err := scanSSE(reader, func(event sseEvent) error {
 		events = append(events, event)
 		return nil
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("scanSSE: %v", err)
 	}
 	if len(events) != 2 || events[0].Event != "output" || events[1].Event != "done" {
@@ -162,7 +163,7 @@ data: {"response":"尾帧"}`,
 			if err := scanSSE(strings.NewReader(tc.input), func(event sseEvent) error {
 				events = append(events, event)
 				return nil
-			}); err != nil {
+			}, nil); err != nil {
 				t.Fatalf("scanSSE: %v", err)
 			}
 			if len(events) != 1 || events[0].Event != tc.wantEvent || events[0].Data != tc.wantData {
@@ -176,7 +177,7 @@ data: {"response":"尾帧"}`,
 	if err := scanSSE(strings.NewReader("event: done"), func(event sseEvent) error {
 		events = append(events, event)
 		return nil
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("scanSSE incomplete tail: %v", err)
 	}
 	if len(events) != 0 {
@@ -205,17 +206,150 @@ func (r *chunkReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// TestCollectTraeStreamRejectsOutputWithoutDone 锁定部分 output 后 EOF 不能伪装为正常 stop。
+// TestCollectTraeStreamFoldsOutputWithoutDoneToLength 锁定部分 output 后 EOF（上游断流）
+// 应兜底补 length 收尾，保留已生成内容，而不是报错中断或伪装成完整 stop。
 //
 // [参数] t: 当前测试。
 // [返回] 无。
-// 最近修改时间：2026-08-30 20:22:38；改动原因：防止不完整长回答被当作成功响应。
-func TestCollectTraeStreamRejectsOutputWithoutDone(t *testing.T) {
-	_, err := collectTraeStream(strings.NewReader(`event: output
+// 最近修改时间：2026-08-31 02:10:00；改动原因：0.1.21 把部分输出无 done 一律报 truncated 错误导致 IDE 中断，
+// 实际是上游中途断流，应补 length 正常收尾；仅空响应（无 output 无 done）才真正报错。
+func TestCollectTraeStreamFoldsOutputWithoutDoneToLength(t *testing.T) {
+	chunks, err := collectTraeStream(strings.NewReader(`event: output
 data: {"response":"未完成"}
 
 `), "qwen3.8-max", 200)
-	if err == nil || !strings.Contains(err.Error(), "truncated SSE response") {
-		t.Fatalf("error = %v, want truncated SSE response", err)
+	if err != nil {
+		t.Fatalf("collectTraeStream error = %v; want nil (upstream truncation is recoverable)", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("chunks = %d; want 2 (output + length finish)", len(chunks))
+	}
+	var tail struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(chunks[len(chunks)-1].Payload, &tail); err != nil {
+		t.Fatalf("decode tail chunk: %v", err)
+	}
+	if len(tail.Choices) != 1 || tail.Choices[0].FinishReason != "length" {
+		t.Fatalf("finish_reason = %+v; want length", tail.Choices)
+	}
+}
+
+// TestCollectTraeStreamRejectsEmptyWithoutDone 锁定既无 output 也无 done 的空响应仍报错（防 0.1.20 空成功回归）。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+func TestCollectTraeStreamRejectsEmptyWithoutDone(t *testing.T) {
+	_, err := collectTraeStream(strings.NewReader(""), "qwen3.8-max", 200)
+	if err == nil {
+		t.Fatalf("empty response without done must be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing output and done event") {
+		t.Fatalf("error = %v, want missing output and done event", err)
+	}
+}
+
+// streamErrReader 在返回预设 SSE 字节后以读错误断开，模拟上游真实断流
+// （对端 RST / unexpected EOF / 宿主流桥桥接错误），而非干净 EOF。
+type streamErrReader struct {
+	data []byte
+	pos  int
+	err  error
+}
+
+// Read 先交付预设字节，耗尽后返回读错误而非 io.EOF。
+// [参数] p: 调用方提供的目标缓冲区。
+// [返回] n: 本次复制的字节数；error: 预设字节耗尽后返回读错误。
+// 最近修改时间：2026-08-31 15:20:00；改动原因：为读错误型断流兜底测试提供可控读取边界。
+func (r *streamErrReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, r.err
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+// TestCollectTraeStreamFoldsReadErrorAfterOutputToLength 锁定部分 output 后遭遇读错误
+// （真实断流形态）应与干净 EOF 一样兜底补 length 收尾，保留已生成内容。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-08-31 15:20:00；改动原因：0.1.22 只兜住干净 EOF 型断流，读错误型断流仍中断 IDE，需回归锁定。
+func TestCollectTraeStreamFoldsReadErrorAfterOutputToLength(t *testing.T) {
+	body := "event: output\ndata: {\"response\":\"未完成\"}\n\nevent: output\ndata: {\"response\":\"继续\"}\n\n"
+	r := &streamErrReader{data: []byte(body), err: errors.New("connection reset by peer")}
+	chunks, err := collectTraeStream(r, "qwen3.8-max", 200)
+	if err != nil {
+		t.Fatalf("collectTraeStream error = %v; want nil (read error after output is recoverable)", err)
+	}
+	// 两个 output 分片 + 一个 length 终止分片。
+	if len(chunks) != 3 {
+		t.Fatalf("chunks = %d; want 3 (2 output + length finish)", len(chunks))
+	}
+	var tail struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(chunks[len(chunks)-1].Payload, &tail); err != nil {
+		t.Fatalf("decode tail chunk: %v", err)
+	}
+	if len(tail.Choices) != 1 || tail.Choices[0].FinishReason != "length" {
+		t.Fatalf("finish_reason = %+v; want length", tail.Choices)
+	}
+}
+
+// TestCollectTraeStreamPropagatesReadErrorWithoutOutput 锁定读错误前未收到任何业务内容时
+// 仍按致命错误上报，避免把空响应继续伪装成成功（防 0.1.20 空成功回归）。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-08-31 15:20:00；改动原因：读错误兜底仅限已有可交付内容的场景，零内容不得豁免。
+func TestCollectTraeStreamPropagatesReadErrorWithoutOutput(t *testing.T) {
+	r := &streamErrReader{data: []byte(""), err: errors.New("connection reset by peer")}
+	_, err := collectTraeStream(r, "qwen3.8-max", 200)
+	if err == nil {
+		t.Fatalf("read error without any output must be fatal, got nil")
+	}
+	if !strings.Contains(err.Error(), "connection reset by peer") {
+		t.Fatalf("error = %v; want the underlying read error surfaced", err)
+	}
+}
+
+// TestAggregateTraeCompletionFoldsReadErrorToLength 锁定非流式聚合路径在读错误型断流后
+// 同样补 length 收尾并保留已累积正文。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-08-31 15:20:00；改动原因：三条响应路径需统一读错误断流收尾语义。
+func TestAggregateTraeCompletionFoldsReadErrorToLength(t *testing.T) {
+	body := "event: output\ndata: {\"response\":\"部分内容\"}\n\n"
+	r := &streamErrReader{data: []byte(body), err: errors.New("unexpected EOF")}
+	out, err := aggregateTraeCompletion(r, "qwen3.8-max", 200)
+	if err != nil {
+		t.Fatalf("aggregateTraeCompletion error = %v; want nil (read error after output is recoverable)", err)
+	}
+	var completion struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(out, &completion); err != nil {
+		t.Fatalf("decode completion: %v", err)
+	}
+	if len(completion.Choices) != 1 {
+		t.Fatalf("choices = %d; want 1", len(completion.Choices))
+	}
+	if completion.Choices[0].FinishReason != "length" {
+		t.Fatalf("finish_reason = %q; want length", completion.Choices[0].FinishReason)
+	}
+	if completion.Choices[0].Message.Content != "部分内容" {
+		t.Fatalf("content = %q; want 部分内容（已生成内容必须保留）", completion.Choices[0].Message.Content)
 	}
 }

@@ -87,7 +87,7 @@ func chunkDelta(requestID, model string, text, reasoning string, finishReason st
 
 // completionAggregate renders the final chat.completion for non-streaming
 // requests from the accumulated text/reasoning.
-func completionAggregate(requestID, model, text, reasoning string) ([]byte, error) {
+func completionAggregate(requestID, model, text, reasoning, finishReason string) ([]byte, error) {
 	msg := map[string]any{"role": "assistant", "content": text}
 	if reasoning != "" {
 		msg["reasoning_content"] = reasoning
@@ -101,7 +101,7 @@ func completionAggregate(requestID, model, text, reasoning string) ([]byte, erro
 			{
 				"index":         0,
 				"message":       msg,
-				"finish_reason": "stop",
+				"finish_reason": finishReason,
 			},
 		},
 	}
@@ -135,18 +135,38 @@ func (t *traeSSETerminal) recordDone() {
 	t.hasDone = true
 }
 
-// validate 确认扫描结果收到明确完成事件，区分业务完成与传输层提前 EOF。
+// hasPayload 报告本次扫描是否已收到可交付的业务事件（正文输出或明确完成）。
+// 供 scanSSE 在读取错误时判定：已有可交付内容的上游断流应按截断收尾，
+// 而非把已生成内容连同错误一起丢弃。
+// [参数] 无。
+// [返回] 是否已收到正文输出或完成事件。
+// 最近修改时间：2026-08-31 15:20:00；改动原因：读错误型断流（RST/unexpected EOF）需与干净 EOF 同款兜底。
+func (t *traeSSETerminal) hasPayload() bool {
+	return t.hasOutput || t.hasDone
+}
+
+// traeStreamTermination 描述一次 SSE 扫描的终结类别，供三条响应路径统一收尾。
+// 区分「业务完整」「上游中途断流但有部分输出」「空响应」三类，避免把可兜底的部分输出误判为致命错误。
+type traeStreamTermination int
+
+const (
+	terminationDone      traeStreamTermination = iota // 收到明确 done，业务完整。
+	terminationOutputEOF                              // 有部分输出但 EOF 无 done，上游中途断流，可兜底收尾。
+	terminationInvalid                                // 既无 output 也无 done，空响应。
+)
+
+// classify 依据扫描累积的 output/done 判定终结类别。
 // [参数] statusCode: 上游 HTTP 状态码。
-// [返回] error: 缺少 done 时返回协议截断错误，否则为 nil。
-// 最近修改时间：2026-08-30 20:22:38；改动原因：部分 output 后无 done 仍是不完整响应，禁止被补成正常 stop。
-func (t traeSSETerminal) validate(statusCode int) error {
+// [返回] traeStreamTermination: 终结类别；error: 空响应时的协议错误，其余类别为 nil。
+// 最近修改时间：2026-08-31 02:10:00；改动原因：部分 output 后 EOF 是上游断流而非空成功，应兜底收尾而非报错中断。
+func (t traeSSETerminal) classify(statusCode int) (traeStreamTermination, error) {
 	if t.hasDone {
-		return nil
+		return terminationDone, nil
 	}
 	if t.hasOutput {
-		return fmt.Errorf("upstream %d: truncated SSE response: output received without done event", statusCode)
+		return terminationOutputEOF, nil
 	}
-	return fmt.Errorf("upstream %d: invalid SSE response: missing output and done event", statusCode)
+	return terminationInvalid, fmt.Errorf("upstream %d: invalid SSE response: missing output and done event", statusCode)
 }
 
 // collectTraeStream reads the upstream SSE stream, converts every output
@@ -180,14 +200,21 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 			return fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(msg, 200))
 		}
 		return nil
-	})
+	}, terminal.hasPayload)
 	if err != nil {
 		return nil, err
 	}
-	if err := terminal.validate(statusCode); err != nil {
+	termination, err := terminal.classify(statusCode)
+	if err != nil {
 		return nil, err
 	}
-	raw, _ := chunkDelta(requestID, model, "", "", "stop")
+	// 收到 done 正常收尾；部分 output 后 EOF（上游中途断流）补 length 收尾，
+	// 让客户端保留已生成内容，而不是把可兜底的中断误判为致命错误。仅空响应才真正报错。
+	finish := "stop"
+	if termination == terminationOutputEOF {
+		finish = "length"
+	}
+	raw, _ := chunkDelta(requestID, model, "", "", finish)
 	if raw != nil {
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
 	}
@@ -221,14 +248,19 @@ func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte,
 			return fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(msg, 200))
 		}
 		return nil
-	})
+	}, terminal.hasPayload)
 	if err != nil {
 		return nil, err
 	}
-	if err := terminal.validate(statusCode); err != nil {
+	termination, err := terminal.classify(statusCode)
+	if err != nil {
 		return nil, err
 	}
-	return completionAggregate(requestID, model, text.String(), reasoning.String())
+	finish := "stop"
+	if termination == terminationOutputEOF {
+		finish = "length"
+	}
+	return completionAggregate(requestID, model, text.String(), reasoning.String(), finish)
 }
 
 // traeStreamPumpContext 保存异步流下发与用量发布共享的请求上下文。
@@ -278,23 +310,32 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 			return fmt.Errorf("upstream %d: %s", ctx.StatusCode, truncateRedacted(msg, 200))
 		}
 		return nil
-	})
+	}, terminal.hasPayload)
+	// scanErr: SSE 事件错误 / 分片下发失败；空响应（invalid）也归入致命失败。
+	var termination traeStreamTermination
 	if scanErr == nil {
-		scanErr = terminal.validate(ctx.StatusCode)
+		termination, scanErr = terminal.classify(ctx.StatusCode)
 	}
-	// 2. 扫描、协议校验或下发失败时关闭流并发布失败用量；已输出分片仍纳入统计。
 	if scanErr != nil {
+		// 致命失败：上游显式 event:error、下发失败或空响应。关闭流并发布失败用量，已输出分片仍纳入统计。
 		reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, scanErr.Error())
 		streamEmitError(ctx.StreamID, scanErr.Error())
 		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), true, ctx.StatusCode, scanErr.Error())
 		return
 	}
 
-	// 3. 正常结束时下发 stop 分片、关闭宿主流，并发布成功用量。
-	raw, _ := chunkDelta(requestID, ctx.Model, "", "", "stop")
+	// 上游中途断流（部分 output 但 EOF 无 done）时补 length 收尾，保留已生成内容；
+	// 不把可兜底的中断误判为账号失败，也不复位账号（未走正常 done 结束）。
+	finish := "stop"
+	incomplete := false
+	if termination == terminationOutputEOF {
+		finish = "length"
+		incomplete = true
+	}
+	raw, _ := chunkDelta(requestID, ctx.Model, "", "", finish)
 	if raw != nil {
 		if emitErr := streamEmit(ctx.StreamID, raw); emitErr != nil {
-			// stop 下发失败表示客户端没有收到完整终止信号，不能继续复位账号或记成功。
+			// 终止分片下发失败表示客户端没有收到完整终止信号，不能继续复位账号或记成功。
 			reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, emitErr.Error())
 			streamEmitError(ctx.StreamID, emitErr.Error())
 			publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), true, ctx.StatusCode, emitErr.Error())
@@ -303,6 +344,11 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
 	}
 	streamClose(ctx.StreamID)
+	if incomplete {
+		// 断流收尾：不清零账号故障、不记成功用量；用「不完整」标记落一次用量供面板识别。
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, ctx.StatusCode, "truncated: upstream stream ended without done")
+		return
+	}
 	resetAccountFailover(ctx.AuthID)
 	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, 0, "")
 }
