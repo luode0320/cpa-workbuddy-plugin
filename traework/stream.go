@@ -297,25 +297,33 @@ type traeStreamPumpContext struct {
 	AuthID        string    // 调度与故障核算使用的账号标识。
 	AuthUID       string    // 用量维度使用的 Trae 账号 UID。
 	Started       time.Time // 请求开始时间。
+	InputChars    int       // 请求输入估算字符数，用于伪完成检测的输入长度判据。
 }
 
 // pumpTraeStream 读取 Trae 上游 SSE，向宿主推送分片，并在流结束时发布一次用量结果。
 // [参数] r: 上游 SSE；ctx: 异步流下发、账号核算与用量发布上下文。
 // [返回] 无；分片与错误通过宿主流通道发送，用量通过共享发布路径异步落地。
 // 最近修改时间：2026-08-30 23:40:18；改动原因：补齐 done 终止校验与最终 stop 下发失败核算，客户端未完整收尾时禁止记成功。
-// pseudoCompletionMinChars 是伪完成检测的正文字符阈值。上游账号被限流/标记时
-// 会返回「HTTP 200 + done + 极少正文」的伪完成——协议层合法成功，但语义上
-// 是账号级故障，会被 resetAccountFailover 清零而永不换号。正文（不含 reasoning）
-// 低于该阈值即判伪完成，计一次账号失败并驱逐会话绑定，让下一次请求切到健康账号。
-// 阈值取 120 字符（≈30 token）：覆盖生产观察到的伪完成（4~129 token），
-// 同时不误伤正常短答与长输出（健康长输出 215+ token ≈ 860+ 字符）。
-const pseudoCompletionMinChars = 120
 
-// isPseudoCompletion reports whether a done-terminated stream carried almost no
-// visible content — the signature of an account silently throttled/flagged by
-// the upstream. It sums only content (not reasoning) deltas; a reasoning-heavy
-// model that answers tersely is NOT treated as a pseudo completion.
-func isPseudoCompletion(chunks []pluginapi.ExecutorStreamChunk) bool {
+// pseudoCompletionMaxChars 是伪完成检测的最大输出字符数（等价于 150 token 估算，
+// 即 150*4=600 字符）。pseudoCompletionMinInputChars 是判伪完成所需的最小输入
+// 长度。双重判据：输出字符低于阈值 且 输入是长任务时，才判伪完成——覆盖生产
+// 观察到的伪完成（15~129 token，包括用户长任务被掐断的 120 token），同时通过
+// 输入长度保护正常短答（如「你好」≈5 token）不被误判。健康长输出 215+ token
+// （860+ 字符）不受影响。旧实现用 120 字符阈值，漏掉 ~120 token（≈480 字符）
+// 的伪完成。用字符数而非估算 token，避免短输出 chars/4 取整归零误判。
+const (
+	pseudoCompletionMaxChars      = 600
+	pseudoCompletionMinInputChars = 200
+)
+
+// isPseudoCompletion reports whether a done-terminated stream carried far less
+// output than a long-input task warrants — the signature of an account silently
+// throttled/flagged by the upstream. inputChars is the estimated prompt length;
+// a short prompt with a short answer is NOT treated as a pseudo completion.
+// It sums only content (not reasoning) deltas; a reasoning-heavy model that
+// answers tersely is not flagged either.
+func isPseudoCompletion(chunks []pluginapi.ExecutorStreamChunk, inputChars int) bool {
 	var chars int
 	for _, c := range chunks {
 		var ch struct {
@@ -332,7 +340,10 @@ func isPseudoCompletion(chunks []pluginapi.ExecutorStreamChunk) bool {
 			chars += len(c2.Delta.Content)
 		}
 	}
-	return chars > 0 && chars < pseudoCompletionMinChars
+	if chars <= 0 || chars >= pseudoCompletionMaxChars {
+		return false
+	}
+	return inputChars >= pseudoCompletionMinInputChars
 }
 
 // pumpTraeStream reads the upstream SSE stream, pushes every output chunk to the
@@ -416,7 +427,7 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	}
 	log.Printf("[traework] stream pump done: request_id=%s stream_id=%s model=%s status=%d termination=%s chunks=%d elapsed_ms=%d",
 		requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, terminationLabel(termination), len(chunks), time.Since(started).Milliseconds())
-	if isPseudoCompletion(chunks) {
+	if isPseudoCompletion(chunks, ctx.InputChars) {
 		// 伪完成：上游账号被静默限流/标记时返回「done + 极少正文」。不当作成功
 		// 清零（否则账号永不换号），计一次账号失败并驱逐会话绑定，让下一次请求
 		// 切到健康账号。已生成的少量内容仍正常下发给客户端。

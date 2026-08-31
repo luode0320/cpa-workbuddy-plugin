@@ -8,8 +8,9 @@ import (
 )
 
 // TestIsPseudoCompletion covers the pseudo-completion detector: a done-terminated
-// stream with near-empty visible content must be flagged so the account is
-// force-recorded as failed and conversations are evicted to a healthy account.
+// stream with far less output than a long-input task warrants must be flagged so
+// the account is force-recorded as failed and conversations are evicted to a
+// healthy account. Short prompts with short answers are NOT flagged.
 func TestIsPseudoCompletion(t *testing.T) {
 	chunkWith := func(text, reasoning string) pluginapi.ExecutorStreamChunk {
 		raw, err := chunkDelta("req", "qwen3.8-max", text, reasoning, "")
@@ -19,39 +20,51 @@ func TestIsPseudoCompletion(t *testing.T) {
 		return pluginapi.ExecutorStreamChunk{Payload: raw}
 	}
 
-	short := strings.Repeat("x", pseudoCompletionMinChars-1)
-	atThreshold := strings.Repeat("x", pseudoCompletionMinChars)
-	long := strings.Repeat("x", pseudoCompletionMinChars*3)
+	// Output char thresholds: pseudo = 59..479 chars (≈14..119 tokens, below 600);
+	// healthy long = 860 chars (≈215 tokens, above 600). inputChars: long tasks
+	// feed a few thousand chars, a greeting is a few chars.
+	const (
+		shortInput = 10
+		longInput  = 3000
+	)
+	pseudoShort := strings.Repeat("x", 15*4-1) // ≈14 tokens (59 chars), below 600
+	pseudoMid := strings.Repeat("x", 120*4-1)  // ≈119 tokens (479 chars), below 600 — the 01:49 gap
+	healthy := strings.Repeat("x", 215*4)      // ≈215 tokens (860 chars), above 600
+	greeting := strings.Repeat("x", 5*4-1)     // ≈4 tokens (19 chars), short answer
 
 	cases := []struct {
-		name   string
-		chunks []pluginapi.ExecutorStreamChunk
-		want   bool
+		name       string
+		chunks     []pluginapi.ExecutorStreamChunk
+		inputChars int
+		want       bool
 	}{
-		{name: "empty stream is not pseudo (no output at all)", chunks: nil, want: false},
-		{name: "short content below threshold is pseudo", chunks: []pluginapi.ExecutorStreamChunk{chunkWith(short, "")}, want: true},
-		{name: "exactly at threshold is not pseudo", chunks: []pluginapi.ExecutorStreamChunk{chunkWith(atThreshold, "")}, want: false},
-		{name: "long content is not pseudo", chunks: []pluginapi.ExecutorStreamChunk{chunkWith(long, "")}, want: false},
-		{name: "only reasoning, no content, is not pseudo", chunks: []pluginapi.ExecutorStreamChunk{chunkWith("", "思考过程很长的推理...")}, want: false},
+		{name: "empty stream is not pseudo (no output at all)", chunks: nil, inputChars: longInput, want: false},
+		{name: "short output with long input is pseudo", chunks: []pluginapi.ExecutorStreamChunk{chunkWith(pseudoShort, "")}, inputChars: longInput, want: true},
+		{name: "mid output (~119 tok) with long input is pseudo — 01:49 gap", chunks: []pluginapi.ExecutorStreamChunk{chunkWith(pseudoMid, "")}, inputChars: longInput, want: true},
+		{name: "short output with short input is NOT pseudo (greeting)", chunks: []pluginapi.ExecutorStreamChunk{chunkWith(greeting, "")}, inputChars: shortInput, want: false},
+		{name: "healthy long output is not pseudo", chunks: []pluginapi.ExecutorStreamChunk{chunkWith(healthy, "")}, inputChars: longInput, want: false},
+		{name: "only reasoning, no content, is not pseudo", chunks: []pluginapi.ExecutorStreamChunk{chunkWith("", "思考过程很长的推理...")}, inputChars: longInput, want: false},
 		{
-			name: "short content across many chunks is pseudo",
+			name: "short content across many chunks with long input is pseudo",
 			chunks: []pluginapi.ExecutorStreamChunk{
 				chunkWith(strings.Repeat("a", 10), ""),
 				chunkWith(strings.Repeat("b", 10), ""),
 			},
-			want: true,
+			inputChars: longInput,
+			want:       true,
 		},
 		{
-			name: "malformed chunk payload is ignored",
+			name: "malformed chunk payload is ignored (short output, long input)",
 			chunks: []pluginapi.ExecutorStreamChunk{
 				{Payload: []byte("{not json")},
 				chunkWith("hi", ""),
 			},
-			want: true,
+			inputChars: longInput,
+			want:       true,
 		},
 	}
 	for _, tc := range cases {
-		if got := isPseudoCompletion(tc.chunks); got != tc.want {
+		if got := isPseudoCompletion(tc.chunks, tc.inputChars); got != tc.want {
 			t.Errorf("%s: isPseudoCompletion = %v, want %v", tc.name, got, tc.want)
 		}
 	}
@@ -82,5 +95,29 @@ func TestNoteForcedAccountFailureForPseudo(t *testing.T) {
 	}
 	if count, _, _ := failoverStateSnapshot(auth); count != 1 {
 		t.Fatalf("failover count after noteForcedAccountFailure = %d, want 1", count)
+	}
+}
+
+// TestEstimateInputChars covers the pseudo-completion input-length signal: it
+// must sum text across the normalized message shape (content = text-parts array),
+// so a long GC-style task feeds enough chars to satisfy the input gate while a
+// greeting does not.
+func TestEstimateInputChars(t *testing.T) {
+	msgs := toTraeMessages([]map[string]any{
+		{"role": "user", "content": "你好"},
+		{"role": "user", "content": strings.Repeat("分析", 2000)},
+	})
+	got := estimateInputChars(msgs)
+	// 你好 = 6 bytes (UTF-8); 2000 * 分析 (6 bytes each) = 12000 bytes.
+	want := 6 + 2000*6
+	if got != want {
+		t.Fatalf("estimateInputChars = %d, want %d", got, want)
+	}
+	// Multi-part content must also be counted.
+	multi := toTraeMessages([]map[string]any{
+		{"role": "user", "content": []any{map[string]any{"type": "text", "text": "abc"}, map[string]any{"type": "text", "text": "def"}}},
+	})
+	if got := estimateInputChars(multi); got != 6 {
+		t.Fatalf("estimateInputChars(multi-part) = %d, want 6", got)
 	}
 }

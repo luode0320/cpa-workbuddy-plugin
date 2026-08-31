@@ -1,5 +1,21 @@
 # TraeWork Plugin Changelog
 
+## 0.1.26
+
+### Fix — 伪完成检测升级「输出字符 + 输入长度」双重判据，修复 120-token 伪完成漏检
+
+生产 0.1.25 部署后用户反馈 qwen3.8-max 长推理仍被提前结束。全量 feed + 容器日志定位到用户 01:49（UTC 17:49:43）在健康账号 `2257747741770235` 上拿到 **120 tokens / 5.9s** 的伪完成，而同账号前后请求均为 10803~11390 tokens 长输出——账号本身健康，是上游**瞬时限流**返回「HTTP 200 + done + 极少正文」。
+
+根因：0.1.25 的 `isPseudoCompletion` 用**裸字符阈值 120**（注释本意是覆盖 4~129 token，但实现成了字符），120 token 中文输出 ≈ 480 字符远超阈值 → 漏检 → 伪完成被 `resetAccountFailover` 当成功清零 → 账号永不换号 → 同会话继续粘在被瞬时限流的账号上。
+
+修复（`stream.go` + `executor.go`）：
+
+1. **双重判据**：输出字符 < 600（等价 150 token 估算）**且** 输入字符 ≥ 200（长任务）才判伪完成。覆盖生产全部伪完成样本（15/120 token），同时通过输入长度保护正常短答（「你好」≈5 token）不被误判。
+2. **输入长度穿入**：`handleExecStream` 用新增 `estimateInputChars` 从归一化消息统计输入字符数，同步 collect 路径直接传入；异步 pump 路径经 `traeStreamPumpContext.InputChars` 传入 `isPseudoCompletion`。
+3. 用字符数而非估算 token，避免短输出 `chars/4` 取整归零导致漏判。
+
+验证：cgo shim build、vet、test 全绿；`TestIsPseudoCompletion` 扩充覆盖（59 字符伪完成 / 479 字符 120-token 伪完成 / 短输入短答不误判 / 860 字符健康长输出不误判），新增 `TestEstimateInputChars`（单/多段文本统计）；行为哨兵（临时把 `isPseudoCompletion` 改恒 false）FAIL 证明测试真实执行；`git diff --check` PASS；6-review `STYLE: PASS`。
+
 ## 0.1.25
 
 ### Fix — 伪完成检测换号 + 会话分配优先面板选中账号，修复 qwen3.8-max「短输出伪完成」不换号

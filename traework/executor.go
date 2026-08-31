@@ -150,6 +150,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "empty messages")
 		return nil, fmt.Errorf("empty messages after normalization")
 	}
+	inputChars := estimateInputChars(messages)
 	payload := buildTraePayload(messages, upstreamModel, true, oa.MaxTokens, oa.Temperature, oa.TopP)
 	headers := streamHeaders()
 	sseFramed := clientNeedsSSEFrame(req.Metadata)
@@ -181,7 +182,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			}
 			chunks, collectErr := collectTraeStream(bytes.NewReader(resp.Body), req.Model, resp.StatusCode)
 			if collectErr == nil {
-				if isPseudoCompletion(chunks) {
+				if isPseudoCompletion(chunks, inputChars) {
 					// 伪完成：上游账号被静默限流/标记。计一次账号失败并驱逐会话
 					// 绑定，让下一次请求切到健康账号；已生成内容照常返回客户端。
 					log.Printf("[traework] exec stream collect pseudo-done: model=%s auth=%s attempt=%d chunks=%d", req.Model, curAuthID, attempt+1, len(chunks))
@@ -257,6 +258,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			AuthID:        usedAuthID,    // 供故障退避与恢复使用。
 			AuthUID:       authUID,       // 供账号用量维度使用。
 			Started:       started,       // 计算请求总延迟。
+			InputChars:    inputChars,    // 供伪完成检测的输入长度判据。
 		})
 	}()
 	return okEnvelope(streamResponse{Headers: headers})
@@ -322,4 +324,22 @@ func estimateUsageFromChunks(chunks []pluginapi.ExecutorStreamChunk) usage.Detai
 	}
 	toks := int64(chars / 4)
 	return usage.Detail{InputTokens: 0, OutputTokens: toks, TotalTokens: toks}
+}
+
+// estimateInputChars sums the text characters across normalized request
+// messages (toTraeMessages output: content is a text-parts array). Used as the
+// pseudo-completion input-length signal: a long prompt that yields far less
+// output than warranted is flagged, while a short prompt with a short answer is
+// not.
+func estimateInputChars(messages []map[string]any) int {
+	var chars int
+	for _, m := range messages {
+		parts, _ := m["content"].([]map[string]any)
+		for _, p := range parts {
+			if txt, ok := p["text"].(string); ok {
+				chars += len(txt)
+			}
+		}
+	}
+	return chars
 }
