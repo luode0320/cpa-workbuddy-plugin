@@ -238,6 +238,37 @@ func TestPickSessionAuth_NoSessionFallsBackToPanel(t *testing.T) {
 	}
 }
 
+func TestPickSessionAuth_FreshAssignmentPrefersActiveID(t *testing.T) {
+	resetSessionRouting(t)
+	setActiveAuthID("")
+	t.Cleanup(func() { setActiveAuthID("") })
+	cands := []activeAuthCandidate{
+		{ID: "tr-a"}, {ID: "tr-b"},
+	}
+	// Panel-selected account is usable: a fresh conversation must land on it,
+	// even though tr-a sorts first and would otherwise win round-robin.
+	setActiveAuthID("tr-b")
+	if got := pickSessionAuth("conv-1", cands); got != "tr-b" {
+		t.Fatalf("fresh assignment should prefer panel active account tr-b, got %q", got)
+	}
+	// Panel-selected account is NOT in candidates (e.g. disabled upstream): fall
+	// back to the unbound-first spread and never pick a missing account.
+	setActiveAuthID("ghost")
+	if got := pickSessionAuth("conv-2", cands); got == "" || got == "ghost" {
+		t.Fatalf("unusable panel selection should fall back to a real candidate, got %q", got)
+	}
+	// Explicit panel selection is cleared: unbound-first spread wins again.
+	setActiveAuthID("")
+	first := pickSessionAuth("spread-a", cands)
+	second := pickSessionAuth("spread-b", cands)
+	if first == "" || second == "" {
+		t.Fatalf("fresh assignments with no panel selection should return accounts, got %q / %q", first, second)
+	}
+	if first == second {
+		t.Fatalf("two fresh conversations with no panel selection should spread, both got %q", first)
+	}
+}
+
 func TestPickSessionAuth_AllExhaustedKeepsPin(t *testing.T) {
 	resetSessionRouting(t)
 	allExhausted := []activeAuthCandidate{

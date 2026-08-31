@@ -225,8 +225,9 @@ func pickSessionAuth(sessionKey string, candidates []activeAuthCandidate) string
 		return candidates[0].ID
 	}
 
-	// Fresh assignment: prefer accounts with no live bindings (spreads
-	// conversations across accounts), then round-robin.
+	// Fresh assignment: prefer the panel-selected active account first (so the
+	// dashboard selection actually steers new conversations), then accounts
+	// with no live bindings (spreads conversations), then round-robin.
 	boundCounts := make(map[string]int, len(usable))
 	for _, b := range sessionAuthBindings {
 		if now.Before(b.ExpiresAt) {
@@ -234,10 +235,17 @@ func pickSessionAuth(sessionKey string, candidates []activeAuthCandidate) string
 		}
 	}
 	next := ""
-	for _, id := range usable {
-		if boundCounts[id] == 0 {
-			next = id
-			break
+	if active := getActiveAuthID(); active != "" {
+		if _, isUsable := usableSet[active]; isUsable {
+			next = active
+		}
+	}
+	if next == "" {
+		for _, id := range usable {
+			if boundCounts[id] == 0 {
+				next = id
+				break
+			}
 		}
 	}
 	if next == "" {

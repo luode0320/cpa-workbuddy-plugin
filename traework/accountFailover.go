@@ -154,6 +154,33 @@ func recordAccountFailure(authID string, status int, body string) bool {
 	if !failoverActive() || !isAccountFailure(status, body) {
 		return false
 	}
+	return bumpFailoverState(authID, body)
+}
+
+// recordForcedFailure records a failure for an account regardless of
+// isAccountFailure classification. Used by pseudo-completion detection: the
+// upstream returns a protocol-valid HTTP 200 + done with near-empty output
+// (silent per-account throttling) that does not match any normal failure
+// marker, yet must still drive failover so routing moves off the flagged
+// account.
+func recordForcedFailure(authID string, body string) bool {
+	if !failoverActive() {
+		return false
+	}
+	return bumpFailoverState(authID, body)
+}
+
+// bumpFailoverState increments the consecutive-failure counter for the
+// account and extends its cooldown window using the backoff tier for the new
+// count. Returns true when the failure was counted.
+//
+// When the new count crosses anomalyThreshold() (default 10, configurable
+// via `anomaly_pool_threshold:`), the account is moved into the anomaly set
+// in anomaly.go — kept out of routing until operator-driven unfreeze or the
+// daily 00:00 refresh loop clears the set. The freeze is kicked off in a
+// background goroutine because it touches host.auth.list + direct file
+// write and would otherwise stall the request hot path.
+func bumpFailoverState(authID string, body string) bool {
 	now := time.Now()
 	var shouldFreeze bool
 	failoverMu.Lock()

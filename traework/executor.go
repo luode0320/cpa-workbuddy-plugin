@@ -181,6 +181,18 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			}
 			chunks, collectErr := collectTraeStream(bytes.NewReader(resp.Body), req.Model, resp.StatusCode)
 			if collectErr == nil {
+				if isPseudoCompletion(chunks) {
+					// 伪完成：上游账号被静默限流/标记。计一次账号失败并驱逐会话
+					// 绑定，让下一次请求切到健康账号；已生成内容照常返回客户端。
+					log.Printf("[traework] exec stream collect pseudo-done: model=%s auth=%s attempt=%d chunks=%d", req.Model, curAuthID, attempt+1, len(chunks))
+					noteForcedAccountFailure(curAuthID, "pseudo completion: upstream returned done with near-empty output")
+					evictSessionBindingsForAuth(curAuthID)
+					publishUsage(req.Model, upstreamModel, authUID, started, estimateUsageFromChunks(chunks), false, resp.StatusCode, "pseudo completion: upstream returned done with near-empty output")
+					if sseFramed {
+						return okEnvelope(streamResponse{Headers: headers, Chunks: sseFrameChunks(chunks)})
+					}
+					return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
+				}
 				resetAccountFailover(curAuthID)
 				log.Printf("[traework] exec stream collect ok: model=%s auth=%s attempt=%d chunks=%d", req.Model, curAuthID, attempt+1, len(chunks))
 				publishUsage(req.Model, upstreamModel, authUID, started, estimateUsageFromChunks(chunks), false, 0, "")

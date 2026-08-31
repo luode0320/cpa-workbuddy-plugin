@@ -23,6 +23,10 @@ const (
 	soloWorkLite = "solo_work_lite"
 	inlineChat   = "inline_chat"
 	maxBodyBytes = 4 << 20 // 4 MiB non-streamed body cap
+	// streamDefaultMaxTokens 是流式请求缺省 max_tokens。客户端不传时上游
+	// Trae 会给极小上限，导致 solo 长任务（如 qwen3.8-max 分析项目）刚开口
+	// 就 done。20000 与 config models 样例一致。
+	streamDefaultMaxTokens = 20000
 )
 
 // UpstreamError carries the upstream HTTP status and truncated body so the
@@ -121,6 +125,11 @@ func buildTraePayload(messages []map[string]any, model string, stream bool, maxT
 	if configName != "" {
 		payload["config_name"] = configName
 		payload["model"] = configName
+	}
+	// 流式路径缺省 max_tokens：客户端不传时上游 Trae 会给极小上限，导致
+	// solo 长任务刚开口就 done；补默认值仅作用于流式，非流式保持原样。
+	if stream && maxTokens <= 0 {
+		maxTokens = streamDefaultMaxTokens
 	}
 	if maxTokens > 0 {
 		payload["max_tokens"] = maxTokens

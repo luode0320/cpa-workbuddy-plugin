@@ -28,6 +28,27 @@ func noteAccountFailure(authID string, status int, body string) bool {
 	return true
 }
 
+// noteForcedAccountFailure records a failure that bypasses isAccountFailure
+// classification (see recordForcedFailure). Used by pseudo-completion
+// detection, which must drive failover off an account even though the
+// upstream response is a protocol-valid HTTP 200 + done.
+func noteForcedAccountFailure(authID string, body string) bool {
+	if !failoverActive() || strings.TrimSpace(authID) == "" {
+		return false
+	}
+	if !recordForcedFailure(authID, body) {
+		return false
+	}
+	go func() {
+		_, id := resolveAuthIndexAndID(authID)
+		if id == "" || id == authID {
+			return
+		}
+		recordForcedFailure(id, body)
+	}()
+	return true
+}
+
 // resolveAuthIndexAndID maps either an auth_index or an auth ID to the
 // (authIndex, authID) pair the host understands. Returns empty strings when
 // unresolvable. Used by anomaly freeze and failover mirroring.

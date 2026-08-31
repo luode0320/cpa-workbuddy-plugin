@@ -1,5 +1,32 @@
 # TraeWork Plugin Changelog
 
+## 0.1.25
+
+### Fix — 伪完成检测换号 + 会话分配优先面板选中账号，修复 qwen3.8-max「短输出伪完成」不换号
+
+生产 0.1.23 实测（正式路径发真实请求 + 全量 feed 分析）确认两件事：
+
+1. **伪完成是账号级问题且绕过 failover**：账号 `2033439621254311` 的 `qwen3.8-max` 全历史几乎都是「HTTP 200 + done + 极少输出」（1~129 token，平均 77），而被静默限流/标记；健康账号 `2257747741770235` 曾有 215 token / 7.9 分钟真实长输出。伪完成在协议层是合法成功（`termination=done`），`resetAccountFailover` 将其清零，账号永不进入 cooldown/anomaly → **永不换号**。
+2. **切换机制对 session 模式形同虚设**：host 把传入插件的候选账号按 auth ID 字典序排序（`traework-203343... < traework-225774...`），而插件 `pickSessionAuth` 新会话无绑定时取 `usable[0]` 且完全不看面板选中账号（active_id）——所以即使把 active_id 切到 225774，新会话仍恒定选 203343。
+
+修复（两处叠加，彻底解决）：
+
+1. **伪完成检测（方向 2）**：`stream.go` 新增 `isPseudoCompletion`——`done` 收尾但正文（不含 reasoning）字符 < 120（≈30 token）判伪完成；异步 `pumpTraeStream` 与同步 `executor.go` collect 路径命中后**不计成功清零**，改走 `noteForcedAccountFailure`（新增强制记账，跳过 `isAccountFailure` 判定，因为伪完成 status=200 无任何失败标记）计账号失败 + `evictSessionBindingsForAuth` 驱逐会话绑定，让下一次请求切到健康账号。已生成的少量内容仍正常下发给客户端，不打断用户。
+2. **会话分配优先面板选中账号（方向 1）**：`session_auth.go` 的 `pickSessionAuth` 新分配分支优先选中 `getActiveAuthID()`（面板 active_id），再退化为「无绑定优先 → round-robin」。面板切号从此真正生效，运营可手动把流量切到健康账号。
+
+验证：cgo shim build、vet、test 全绿；新增 `TestPickSessionAuth_FreshAssignmentPrefersActiveID`（active_id 被优先选中）与 `TestIsPseudoCompletion`（短正文判真、长正文判假、纯 reasoning 不误判），行为哨兵（临时移除优先分支/阈值分支）FAIL 证明测试真实执行；`git diff --check` PASS；6-review `STYLE: PASS`。
+
+## 0.1.24
+
+### Fix — 流式请求补默认 max_tokens=20000，solo 长任务不再"刚开口就 done"
+
+生产 0.1.23 日志证明 traework 收流链路健康（termination=done、22 chunks、宿主 200、feed failed:false），但账号 `qwen3.8-max` 全历史请求平均仅 77 tokens、最大 273 tokens，全部正常 done —— 上游 Trae 对**无 `max_tokens`** 的 solo 请求给极小默认上限，长任务（如分析项目、应持续数分钟的推理）刚输出一小段就自行结束。用户确认 Trae 原生客户端用同账号跑 `qwen3.8-max` 长输出正常、额度充足，根因锁定在插件链路缺 `max_tokens` 缺省。
+
+1. `traework/upstream.go` 新增常量 `streamDefaultMaxTokens = 20000`（与 config models 样例一致）。
+2. `buildTraePayload` 流式路径（`stream == true`）在客户端未传 `max_tokens`（`maxTokens <= 0`）时补默认值 20000；显式传入时保留原值；**非流式路径保持原样**（不补默认）。
+
+验证：cgo shim build、vet、test 全绿；新增 `TestBuildTraePayloadStreamDefaultMaxTokens` 覆盖三种形态（流式缺省补 20000 / 流式显式保留 / 非流式不补），行为哨兵（临时移除补默认分支）FAIL `stream max_tokens = <nil>, want 20000` 证明测试真实执行且精确覆盖行为；`git diff --check` PASS；6-review `STYLE: PASS`。
+
 ## 0.1.23
 
 ### Added — 流式响应三出口补现场日志插桩，便于定位生产「生成中途停止」形态

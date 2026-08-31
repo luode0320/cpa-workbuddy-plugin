@@ -303,6 +303,40 @@ type traeStreamPumpContext struct {
 // [参数] r: 上游 SSE；ctx: 异步流下发、账号核算与用量发布上下文。
 // [返回] 无；分片与错误通过宿主流通道发送，用量通过共享发布路径异步落地。
 // 最近修改时间：2026-08-30 23:40:18；改动原因：补齐 done 终止校验与最终 stop 下发失败核算，客户端未完整收尾时禁止记成功。
+// pseudoCompletionMinChars 是伪完成检测的正文字符阈值。上游账号被限流/标记时
+// 会返回「HTTP 200 + done + 极少正文」的伪完成——协议层合法成功，但语义上
+// 是账号级故障，会被 resetAccountFailover 清零而永不换号。正文（不含 reasoning）
+// 低于该阈值即判伪完成，计一次账号失败并驱逐会话绑定，让下一次请求切到健康账号。
+// 阈值取 120 字符（≈30 token）：覆盖生产观察到的伪完成（4~129 token），
+// 同时不误伤正常短答与长输出（健康长输出 215+ token ≈ 860+ 字符）。
+const pseudoCompletionMinChars = 120
+
+// isPseudoCompletion reports whether a done-terminated stream carried almost no
+// visible content — the signature of an account silently throttled/flagged by
+// the upstream. It sums only content (not reasoning) deltas; a reasoning-heavy
+// model that answers tersely is NOT treated as a pseudo completion.
+func isPseudoCompletion(chunks []pluginapi.ExecutorStreamChunk) bool {
+	var chars int
+	for _, c := range chunks {
+		var ch struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(c.Payload, &ch); err != nil {
+			continue
+		}
+		for _, c2 := range ch.Choices {
+			chars += len(c2.Delta.Content)
+		}
+	}
+	return chars > 0 && chars < pseudoCompletionMinChars
+}
+
+// pumpTraeStream reads the upstream SSE stream, pushes every output chunk to the
+// host stream, and reconciles failover/usage on the terminal event.
 func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	// 1. 转换并推送上游分片，同时保留已成功生成的标准分片用于估算输出 token。
 	requestID := randomUUID()
@@ -382,6 +416,17 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	}
 	log.Printf("[traework] stream pump done: request_id=%s stream_id=%s model=%s status=%d termination=%s chunks=%d elapsed_ms=%d",
 		requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, terminationLabel(termination), len(chunks), time.Since(started).Milliseconds())
+	if isPseudoCompletion(chunks) {
+		// 伪完成：上游账号被静默限流/标记时返回「done + 极少正文」。不当作成功
+		// 清零（否则账号永不换号），计一次账号失败并驱逐会话绑定，让下一次请求
+		// 切到健康账号。已生成的少量内容仍正常下发给客户端。
+		log.Printf("[traework] stream pump pseudo-done: request_id=%s stream_id=%s model=%s status=%d chunks=%d elapsed_ms=%d",
+			requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, len(chunks), time.Since(started).Milliseconds())
+		noteForcedAccountFailure(ctx.AuthID, "pseudo completion: upstream returned done with near-empty output")
+		evictSessionBindingsForAuth(ctx.AuthID)
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, ctx.StatusCode, "pseudo completion: upstream returned done with near-empty output")
+		return
+	}
 	resetAccountFailover(ctx.AuthID)
 	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, 0, "")
 }
