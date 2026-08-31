@@ -1,5 +1,21 @@
 # TraeWork Plugin Changelog
 
+## 0.1.23
+
+### Added — 流式响应三出口补现场日志插桩，便于定位生产「生成中途停止」形态
+
+0.1.21/0.1.22 反复修复"生成中途停止、无下文"，但流路径零日志，生产无法确认一次中断到底是上游未发 `done`（上游断流）、收到 `done` 后丢失（宿主掐流）、还是空响应。本轮为三条流出口补可检索日志，供生产 `docker logs` 按 `request_id` / `stream_id` 拉全链路判断流形态。
+
+1. `traework/stream.go` 新增 `terminationLabel`，把终结类别映射为稳定短标签 `done` / `output_eof` / `invalid`。
+2. `collectTraeStream`（同步收集）在 error / invalid / done 出口各落一条 `[traework] stream collect ...` 日志，含 `request_id` / `model` / `status` / `termination` / `chunks` / `finish` / `elapsed_ms`。
+3. `aggregateTraeCompletion`（非流式聚合）同理，含 `chars` 统计。
+4. `pumpTraeStream`（异步泵）在 error / finish emit error / truncated（output_eof）/ done 出口各落一条 `[traework] stream pump ...` 日志，含 `stream_id` 关联宿主流。
+5. `traework/executor.go` 的 `handleExecStream` 在同步收集成功、上游错误、账号池耗尽、异步泵启动与启动失败各补账号维度日志。
+
+全部为只读插桩，不改变业务分支、终止判定、账号核算或 usage 发布行为。
+
+验证：cgo shim build、vet、test 全绿；临时必失败哨兵测试 FAIL 证明新增代码真实进编译后删除重跑全绿；`git diff --check` 退出码 0。真实日志形态待发布后由用户触发一次中断会话，从生产 `docker logs cli-proxy-api` 抓取核对。
+
 ## 0.1.22
 
 ### Fix — 上游长回答中途断流兜底收尾，不再中断报错

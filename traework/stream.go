@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -169,6 +170,20 @@ func (t traeSSETerminal) classify(statusCode int) (traeStreamTermination, error)
 	return terminationInvalid, fmt.Errorf("upstream %d: invalid SSE response: missing output and done event", statusCode)
 }
 
+// terminationLabel 返回终结类别的稳定短标签，供流路径日志区分业务完整 / 断流 / 空响应。
+func terminationLabel(t traeStreamTermination) string {
+	switch t {
+	case terminationDone:
+		return "done"
+	case terminationOutputEOF:
+		return "output_eof"
+	case terminationInvalid:
+		return "invalid"
+	default:
+		return "unknown"
+	}
+}
+
 // collectTraeStream reads the upstream SSE stream, converts every output
 // event into a chat.completion.chunk, and returns the chunks. On an
 // event:error it surfaces the upstream message via fmt.Errorf with the
@@ -178,6 +193,7 @@ func (t traeSSETerminal) classify(statusCode int) (traeStreamTermination, error)
 // 最近修改时间：2026-08-30 23:40:18；改动原因：业务成功必须收到 done，部分 output 后 EOF 不得补成正常 stop。
 func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.ExecutorStreamChunk, error) {
 	requestID := randomUUID()
+	started := time.Now()
 	var chunks []pluginapi.ExecutorStreamChunk
 	var terminal traeSSETerminal
 	err := scanSSE(r, func(ev sseEvent) error {
@@ -202,10 +218,12 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 		return nil
 	}, terminal.hasPayload)
 	if err != nil {
+		log.Printf("[traework] stream collect error: request_id=%s model=%s status=%d err=%s elapsed_ms=%d", requestID, model, statusCode, truncateRedacted(err.Error(), 200), time.Since(started).Milliseconds())
 		return nil, err
 	}
 	termination, err := terminal.classify(statusCode)
 	if err != nil {
+		log.Printf("[traework] stream collect invalid: request_id=%s model=%s status=%d err=%s elapsed_ms=%d", requestID, model, statusCode, truncateRedacted(err.Error(), 200), time.Since(started).Milliseconds())
 		return nil, err
 	}
 	// 收到 done 正常收尾；部分 output 后 EOF（上游中途断流）补 length 收尾，
@@ -218,6 +236,8 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 	if raw != nil {
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
 	}
+	log.Printf("[traework] stream collect done: request_id=%s model=%s status=%d termination=%s chunks=%d finish=%s elapsed_ms=%d",
+		requestID, model, statusCode, terminationLabel(termination), len(chunks), finish, time.Since(started).Milliseconds())
 	return chunks, nil
 }
 
@@ -228,6 +248,7 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 // 最近修改时间：2026-08-30 23:40:18；改动原因：聚合响应必须收到 done，避免把部分输出后的 EOF 误判为完整完成。
 func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte, error) {
 	requestID := randomUUID()
+	started := time.Now()
 	var text, reasoning strings.Builder
 	var terminal traeSSETerminal
 	err := scanSSE(r, func(ev sseEvent) error {
@@ -250,16 +271,20 @@ func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte,
 		return nil
 	}, terminal.hasPayload)
 	if err != nil {
+		log.Printf("[traework] stream aggregate error: request_id=%s model=%s status=%d err=%s elapsed_ms=%d", requestID, model, statusCode, truncateRedacted(err.Error(), 200), time.Since(started).Milliseconds())
 		return nil, err
 	}
 	termination, err := terminal.classify(statusCode)
 	if err != nil {
+		log.Printf("[traework] stream aggregate invalid: request_id=%s model=%s status=%d err=%s elapsed_ms=%d", requestID, model, statusCode, truncateRedacted(err.Error(), 200), time.Since(started).Milliseconds())
 		return nil, err
 	}
 	finish := "stop"
 	if termination == terminationOutputEOF {
 		finish = "length"
 	}
+	log.Printf("[traework] stream aggregate done: request_id=%s model=%s status=%d termination=%s finish=%s chars=%d elapsed_ms=%d",
+		requestID, model, statusCode, terminationLabel(termination), finish, text.Len()+reasoning.Len(), time.Since(started).Milliseconds())
 	return completionAggregate(requestID, model, text.String(), reasoning.String(), finish)
 }
 
@@ -281,6 +306,7 @@ type traeStreamPumpContext struct {
 func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	// 1. 转换并推送上游分片，同时保留已成功生成的标准分片用于估算输出 token。
 	requestID := randomUUID()
+	started := time.Now()
 	var chunks []pluginapi.ExecutorStreamChunk
 	var terminal traeSSETerminal
 	scanErr := scanSSE(r, func(ev sseEvent) error {
@@ -318,6 +344,8 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	}
 	if scanErr != nil {
 		// 致命失败：上游显式 event:error、下发失败或空响应。关闭流并发布失败用量，已输出分片仍纳入统计。
+		log.Printf("[traework] stream pump error: request_id=%s stream_id=%s model=%s status=%d err=%s elapsed_ms=%d",
+			requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, truncateRedacted(scanErr.Error(), 200), time.Since(started).Milliseconds())
 		reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, scanErr.Error())
 		streamEmitError(ctx.StreamID, scanErr.Error())
 		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), true, ctx.StatusCode, scanErr.Error())
@@ -336,6 +364,7 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	if raw != nil {
 		if emitErr := streamEmit(ctx.StreamID, raw); emitErr != nil {
 			// 终止分片下发失败表示客户端没有收到完整终止信号，不能继续复位账号或记成功。
+			log.Printf("[traework] stream pump finish emit error: request_id=%s stream_id=%s model=%s err=%s", requestID, ctx.StreamID, ctx.Model, truncateRedacted(emitErr.Error(), 200))
 			reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, emitErr.Error())
 			streamEmitError(ctx.StreamID, emitErr.Error())
 			publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), true, ctx.StatusCode, emitErr.Error())
@@ -346,9 +375,13 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	streamClose(ctx.StreamID)
 	if incomplete {
 		// 断流收尾：不清零账号故障、不记成功用量；用「不完整」标记落一次用量供面板识别。
+		log.Printf("[traework] stream pump truncated: request_id=%s stream_id=%s model=%s status=%d chunks=%d elapsed_ms=%d",
+			requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, len(chunks), time.Since(started).Milliseconds())
 		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, ctx.StatusCode, "truncated: upstream stream ended without done")
 		return
 	}
+	log.Printf("[traework] stream pump done: request_id=%s stream_id=%s model=%s status=%d termination=%s chunks=%d elapsed_ms=%d",
+		requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, terminationLabel(termination), len(chunks), time.Since(started).Milliseconds())
 	resetAccountFailover(ctx.AuthID)
 	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, 0, "")
 }

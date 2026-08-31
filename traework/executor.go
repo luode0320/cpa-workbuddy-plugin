@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -165,6 +166,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			if callErr != nil {
 				statusCode := parseUpstreamStatusFromErr(callErr)
 				if !isAccountLevel4xx(statusCode) || attempt >= budget || curSA == nil {
+					log.Printf("[traework] exec stream upstream error: model=%s auth=%s status=%d err=%s", req.Model, curAuthID, statusCode, truncateRedacted(callErr.Error(), 200))
 					reconcileAfterExecutorError(curAuthID, statusCode, callErr.Error())
 					publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error())
 					return nil, callErr
@@ -180,6 +182,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			chunks, collectErr := collectTraeStream(bytes.NewReader(resp.Body), req.Model, resp.StatusCode)
 			if collectErr == nil {
 				resetAccountFailover(curAuthID)
+				log.Printf("[traework] exec stream collect ok: model=%s auth=%s attempt=%d chunks=%d", req.Model, curAuthID, attempt+1, len(chunks))
 				publishUsage(req.Model, upstreamModel, authUID, started, estimateUsageFromChunks(chunks), false, 0, "")
 				if sseFramed {
 					return okEnvelope(streamResponse{Headers: headers, Chunks: sseFrameChunks(chunks)})
@@ -202,6 +205,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			curAuthID = nextAuthID
 		}
 		errFinal := fmt.Errorf("upstream account pool exhausted after %d attempt(s)", budget+1)
+		log.Printf("[traework] exec stream auth pool exhausted: model=%s auth=%s err=%s", req.Model, curAuthID, truncateRedacted(errFinal.Error(), 200))
 		reconcileAfterExecutorError(curAuthID, 0, errFinal.Error())
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, errFinal.Error())
 		return nil, errFinal
@@ -213,11 +217,13 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		if statusCode == 0 {
 			statusCode = parseUpstreamStatusFromErr(callErr)
 		}
+		log.Printf("[traework] exec stream async start error: model=%s auth=%s status=%d err=%s stream_id=%s", req.Model, usedAuthID, statusCode, truncateRedacted(callErr.Error(), 200), req.StreamID)
 		reconcileAfterExecutorError(usedAuthID, statusCode, callErr.Error())
 		streamEmitError(req.StreamID, callErr.Error())
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error())
 		return okEnvelope(streamResponse{Headers: headers})
 	}
+	log.Printf("[traework] exec stream async pump: model=%s auth=%s status=%d stream_id=%s", req.Model, usedAuthID, statusCode, req.StreamID)
 	go func() {
 		// 3.1 后台流泵统一关闭上游句柄，并把非预期 panic 转成可见失败，避免穿透插件运行时。
 		defer upstreamStream.Close()
