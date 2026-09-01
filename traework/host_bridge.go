@@ -98,6 +98,12 @@ func hostBridgeUnwrap(raw []byte, method string) (json.RawMessage, error) {
 // hostBridgeAvailable reports whether host.http.* RPC is wired up. False in
 // unit tests (no hostAPI) and when the host binary predates the bridge.
 func hostBridgeAvailable() bool {
+	return hostBridgeAvailableFn()
+}
+
+// hostBridgeAvailableFn is the availability probe seam, injectable in tests to
+// exercise the host-bridge branch without a real hostAPI.
+var hostBridgeAvailableFn = func() bool {
 	return hostAPI != nil && hostAPI.call != nil
 }
 
@@ -241,20 +247,38 @@ func hostHTTPDoDirect(req *http.Request, bodyBytes []byte) (*hostHTTPResponse, e
 // hostHTTPStream is a handle for an in-flight host-bridged stream. Read returns
 // the next chunk; Close aborts the upstream.
 //
-// Two modes:
+// Three modes:
 //   - Bridged: streamID set, Read/Close forward to host RPC.
+//   - Live: direct holds an open http.Response.Body; Read drains it as the
+//     upstream produces bytes (used when the host stream bridge hangs and the
+//     async path degrades to the plugin's own HTTP client).
 //   - Direct (test fallback): direct holds the full buffered body, Read drains
 //     it once then reports done. Close is a no-op.
 type hostHTTPStream struct {
 	streamID string
+	liveBody io.ReadCloser
 	direct   []byte
 	directAt int
 }
 
+// hostBridgeOpenTimeout bounds how long the async streaming path waits for the
+// host's MethodHostHTTPDoStream RPC to open the upstream. The host RPC is a
+// synchronous cgo call that can hang (observed 2026-09-02: stream_id=1664 sat
+// for 4 minutes with no open/pump/pseudo/done logs and the client got 499).
+// When it times out the streaming path degrades to the plugin's own direct
+// HTTP client instead of hanging the coordinator goroutine forever.
+const hostBridgeOpenTimeout = 30 * time.Second
+
+// errHostBridgeOpenTimeout reports that the host stream bridge did not open the
+// upstream within hostBridgeOpenTimeout; callers should fall back to the direct
+// HTTP client so the request still completes.
+var errHostBridgeOpenTimeout = fmt.Errorf("host stream bridge open timed out after %s", hostBridgeOpenTimeout)
+
 // hostHTTPDoStream 通过宿主流桥打开上游请求，并把异步执行的 callback context 传给宿主。
 // [参数] req: 上游 HTTP 请求；hostCallbackID: CPA 为当前异步执行注册的 callback 标识。
 // [返回] hostHTTPStream: 可按块读取的响应流；int: HTTP 状态码；http.Header: 响应头；error: 打开流失败。
-// 最近修改时间：2026-08-30 23:40:18；改动原因：透传长生命周期 callback context，使客户端取消能够传递到上游流。
+// 最近修改时间：2026-09-02 00:50:00；改动原因：宿主流桥打开可能挂起（cgo 同步无超时），
+// 增加超时保护并在超时后降级到插件直连，避免异步协调器永久悬挂。
 func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream, int, http.Header, error) {
 	if req == nil {
 		return nil, 0, nil, fmt.Errorf("nil request")
@@ -280,8 +304,10 @@ func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream
 			Body:    bodyBytes,
 		},
 	}
-	raw, err := hostCall(pluginabi.MethodHostHTTPDoStream, mustJSON(wire))
+	raw, err := hostStreamOpenFn(mustJSON(wire))
 	if err != nil {
+		// 宿主流桥打开挂起（cgo 同步调用无超时）：降级到插件直连，保证异步流式
+		// 请求仍能完成，而不是让协调器 goroutine 永久悬挂。
 		return hostHTTPDoStreamDirect(req, bodyBytes)
 	}
 	result, err := hostBridgeUnwrap(raw, pluginabi.MethodHostHTTPDoStream)
@@ -298,9 +324,41 @@ func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream
 	return &hostHTTPStream{streamID: resp.StreamID}, resp.StatusCode, http.Header(resp.Headers), nil
 }
 
-// hostHTTPDoStreamDirect is the test-only fallback: it performs the request
-// with the plugin's own http.Client and buffers the full body into an
-// in-memory hostHTTPStream so Read/Close keep the same contract.
+// hostStreamOpenFn is the host stream bridge open seam, injectable in tests to
+// simulate a hanging MethodHostHTTPDoStream RPC.
+var hostStreamOpenFn = hostHTTPDoStreamBridged
+
+// hostHTTPDoStreamBridged runs the host.stream.do RPC with a bounded wait. The
+// RPC itself is a synchronous cgo call that can hang indefinitely; running it
+// in a goroutine and racing it against a timer lets the caller bail out to the
+// direct client. If the goroutine finishes after the timer, its result is
+// discarded (the late host-side stream is leaked on the host, but the client
+// request no longer blocks on it).
+func hostHTTPDoStreamBridged(wireJSON []byte) ([]byte, error) {
+	type res struct {
+		raw []byte
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		raw, err := hostCall(pluginabi.MethodHostHTTPDoStream, wireJSON)
+		done <- res{raw: raw, err: err}
+	}()
+	select {
+	case r := <-done:
+		return r.raw, r.err
+	case <-time.After(hostBridgeOpenTimeout):
+		return nil, errHostBridgeOpenTimeout
+	}
+}
+
+// hostHTTPDoStreamDirect performs the request with the plugin's own http.Client
+// and streams the response body as the upstream produces it. Used when the host
+// stream bridge is unavailable, or as the degradation path after the bridge
+// open timed out (hostBridgeOpenTimeout) — without this the async coordinator
+// would hang forever on the synchronous host RPC. Unlike the old test-only
+// buffered variant, it does NOT wait for the full body, so long generations
+// still stream to the client instead of blocking on a full read.
 func hostHTTPDoStreamDirect(req *http.Request, bodyBytes []byte) (*hostHTTPStream, int, http.Header, error) {
 	newReq, err := http.NewRequestWithContext(req.Context(), req.Method, req.URL.String(), bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -311,12 +369,7 @@ func hostHTTPDoStreamDirect(req *http.Request, bodyBytes []byte) (*hostHTTPStrea
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, resp.StatusCode, resp.Header.Clone(), err
-	}
-	return &hostHTTPStream{direct: raw}, resp.StatusCode, resp.Header.Clone(), nil
+	return &hostHTTPStream{liveBody: resp.Body}, resp.StatusCode, resp.Header.Clone(), nil
 }
 
 // Read pulls the next chunk. Returns (payload, done, err). done=true means the
@@ -333,6 +386,21 @@ func (s *hostHTTPStream) Read() ([]byte, bool, error) {
 		out := s.direct[s.directAt:]
 		s.directAt = len(s.direct)
 		return out, false, nil
+	}
+	// Live direct mode: drain the open upstream response body as bytes arrive.
+	if s.liveBody != nil {
+		buf := make([]byte, 32*1024)
+		n, err := s.liveBody.Read(buf)
+		if n > 0 {
+			return buf[:n], false, nil
+		}
+		if err == io.EOF {
+			return nil, true, nil
+		}
+		if err != nil {
+			return nil, true, err
+		}
+		return nil, false, nil
 	}
 	if s.streamID == "" {
 		return nil, true, fmt.Errorf("stream closed")
@@ -358,6 +426,11 @@ func (s *hostHTTPStream) Read() ([]byte, bool, error) {
 // Close aborts the upstream stream. Always safe to call (idempotent on host).
 func (s *hostHTTPStream) Close() {
 	if s == nil {
+		return
+	}
+	if s.liveBody != nil {
+		_ = s.liveBody.Close()
+		s.liveBody = nil
 		return
 	}
 	if s.direct != nil {

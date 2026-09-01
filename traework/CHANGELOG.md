@@ -1,5 +1,20 @@
 # TraeWork Plugin Changelog
 
+## 0.1.28
+
+### Fix — 异步流式宿主流桥打开挂起：超时保护 + 降级插件直连，修复长推理卡死/499
+
+0.1.27 发布部署后，生产直连复现 `qwen3.8-max` 长推理「一直失败」：非流式请求一次成功（13.3s 返回完整正文，走聚合路径），但**带 `StreamID` 的异步流式请求 240s 无任何字节后超时**。生产日志仅一条 `exec stream async scheduled: ... stream_id=1664`，之后无 open/pump/伪完成/耗尽日志、无失败核算；宿主在 4m0s 返回 `499`。根因：异步协调器第一次 `deps.Open` 调 `callLLMStream → hostHTTPDoStream → hostCall(MethodHostHTTPDoStream)`，`hostCall` 是**同步 cgo 调用（`C.wb_call_host`，无超时）**，宿主流桥在长推理场景打开上游后不返回，协调器 goroutine 永久悬挂，客户端收不到任何内容，feed 记「失败（HTTP 200）0/12 tokens」。
+
+修复（`traework/host_bridge.go`）：
+
+1. **宿主流桥打开超时保护**：新增 `hostBridgeOpenTimeout = 30s`，把 `MethodHostHTTPDoStream` RPC 放进独立 goroutine 并用 `select` 竞争超时；超时返回 `errHostBridgeOpenTimeout`，不再永久阻塞。
+2. **降级插件直连**：`hostHTTPDoStream` 超时或桥调用失败时回退 `hostHTTPDoStreamDirect`——用插件自有 `http.Client`（120s Timeout）直接请求上游，并把响应体升级为**实时流（live 模式）**边读边发，而非旧版一次性缓冲完整 body；长推理仍能流式输出，只是首包经插件直连而非宿主桥。
+3. **可测化**：抽出 `hostBridgeAvailableFn` 与 `hostStreamOpenFn` 注入点，便于单测模拟桥挂起。
+4. 超时后迟到的宿主侧流会被丢弃（宿主侧遗留一个未消费流，优于客户端 4 分钟卡死）。
+
+验证：cgo shim build、vet、test 全绿；新增 `test/traework/host_stream_timeout_test.go` 覆盖「桥打开超时→降级直连读完整 SSE」与「直连流边读边发、首包不等待完整 body」；唯一失败哨兵先使 cgo-shim FAIL、删除后全绿；UTF-8、gofmt、`git diff --check` PASS。生产流式长推理验收由发布后直连承接。
+
 ## 0.1.27
 
 ### Fix — 伪完成同请求换号恢复：A 短答零泄漏丢弃，原 StreamID 内切换健康账号 B 继续生成
