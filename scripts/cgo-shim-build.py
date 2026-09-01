@@ -160,6 +160,17 @@ def shim_main(path: Path) -> None:
     path.write_text(new, encoding="utf-8")
 
 
+def copy_mirrored_tests(root: Path, workdir: Path) -> None:
+    test_root = root.parent / "test" / root.name
+    if not test_root.is_dir():
+        return
+    for source in sorted(test_root.glob("*_test.go")):
+        target = workdir / source.name
+        if target.exists():
+            raise SystemExit(f"{source}: test filename conflicts with {target}")
+        shutil.copy2(source, target)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("plugin_dir", help="plugin directory (e.g. workbuddy)")
@@ -173,8 +184,10 @@ def main() -> int:
     if not (root / "go.mod").exists():
         raise SystemExit(f"{root}: not a Go module (no go.mod)")
 
-    workdir = Path(tempfile.mkdtemp(prefix="cpa-shim-", dir=root.parent)) / root.name
+    temp_root = Path(tempfile.mkdtemp(prefix="cpa-shim-", dir=root.parent))
+    workdir = temp_root / root.name
     shutil.copytree(root, workdir, ignore=shutil.ignore_patterns(".git", "dist"))
+    copy_mirrored_tests(root, workdir)
     shim_main(workdir / "main.go")
     print(f"[cgo-shim] shim dir: {workdir}", flush=True)
 
@@ -199,13 +212,13 @@ def main() -> int:
             break
         print(f"[cgo-shim] OK: go {' '.join(cmd)}", flush=True)
     if ok:
-        shutil.rmtree(workdir, ignore_errors=True)
+        shutil.rmtree(temp_root, ignore_errors=True)
         print(f"[cgo-shim] all green ({root.name})", flush=True)
         return 0
     if args.keep:
         print(f"[cgo-shim] shim dir kept at {workdir}", flush=True)
     else:
-        shutil.rmtree(workdir, ignore_errors=True)
+        shutil.rmtree(temp_root, ignore_errors=True)
     return 1
 
 

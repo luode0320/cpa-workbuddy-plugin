@@ -346,14 +346,31 @@ func isPseudoCompletion(chunks []pluginapi.ExecutorStreamChunk, inputChars int) 
 	return inputChars >= pseudoCompletionMinInputChars
 }
 
-// pumpTraeStream reads the upstream SSE stream, pushes every output chunk to the
-// host stream, and reconciles failover/usage on the terminal event.
-func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
-	// 1. 转换并推送上游分片，同时保留已成功生成的标准分片用于估算输出 token。
-	requestID := randomUUID()
-	started := time.Now()
-	var chunks []pluginapi.ExecutorStreamChunk
+// traeStreamAttemptResult 保存单次上游流尝试的转换结果；逻辑请求协调器据此决定换号或唯一收尾。
+type traeStreamAttemptResult struct {
+	RequestID   string
+	Chunks      []pluginapi.ExecutorStreamChunk
+	Termination traeStreamTermination
+	Pseudo      bool
+	Emitted     bool
+	Err         error
+}
+
+// traeStreamEmitter 下发一个已转换的客户端分片。
+type traeStreamEmitter func(payload []byte) error
+
+// pumpTraeStreamAttempt 读取单次 Trae SSE；长输入达到健康门槛前缓存全部分片，伪完成时不向客户端泄漏。
+// [参数] r: 单次上游 SSE；ctx: 流上下文；requestID: 逻辑请求固定 ID；emit: 分片下发函数。
+// [返回] 单次尝试的终结类别、分片、伪完成和下发状态；本函数不发送 finish，也不关闭宿主流。
+// 最近修改时间：2026-09-01 23:30:00；改动原因：伪完成必须在首次下发前识别，才能在同一请求内无痕换号。
+func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID string, emit traeStreamEmitter) traeStreamAttemptResult {
+	result := traeStreamAttemptResult{RequestID: requestID}
+	gateOpen := ctx.InputChars < pseudoCompletionMinInputChars
+	contentChars := 0
+	pending := make([][]byte, 0)
 	var terminal traeSSETerminal
+
+	// 1. 转换每个 output；长输入在正文达到 600 字节前只缓存，不向客户端承诺当前账号。
 	scanErr := scanSSE(r, func(ev sseEvent) error {
 		switch ev.Event {
 		case "output":
@@ -362,15 +379,30 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 				return nil
 			}
 			raw, err := chunkDelta(requestID, ctx.Model, text, reasoning, "")
-			if err != nil {
+			if err != nil || raw == nil {
 				return err
 			}
-			if raw != nil {
-				if emitErr := streamEmit(ctx.StreamID, raw); emitErr != nil {
-					return emitErr
+			result.Chunks = append(result.Chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
+			contentChars += len(text)
+			if !gateOpen {
+				pending = append(pending, raw)
+				if contentChars < pseudoCompletionMaxChars {
+					return nil
 				}
-				chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
+				gateOpen = true
+				for _, buffered := range pending {
+					if err := emit(buffered); err != nil {
+						return err
+					}
+					result.Emitted = true
+				}
+				pending = nil
+				return nil
 			}
+			if err := emit(raw); err != nil {
+				return err
+			}
+			result.Emitted = true
 		case "done":
 			terminal.recordDone()
 		case "error":
@@ -382,64 +414,86 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 		}
 		return nil
 	}, terminal.hasPayload)
-	// scanErr: SSE 事件错误 / 分片下发失败；空响应（invalid）也归入致命失败。
-	var termination traeStreamTermination
-	if scanErr == nil {
-		termination, scanErr = terminal.classify(ctx.StatusCode)
-	}
 	if scanErr != nil {
-		// 致命失败：上游显式 event:error、下发失败或空响应。关闭流并发布失败用量，已输出分片仍纳入统计。
+		result.Err = scanErr
+		return result
+	}
+
+	// 2. 先分类并识别伪完成；命中时丢弃 pending，禁止下发正文、reasoning 和终止分片。
+	result.Termination, result.Err = terminal.classify(ctx.StatusCode)
+	if result.Err != nil {
+		return result
+	}
+	if result.Termination == terminationDone && isPseudoCompletion(result.Chunks, ctx.InputChars) {
+		result.Pseudo = true
+		return result
+	}
+
+	// 3. reasoning-only 或 output_eof 不属于伪完成，按既有兼容语义释放尚未承诺的缓冲。
+	for _, buffered := range pending {
+		if err := emit(buffered); err != nil {
+			result.Err = err
+			return result
+		}
+		result.Emitted = true
+	}
+	return result
+}
+
+// pumpTraeStream 保留单次异步流入口；账号级协调与唯一终结由 executor 统一接管。
+func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
+	requestID := randomUUID()
+	started := time.Now()
+	result := pumpTraeStreamAttempt(r, ctx, requestID, func(payload []byte) error {
+		return streamEmit(ctx.StreamID, payload)
+	})
+	if result.Err != nil {
 		log.Printf("[traework] stream pump error: request_id=%s stream_id=%s model=%s status=%d err=%s elapsed_ms=%d",
-			requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, truncateRedacted(scanErr.Error(), 200), time.Since(started).Milliseconds())
-		reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, scanErr.Error())
-		streamEmitError(ctx.StreamID, scanErr.Error())
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), true, ctx.StatusCode, scanErr.Error())
+			requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, truncateRedacted(result.Err.Error(), 200), time.Since(started).Milliseconds())
+		reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, result.Err.Error())
+		streamEmitError(ctx.StreamID, result.Err.Error())
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, result.Err.Error())
+		return
+	}
+	if result.Pseudo {
+		reason := "pseudo completion: upstream returned done with near-empty output"
+		log.Printf("[traework] stream pump pseudo-done: request_id=%s stream_id=%s model=%s status=%d chunks=%d elapsed_ms=%d",
+			requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, len(result.Chunks), time.Since(started).Milliseconds())
+		noteForcedAccountFailure(ctx.AuthID, reason)
+		evictSessionBindingsForAuth(ctx.AuthID)
+		streamEmitError(ctx.StreamID, reason)
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, reason)
 		return
 	}
 
-	// 上游中途断流（部分 output 但 EOF 无 done）时补 length 收尾，保留已生成内容；
-	// 不把可兜底的中断误判为账号失败，也不复位账号（未走正常 done 结束）。
 	finish := "stop"
-	incomplete := false
-	if termination == terminationOutputEOF {
+	failed := false
+	failureReason := ""
+	if result.Termination == terminationOutputEOF {
 		finish = "length"
-		incomplete = true
+		failed = true
+		failureReason = "truncated: upstream stream ended without done"
 	}
-	raw, _ := chunkDelta(requestID, ctx.Model, "", "", finish)
-	if raw != nil {
-		if emitErr := streamEmit(ctx.StreamID, raw); emitErr != nil {
-			// 终止分片下发失败表示客户端没有收到完整终止信号，不能继续复位账号或记成功。
-			log.Printf("[traework] stream pump finish emit error: request_id=%s stream_id=%s model=%s err=%s", requestID, ctx.StreamID, ctx.Model, truncateRedacted(emitErr.Error(), 200))
-			reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, emitErr.Error())
-			streamEmitError(ctx.StreamID, emitErr.Error())
-			publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), true, ctx.StatusCode, emitErr.Error())
-			return
+	raw, err := chunkDelta(requestID, ctx.Model, "", "", finish)
+	if err == nil && raw != nil {
+		err = streamEmit(ctx.StreamID, raw)
+		if err == nil {
+			result.Chunks = append(result.Chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
 		}
-		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
 	}
-	streamClose(ctx.StreamID)
-	if incomplete {
-		// 断流收尾：不清零账号故障、不记成功用量；用「不完整」标记落一次用量供面板识别。
-		log.Printf("[traework] stream pump truncated: request_id=%s stream_id=%s model=%s status=%d chunks=%d elapsed_ms=%d",
-			requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, len(chunks), time.Since(started).Milliseconds())
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, ctx.StatusCode, "truncated: upstream stream ended without done")
+	if err != nil {
+		reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, err.Error())
+		streamEmitError(ctx.StreamID, err.Error())
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, err.Error())
 		return
 	}
-	log.Printf("[traework] stream pump done: request_id=%s stream_id=%s model=%s status=%d termination=%s chunks=%d elapsed_ms=%d",
-		requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, terminationLabel(termination), len(chunks), time.Since(started).Milliseconds())
-	if isPseudoCompletion(chunks, ctx.InputChars) {
-		// 伪完成：上游账号被静默限流/标记时返回「done + 极少正文」。不当作成功
-		// 清零（否则账号永不换号），计一次账号失败并驱逐会话绑定，让下一次请求
-		// 切到健康账号。已生成的少量内容仍正常下发给客户端。
-		log.Printf("[traework] stream pump pseudo-done: request_id=%s stream_id=%s model=%s status=%d chunks=%d elapsed_ms=%d",
-			requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, len(chunks), time.Since(started).Milliseconds())
-		noteForcedAccountFailure(ctx.AuthID, "pseudo completion: upstream returned done with near-empty output")
-		evictSessionBindingsForAuth(ctx.AuthID)
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, ctx.StatusCode, "pseudo completion: upstream returned done with near-empty output")
+	streamClose(ctx.StreamID)
+	if failed {
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, failureReason)
 		return
 	}
 	resetAccountFailover(ctx.AuthID)
-	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, 0, "")
+	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), false, 0, "")
 }
 
 // clientNeedsSSEFrame reports whether the client expects raw SSE framing in

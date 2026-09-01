@@ -7,10 +7,13 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -25,6 +28,67 @@ type executorStreamRequest struct {
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
+// traeSyncStreamDeps 汇总同步流式账号重试使用的既有依赖，便于用脚本化上游锁定同请求恢复行为。
+type traeSyncStreamDeps struct {
+	CallLLM      func(a *traeAuth, payload map[string]any, authID string) (*hostHTTPResponse, error)
+	PickNextAuth func(currentAuthID string) (nextAuthID string, nextSA *traeAuth, ok bool)
+}
+
+var defaultTraeSyncStreamDeps = traeSyncStreamDeps{
+	CallLLM:      callLLM,
+	PickNextAuth: pickNextAuth,
+}
+
+// traeSyncStreamContext 保存同步流式重试共享的模型、账号和用量上下文。
+type traeSyncStreamContext struct {
+	Model         string
+	UpstreamModel string
+	AuthID        string
+	AuthUID       string
+	Started       time.Time
+	InputChars    int
+	Budget        int
+}
+
+// traeAsyncUpstream 统一生产宿主流与测试内存流的读取、关闭契约。
+type traeAsyncUpstream struct {
+	Reader io.Reader
+	Close  func()
+}
+
+// traeAsyncStreamDeps 汇总异步逻辑请求协调器的账号、上游和客户端流依赖。
+type traeAsyncStreamDeps struct {
+	Open         func(a *traeAuth, payload map[string]any, authID, hostCallbackID string) (traeAsyncUpstream, int, error)
+	PickNextAuth func(currentAuthID string) (nextAuthID string, nextSA *traeAuth, ok bool)
+	Emit         func(streamID string, payload []byte) error
+	Close        func(streamID string)
+}
+
+var defaultTraeAsyncStreamDeps = traeAsyncStreamDeps{
+	Open: func(a *traeAuth, payload map[string]any, authID, hostCallbackID string) (traeAsyncUpstream, int, error) {
+		stream, statusCode, err := callLLMStream(a, payload, authID, hostCallbackID)
+		if err != nil {
+			return traeAsyncUpstream{}, statusCode, err
+		}
+		return traeAsyncUpstream{Reader: newHostStreamReader(stream), Close: stream.Close}, statusCode, nil
+	},
+	PickNextAuth: pickNextAuth,
+	Emit:         streamEmit,
+	Close:        streamClose,
+}
+
+// traeAsyncStreamContext 保存整个异步逻辑请求跨账号共享的输入与终结上下文。
+type traeAsyncStreamContext struct {
+	StreamID       string
+	HostCallbackID string
+	Model          string
+	UpstreamModel  string
+	Payload        map[string]any
+	Started        time.Time
+	InputChars     int
+	Budget         int
+}
+
 // authIDFor returns the account identity used for failover/credit bookkeeping
 // under the host's auth-ID namespace: prefer the host-provided ID (scheduler
 // key), fall back to the credential's userId.
@@ -36,6 +100,12 @@ func authIDFor(a *traeAuth, fallback string) string {
 		return strings.TrimSpace(a.UserID)
 	}
 	return ""
+}
+
+// authLogHash 返回账号标识的不可逆短哈希，仅用于跨 attempt 关联脱敏日志。
+func authLogHash(authID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(authID)))
+	return fmt.Sprintf("%x", sum[:4])
 }
 
 // handleExecExecute performs one non-streaming chat completion.
@@ -157,111 +227,292 @@ func handleExecStream(raw []byte) ([]byte, error) {
 
 	usedAuthID := authIDFor(a, req.AuthID)
 
-	// 2. 无异步流标识时同步收集分片；账号级失败在同一请求内按预算换号重试。
+	// 2. 无异步流标识时同步收集分片；账号级失败与伪完成都在同一请求内按预算换号。
 	if req.StreamID == "" {
-		budget := loadedRetryOn4xx()
-		curSA := a
-		curAuthID := usedAuthID
-		for attempt := 0; attempt <= budget; attempt++ {
-			resp, callErr := callLLM(curSA, payload, curAuthID)
-			if callErr != nil {
-				statusCode := parseUpstreamStatusFromErr(callErr)
-				if !isAccountLevel4xx(statusCode) || attempt >= budget || curSA == nil {
-					log.Printf("[traework] exec stream upstream error: model=%s auth=%s status=%d err=%s", req.Model, curAuthID, statusCode, truncateRedacted(callErr.Error(), 200))
-					reconcileAfterExecutorError(curAuthID, statusCode, callErr.Error())
-					publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error())
-					return nil, callErr
+		chunks, streamErr := runTraeSyncStream(a, payload, traeSyncStreamContext{
+			Model:         req.Model,
+			UpstreamModel: upstreamModel,
+			AuthID:        usedAuthID,
+			AuthUID:       authUID,
+			Started:       started,
+			InputChars:    inputChars,
+			Budget:        loadedRetryOn4xx(),
+		}, defaultTraeSyncStreamDeps)
+		if streamErr != nil {
+			return nil, streamErr
+		}
+		if sseFramed {
+			chunks = sseFrameChunks(chunks)
+		}
+		return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
+	}
+
+	// 3. 有异步流标识时立即返回响应头；后台协调器在同一 StreamID 内完成上游打开、伪完成换号和唯一收尾。
+	go func() {
+		deps := defaultTraeAsyncStreamDeps
+		closeStream := deps.Close
+		var closeOnce sync.Once
+		deps.Close = func(streamID string) {
+			closeOnce.Do(func() { closeStream(streamID) })
+		}
+		runTraeAsyncStream(a, usedAuthID, traeAsyncStreamContext{
+			StreamID:       req.StreamID,
+			HostCallbackID: req.HostCallbackID,
+			Model:          req.Model,
+			UpstreamModel:  upstreamModel,
+			Payload:        payload,
+			Started:        started,
+			InputChars:     inputChars,
+			Budget:         loadedRetryOn4xx(),
+		}, deps)
+	}()
+	log.Printf("[traework] exec stream async scheduled: model=%s auth_hash=%s stream_id=%s", req.Model, authLogHash(usedAuthID), req.StreamID)
+	return okEnvelope(streamResponse{Headers: headers})
+}
+
+// runTraeAsyncStream 协调一个宿主 StreamID 下的多账号上游尝试，并只在最终结果上收尾一次。
+// [参数] initialAuth: 初始账号；initialAuthID: 初始账号标识；ctx: 逻辑请求上下文；deps: 上游与宿主流依赖。
+// [返回] 无；最终正文、错误和关闭通过 deps 发送，所有 attempt 的用量分别按实际账号记录。
+// 最近修改时间：2026-09-01 23:50:00；改动原因：异步伪完成必须保持原 StreamID 打开并在当前请求内切到健康账号。
+func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsyncStreamContext, deps traeAsyncStreamDeps) {
+	curSA := initialAuth
+	curAuthID := initialAuthID
+	curAuthUID := strings.TrimSpace(initialAuth.UserID)
+	requestID := randomUUID()
+	triedAuthIDs := map[string]struct{}{curAuthID: {}}
+	attemptsMade := 0
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			panicErr := fmt.Errorf("Trae stream coordinator panic: %v", recovered)
+			emitTraeAsyncError(ctx.StreamID, panicErr.Error(), deps)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, 0, panicErr.Error())
+		}
+	}()
+	for attempt := 0; attempt <= ctx.Budget; attempt++ {
+		attemptsMade = attempt + 1
+		// 1. 每次账号尝试复用同一 payload 和 HostCallbackID，但拥有独立、及时关闭的上游句柄。
+		upstream, statusCode, openErr := deps.Open(curSA, ctx.Payload, curAuthID, ctx.HostCallbackID)
+		if openErr != nil {
+			if statusCode == 0 {
+				statusCode = parseUpstreamStatusFromErr(openErr)
+			}
+			log.Printf("[traework] exec stream async open error: request_id=%s stream_id=%s model=%s auth_hash=%s attempt=%d status=%d err=%s",
+				requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, statusCode, truncateRedacted(openErr.Error(), 200))
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, statusCode, openErr.Error())
+			if !isAccountLevel4xx(statusCode) || attempt >= ctx.Budget {
+				emitTraeAsyncError(ctx.StreamID, openErr.Error(), deps)
+				return
+			}
+			nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID)
+			if !hasNext || nextSA == nil {
+				break
+			}
+			if _, seen := triedAuthIDs[nextAuthID]; seen {
+				break
+			}
+			triedAuthIDs[nextAuthID] = struct{}{}
+			curSA = nextSA
+			curAuthID = nextAuthID
+			curAuthUID = strings.TrimSpace(nextSA.UserID)
+			continue
+		}
+
+		result := func() traeStreamAttemptResult {
+			if upstream.Close != nil {
+				defer upstream.Close()
+			}
+			return pumpTraeStreamAttempt(upstream.Reader, traeStreamPumpContext{
+				StreamID:      ctx.StreamID,
+				Model:         ctx.Model,
+				UpstreamModel: ctx.UpstreamModel,
+				StatusCode:    statusCode,
+				AuthID:        curAuthID,
+				AuthUID:       curAuthUID,
+				Started:       ctx.Started,
+				InputChars:    ctx.InputChars,
+			}, requestID, func(payload []byte) error {
+				return deps.Emit(ctx.StreamID, payload)
+			})
+		}()
+
+		// 2. 门槛前伪完成不产生任何客户端输出；记录失败后选择下一账号继续原逻辑请求。
+		if result.Pseudo {
+			reason := "pseudo completion: upstream returned done with near-empty output"
+			log.Printf("[traework] exec stream async pseudo retry: request_id=%s stream_id=%s model=%s auth_hash=%s attempt=%d chunks=%d",
+				requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, len(result.Chunks))
+			noteForcedAccountFailure(curAuthID, reason)
+			evictSessionBindingsForAuth(curAuthID)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, reason)
+			if attempt >= ctx.Budget {
+				break
+			}
+			nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID)
+			if !hasNext || nextSA == nil {
+				break
+			}
+			if _, seen := triedAuthIDs[nextAuthID]; seen {
+				break
+			}
+			triedAuthIDs[nextAuthID] = struct{}{}
+			curSA = nextSA
+			curAuthID = nextAuthID
+			curAuthUID = strings.TrimSpace(nextSA.UserID)
+			continue
+		}
+		if result.Err != nil {
+			log.Printf("[traework] exec stream async attempt error: request_id=%s stream_id=%s model=%s auth_hash=%s attempt=%d status=%d emitted=%v err=%s",
+				requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, statusCode, result.Emitted, truncateRedacted(result.Err.Error(), 200))
+			reconcileAfterExecutorError(curAuthID, statusCode, result.Err.Error())
+			emitTraeAsyncError(ctx.StreamID, result.Err.Error(), deps)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, result.Err.Error())
+			return
+		}
+
+		// 3. 只有最终可交付 attempt 能发送 finish；随后恰好关闭一次宿主 StreamID。
+		finish := "stop"
+		failed := false
+		failureReason := ""
+		if result.Termination == terminationOutputEOF {
+			finish = "length"
+			failed = true
+			failureReason = "truncated: upstream stream ended without done"
+		}
+		finishRaw, finishErr := chunkDelta(requestID, ctx.Model, "", "", finish)
+		if finishErr == nil && finishRaw != nil {
+			finishErr = deps.Emit(ctx.StreamID, finishRaw)
+			if finishErr == nil {
+				result.Chunks = append(result.Chunks, pluginapi.ExecutorStreamChunk{Payload: finishRaw})
+			}
+		}
+		if finishErr != nil {
+			reconcileAfterExecutorError(curAuthID, statusCode, finishErr.Error())
+			emitTraeAsyncError(ctx.StreamID, finishErr.Error(), deps)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, finishErr.Error())
+			return
+		}
+		deps.Close(ctx.StreamID)
+		if failed {
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, failureReason)
+			return
+		}
+		resetAccountFailover(curAuthID)
+		publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), false, 0, "")
+		log.Printf("[traework] exec stream async done: request_id=%s stream_id=%s model=%s auth_hash=%s attempt=%d chunks=%d",
+			requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, len(result.Chunks))
+		return
+	}
+
+	errFinal := fmt.Errorf("upstream account pool exhausted after %d attempt(s)", attemptsMade)
+	log.Printf("[traework] exec stream async pool exhausted: request_id=%s stream_id=%s model=%s auth_hash=%s err=%s",
+		requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), truncateRedacted(errFinal.Error(), 200))
+	emitTraeAsyncError(ctx.StreamID, errFinal.Error(), deps)
+}
+
+// emitTraeAsyncError 发送单个错误分片并关闭宿主流；调用方发送后必须立即结束逻辑请求。
+func emitTraeAsyncError(streamID, message string, deps traeAsyncStreamDeps) {
+	payload, err := json.Marshal(map[string]any{"error": message})
+	if err == nil {
+		_ = deps.Emit(streamID, payload)
+	}
+	deps.Close(streamID)
+}
+
+// runTraeSyncStream 在同步流式请求内执行账号重试；伪完成分片在切号前直接丢弃。
+// [参数] initialAuth: 初始账号；payload: 上游负载；ctx: 重试与用量上下文；deps: 上游和候选选择依赖。
+// [返回] 最终健康账号分片；账号池耗尽或上游失败时返回错误且不返回伪完成分片。
+// 最近修改时间：2026-09-01 23:40:00；改动原因：HTTP 200 伪完成必须恢复当前请求，而不是把短结果返回后只影响下一请求。
+func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSyncStreamContext, deps traeSyncStreamDeps) ([]pluginapi.ExecutorStreamChunk, error) {
+	curSA := initialAuth
+	curAuthID := ctx.AuthID
+	curAuthUID := ctx.AuthUID
+	triedAuthIDs := map[string]struct{}{curAuthID: {}}
+	lastFailurePublished := false
+	attemptsMade := 0
+	for attempt := 0; attempt <= ctx.Budget; attempt++ {
+		attemptsMade = attempt + 1
+		lastFailurePublished = false
+		// 1. 每次尝试重新调用上游；普通账号级错误沿用既有同请求换号契约。
+		resp, callErr := deps.CallLLM(curSA, payload, curAuthID)
+		if callErr != nil {
+			statusCode := parseUpstreamStatusFromErr(callErr)
+			if !isAccountLevel4xx(statusCode) || attempt >= ctx.Budget || curSA == nil {
+				log.Printf("[traework] exec stream upstream error: model=%s auth_hash=%s status=%d err=%s", ctx.Model, authLogHash(curAuthID), statusCode, truncateRedacted(callErr.Error(), 200))
+				reconcileAfterExecutorError(curAuthID, statusCode, callErr.Error())
+				publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, statusCode, callErr.Error())
+				return nil, callErr
+			}
+			nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID)
+			if !hasNext || nextSA == nil {
+				break
+			}
+			if _, seen := triedAuthIDs[nextAuthID]; seen {
+				break
+			}
+			triedAuthIDs[nextAuthID] = struct{}{}
+			curSA = nextSA
+			curAuthID = nextAuthID
+			curAuthUID = strings.TrimSpace(nextSA.UserID)
+			continue
+		}
+
+		chunks, collectErr := collectTraeStream(bytes.NewReader(resp.Body), ctx.Model, resp.StatusCode)
+		if collectErr == nil {
+			if isPseudoCompletion(chunks, ctx.InputChars) {
+				// 2. 伪完成按失败 attempt 核算并驱逐绑定；候选和预算允许时丢弃当前 chunks 后继续。
+				reason := "pseudo completion: upstream returned done with near-empty output"
+				log.Printf("[traework] exec stream collect pseudo-done: model=%s auth_hash=%s attempt=%d chunks=%d", ctx.Model, authLogHash(curAuthID), attempt+1, len(chunks))
+				noteForcedAccountFailure(curAuthID, reason)
+				evictSessionBindingsForAuth(curAuthID)
+				publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(chunks), true, resp.StatusCode, reason)
+				lastFailurePublished = true
+				if attempt >= ctx.Budget {
+					break
 				}
-				nextAuthID, nextSA, hasNext := pickNextAuth(curAuthID)
+				nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID)
 				if !hasNext || nextSA == nil {
 					break
 				}
+				if _, seen := triedAuthIDs[nextAuthID]; seen {
+					break
+				}
+				triedAuthIDs[nextAuthID] = struct{}{}
 				curSA = nextSA
 				curAuthID = nextAuthID
+				curAuthUID = strings.TrimSpace(nextSA.UserID)
 				continue
 			}
-			chunks, collectErr := collectTraeStream(bytes.NewReader(resp.Body), req.Model, resp.StatusCode)
-			if collectErr == nil {
-				if isPseudoCompletion(chunks, inputChars) {
-					// 伪完成：上游账号被静默限流/标记。计一次账号失败并驱逐会话
-					// 绑定，让下一次请求切到健康账号；已生成内容照常返回客户端。
-					log.Printf("[traework] exec stream collect pseudo-done: model=%s auth=%s attempt=%d chunks=%d", req.Model, curAuthID, attempt+1, len(chunks))
-					noteForcedAccountFailure(curAuthID, "pseudo completion: upstream returned done with near-empty output")
-					evictSessionBindingsForAuth(curAuthID)
-					publishUsage(req.Model, upstreamModel, authUID, started, estimateUsageFromChunks(chunks), false, resp.StatusCode, "pseudo completion: upstream returned done with near-empty output")
-					if sseFramed {
-						return okEnvelope(streamResponse{Headers: headers, Chunks: sseFrameChunks(chunks)})
-					}
-					return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
-				}
-				resetAccountFailover(curAuthID)
-				log.Printf("[traework] exec stream collect ok: model=%s auth=%s attempt=%d chunks=%d", req.Model, curAuthID, attempt+1, len(chunks))
-				publishUsage(req.Model, upstreamModel, authUID, started, estimateUsageFromChunks(chunks), false, 0, "")
-				if sseFramed {
-					return okEnvelope(streamResponse{Headers: headers, Chunks: sseFrameChunks(chunks)})
-				}
-				return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
-			}
-			// SSE-layer business error on a 200 response: rotate accounts
-			// when it classifies as account-level (4011/14018/...).
-			if !isAccountFailure(resp.StatusCode, collectErr.Error()) || attempt >= budget || curSA == nil {
-				reconcileAfterExecutorError(curAuthID, resp.StatusCode, collectErr.Error())
-				publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, resp.StatusCode, collectErr.Error())
-				return nil, collectErr
-			}
+			resetAccountFailover(curAuthID)
+			log.Printf("[traework] exec stream collect ok: model=%s auth_hash=%s attempt=%d chunks=%d", ctx.Model, authLogHash(curAuthID), attempt+1, len(chunks))
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, 0, "")
+			return chunks, nil
+		}
+
+		// 3. HTTP 200 内的账号级 SSE 错误可继续换号，其余错误立即返回。
+		if !isAccountFailure(resp.StatusCode, collectErr.Error()) || attempt >= ctx.Budget || curSA == nil {
 			reconcileAfterExecutorError(curAuthID, resp.StatusCode, collectErr.Error())
-			nextAuthID, nextSA, hasNext := pickNextAuth(curAuthID)
-			if !hasNext || nextSA == nil {
-				return nil, collectErr
-			}
-			curSA = nextSA
-			curAuthID = nextAuthID
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, resp.StatusCode, collectErr.Error())
+			return nil, collectErr
 		}
-		errFinal := fmt.Errorf("upstream account pool exhausted after %d attempt(s)", budget+1)
-		log.Printf("[traework] exec stream auth pool exhausted: model=%s auth=%s err=%s", req.Model, curAuthID, truncateRedacted(errFinal.Error(), 200))
-		reconcileAfterExecutorError(curAuthID, 0, errFinal.Error())
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, errFinal.Error())
-		return nil, errFinal
+		reconcileAfterExecutorError(curAuthID, resp.StatusCode, collectErr.Error())
+		nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID)
+		if !hasNext || nextSA == nil {
+			return nil, collectErr
+		}
+		if _, seen := triedAuthIDs[nextAuthID]; seen {
+			break
+		}
+		triedAuthIDs[nextAuthID] = struct{}{}
+		curSA = nextSA
+		curAuthID = nextAuthID
+		curAuthUID = strings.TrimSpace(nextSA.UserID)
 	}
 
-	// 3. 有异步流标识时打开宿主流桥并立即返回响应头，由流泵实时拉取和下发上游分片。
-	upstreamStream, statusCode, callErr := callLLMStream(a, payload, usedAuthID, req.HostCallbackID)
-	if callErr != nil {
-		if statusCode == 0 {
-			statusCode = parseUpstreamStatusFromErr(callErr)
-		}
-		log.Printf("[traework] exec stream async start error: model=%s auth=%s status=%d err=%s stream_id=%s", req.Model, usedAuthID, statusCode, truncateRedacted(callErr.Error(), 200), req.StreamID)
-		reconcileAfterExecutorError(usedAuthID, statusCode, callErr.Error())
-		streamEmitError(req.StreamID, callErr.Error())
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error())
-		return okEnvelope(streamResponse{Headers: headers})
+	errFinal := fmt.Errorf("upstream account pool exhausted after %d attempt(s)", attemptsMade)
+	log.Printf("[traework] exec stream auth pool exhausted: model=%s auth_hash=%s err=%s", ctx.Model, authLogHash(curAuthID), truncateRedacted(errFinal.Error(), 200))
+	if !lastFailurePublished {
+		publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, 0, errFinal.Error())
 	}
-	log.Printf("[traework] exec stream async pump: model=%s auth=%s status=%d stream_id=%s", req.Model, usedAuthID, statusCode, req.StreamID)
-	go func() {
-		// 3.1 后台流泵统一关闭上游句柄，并把非预期 panic 转成可见失败，避免穿透插件运行时。
-		defer upstreamStream.Close()
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				panicErr := fmt.Errorf("Trae stream pump panic: %v", recovered)
-				reconcileAfterExecutorError(usedAuthID, statusCode, panicErr.Error())
-				streamEmitError(req.StreamID, panicErr.Error())
-				publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, panicErr.Error())
-			}
-		}()
-
-		// 3.2 宿主流桥按需拉取任意大小分片，SSE 扫描器负责跨分片重组事件行。
-		pumpTraeStream(newHostStreamReader(upstreamStream), traeStreamPumpContext{
-			StreamID:      req.StreamID,  // 绑定当前宿主异步流。
-			Model:         req.Model,     // 保留客户端请求模型作为统计别名。
-			UpstreamModel: upstreamModel, // 记录 Trae 实际请求模型。
-			StatusCode:    statusCode,    // 供 SSE 错误核算使用。
-			AuthID:        usedAuthID,    // 供故障退避与恢复使用。
-			AuthUID:       authUID,       // 供账号用量维度使用。
-			Started:       started,       // 计算请求总延迟。
-			InputChars:    inputChars,    // 供伪完成检测的输入长度判据。
-		})
-	}()
-	return okEnvelope(streamResponse{Headers: headers})
+	return nil, errFinal
 }
 
 // reconcileAfterExecutorError records the failure (failover cooldown +

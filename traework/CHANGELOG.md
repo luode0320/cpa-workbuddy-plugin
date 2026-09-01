@@ -1,5 +1,20 @@
 # TraeWork Plugin Changelog
 
+## 0.1.27
+
+### Fix — 伪完成同请求换号恢复：A 短答零泄漏丢弃，原 StreamID 内切换健康账号 B 继续生成
+
+0.1.26 能在服务端识别伪完成，但检测发生在正文、`stop` 与 `close` 已下发之后，客户端仍会看到短输出并以成功收尾；账号失败与会话驱逐只影响**下一请求**。生产现象证明需要把恢复提前到**首次 emit 之前**，并在同一逻辑请求内完成。
+
+修复（`traework/stream.go` + `traework/executor.go`）：
+
+1. **单次上游尝试解析器（`pumpTraeStreamAttempt`）**：长输入（输入字符 ≥ 200）在前 600 字节正文健康门槛前全量缓冲 content + reasoning 标准 chunk，不 emit、不 finish、不 close；达到 600 字节立即按序释放并实时透传；门槛前收到显式 `done` 且正文 1..599 字节 → 判定伪完成，丢弃该 attempt 全部 pending，返回结构化结果且**零 finish/close**。
+2. **同步路径同请求换号**：`handleExecStream` 同步分支在既有账号重试循环内复用 `pickNextAuth`，A 伪完成 → forced failure 记账 + 驱逐会话绑定 + 更新 `curSA/curAuthID/authUID` 继续尝试 B；池耗尽返回 `upstream account pool exhausted after N attempt(s)`。
+3. **异步协调器（`runTraeAsyncStream`）**：保持客户端固定 `StreamID` 与 OpenAI request ID，复用原 `HostCallbackID`；每次上游 attempt 独立 open → pump → 立即 close；伪完成时只关闭 A 上游句柄，保持宿主流打开并在同一逻辑请求内选 B；只有最终健康账号能发送正文、唯一 `stop` + 一次下游 `close`。`triedAuthIDs` 阻止 A→B→A 回跳。
+4. **失败边界**：所有账号伪完成 → 显式失败且不补成功终止；output EOF 唯一 `length` 收尾并记失败；读取/发送错误与客户端取消不当作伪完成重试，立即关闭当前上游并结束。
+
+验证：cgo shim build、vet、test 全绿（最新 1.433s）；新增三份根镜像回归（`test/traework/stream_pseudo_test.go`、`executor_pseudo_retry_test.go`、`async_stream_failover_test.go`）覆盖 599/600 字节边界、同步 A→B 与池耗尽、异步同 StreamID 零泄漏恢复；两轮唯一失败哨兵先使同一 cgo-shim 入口失败、删除后全绿，证明测试真实进入编译；`git diff --check`、UTF-8、gofmt、污染门禁 PASS；6-review `STYLE: PASS`。生产 `/v1/responses` 验收由部署后真实验证承接。
+
 ## 0.1.26
 
 ### Fix — 伪完成检测升级「输出字符 + 输入长度」双重判据，修复 120-token 伪完成漏检
@@ -10,7 +25,7 @@
 
 修复（`stream.go` + `executor.go`）：
 
-1. **双重判据**：输出字符 < 600（等价 150 token 估算）**且** 输入字符 ≥ 200（长任务）才判伪完成。覆盖生产全部伪完成样本（15/120 token），同时通过输入长度保护正常短答（「你好」≈5 token）不被误判。
+1. **双重判据**：输出字符 < 600（等价 150 token 估算）**且** 输入字符 ≥ 200（长任务）才判伪完成。覆盖当时已知的 15/120 token 检测样本，同时通过输入长度保护正常短答（「你好」≈5 token）不被误判；后续生产反证表明，该版本的检测发生在正文与终止已下发之后，不代表当前请求已经恢复。
 2. **输入长度穿入**：`handleExecStream` 用新增 `estimateInputChars` 从归一化消息统计输入字符数，同步 collect 路径直接传入；异步 pump 路径经 `traeStreamPumpContext.InputChars` 传入 `isPseudoCompletion`。
 3. 用字符数而非估算 token，避免短输出 `chars/4` 取整归零导致漏判。
 
@@ -25,12 +40,12 @@
 1. **伪完成是账号级问题且绕过 failover**：账号 `2033439621254311` 的 `qwen3.8-max` 全历史几乎都是「HTTP 200 + done + 极少输出」（1~129 token，平均 77），而被静默限流/标记；健康账号 `2257747741770235` 曾有 215 token / 7.9 分钟真实长输出。伪完成在协议层是合法成功（`termination=done`），`resetAccountFailover` 将其清零，账号永不进入 cooldown/anomaly → **永不换号**。
 2. **切换机制对 session 模式形同虚设**：host 把传入插件的候选账号按 auth ID 字典序排序（`traework-203343... < traework-225774...`），而插件 `pickSessionAuth` 新会话无绑定时取 `usable[0]` 且完全不看面板选中账号（active_id）——所以即使把 active_id 切到 225774，新会话仍恒定选 203343。
 
-修复（两处叠加，彻底解决）：
+修复（两处叠加，补齐检测与下一请求换号）：
 
 1. **伪完成检测（方向 2）**：`stream.go` 新增 `isPseudoCompletion`——`done` 收尾但正文（不含 reasoning）字符 < 120（≈30 token）判伪完成；异步 `pumpTraeStream` 与同步 `executor.go` collect 路径命中后**不计成功清零**，改走 `noteForcedAccountFailure`（新增强制记账，跳过 `isAccountFailure` 判定，因为伪完成 status=200 无任何失败标记）计账号失败 + `evictSessionBindingsForAuth` 驱逐会话绑定，让下一次请求切到健康账号。已生成的少量内容仍正常下发给客户端，不打断用户。
 2. **会话分配优先面板选中账号（方向 1）**：`session_auth.go` 的 `pickSessionAuth` 新分配分支优先选中 `getActiveAuthID()`（面板 active_id），再退化为「无绑定优先 → round-robin」。面板切号从此真正生效，运营可手动把流量切到健康账号。
 
-验证：cgo shim build、vet、test 全绿；新增 `TestPickSessionAuth_FreshAssignmentPrefersActiveID`（active_id 被优先选中）与 `TestIsPseudoCompletion`（短正文判真、长正文判假、纯 reasoning 不误判），行为哨兵（临时移除优先分支/阈值分支）FAIL 证明测试真实执行；`git diff --check` PASS；6-review `STYLE: PASS`。
+验证：cgo shim build、vet、test 全绿；新增 `TestPickSessionAuth_FreshAssignmentPrefersActiveID`（active_id 被优先选中）与 `TestIsPseudoCompletion`（短正文判真、长正文判假、纯 reasoning 不误判），行为哨兵（临时移除优先分支/阈值分支）FAIL 证明测试真实执行；`git diff --check` PASS；6-review `STYLE: PASS`。后续反证：伪完成少量内容仍会先下发，账号失败与会话驱逐只能影响下一请求；同请求零泄漏恢复由后续版本承接。
 
 ## 0.1.24
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
@@ -67,6 +68,79 @@ func TestIsPseudoCompletion(t *testing.T) {
 		if got := isPseudoCompletion(tc.chunks, tc.inputChars); got != tc.want {
 			t.Errorf("%s: isPseudoCompletion = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestPumpTraeStreamAttemptHealthGate 验证长输入在健康门槛前零下发，达标后按序释放。
+// [参数] t: 当前测试。
+// [返回] 无；断言失败时由 testing 终止用例。
+// 最近修改时间：2026-09-01 23:30:00；改动原因：锁定伪完成同请求恢复所需的首次下发门槛。
+func TestPumpTraeStreamAttemptHealthGate(t *testing.T) {
+	makeSSE := func(parts ...string) string {
+		var out strings.Builder
+		for _, part := range parts {
+			out.WriteString("event: output\ndata: {\"response\":\"")
+			out.WriteString(part)
+			out.WriteString("\"}\n\n")
+		}
+		out.WriteString("event: done\ndata: {}\n\n")
+		return out.String()
+	}
+	ctx := traeStreamPumpContext{Model: "qwen-max-latest", StatusCode: 200, InputChars: 3000}
+
+	// 1. 599 字节正文后 done 必须判伪完成，失败账号的任何分片都不能下发。
+	var emitted [][]byte
+	pseudo := pumpTraeStreamAttempt(strings.NewReader(makeSSE(strings.Repeat("a", 599))), ctx, "gate-pseudo", func(payload []byte) error {
+		emitted = append(emitted, bytes.Clone(payload))
+		return nil
+	})
+	if !pseudo.Pseudo || pseudo.Err != nil || pseudo.Emitted || len(emitted) != 0 {
+		t.Fatalf("599-byte result = pseudo:%v err:%v emitted:%v calls:%d", pseudo.Pseudo, pseudo.Err, pseudo.Emitted, len(emitted))
+	}
+
+	// 2. 分片累计到 600 字节时必须按原顺序释放；后续分片继续实时下发。
+	emitted = nil
+	healthy := pumpTraeStreamAttempt(strings.NewReader(makeSSE(strings.Repeat("b", 300), strings.Repeat("c", 300), "tail")), ctx, "gate-healthy", func(payload []byte) error {
+		emitted = append(emitted, bytes.Clone(payload))
+		return nil
+	})
+	if healthy.Pseudo || healthy.Err != nil || !healthy.Emitted || len(emitted) != 3 {
+		t.Fatalf("600-byte result = pseudo:%v err:%v emitted:%v calls:%d", healthy.Pseudo, healthy.Err, healthy.Emitted, len(emitted))
+	}
+	if !bytes.Contains(emitted[0], []byte(strings.Repeat("b", 300))) || !bytes.Contains(emitted[1], []byte(strings.Repeat("c", 300))) || !bytes.Contains(emitted[2], []byte("tail")) {
+		t.Fatalf("emission order/content mismatch: %q", emitted)
+	}
+}
+
+// TestPumpTraeStreamAttemptKeepsExistingTerminalSemantics 验证短输入、纯推理和断流仍沿用原终结契约。
+// [参数] t: 当前测试。
+// [返回] 无；断言失败时由 testing 终止用例。
+// 最近修改时间：2026-09-01 23:30:00；改动原因：门槛缓冲不能误伤正常短答或已有断流兜底。
+func TestPumpTraeStreamAttemptKeepsExistingTerminalSemantics(t *testing.T) {
+	cases := []struct {
+		name        string
+		sse         string
+		inputChars  int
+		termination traeStreamTermination
+		wantEmit    int
+		wantPseudo  bool
+	}{
+		{name: "short input emits immediately", sse: "event: output\ndata: {\"response\":\"hi\"}\n\nevent: done\ndata: {}\n\n", inputChars: 2, termination: terminationDone, wantEmit: 1},
+		{name: "reasoning only is not pseudo", sse: "event: output\ndata: {\"reasoning\":\"long reasoning\"}\n\nevent: done\ndata: {}\n\n", inputChars: 3000, termination: terminationDone, wantEmit: 1},
+		{name: "output eof flushes buffered content", sse: "event: output\ndata: {\"response\":\"partial\"}\n\n", inputChars: 3000, termination: terminationOutputEOF, wantEmit: 1},
+		{name: "done without output stays valid", sse: "event: done\ndata: {}\n\n", inputChars: 3000, termination: terminationDone, wantEmit: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			emitCount := 0
+			result := pumpTraeStreamAttempt(strings.NewReader(tc.sse), traeStreamPumpContext{Model: "qwen-max-latest", StatusCode: 200, InputChars: tc.inputChars}, "terminal", func([]byte) error {
+				emitCount++
+				return nil
+			})
+			if result.Err != nil || result.Pseudo != tc.wantPseudo || result.Termination != tc.termination || emitCount != tc.wantEmit {
+				t.Fatalf("result = termination:%s pseudo:%v err:%v emits:%d", terminationLabel(result.Termination), result.Pseudo, result.Err, emitCount)
+			}
+		})
 	}
 }
 
