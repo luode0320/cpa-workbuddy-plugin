@@ -1,5 +1,20 @@
 # TraeWork Plugin Changelog
 
+## 0.1.29
+
+### Fix — 异步流式宿主流桥读取挂起：read 超时保护 + 降级插件直连，覆盖打开阶段未覆盖的卡死窗口
+
+0.1.28 修复了宿主流桥**打开阶段**的永久阻塞，但生产直连复现 `qwen3.8-max` 长推理仍失败：`stream_id=1945` scheduled 后 2 分钟无任何 open/pump/伪完成/耗尽日志，客户端 `499`。根因：`hostHTTPStream.Read()` 里的 `hostCall(MethodHostHTTPStreamRead)` 同样是**同步 cgo 调用（无超时）**，阻塞在宿主侧无缓冲 chunk 通道上等上游数据；长推理期间宿主侧上游数据迟迟不到，read 永久悬挂——0.1.28 只保护了 open，read 阶段仍是裸奔。
+
+修复（`traework/host_bridge.go` + `traework/main.go`）：
+
+1. **宿主流桥读取超时保护**：新增 `hostBridgeReadTimeout = 90s`，把 `MethodHostHTTPStreamRead` RPC 放进独立 goroutine 并用 `select` 竞争超时；超时返回 `errHostBridgeReadTimeout`，不再永久阻塞。90s 宽于健康流正常 chunk 间隔，同时兜住卡死窗口。
+2. **read 超时降级插件直连**：`hostHTTPStream` 打开时保存原始请求 `req`/`bodyBytes`；bridged read 超时后在同一 attempt 内重开上游为**直接实时流**（live 模式），后续 Read 全部从直连体读取，请求完成而不是悬挂。
+3. **流式直连客户端无整体超时**：新增 `streamHTTPClient`（无 `Timeout`，仅 dial/TLS/响应头超时）替代 120s 的 `sharedHTTPClient`——否则 read 超时降级直连后，长推理在第 120s 被整体超时掐断，等于从「挂起」变「截断」。
+4. **可测化**：抽出 `hostStreamReadFn` / `hostStreamDirectFn` 注入点，`hostBridgeReadTimeout` 改为 var 便于测试缩小驱动降级路径。
+
+验证：cgo shim build、vet、test 全绿；新增 `traework/host_bridge_read_timeout_test.go` 三个用例——「桥 read 挂起→超时降级直连读完整 SSE」「桥 read 正常→透传不降级」「缺 req→超时返回明确错误不 panic」；唯一失败哨兵先使 cgo-shim FAIL、删除后全绿；UTF-8、gofmt、`git diff --check` PASS。生产流式长推理验收由发布后直连承接。
+
 ## 0.1.28
 
 ### Fix — 异步流式宿主流桥打开挂起：超时保护 + 降级插件直连，修复长推理卡死/499

@@ -81,6 +81,11 @@ var (
 	hostAPI        *C.cliproxy_host_api // captured at init, used for async host calls
 	httpClientOnce sync.Once
 	sharedClient   *http.Client
+
+	// streamHTTPClientOnce / streamClient 是流式直连专用客户端（无整体超时），
+	// 与 sharedClient（120s 整体超时）分离：桥降级直连长推理时不被整体超时掐断。
+	streamHTTPClientOnce sync.Once
+	streamClient         *http.Client
 )
 
 func main() {}
@@ -273,7 +278,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.1.28"
+var version = "0.1.29"
 
 func wbRegistration() registration {
 	return registration{

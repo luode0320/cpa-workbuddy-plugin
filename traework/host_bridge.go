@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"runtime"
 	"time"
@@ -254,11 +255,23 @@ func hostHTTPDoDirect(req *http.Request, bodyBytes []byte) (*hostHTTPResponse, e
 //     async path degrades to the plugin's own HTTP client).
 //   - Direct (test fallback): direct holds the full buffered body, Read drains
 //     it once then reports done. Close is a no-op.
+//
+// The bridged mode keeps the original request (req/bodyBytes) so a read that
+// stalls past hostBridgeReadTimeout can be aborted and re-opened as a direct
+// live stream on the same attempt — mirroring the open-phase degradation in
+// hostHTTPDoStreamBridged, but covering the read phase that the open-phase
+// protection misses. Reads are strictly sequential (single consumer), so once
+// degraded the liveBody branch at the top of Read serves the remainder of the
+// attempt.
 type hostHTTPStream struct {
 	streamID string
 	liveBody io.ReadCloser
 	direct   []byte
 	directAt int
+
+	// Bridged read-phase degradation state (nil outside bridged mode).
+	req       *http.Request
+	bodyBytes []byte
 }
 
 // hostBridgeOpenTimeout bounds how long the async streaming path waits for the
@@ -273,6 +286,22 @@ const hostBridgeOpenTimeout = 30 * time.Second
 // upstream within hostBridgeOpenTimeout; callers should fall back to the direct
 // HTTP client so the request still completes.
 var errHostBridgeOpenTimeout = fmt.Errorf("host stream bridge open timed out after %s", hostBridgeOpenTimeout)
+
+// hostBridgeReadTimeout bounds how long a single bridged Read RPC may block
+// before the stream degrades to the plugin's own direct HTTP client. The read
+// RPC is another synchronous cgo call that waits on the host's unbuffered chunk
+// channel; a long qwen3.8-max generation can stall it for minutes (observed
+// 2026-09-02: stream_id=1945 scheduled then 2 min with zero open/pump/pseudo/
+// done logs, client got gin 499) while the plugin's direct client streams the
+// same upstream fine. 90s is comfortably longer than a normal chunk gap for a
+// healthy stream but still bounds the hang. Kept as a var (not const) so tests
+// can shrink it to drive the degradation path deterministically.
+var hostBridgeReadTimeout = 90 * time.Second
+
+// errHostBridgeReadTimeout reports that a bridged Read RPC did not return
+// within hostBridgeReadTimeout; the stream re-opens directly so the request
+// completes instead of hanging.
+var errHostBridgeReadTimeout = fmt.Errorf("host stream bridge read timed out after %s", hostBridgeReadTimeout)
 
 // hostHTTPDoStream 通过宿主流桥打开上游请求，并把异步执行的 callback context 传给宿主。
 // [参数] req: 上游 HTTP 请求；hostCallbackID: CPA 为当前异步执行注册的 callback 标识。
@@ -321,7 +350,13 @@ func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream
 	if resp.StreamID == "" {
 		return nil, resp.StatusCode, http.Header(resp.Headers), fmt.Errorf("host stream bridge unavailable")
 	}
-	return &hostHTTPStream{streamID: resp.StreamID}, resp.StatusCode, http.Header(resp.Headers), nil
+	// 保存原始请求与请求体：bridged read 若在 hostBridgeReadTimeout 内无数据，
+	// 同一 attempt 可直接重开上游，无需重建认证头与 payload。
+	return &hostHTTPStream{
+		streamID:  resp.StreamID,
+		req:       req,
+		bodyBytes: bodyBytes,
+	}, resp.StatusCode, http.Header(resp.Headers), nil
 }
 
 // hostStreamOpenFn is the host stream bridge open seam, injectable in tests to
@@ -355,25 +390,60 @@ func hostHTTPDoStreamBridged(wireJSON []byte) ([]byte, error) {
 // hostHTTPDoStreamDirect performs the request with the plugin's own http.Client
 // and streams the response body as the upstream produces it. Used when the host
 // stream bridge is unavailable, or as the degradation path after the bridge
-// open timed out (hostBridgeOpenTimeout) — without this the async coordinator
-// would hang forever on the synchronous host RPC. Unlike the old test-only
-// buffered variant, it does NOT wait for the full body, so long generations
-// still stream to the client instead of blocking on a full read.
+// open (hostBridgeOpenTimeout) or read (hostBridgeReadTimeout) stalled — without
+// this the async coordinator would hang forever on the synchronous host RPC.
+// Unlike the old test-only buffered variant, it does NOT wait for the full body,
+// so long generations still stream to the client instead of blocking on a full
+// read.
 func hostHTTPDoStreamDirect(req *http.Request, bodyBytes []byte) (*hostHTTPStream, int, http.Header, error) {
 	newReq, err := http.NewRequestWithContext(req.Context(), req.Method, req.URL.String(), bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	newReq.Header = req.Header.Clone()
-	resp, err := sharedHTTPClient().Do(newReq)
+	resp, err := streamHTTPClient().Do(newReq)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	return &hostHTTPStream{liveBody: resp.Body}, resp.StatusCode, resp.Header.Clone(), nil
 }
 
+// streamHTTPClient is the plugin's own HTTP client for direct STREAMING
+// upstream calls. It deliberately has NO overall Timeout (unlike
+// sharedHTTPClient's 120s): a single qwen3.8-max long reasoning generation can
+// legitimately take minutes, and an overall deadline would truncate it mid-stream
+// right when the bridge read degraded. Only per-operation dial/TLS deadlines
+// apply so a wedged connection still fails fast while a healthy long stream
+// runs to completion.
+func streamHTTPClient() *http.Client {
+	streamHTTPClientOnce.Do(func() {
+		streamClient = &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:        20,
+				IdleConnTimeout:     90 * time.Second,
+				MaxIdleConnsPerHost: 5,
+				DialContext: (&net.Dialer{
+					Timeout:   10 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 30 * time.Second,
+			},
+		}
+	})
+	return streamClient
+}
+
 // Read pulls the next chunk. Returns (payload, done, err). done=true means the
 // stream ended cleanly; err non-nil means upstream or bridge error.
+//
+// Bridged reads are wrapped in a goroutine+select race: the read RPC is a
+// synchronous cgo call with no host-side deadline, and a stalled upstream can
+// block it past hostBridgeReadTimeout while the plugin's direct client streams
+// the same upstream fine. On timeout the stream degrades to the direct live
+// body (re-opening the upstream once) so the request completes instead of
+// hanging the coordinator. Reads are sequential (single consumer), so the
+// sticky liveBody branch at the top serves the rest of the attempt.
 func (s *hostHTTPStream) Read() ([]byte, bool, error) {
 	if s == nil {
 		return nil, true, fmt.Errorf("stream closed")
@@ -388,6 +458,7 @@ func (s *hostHTTPStream) Read() ([]byte, bool, error) {
 		return out, false, nil
 	}
 	// Live direct mode: drain the open upstream response body as bytes arrive.
+	// Once a bridged read degrades (below) this branch serves the remainder.
 	if s.liveBody != nil {
 		buf := make([]byte, 32*1024)
 		n, err := s.liveBody.Read(buf)
@@ -405,10 +476,54 @@ func (s *hostHTTPStream) Read() ([]byte, bool, error) {
 	if s.streamID == "" {
 		return nil, true, fmt.Errorf("stream closed")
 	}
-	raw, err := hostCall(pluginabi.MethodHostHTTPStreamRead, mustJSON(map[string]any{"stream_id": s.streamID}))
-	if err != nil {
+
+	// Bridged read with bounded wait; on timeout re-open directly.
+	raw, err := s.bridgedRead()
+	if err == nil {
+		return s.bridgeReadUnwrap(raw)
+	}
+	if err != errHostBridgeReadTimeout {
 		return nil, true, err
 	}
+	return s.degradeToDirect()
+}
+
+// hostStreamReadFn is the host stream bridge read seam, injectable in tests to
+// simulate a hanging MethodHostHTTPStreamRead RPC (the production read stall
+// that the read-phase degradation guards against). Defaults to the real
+// synchronous cgo call.
+var hostStreamReadFn = func(streamID string) ([]byte, error) {
+	return hostCall(pluginabi.MethodHostHTTPStreamRead, mustJSON(map[string]any{"stream_id": streamID}))
+}
+
+// hostStreamDirectFn is the direct-stream degradation seam, injectable in tests
+// to substitute an in-memory upstream for the real plugin HTTP client. Defaults
+// to the real client (hostHTTPDoStreamDirect).
+var hostStreamDirectFn = hostHTTPDoStreamDirect
+
+// bridgedRead runs one host stream read RPC under hostBridgeReadTimeout; the
+// goroutine's late result is discarded if the timer wins (the host-side stream
+// is closed by the eventual Close RPC, and this stream is now direct).
+func (s *hostHTTPStream) bridgedRead() ([]byte, error) {
+	type res struct {
+		raw []byte
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		raw, err := hostStreamReadFn(s.streamID)
+		done <- res{raw: raw, err: err}
+	}()
+	select {
+	case r := <-done:
+		return r.raw, r.err
+	case <-time.After(hostBridgeReadTimeout):
+		return nil, errHostBridgeReadTimeout
+	}
+}
+
+// bridgeReadUnwrap decodes the host stream read envelope into a chunk triple.
+func (s *hostHTTPStream) bridgeReadUnwrap(raw []byte) ([]byte, bool, error) {
 	result, err := hostBridgeUnwrap(raw, pluginabi.MethodHostHTTPStreamRead)
 	if err != nil {
 		return nil, true, err
@@ -421,6 +536,37 @@ func (s *hostHTTPStream) Read() ([]byte, bool, error) {
 		return nil, true, fmt.Errorf("%s", resp.Error)
 	}
 	return resp.Payload, resp.Done, nil
+}
+
+// degradeToDirect re-opens the same upstream with the plugin's own HTTP client
+// and switches this stream to live direct mode, then drains the first chunk.
+// Subsequent Reads hit the liveBody branch at the top of Read.
+func (s *hostHTTPStream) degradeToDirect() ([]byte, bool, error) {
+	if s.req == nil {
+		return nil, true, fmt.Errorf("host stream bridge read timed out (%s) and no direct fallback request", hostBridgeReadTimeout)
+	}
+	direct, statusCode, _, err := hostStreamDirectFn(s.req, s.bodyBytes)
+	if err != nil {
+		return nil, true, fmt.Errorf("host stream bridge read timed out (%s); direct fallback failed: %w", hostBridgeReadTimeout, err)
+	}
+	if statusCode < 200 || statusCode >= 300 {
+		return nil, true, fmt.Errorf("host stream bridge read timed out (%s); direct fallback status %d", hostBridgeReadTimeout, statusCode)
+	}
+	s.liveBody = direct.liveBody
+	s.streamID = ""
+	// Read from the direct body immediately.
+	buf := make([]byte, 32*1024)
+	n, err := s.liveBody.Read(buf)
+	if n > 0 {
+		return buf[:n], false, nil
+	}
+	if err == io.EOF {
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, true, err
+	}
+	return nil, false, nil
 }
 
 // Close aborts the upstream stream. Always safe to call (idempotent on host).
