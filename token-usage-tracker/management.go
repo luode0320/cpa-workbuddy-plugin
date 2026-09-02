@@ -21,6 +21,7 @@ package main
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -84,6 +85,7 @@ func managementRegistration() managementRegistrationResponse {
 		},
 		Resources: []resourceRoute{
 			{Path: "/usage", Menu: "Token 用量", Description: "Token usage dashboard: per-model/account consumption, trends, requests, costs (records produced by the workbuddy plugin via the shared usage feed)."},
+			{Path: "/usage/events", Description: "SSE event stream: latest feed sequence, used by the dashboard to refresh on new usage (host bridge is single-shot, so this reports the current seq and EventSource reconnects)."},
 			{Path: "/stats", Description: "Statistics summary."},
 			{Path: "/stats/initial", Description: "Initial dashboard payload."},
 			{Path: "/stats/trends", Description: "Token usage trend series."},
@@ -151,6 +153,9 @@ func serveStatsResource(sub string, query url.Values) (pluginapi.ManagementRespo
 	if sub == "/usage" || sub == "/usage/" {
 		return mgmtHTMLResponse(usagestats.DashboardHTML()), true
 	}
+	if sub == "/usage/events" {
+		return serveUsageEvents(sub, query)
+	}
 	if !statsReadAPIPath(sub) {
 		return pluginapi.ManagementResponse{}, false
 	}
@@ -172,13 +177,30 @@ func serveStatsResource(sub string, query url.Values) (pluginapi.ManagementRespo
 	return managementResult(result), true
 }
 
+// serveUsageEvents returns the dashboard SSE notification: the current feed
+// sequence as one SSE data frame. The host management bridge writes the whole
+// response in a single shot and closes the connection (no incremental flush),
+// so this is a short-lived notification the EventSource reconnects to; the
+// frontend ignores frames whose seq did not advance.
+func serveUsageEvents(sub string, query url.Values) (pluginapi.ManagementResponse, bool) {
+	seq := feedNotifierLatest()
+	body := fmt.Appendf(nil, "retry: 2000\n\n")
+	body = fmt.Appendf(body, "data: {\"seq\":%d}\n\n", seq)
+	h := http.Header{}
+	h.Set("Content-Type", "text/event-stream; charset=utf-8")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	return pluginapi.ManagementResponse{StatusCode: http.StatusOK, Headers: h, Body: body}, true
+}
+
 // statsReadAPIPath reports whether the relative resource path belongs to the
 // read-only statistics API consumed by the dashboard frontend. Keep in sync
 // with the /stats* /requests /costs /prices /preferences /exchange-rate
 // entries in managementRegistration().
 func statsReadAPIPath(rel string) bool {
 	switch {
-	case rel == "/stats" || strings.HasPrefix(rel, "/stats/"),
+	case rel == "/usage/events",
+		rel == "/stats" || strings.HasPrefix(rel, "/stats/"),
 		rel == "/requests" || strings.HasPrefix(rel, "/requests/"),
 		rel == "/costs" || strings.HasPrefix(rel, "/costs/"),
 		rel == "/prices",

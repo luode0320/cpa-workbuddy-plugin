@@ -84,6 +84,20 @@ var (
 	feedOffsetLoaded bool
 )
 
+// feedNotifier tracks a monotonically increasing sequence number that bumps
+// every time the importer records a new line from the shared usage feed. The
+// dashboard frontend subscribes via the /usage/events resource route
+// (text/event-stream) and refreshes only when this sequence advanced. The
+// host's management bridge writes each response in a single shot (no
+// incremental flush), so the SSE endpoint reports the latest sequence and
+// closes; EventSource reconnects automatically. A single uint64 avoids any
+// per-client cursor bookkeeping: clients compare the seq they last saw and
+// ignore unchanged values.
+var (
+	feedNotifierMu  sync.Mutex
+	feedNotifierSeq uint64
+)
+
 // configure parses config_yaml and (re)opens the store. Called from
 // register/reconfigure. Failures are non-fatal: the plugin keeps serving the
 // dashboard and only disables statistics ingestion.
@@ -456,8 +470,25 @@ func ingestFeedChunk(store *usagestats.Store, chunk []byte) int64 {
 			trackerWarnf("feed: skipping unparsable line: %v", err)
 			continue
 		}
+		feedNotifierBump()
 	}
 	return consumed
+}
+
+// feedNotifierBump advances the feed sequence after one line was recorded.
+// The sequence is intentionally monotonic and never wraps on any realistic
+// uptime; the dashboard only compares relative order.
+func feedNotifierBump() {
+	feedNotifierMu.Lock()
+	feedNotifierSeq++
+	feedNotifierMu.Unlock()
+}
+
+// feedNotifierLatest returns the current feed sequence.
+func feedNotifierLatest() uint64 {
+	feedNotifierMu.Lock()
+	defer feedNotifierMu.Unlock()
+	return feedNotifierSeq
 }
 
 func trackerInfof(format string, args ...any) {

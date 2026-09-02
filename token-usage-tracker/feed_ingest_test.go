@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -438,4 +439,82 @@ func jsonRequestsTotal(body []byte) uint64 {
 	}
 	_ = json.Unmarshal(body, &s)
 	return s.Summary.Requests
+}
+
+// TestFeedNotifierSSE covers the SSE notification path used by the dashboard:
+// the notifier sequence advances per recorded feed line, and the /usage/events
+// resource route renders a valid text/event-stream body carrying the latest
+// sequence (the host bridge delivers the whole body in one shot and the
+// frontend EventSource reconnects, so only the current seq is meaningful).
+func TestFeedNotifierSSE(t *testing.T) {
+	resetFeedState()
+	defer resetFeedState()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "stats.db")
+	feedPath := filepath.Join(dir, "feed.ndjson")
+
+	store, err := usagestats.Open(usagestats.Config{
+		DataPath:        dbPath,
+		RetentionDays:   365,
+		FlushInterval:   time.Second,
+		FlushMaxRecords: 100,
+		SyncOnRecord:    true,
+	})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	storeMu.Lock()
+	usageStore = store
+	storeMu.Unlock()
+
+	// Fresh notifier baseline.
+	feedNotifierMu.Lock()
+	feedNotifierSeq = 0
+	feedNotifierMu.Unlock()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	feedData := validFeedLine(now.Format(time.RFC3339Nano), "deepseek-v4", "u-1", 100, 200, 350) + "\n"
+	if err := os.WriteFile(feedPath, []byte(feedData), 0o644); err != nil {
+		t.Fatalf("write feed: %v", err)
+	}
+	trackerCfgMu.Lock()
+	trackerCfg.FeedPath = feedPath
+	trackerCfg.DBPath = dbPath
+	trackerCfgMu.Unlock()
+
+	// 1. Importing one line bumps the sequence to 1.
+	syncUsageFeed()
+	if got := feedNotifierLatest(); got != 1 {
+		t.Fatalf("feedNotifierLatest() = %d after one line, want 1", got)
+	}
+
+	// 2. A second import with no new lines leaves the sequence unchanged.
+	syncUsageFeed()
+	if got := feedNotifierLatest(); got != 1 {
+		t.Fatalf("feedNotifierLatest() = %d after no-op sync, want 1", got)
+	}
+
+	// 3. The /usage/events route returns text/event-stream with the current seq.
+	resp, ok := serveUsageEvents("/usage/events", url.Values{})
+	if !ok {
+		t.Fatal("serveUsageEvents() ok = false, want true")
+	}
+	if ct := resp.Headers.Get("Content-Type"); ct != "text/event-stream; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want text/event-stream; charset=utf-8", ct)
+	}
+	body := string(resp.Body)
+	wantSeq := `"seq":1`
+	if !strings.Contains(body, wantSeq) {
+		t.Fatalf("events body %q does not contain %q", body, wantSeq)
+	}
+	if !strings.HasPrefix(body, "retry: 2000\n\n") {
+		t.Fatalf("events body %q missing retry preamble", body)
+	}
+
+	// 4. The path is accepted by the read-route gate.
+	if !statsReadAPIPath("/usage/events") {
+		t.Fatal("statsReadAPIPath(/usage/events) = false, want true")
+	}
 }
