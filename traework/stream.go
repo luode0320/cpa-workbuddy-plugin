@@ -382,15 +382,19 @@ type traeStreamEmitter func(payload []byte) error
 // pumpTraeStreamAttempt 读取单次 Trae SSE；长输入达到健康门槛前缓存全部分片，伪完成时不向客户端泄漏。
 // [参数] r: 单次上游 SSE；ctx: 流上下文；requestID: 逻辑请求固定 ID；emit: 分片下发函数。
 // [返回] 单次尝试的终结类别、分片、伪完成和下发状态；本函数不发送 finish，也不关闭宿主流。
-// 最近修改时间：2026-09-01 23:30:00；改动原因：伪完成必须在首次下发前识别，才能在同一请求内无痕换号。
+// 最近修改时间：2026-09-02 23:40:00；改动原因：思考型长推理在 reasoning 阶段即应流式放行——
+// gate 只累计 content 会把 reasoning-only 分片无限压 pending，长思考（reasoning≥600 字符）
+// 时客户端/nginx 长时间零字节触发 300s 读超时 504（生产 stream 2878）；reasoning 长在
+// isPseudoCompletion 已豁免为健康，放行 reasoning 不构成伪完成泄漏。
 func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID string, emit traeStreamEmitter) traeStreamAttemptResult {
 	result := traeStreamAttemptResult{RequestID: requestID}
 	gateOpen := ctx.InputChars < pseudoCompletionMinInputChars
-	contentChars := 0
+	healthChars := 0
 	pending := make([][]byte, 0)
 	var terminal traeSSETerminal
 
-	// 1. 转换每个 output；长输入在正文达到 600 字节前只缓存，不向客户端承诺当前账号。
+	// 1. 转换每个 output；长输入在 content+reasoning 合计达到健康门槛前只缓存，
+	//    不向客户端承诺当前账号（双轴都短的真伪完成全程零泄漏）。
 	scanErr := scanSSE(r, func(ev sseEvent) error {
 		switch ev.Event {
 		case "output":
@@ -403,10 +407,10 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 				return err
 			}
 			result.Chunks = append(result.Chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
-			contentChars += len(text)
+			healthChars += len(text) + len(reasoning)
 			if !gateOpen {
 				pending = append(pending, raw)
-				if contentChars < pseudoCompletionMaxChars {
+				if healthChars < pseudoCompletionMaxChars {
 					return nil
 				}
 				gateOpen = true

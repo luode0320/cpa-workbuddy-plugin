@@ -1,5 +1,17 @@
 # TraeWork Plugin Changelog
 
+## 0.1.31
+
+### Fix — 思考型长推理 reasoning 阶段零字节 504：pump gate 纳入 reasoning 双轴健康度流式放行
+
+生产验收 0.1.30（2026-09-02，CYCLE-04）短请求与常规长推理全绿后，深度思考请求（quickselect 算法推导，prompt 要求「深入思考后完整作答」）触发 **504**：`stream_id=2878` scheduled 后 5 分钟零字节、无 done/error/degrade，nginx `proxy_read_timeout 300s` 掐断。根因：`pumpTraeStreamAttempt` 的伪完成保护 gate **只累计 content**（`contentChars += len(text)`），思考型模型 reasoning 阶段的 reasoning-only 分片被无限压入 pending 缓存、永不转发——上游 reasoning 持续流入宿主桥（无 90s 降级，证明桥健康），但插件→nginx→客户端方向 300s 无字节 → 504。0.1.30 的 `isPseudoCompletion` 已把 reasoning 长流豁免为健康（reasoning ≥600 不判伪），gate 却不放行 reasoning，判据与转发放行不一致。
+
+修复（`traework/stream.go`）：
+
+4. **FIX-D · pump gate 双轴健康度**：`pumpTraeStreamAttempt` 门槛累计从 `contentChars += len(text)` 改为 `healthChars += len(text) + len(reasoning)`——reasoning 达到 600 字符（健康思考轨迹）即 gate 打开、按序释放已缓冲分片并转实时转发，reasoning 阶段客户端持续收到字节，不再触发 300s 读超时。伪完成保护不回归：真伪完成是 content+reasoning **双轴都短**（合计 <600），gate 不打开 → 全程 pending → done 后 `isPseudoCompletion` 判伪 → 丢弃 + 换号，零泄漏语义保留。reasoning-only 短流（content==0）仍走既有豁免不判伪。
+
+验证：新增 `TestPumpTraeStreamAttemptReasoningFlushes`（reasoning-only ≥600 按序放行不判伪 / 双轴短真伪完成零下发 / reasoning 达标后 content 实时放行 / reasoning-only 短流豁免释放），哨兵先 FAIL 后删除证明真实编译。cgo-shim build+vet+test 全绿 + gofmt（LF 转换）CLEAN + UTF-8 OK。
+
 ## 0.1.30
 
 ### Fix — 池耗尽根因三缺陷修复：async 401 核算驱逐 + 伪完成单号池同号退避 + reasoning 纳入伪完成判据

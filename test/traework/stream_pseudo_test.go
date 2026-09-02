@@ -195,3 +195,74 @@ func TestEstimateInputChars(t *testing.T) {
 		t.Fatalf("estimateInputChars(multi-part) = %d, want 6", got)
 	}
 }
+
+// TestPumpTraeStreamAttemptReasoningFlushes 验证思考型长推理的 reasoning 也计入健康门槛：
+// 长输入下 reasoning-only 分片累计达到 600 字符后 gate 必须打开并按序实时放行（不能一直压
+// pending 到 done，否则 reasoning 阶段客户端/nginx 零字节会触发 300s 读超时 504——生产
+// stream 2878）。同时确认真伪完成（双轴合计仍 <600）依旧全程缓存不泄漏。
+// [参数] t: 当前测试。
+// [返回] 无；断言失败时由 testing 终止用例。
+// 最近修改时间：2026-09-02 23:40:00；改动原因：FIX-D，gate 从只统计 content 改为统计
+// content+reasoning 双轴健康度。
+func TestPumpTraeStreamAttemptReasoningFlushes(t *testing.T) {
+	makeReasoningSSE := func(parts ...string) string {
+		var out strings.Builder
+		for _, part := range parts {
+			out.WriteString("event: output\ndata: {\"reasoning\":\"")
+			out.WriteString(part)
+			out.WriteString("\"}\n\n")
+		}
+		out.WriteString("event: done\ndata: {}\n\n")
+		return out.String()
+	}
+	ctx := traeStreamPumpContext{Model: "qwen3.8-max", StatusCode: 200, InputChars: 3000}
+
+	// 1. reasoning-only 流累计 ≥600 字符（两段 300+300）必须 gate 打开并按序放行，
+	//    且 isPseudoCompletion 对 reasoning 长流豁免 → 不判伪。
+	var emitted [][]byte
+	healthy := pumpTraeStreamAttempt(strings.NewReader(makeReasoningSSE(strings.Repeat("r", 300), strings.Repeat("s", 300))), ctx, "reasoning-gate", func(payload []byte) error {
+		emitted = append(emitted, bytes.Clone(payload))
+		return nil
+	})
+	if healthy.Pseudo || healthy.Err != nil || !healthy.Emitted || len(emitted) != 2 {
+		t.Fatalf("reasoning 600-byte result = pseudo:%v err:%v emitted:%v calls:%d", healthy.Pseudo, healthy.Err, healthy.Emitted, len(emitted))
+	}
+	if !bytes.Contains(emitted[0], []byte(strings.Repeat("r", 300))) || !bytes.Contains(emitted[1], []byte(strings.Repeat("s", 300))) {
+		t.Fatalf("reasoning emission order/content mismatch: %q", emitted)
+	}
+
+	// 2. 真伪完成（content 短 + reasoning 也短，双轴合计 <600）依旧全程缓存零下发。
+	//    注意必须双轴都有值：reasoning-only（content==0）走既有豁免语义不判伪。
+	emitted = nil
+	dualShortSSE := "event: output\ndata: {\"reasoning\":\"tiny\",\"response\":\"" + strings.Repeat("c", 100) + "\"}\n\nevent: done\ndata: {}\n\n"
+	pseudo := pumpTraeStreamAttempt(strings.NewReader(dualShortSSE), ctx, "dual-short-pseudo", func(payload []byte) error {
+		emitted = append(emitted, bytes.Clone(payload))
+		return nil
+	})
+	if !pseudo.Pseudo || pseudo.Err != nil || pseudo.Emitted || len(emitted) != 0 {
+		t.Fatalf("dual-short result = pseudo:%v err:%v emitted:%v calls:%d", pseudo.Pseudo, pseudo.Err, pseudo.Emitted, len(emitted))
+	}
+
+	// 2b. reasoning-only 短流（content==0）仍走既有豁免：不判伪，done 后释放缓冲。
+	emitted = nil
+	ro := pumpTraeStreamAttempt(strings.NewReader(makeReasoningSSE("tiny reasoning only")), ctx, "reasoning-only-short", func(payload []byte) error {
+		emitted = append(emitted, bytes.Clone(payload))
+		return nil
+	})
+	if ro.Pseudo || ro.Err != nil || !ro.Emitted || len(emitted) != 1 {
+		t.Fatalf("reasoning-only-short result = pseudo:%v err:%v emitted:%v calls:%d", ro.Pseudo, ro.Err, ro.Emitted, len(emitted))
+	}
+
+	// 3. reasoning 累计达标后，后续 content 分片也实时放行（gate 已打开）。
+	emitted = nil
+	mixed := pumpTraeStreamAttempt(strings.NewReader(
+		"event: output\ndata: {\"reasoning\":\""+strings.Repeat("r", 600)+"\"}\n\n"+
+			"event: output\ndata: {\"response\":\"final answer\"}\n\n"+
+			"event: done\ndata: {}\n\n"), ctx, "reasoning-then-content", func(payload []byte) error {
+		emitted = append(emitted, bytes.Clone(payload))
+		return nil
+	})
+	if mixed.Pseudo || mixed.Err != nil || !mixed.Emitted || len(emitted) != 2 {
+		t.Fatalf("reasoning-then-content result = pseudo:%v err:%v emitted:%v calls:%d", mixed.Pseudo, mixed.Err, mixed.Emitted, len(emitted))
+	}
+}
