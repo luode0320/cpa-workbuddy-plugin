@@ -17,6 +17,7 @@
   - workbuddy 是新版：publishUsage 带 reasoningEffort/accountLabel、有 preserve watchdog、session_auth、`backendHeaders`+`endpointChatFor(sa)`、stripDataPrefix SSE
   - **同步改动只能逐函数适配，不能整体覆盖文件**；accountFailover.go 等纯逻辑文件可整文件同步
 - 插件是 c-shared（import "C"），Windows 无 gcc 时 main.go 被工具链忽略（undefined: storedAuth 是环境假象），验证一律走 `python scripts/cgo-shim-build.py <plugin>`
+- **插件侧无 ws/SSE 长连接通道（宿主 SDK v7.2.129 实测，2026-09-01）**：插件 ABI 无任何注册 ws/SSE 长连接的方法（`AttachWebsocketRoute` 仅服务内部 wsrelay；`MethodHostStreamEmit/Close` 的 StreamID 只在 executor 流式路径创建）；management/resource 桥接单次写回（`w.WriteHeader + w.Write` 无 Flush/ws 升级）。SSE body 原样透传（`text/event-stream` 不触发 JSON 转义）→ 实时推送落地「SSE 短连接轮询通知 + REST 拉取」：`/usage/events` 返回 `retry: 2000\n\ndata: {"seq":N}`，EventSource 自动重连，seq 前进才触发 load()；15s 轮询 fallback。前端 `fullModePage` 禁用 EventSource（无法带 session header）。详见知识库《插件侧无WebSocket长连接只能SSE短连接轮询》
 - 磁盘写路径：host.auth.save 会丢未知顶层字段 → 直写物理 auth 文件（writeAuthFileDirect + fsnotify）；auth 目录 `~/.antigravity_cockpit/<plugin>_accounts/`
 - config_yaml 经 host RPC 传输时 []byte 走 base64；测试必须 `json.Marshal(map{"config_yaml": []byte(yaml)})`
 
@@ -64,4 +65,7 @@ usage_tracking:
   schema_version: 1
   counted_files:
     - PROJECT_MEMORY.md
+    - PROJECT_STYLE.md
+    - PROJECT_HISTORY.md
+  policy_ref: memory-usage-tracking-rules/references/usage-tracking-policy.md
 ```

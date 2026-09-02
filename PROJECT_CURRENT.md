@@ -3,33 +3,70 @@
 ## 目标与范围
 
 - 目标：维护 CLIProxyAPI (CPA) 的 Go 插件集合 `cpa-workbuddy-plugin`——将腾讯 CodeBuddy（WorkBuddy）与 QoderWork CN 封装为 OpenAI 兼容 provider，提供多账号管理、动态模型、流式推理、每日签到、积分生命周期与 token 用量统计。
-- 范围：三插件（workbuddy-provider / qoderwork-provider / workbuddy-token-usage）的迭代、测试、发布与 registry 同步；QoderWork 逆向知识维护。
+- 范围：四插件（workbuddy-provider / qoderwork-provider / traework-provider / workbuddy-token-usage）的迭代、测试、发布、生产部署与 registry 同步；QoderWork / Trae SOLO 逆向知识维护。
 - 非范围：CLIProxyAPI 网关本体；CPA 内置调度器逻辑的修改（插件只做 host 契约适配）。
 
 ## 项目概览
 
-- 状态：活跃维护中（最近发布 2026-08-29 workbuddy 0.14.15 + traework 0.1.5：models 支持宿主 YAML block sequence 落库形态）
-- 活动会话数：1
-- 更新时间：2026-08-29 00:30 (GMT+8)
+- 状态：活跃维护中。生产现役与 registry 对齐：workbuddy-provider **0.14.18** / qoderwork-provider **0.9.6** / traework-provider **0.1.31** / workbuddy-token-usage 0.2.1。traework 0.1.31 已发布并热加载部署生效（active_version=0.1.31 retired=0.1.30，落盘 .so sha256 c053981a...c2ffe1 与本地 zip 一致）。0.1.30 修复伪完成三缺陷（async 401 核算驱逐 + 单号池同号退避 + reasoning 纳入伪完成判据）；0.1.31 修复思考型长推理 reasoning 阶段零字节 504（pump gate 双轴健康度流式放行，stream 2999 生产复验 490.7s 完整返回 8702+55062 字符）。
+- 活动会话数：2（本会话 + 并行会话共享工作树 F:\cpa-plugin）
+- 更新时间：2026-09-02 (GMT+8)
 
 ## 活动会话任务摘要
 
-- 本会话：qoderwork 全量 1-9 功能同步（对齐 workbuddy 已实现但未同步的功能；同步原则：逐函数适配、纯逻辑文件可整文件复制）
-  1. **【已完成】** 同步①登录轮询重复账号修复：qoderwork oauth.go handlePollLogin 三处成功路径改 `toAuthDataOpts` + `ad.ID=""`（对齐 workbuddy 0.14.12）
-  2. **【已完成】** 同步②models 配置面板化 + ConfigFields 中文化（对齐 workbuddy 0.14.13）
-  3. **【已完成】** 同步③面板 5 卡片 + 异步刷新前端
-  4. **【已完成】** 同步④账号删除功能
-  5. **【已完成】** 同步⑤计数持久化（挂载点最终落在 preserveWatchdogLoop：启动 loadCountersFromDisk + 每次醒来 flushCounters，与 workbuddy 对称）
-  6. **【已完成】** 同步⑥session_auth 会话粘性：scheduler.go `schedulerModeSession` 默认值 + `pickSessionAuth` 分支；session_auth.go 根文件；驱逐点 `evictSessionBindingsForAuth` 接入 noteAccountFailure（双路径）/freezeAccountForAnomaly（两分支）/clearDeletedAccountState
-  7. **【已完成】** 同步⑦usage_feed NDJSON 通道：usage_feed.go 新建 + publishUsage 8→12 参数（11 处调用点全适配，failover 后 curAccountLabel 归属同步）+ sseUsageCollector ttftNS + ConfigFields usage_feed_enabled/usage_feed_path
-  8. **【已完成】** 同步⑧保号池 + watchdog：preserve.go/watchdog.go 新建（删重复 authFileErr 系列，qoderwork anomaly.go 已有）+ cachedCredits + panel 后端三键（preserve_auto/threshold/pool_size）+ 配置解析 + scheduler preserve 过滤段 + 前端 panel.html 保号展示 8 处
-  9. **【已发布随 0.9.5】** 同步⑨：差异盘点明细未保留在当前会话上下文（发生在更早会话）；用户已确认发布，⑨ 若有遗留项可下轮盘点核对
-- 验证：cgo-shim build+vet+test 全绿（7.397s bump 后复验）；双 panel.html node new Function() 语法 OK（临时脚本用完即删）
-- 状态：**qoderwork 0.9.5 已发布（2026-08-28）**。提交链 64c3e70（feat 30 文件 +3693/-84）→ 6b9a23c（assets 8 文件）→ f7c5ba3（registry）；CI run 33180359855 success（test 4 + build 20 + cross 8 + release），Release `qoderwork-provider-v0.9.5` 8 assets checksums 全 OK；registry raw 200 含 0.9.5 + 7 artifacts 远端 HEAD 全 200；validate-registry OK（4 plugins）
+- 当前会话（2026-09-02，**traework 0.1.30+0.1.31 已发布部署，生产验收 PASS（双循环闭环）**）：用户「不是号有问题, 就是我们的插件有问题」否决账号归因。**0.1.30**（三 FIX，commit d027734/3d74d2d/37d1b86）：FIX-A 伪完成仅无其它候选才同号退避重试 1 次（sync+async 收敛）；FIX-B async 401 open error 补核算+驱逐绑定；FIX-C isPseudoCompletion content+reasoning 双计、reasoning-only 永不判伪。生产验收：形态 A 短请求 5 连发全绿（2-4s）+ 形态 B 长推理 99s/9360 字符完整。**0.1.31**（FIX-D，commit 4477560/6d63e1d/25facac）：CYCLE-04 形态 B2 深度思考 504 取证——`pumpTraeStreamAttempt` gate 只累计 content，reasoning-only 分片无限压 pending 不转发 → 插件→nginx 300s 零字节（stream 2878，nginx proxy_read_timeout 300s）；FIX-D gate 改 content+reasoning 双轴健康度（healthChars），reasoning≥600 即流式放行，真伪完成（双轴短）仍零泄漏。生产复验 stream 2999 同 prompt 完整返回 8702+55062 字符、1232 chunks、490.7s、**首包 26.4s 到达**不再零字节，attempt=1 无换号。两轮发布链均完成 CI success + 远端 raw ALL PASS + 生产 hot reloaded（active 0.1.31 retired 0.1.30）+ 落盘 sha256 与本地 zip 一致。关联记忆 [[traework-20260902-pool-exhausted-rootcause]]。
+
+- 当前会话（2026-09-02，Trae 异步流式宿主流桥打开超时降级直连，**0.1.28 已发布部署 + 生产流式长推理验收 PASS**）：见下方「已完成」0.1.28 条目；该版本只覆盖宿主流桥 open 阶段挂死，read 阶段挂死由本会话 0.1.29 修复承接。
+
+- 当前会话（2026-09-01，Trae 伪完成同请求换号恢复，**六任务全部完成：0.1.27 已发布部署 + 生产真实流量验收**）：0.1.27 已发布并热加载部署生效。生产热加载日志 `active_version=0.1.27 retired_version=0.1.26`，落盘 .so sha256 与本地 release zip 完全一致，二进制含新符号 `pumpTraeStreamAttempt`（0.1.26 无此符号，pseudo 日志路径 12 处 vs 0.1.26 的 0 处），accounts/panel 200，traework 账号池 2 账号（203343 主 / 225774 备）就绪。生产 `/v1/responses` 真实流量验收：部署后第一批 qwen3.8-max 请求在两次请求上走通同请求换号闭环——stream_id=1607（request df45ea3f）attempt1 伪完成→attempt2 伪完成→池耗尽显式失败；stream_id=1609（request 4d1fcf6f）attempt1 伪完成(150 chunks)→attempt2 伪完成(79 chunks)→池耗尽显式失败；失败核算落盘 203343 fail_count=2、225774 fail_count=2 且冷却生效。0.1.27 不再把伪完成短答当成功下发（0.1.26 缺陷已修复）；当前窗口两账号均被上游瞬时限流，「一账号伪完成→另一账号健康成功」记为 NOT_OBSERVED 待自然流量继续观察。
+
+- 当前会话（2026-09-01，token-usage-tracker「feed 新增 usage 实时通知 dashboard」**已改码未提交**）：用户目标为「创建一个名为 workbuddy-token-usage 的插件，并把 feed 的 usage 数据通过 ws 推送给前端」——该插件已存在（token-usage-tracker，成熟插件），真实需求 = 改造现有插件把 feed 新增 usage 数据实时推送给 dashboard 前端。逐层核实 CPA 宿主 SDK v7.2.129：插件 ABI 无任何注册 ws/SSE 长连接的方法（`AttachWebsocketRoute` 仅服务内部 wsrelay，`MethodHostStreamEmit/Close` 的 StreamID 只在 executor 流式路径创建，token-usage-tracker 无 executor capability）；management/resource 桥接单次写回（`w.WriteHeader + w.Write`，无 Flush/ws 升级）→ 实测宿主对 SSE body 原样透传（`text/event-stream` 不触发 JSON 转义）。落地「SSE 短连接轮询通知 + REST 拉取」最小可行形态：`feed_ingest.go` 新增 feedNotifier 单调递增 seq（每条 feed 记录 bump）；`management.go` 新增 `/usage/events` 资源路由（返回 `retry: 2000\n\ndata: {"seq":N}`，EventSource 自动重连）；`dashboard.go` `startUsageEvents()`（fullModePage 时禁用）+ 15s 轮询保留为 fallback。验证：cgo-shim build/vet/test 全绿 + 哨兵（移除 bump 测试 FAIL `want 1`）+ node --check 4 script 块全过 + `git diff --check` PASS + UTF-8 校验通过；6-review `STYLE: PASS`（doc/6-review/2026-09-01_011812_TokenUsageSSE通知_6-review.md）。**未提交未发布**（等用户提交授权）。
+
+- 当前会话（2026-08-31，Trae 流式三出口日志插桩 → **0.1.23 已发布部署**；随后定位长任务"刚开口就 done"根因 → **0.1.24 已改码未发布**）：
+  1. **【已发布 0.1.23】** 为 Trae 流式三出口补现场日志插桩（collect/aggregate/pump），用于生产抓取「生成中途停止」的流形态（done / output_eof / invalid）。commit 链 6f18c8c（feat 日志+版本）→ cdde489（assets 8 文件）→ 338dd80（registry）；CI run 33410867841 success；raw 远端验证 ALL PASS；生产 plugin-store install 0.1.23 + 落盘 sha256 a0dddad9 一致 + hot reloaded active=0.1.23 retired=0.1.22 + accounts/panel 双 200。
+  2. **【根因锁定】** 0.1.23 日志证明 traework 收流链路健康（00:19 请求 termination=done、22 chunks、宿主 200、feed failed:false）；账号 2033439621254311 的 qwen3.8-max 全历史 11 条请求平均 77 tokens、最大 273 tokens、全部正常 done —— 上游 Trae 每次"刚开口就 done"。用户确认 Trae 原生客户端同账号长输出正常、额度充足 → 问题在插件/CPA 链路，最可能是流式请求缺 max_tokens（buildTraePayload 仅 maxTokens>0 才带，客户端不传则上游无 max_tokens，Trae 给极小默认上限）。
+  3. **【代码级完成 0.1.24】** 流式请求补默认 max_tokens=20000：`traework/upstream.go` 新增常量 `streamDefaultMaxTokens = 20000`，`buildTraePayload` 流式路径（stream==true 且 maxTokens<=0）补默认值，非流式路径保持原样；新增 `TestBuildTraePayloadStreamDefaultMaxTokens` 覆盖三种形态（流式缺省补 20000 / 流式显式保留 / 非流式不补）。cgo-shim build/vet/test 全绿 + 行为哨兵（临时移除补默认分支）FAIL `stream max_tokens = <nil>, want 20000` 证明测试真实执行；6-review `STYLE: PASS`（doc/6-review/2026-08-31_163500）。VERSION/main.go/CHANGELOG 已 bump 0.1.24。**未提交未发布**（等用户发布授权）。
+
+- 当前会话（2026-08-30 晚间，Trae `qwen3.8-max` 长流提前结束修复，未提交未发布）：
+  1. **【代码级完成】** 异步路径由完整缓冲改为 CPA 宿主 HTTP 实时流桥；`HostCallbackID` 已贯通到 `host.http.do_stream`。
+  2. **【代码级完成】** SSE 成功条件收紧为必须收到 `event:done`；`output -> EOF` 返回截断错误，不补成功 stop。
+  3. **【代码级完成】** 最终 stop 下发失败时只发布失败 usage，不复位账号成功状态。
+  4. **【验证通过】** 真实 `qwen3.8-max` 上游长流持续 107.164 秒，298 个 output、11,683 个字符，终止序列为 `done -> EOF`；cgo shim build、vet、test 全绿，污染扫描 `POLLUTION: PASS`。
+  5. **【受限】** 本机 CPA `127.0.0.1:8317` 不可用，客户端首包、持续分片、唯一 stop 与取消传播尚未完成端到端验证。
+  6. **【代码级完成】** `scanSSE` 已在 EOF 时解析无换行尾帧；回归覆盖无换行 `done`、无换行 `output` 和只有 `event:` 的残缺尾帧，cgo shim build、vet、test 全绿（1.311 秒）。
+  7. **【风格待修】** `6-review` 为 `STYLE: FIX_REQUIRED`：两个既有 `*_test.go` 仍位于 `traework/` 源码目录，不符合当前根 `test/` ASCII 外部黑盒测试资产规则；不得通过新增生产测试专用入口规避。
+- 本会话（2026-08-30 下午，traework 对齐 workbuddy 能力 + 0.1.16/0.1.17 发布）：
+  1. **【已完成】** 调查确认：traework 对齐五件套未提交改动曾被并行会话 checkout 覆盖（git 无法恢复），并行会话 0.1.15 发布后文件回归工作树且完整可编译（cgo-shim 全绿）
+  2. **【已完成】** 任务 10 收尾：management.go 补 `handleRefreshAll`/`handleRefreshStatus`（async 刷新入队 + 快照）；main.go ConfigFields 补 preserve_threshold / preserve_watchdog_interval / preserve_watchdog_enabled / token_keepalive / lifecycle_auto 五个描述条目
+  3. **【已完成】** 任务 9 面板对齐：traework/panel.html 全新面板（go:embed，替换内嵌字符串）——卡片网格 + 筛选 chips（全部/可用/保号/异常/耗尽/失败/停用）+ 系统状态汇总卡（保号池 watchdog / keepalive / lifecycle / 异常池）+ 成功/失败累计计数 + 异步刷新（进面板自动 + 10 分钟定时 + 2s 轮询 + 卡片三态）+ 签到（全部/单个/自动开关/重试队列）+ keepalive 手动保号刷新 + storage.json 导入 + 0.14.18 版 key 持久化/401 退避/__silent 静默链路
+  4. **【已完成】** 后端 dashboard 聚合：traeAccountView 补 Preserved/SuccessCount/FailedCount；handleAccounts 返回 checkin_auto/server_time + preserve（threshold/interval/enabled/pool_size）+ lifecycle + keepalive 子系统状态
+  5. **【已完成】** 验证：cgo-shim build+vet+test 全绿（多次）；panel.html 两 script 块 node --check 通过（占位符替换后）
+  6. **【已完成】** traework **0.1.16 发布并部署生产**：commit 链 f930adf（feat 24 文件）→ 1d5dfae（assets 8 文件）→ 3ef8643（registry）；CI run 33299646435 success（8 分钟）；raw 远端验证 ALL PASS（7 平台 sha256 OK）；生产 plugin-store install 0.1.16 + 落盘 sha256 8cf91be1 与本地一致 + hot reloaded active=0.1.16 retired=0.1.15 + accounts/panel 双 200
+  7. **【已完成】** traework **0.1.17 发布并部署生产**（两 bug 修复）：checkin.go runFleetCheckin 写缓存不再用 res.Points（本次签到奖励 200）当 TotalRemain，改为成功签到后 accountPoints 真实查询；panel.html 汇总卡标题"系统状态"→"用量汇总 · 全部账号"。commit 链 cc72bf5→6475a71→b857cbd；CI run 33301068289 success（10 分钟）；raw ALL PASS；生产 install 0.1.17 + 落盘 sha256 575cfe52 与本地一致 + hot reloaded active=0.1.17 retired=0.1.16 + accounts/panel 双 200
+- 并行会话（0.1.11→0.1.15 发布链已完成）：WAF UA 加固（0.1.11）/ content parts 数组 4001 修复（0.1.12）/ 对话签到 host 分离（0.1.13）/ 动态模型发现（0.1.14）/ usage_feed 适配 token-usage-tracker（0.1.15）+ workbuddy 0.14.18 定时刷新稳定性修复
+- 关键新铁律：dispatch 必须传 plugin(provider id)+version；download/publish 脚本参数顺序互反；store install 的 CDN 边缘滞后误报（等几分钟重试）；生产部署唯一路径 plugin-store install；并行会话 checkout/reset 会覆盖未提交改动（发版前先 fetch 对齐或及时提交）
 
 ## 已完成
 
-- 2026-08-29 workbuddy 0.14.15 + traework 0.1.5 **已发布**（models 支持宿主 YAML block sequence 落库形态）：服务器 config_store 取证实锤——宿主面板把 JSON 数组反序列化成 YAML block sequence 落库下发（`models:` 换行、缩进 `- key: value`），0.14.14 括号配对解析永不闭合 → 静默忽略。修复：两插件各加 `parseModelsYAMLBlock`（缩进收集 `- key: value`，输出与 json.Unmarshal 同构复用 parseModelsConfig）+ `indentOf`/`splitYAMLPair`/`parseYAMLScalar`；workbuddy 在 models 分支内回退（有原始行），traework 在 configure() 层 `parseModelsYAMLConfig` 先行解析（yamlLines 丢缩进）。纯字符串 YAML 条目仍不支持（回归保护）。测试 +7，cgo-shim 双插件全绿，真实 config_store 数据端到端验证 18 模型完整解析。提交链 462aefb（feat 10 文件 +441/-9）→ 308eb13（assets 16 文件）→ e0c71d9（registry），CI 双 run success（33190024523/33190051880），16 assets checksums 全 OK，registry raw 200 + 两插件 windows_amd64 zip + checksums 远端全 200。遗留：traework/favicon.png 未引用未提交；scripts/__pycache__ pyc 未提交。
+- 2026-09-02 traework **0.1.30 已发布部署 + 生产验收 PASS**（三缺陷修复，用户否决账号归因）：FIX-A 伪完成同号退避重试（sync+async 收敛，仅 `PickNextAuth` 无候选才同号退避 1 次，不耗跨账号 Budget）；FIX-B async 401 open error 补核算+驱逐绑定；FIX-C `isPseudoCompletion` content+reasoning 双计（任一达 600 健康 / reasoning-only 永不判伪）。新增 executor_same_auth_retry_test.go（负向哨兵+定向探针证明真实编译执行）；既有 5 伪完成回归+reasoning-only 豁免全绿；cgo-shim 全绿。发布链 d027734(fix)→3d74d2d(assets)→37d1b86(registry)；CI run 33645466299 success；生产 install 0.1.30 + active=0.1.30 retired=0.1.29 + 落盘 sha256 一致。生产验收（CYCLE-04）：形态 A 用户真实短请求 5 连发全绿（1.8-4.3s 完整）+ 形态 B 常规长推理 99.2s/9360 字符完整（stream 2876），无伪完成误判、无换号、无池耗尽。
+- 2026-09-02 traework **0.1.31 已发布部署 + 生产复验 PASS**（FIX-D reasoning 阶段零字节 504）：CYCLE-04 形态 B2 深度思考请求（quickselect 推导）504——stream_id=2878 scheduled 后 5 分钟零字节、无 done/error/degrade，nginx `proxy_read_timeout 300s` 掐断。根因：`pumpTraeStreamAttempt` gate 只累计 content（`contentChars += len(text)`），reasoning-only 分片无限压 pending 不转发（桥健康、上游 reasoning 持续流入，但插件→客户端 300s 零字节）。FIX-D：gate 改 content+reasoning 双轴健康度（`healthChars += len(text)+len(reasoning)`），reasoning≥600 即流式放行；真伪完成（双轴短合计<600）仍全程 pending→判伪丢弃，零泄漏不回归。新增 `TestPumpTraeStreamAttemptReasoningFlushes` 四断言（哨兵先 FAIL 后删证明真实编译），cgo-shim 全绿 + 6-review STYLE PASS（doc/6-review/2026-09-02_235500）。发布链 4477560(fix)→6d63e1d(assets)→25facac(registry)；CI run 33648734166 success；远端 raw ALL PASS；生产 install 0.1.31 + active=0.1.31 retired=0.1.30 + 落盘 sha256 c053981a 一致。生产复验（CYCLE-04r）：stream 2999 同 prompt 完整返回 8702 正文+55062 reasoning 字符、1232 chunks、490.7s、**首包 26.4s 到达**（reasoning 流式下发不再零字节），attempt=1 无换号；形态 A 短请求回归 4/5 完整（1 次为本机客户端 SSL 瞬时断，重试即过）。
+
+- 2026-09-02 traework **0.1.29 已发布并部署生产（read 阶段超时降级直连），但验收结论已纠偏——agent 自发超长请求验证，非用户真实流量**：用户报 0.1.28 "完全不行"，生产直连复现 qwen3.8-max「分析项目」：插件直接客户端 `hostHTTPDoStreamDirect` 完整流式（327/264 事件，1.6-2.7 分钟），宿主桥 read 阶段在生产阻塞（stream_id=1945 scheduled 后 2 分钟零日志 → gin 499）。根因：`hostCall(MethodHostHTTPStreamRead)` 同步 cgo 无超时，阻塞在 host 侧无缓冲 chunk channel；`sharedHTTPClient` 120s 整体超时还会截断长流。修复：host_bridge.go 加 `hostBridgeReadTimeout=90s`（goroutine+select 竞速）超时返回 `errHostBridgeReadTimeout`，经 `hostStreamDirectFn` seam 降级 `hostHTTPDoStreamDirect` live 实时流（覆盖 0.1.28 只做的 open 阶段）；新增 `streamHTTPClient()` 无整体超时（DialContext 10s/TLSHandshake 10s/ResponseHeader 30s）；`hostHTTPStream` 增 req/bodyBytes 字段保存降级重开所需。新增 host_bridge_read_timeout_test.go 三用例，哨兵先 FAIL 后删除证明进编译。cgo-shim 全绿 + 静态门禁 PASS + 6-review `STYLE: PASS`。发布链：7424cd7（fix）→ 99f6177（assets 8）→ 706b85d（registry）；CI success；远端 raw 7 资产 ALL PASS；生产 install 0.1.29 + active=0.1.29 retired=0.1.28。**纠偏（2026-09-02 本会话生产取证）**：当时「生产验收 3 次完整（2139/2146/2154，208.6s/292.5s/298.4s）」是 agent 自发的**超长请求**（要求 10 章节/3000 字），非用户真实流量；用户真实形态是很多 ~10s 短请求。生产全量日志 grep degrade/timed out **零命中**——0.1.29 从未降级，90s read 超时从未误杀健康流，此前「90s 假杀+降级重连」推断不成立。0.1.29 的 read 修复**尚未被用户真实请求验证**（见「活动会话任务摘要」本会话纠偏行）。
+- 2026-09-02 traework **0.1.28 已发布并部署生产，生产流式长推理验收 PASS**（异步流式宿主流桥打开超时降级直连，本会话）：0.1.27 生产直连复现 qwen3.8-max「积分够却一直失败」——非流式 `/v1/responses` 一次成功（13.3s 聚合路径），带 `StreamID` 异步流式请求 240s 无字节后宿主 499（stream_id=1664 仅 scheduled 一条日志）。根因：`hostCall`（cgo 同步无超时）在宿主流桥 **open 阶段**永久阻塞协调器 goroutine。修复：host_bridge.go 加 `hostBridgeOpenTimeout=30s` 竞速打开，超时/失败降级 `hostHTTPDoStreamDirect` live 实时流（边读边发不缓冲完整 body）；抽出 `hostBridgeAvailableFn`/`hostStreamOpenFn` 注入点；新增 host_stream_timeout_test.go 两用例（哨兵先 FAIL 后删除证明进编译）。cgo-shim 全绿 + 6-review `STYLE: PASS`。发布链 02dc323→b7ae103→a05b252；CI run 33535588336 success；raw 远端 7 资产 ALL PASS；生产 install 0.1.28 + 落盘 sha256 8ec5343f 与本地一致 + hot reloaded active=0.1.28 retired=0.1.27。生产验收：4 次流式 qwen3.8-max 长推理（stream_id 1850/1853/1856/1857，覆盖两账号 + 同 session 粘性，**agent 自发请求，非用户真实流量**）全部 `attempt=1` 完整 done，无挂死/499/伪完成；修复前 1664 场景闭环（1664 是用户 00:29 `/v1/responses` 真实请求，4m0s 499）。
+- 2026-09-01 traework **0.1.26 已发布部署，但完成结论已撤回**：伪完成阈值修正为输出<600 字节且输入≥200 字节，但检测发生在正文/stop/close 下发之后，当前请求仍提前结束，不能恢复；同请求恢复由 0.1.27 承接。
+- 2026-09-01 traework **0.1.25 已发布部署，历史结论已由后续版本推翻**：补充伪完成记账/会话驱逐/active_id 优先，只影响下一请求且失败账号少量内容仍下发，不能恢复当前请求；由 0.1.26→0.1.27 承接。
+- 2026-09-01 **workbuddy-token-usage「feed 新增 usage SSE 实时通知 dashboard」改码未提交**（本会话）：用户目标「创建一个名为 workbuddy-token-usage 的插件并把 feed usage 通过 ws 推给前端」——该插件已存在（token-usage-tracker），真实需求=改造现有插件做 feed→dashboard 实时通知。逐层核实宿主 SDK v7.2.129：插件 ABI 无任何注册 ws/SSE 长连接的方法（`AttachWebsocketRoute` 仅服务内部 wsrelay；`MethodHostStreamEmit/Close` 的 StreamID 只在 executor 流式路径创建，token-usage-tracker 无 executor capability）；management/resource 桥接单次写回（`w.WriteHeader + w.Write`，无 Flush/ws 升级）→ 实测宿主对 SSE body 原样透传（`text/event-stream` 不触发 JSON 转义）。落地「SSE 短连接轮询通知 + REST 拉取」最小可行形态：`feed_ingest.go` 新增 `feedNotifierMu`/`feedNotifierSeq` 单调递增 seq + `feedNotifierBump()`/`feedNotifierLatest()`（每条 feed 记录 bump）；`management.go` 新增 `/usage/events` 资源路由 `serveUsageEvents`（返回 `retry: 2000\n\ndata: {"seq":N}\n\n`，EventSource 自动重连）+ `statsReadAPIPath` 分支；`usage_stats/dashboard.go` `startUsageEvents()`（fullModePage 时禁用，EventSource 无法带 session header）+ 15s 轮询保留为 fallback。验证：cgo-shim build/vet/test 全绿 + 哨兵（移除 bump 测试 FAIL `want 1` 证明测试真实覆盖）+ node --check 4 script 块全过 + `git diff --check` PASS + UTF-8 校验通过；6-review `STYLE: PASS`（doc/6-review/2026-09-01_011812_TokenUsageSSE通知_6-review.md）。**未提交未发布**（等用户提交授权）。
+- 2026-09-01 **trae-local-verify 项目级 skill 创建**（辅助资产，本会话）：`skills/project-cpa-workbuddy-plugin-trae-local-verify-rules` 吸收"本地直连 Trae 上游验证账号推理"经验——5 步流程（临时目录→cgo-shim→verify_main.go→运行判定→清理）+ 复用解密/header/payload/SSE（decryptCredentialString / buildTraePayload / scanSSE / classify）+ 5 条踩坑（sharedHTTPClient 120s 截断长流式→自定义 client+context 10min、先 reasoning 后正文、storage.json 账号≠生产账号、Windows 直连、SSE output 双格式）；references 含 verify-main-template.md 完整模板 + source-notes.md。quick_validate.py PASS、同域冗余扫描无交叉、skill-audit 边界清晰。同步沉淀知识库笔记《长流式客户端Timeout会掐断SSE直连》（新账号 uid 2257747741770235 qwen3.8-max 2m37s/595chunk/2.4万字完整 done vs 生产账号 77tokens 短输出 → 账号级问题定案）。
+- 2026-08-31 traework **0.1.24 改码未提交**（流式请求补默认 max_tokens=20000，本会话）：0.1.23 日志证明 traework 收流链路健康，账号 qwen3.8-max 全历史请求平均 77 tokens / 最大 273 tokens / 全部正常 done，用户确认 Trae 原生客户端同账号长输出正常、额度充足 → 根因是流式请求缺 max_tokens（`buildTraePayload` 仅 maxTokens>0 才带，客户端不传则上游无 max_tokens，Trae 给极小默认上限导致 solo 长任务刚开口就 done）。修复：`traework/upstream.go` 新增常量 `streamDefaultMaxTokens = 20000`（与 config models 样例一致），`buildTraePayload` 流式路径（`stream == true && maxTokens <= 0`）补默认值 20000，显式传入保留原值，非流式路径保持原样；新增 `TestBuildTraePayloadStreamDefaultMaxTokens` 覆盖三形态（流式缺省补 20000 / 流式显式保留 / 非流式不补）。验证：cgo-shim build/vet/test 全绿 + 行为哨兵（临时移除补默认分支）FAIL `stream max_tokens = <nil>, want 20000` 证明测试真实执行且精确覆盖行为 + `git diff --check` PASS + gofmt 干净；6-review `STYLE: PASS`（doc/6-review/2026-08-31_163500_Trae流式默认max_tokens_6-review.md）。VERSION/main.go（0.1.24）/CHANGELOG 已 bump。**未提交未发布**（生产仍 0.1.23，等用户发布授权）。
+- 2026-09-01 traework **0.1.23 已发布并部署生产**（流式三出口日志插桩，本会话）：为定位生产「生成中途停止、无下文」的流形态，给 `traework/stream.go` 三条流出口（`collectTraeStream` 同步收集 / `aggregateTraeCompletion` 非流式聚合 / `pumpTraeStream` 异步泵）的 error / invalid / done（含 output_eof 截断）出口补 `[traework] stream ...` 日志，新增 `terminationLabel` 稳定短标签（done / output_eof / invalid）；`traework/executor.go` `handleExecStream` 补账号维度日志（上游错误 / 收集成功 / 账号池耗尽 / 异步泵启动与失败）。全部只读插桩，不改变业务分支、终止判定、账号核算或 usage 发布。验证：cgo-shim build/vet/test 全绿 + 必失败哨兵 FAIL 证明新增代码真实进编译（哨兵阶段测试输出已现 pump 日志行）+ 删除哨兵重跑全绿 + `git diff --check` 为 0。提交链 6f18c8c（feat 7 文件）→ cdde489（assets 8 文件）→ 338dd80（registry）；CI run 33410867841 success（13 分钟，4 插件测试矩阵全绿 + 7 平台构建，期间 darwin/amd64 一度 queued 属 runner 排队非失败）；raw 远端验证 ALL PASS（7 平台 size+sha256 全 OK）；生产 plugin-store install 0.1.23 + 落盘 .so sha256 a0dddad9 与本地 zip 内一致（非 0.1.13 式新版本名旧二进制）+ hot reloaded active=0.1.23 retired=0.1.22 + accounts/panel 双 200 + 0.1.23 二进制含全部 6 个日志字符串 + 生产日志可见插件侧 `[anomaly]`/`[keepalive]` 前缀证明通道可用。发布链路 13 步全闭环，等用户用 `sess_3179110d` 触发中断后抓现场日志。
+- 2026-08-31 traework **0.1.22 改码未提交**（上游长回答中途断流兜底收尾，本会话）：根因调查确认 0.1.21 的 `validate` 收紧（`hasDone` 严格）把「部分 output 后 EOF 无 done」的上游断流从 0.1.20 的静默补 stop 改成报 truncated 错误中断，IDE 表现为"生成中途停止、无下文"。宿主源码取证：`hostHTTPStreamBridge.read` 无 idle 超时、`DoStream` 无总超时、插件 cgo 桥接用 Background ctx 客户端断开不取消上游 → 断流是上游 Trae 长回答中途 EOF，非宿主掐流。修复：`stream.go` `validate`→`classify` 返回 `traeStreamTermination` 三态（Done/OutputEOF/Invalid），仅空响应报 invalid（保 0.1.20 防空成功回归），三条响应路径（聚合/同步流/异步流）对 OutputEOF 统一补 `finish_reason="length"` 正常收尾；`pumpTraeStream` 断流收尾不清零账号、不记成功用量、以"不完整"落一条用量。测试：`collectTraeStream` 断流补 length、空响应仍报错、`pumpTraeStream` 断流不清零账号故障（哨兵验证真实进编译）。cgo-shim build/vet/test 全绿，gofmt 干净。VERSION/main.go 已 bump 0.1.22，CHANGELOG 已加条目。**未提交未发布**。
+- 2026-08-31 traework **0.1.22 补齐读错误型断流兜底**（本会话，改码未提交）：复查发现上一步三态兜底只在 `scanSSE` 返回 `nil` 时生效，而 `scanSSE` 仅对干净 `io.EOF` 返回 `nil`；真实断流（对端 RST / unexpected EOF / 宿主流桥 `Error` 非空，`host_bridge.go:352-353` 转硬错误）以读错误返回，`pumpTraeStream:309` 判致命失败并 `streamEmitError` 中断 IDE ⇒ 0.1.22 前三步对该形态无效。探针实测：部分 output + `connection reset by peer` → `chunks=0 err=connection reset`（未兜住）；对照干净 EOF → `chunks=2 err=nil`（已兜住）。修复：`upstream.go` `scanSSE` 增 `hasPayload func() bool` 参数，读错误时若已累积可交付业务内容则按截断正常收尾（交由 `classify` 补 `length`、保留已生成内容），零内容才致命；`stream.go` `traeSSETerminal` 增 `hasPayload()`，三条路径接入；既有 `host_bridge_decode_test.go` 三处 `scanSSE` 调用传 `nil` 保持原语义。回归新增 3 用例（读错误后补 length、零内容读错误仍致命、聚合路径补 length 且保留正文），哨兵验证真实进编译，cgo-shim build/vet/test 全绿，gofmt 干净，UTF-8 校验通过。**未提交未发布**（生产仍 0.1.21）。
+- 2026-08-31 traework **0.1.21 已发布**（异步流改走宿主流桥实时读取 + 业务成功严格依赖 done 终止，本会话）：①`callLLMStream`（upstream.go）+ `hostHTTPDoStream`（host_bridge.go）透传 `host_callback_id`，异步聊天实时读取避免长回答全量缓冲，客户端取消可传递到上游流；②`stream.go` `validate` 收紧——业务成功必须收到明确 `done`，部分 `output` 后 EOF 返回截断错误不补成空 stop，最终 stop 下发失败走失败核算；③`scanSSE` EOF 前补齐无换行尾帧。cgo-shim build/vet/test 全绿（1.468s）。提交链 85262aa（fix 9 文件）→ 7ad1e4f（assets 8 文件）→ 4bd1f07（registry）；CI 首 run 33324654919 因无关插件 workbuddy-provider darwin/amd64 checkout 网络瞬时失败拖累 Release job 跳过（Release needs build-cross 无 if:always），重跑 run 33325134505 success；Release `traework-provider-v0.1.21` 8 assets；raw 远端验证 ALL PASS（7 平台 size+sha256 全 OK，无 0.1.20 残留）。
+- 2026-08-30 traework **0.1.17 已发布并部署生产**（两 bug 修复，本会话）：①`checkin.go` runFleetCheckin 成功签到后不再用 `res.Points`（本次签到奖励，恰为 200）当 `TotalRemain` 写缓存——改为 `accountPoints` 真实查询，与单账号 handleManualCheckin 分支一致（根因：截图"全部签到后积分变 200"=签到奖励值覆盖 remain 缓存）；②`panel.html` 汇总卡标题"系统状态"→"用量汇总 · 全部账号"。commit 链 cc72bf5（fix）→ 6475a71（assets 7 zip）→ b857cbd（registry）；CI run 33301068289 success（10 分钟，含 queued 波动）；raw 远端 ALL PASS；生产 plugin-store install 0.1.17 一次成功（无 CDN 滞后），落盘 sha256 575cfe52 与本地 linux/amd64 完全一致（踩坑 29），hot reloaded active=0.1.17 retired=0.1.16，accounts/panel 双 200。收尾时一次 curl 遇上游瞬时 429（code 14018 额度已用尽），复测确认本插件本地数据接口不受影响。
+- 2026-08-30 traework 对齐 workbuddy 能力 **0.1.16 已发布并部署生产**：①五件套（counter 失败计数持久化 / session_auth 会话粘性路由 / refresh_runner 节流刷新 / preserve+watchdog 保号池 / lifecycle 自动停用 / keepalive ExchangeToken 保号）+ ②persistAuthDirect 直写通道 + parseTraeAuth 顶层 runtime token 优先 + ③management 路由扩展（/refresh、/refresh/status、/keepalive、/keepalive/status、/lifecycle）+ ④panel.html 全新面板（go:embed）+ ⑤handleAccounts dashboard 聚合 + ⑥scheduler_mode=session + 5 新配置项。cgo-shim build+vet+test 全绿，node --check 通过。commit 链 f930adf→1d5dfae→3ef8643，CI run 33299646435 success（8 分钟），raw 远端 ALL PASS，生产 install 0.1.16 + 落盘 sha256 一致 + hot reloaded active=0.1.16 + accounts/panel 双 200。发布前 git diff 全量核对确认无并行 usage_feed 残留（2 处为 HEAD 已提交上下文行）。
+- 2026-08-30 traework 0.1.10 + workbuddy 0.14.17 **已发布并部署生产**：0.1.10 = 签到重试队列（1 分钟间隔最多 60 次，幂等 upsert，新端点 /checkin/retries）+ 桥接响应状态键漂移容错（decodeBridgeHTTPResponse 多键解码，修复 StatusCode=0 硬判失败）；0.14.17 = 进面板不再触发异步刷新 + 每 10 分钟定时后台刷新（PERIODIC_REFRESH_MS，页面打开期间生效，后端 /refresh 幂等零改动）。0.1.10 提交链 7798756（并行会话）→ b438f1c（assets）→ c65ffa8（registry）；0.14.17 提交链 6272dae→ce18479→8b02cc1→6732c04。双 CI success（33263088579 / 33262699606），远端 raw 双 ALL PASS，生产 hot reloaded 终验（/checkin/retries 200、panel HTML 含 PERIODIC_REFRESH_MS）。新踩坑：store install CDN 边缘滞后误报 version not found → 等几分钟重试（知识库已沉淀）。
+- 2026-08-29 workbuddy 0.14.16 + qoderwork 0.9.6 + traework 0.1.9 **已发布并部署生产**：0.14.16 面板「失败」筛选 chip（累计失败>0 或连败中，纯前端 6 处）；0.9.6/0.1.9 authFilePrefix 解耦修复（qoderwork 预防性）。traework 面板「暂无账号」三层根因（API 前缀 0.1.6 → management key 0.1.8 → 前缀过滤 0.1.9）全部闭环，accounts 生产实测返回账号。服务器经 plugin-store install 全部升级，与 registry 对齐。发布 skill 全量更新（SSH push、dispatch version、Step 13 生产部署、踩坑 20→27 条）。
+- 2026-08-29 workbuddy 0.14.15 + traework 0.1.5 **已发布**（models 支持宿主 YAML block sequence 落库形态）：服务器 config_store 取证实锤——宿主面板把 JSON 数组反序列化成 YAML block sequence 落库下发（`models:` 换行、缩进 `- key: value`），0.14.14 括号配对解析永不闭合 → 静默忽略。修复：两插件各加 `parseModelsYAMLBlock`（缩进收集 `- key: value`，输出与 json.Unmarshal 同构复用 parseModelsConfig）+ `indentOf`/`splitYAMLPair`/`parseYAMLScalar`；workbuddy 在 models 分支内回退（有原始行），traework 在 configure() 层 `parseModelsYAMLConfig` 先行解析（yamlLines 丢缩进）。纯字符串 YAML 条目仍不支持（回归保护）。测试 +7，cgo-shim 双插件全绿，真实 config_store 数据端到端验证 18 模型完整解析。提交链 462aefb（feat 10 文件 +441/-9）→ 308eb13（assets 16 文件）→ e0c71d9（registry），CI 双 run success（33190024523/33190051880），16 assets checksums 全 OK，registry raw 200 + 两插件 windows_amd64 zip + checksums 远端全 200。
 - 2026-08-28 workbuddy 0.14.14 + traework 0.1.4 **已发布**（models 多行 JSON 兼容 + workbuddy 合并语义）：workbuddy `parseModelsValue` 括号配对跨行收集支持多行 pretty-print JSON（面板自动格式化不再吞配置）；models 合并语义（配置优先 + 自动获取补充，`mergeConfiguredAndDynamic` 按 ID 去重、配置在前；`fetchDynamicModelsFromStorage` 移除配置短路；static 入口合并基数为静态 wbModels()，for_auth 为动态列表）。traework 同款 `parseModelsValue`（config.go）+ 面板 api() 错误处理增强（空响应/非 JSON 友好报错）。测试：workbuddy +5 / traework 新建 config_models_test.go 同款 5 用例，cgo-shim 双插件全绿。提交链 6c8f009（feat）→ bd026f9（assets 16 文件）→ 5a3e815（registry），CI 双 run success（33185257399/33185264311），16 assets checksums 全 OK，registry raw 200 + 两插件 windows_amd64 zip + checksums 远端全 200。docs/models-config.md 随 6c8f009 入库。遗留：traework/favicon.png 未引用未提交；scripts/__pycache__ pyc 未提交。
 - 2026-08-28 qoderwork 0.9.5 **已发布**（全量 1-9 对齐 workbuddy-provider 0.14.13）：①登录轮询重复账号修复（handlePollLogin toAuthDataOpts + ad.ID=""）；②models 配置面板化 + ConfigFields 中文化；③面板 5 卡片 + 异步刷新前端；④账号删除；⑤计数持久化（counter.go + 挂 preserveWatchdogLoop）；⑥session_auth 会话粘性（schedulerModeSession + evictSessionBindingsForAuth 四接入点）；⑦usage_feed NDJSON（publishUsage 8→12 参数，11 处调用点）；⑧保号池 + watchdog（preserve.go/watchdog.go + 面板保号展示 8 处）。同步原则：逐函数适配、纯逻辑文件可整文件复制；SSE 嵌套解包 / COSY 签名等架构差异保留 qoderwork 原样。测试 session_auth/usage_feed/watchdog/auth_delete 同步 + 补 qoderwork 缺失 helper。提交链 64c3e70→6b9a23c→f7c5ba3，CI run 33180359855 success，8 assets checksums 全 OK，registry raw 200 含 0.9.5 + 7 artifacts 远端 HEAD 全 200。真实页面交互验证待做。
 - 2026-08-28 面板凭据导入「json 指定 + 路径固定」（traework 0.1.3，**已发布**）：主按钮改单文件 `.json` 选择（accept + JS 文件名校验），webkitdirectory 降级「选择目录」；删除 servePanel 运行时路径注入，固定 `C:\Users\luode\AppData\Roaming\TRAE SOLO CN\User\globalStorage`；双形态注入（`__STORAGE_DIR_JSON__` JSON 转义 → JS 常量 + `__STORAGE_DIR_DISPLAY__` 原始路径 → HTML hint）。**关键教训**：Windows 路径经单引号直插 JS 会被当未知转义序列丢弃全部反斜杠（`\U`/`\A`/`\T`/`\g`），必须 JSON 转义注入（`json.Marshal`），复制路径按钮实测精确匹配。提交链 ecce53d→2c962aa→3711578，CI run 33179502785 success，8 assets checksums 全 OK，registry raw 200 + 7 artifacts 远端 HEAD 全 200。
@@ -53,15 +90,10 @@
 
 ## 待办
 
-- 【已完成】qoderwork `handlePollLogin` 同构 bug（2026-08-27 发现）：qoderwork/oauth.go:386/406/420 三处成功路径直接 `toAuthData(sa)` 已随同步①改为 `toAuthDataOpts` + `ad.ID=""`（2026-08-28，工作树未提交，发布待用户拍板 qoderwork 0.9.5 节奏）
-- 【待办】qoderwork 全量 1-9 同步 ⑨ 项明细核对（差异盘点发生在更早会话，明细未保留在当前上下文；①-⑧ 已完成并通过 cgo-shim/JS 校验，全部在 qoderwork/ 工作树未提交）
-- 【本轮】workbuddy 0.14.12 登录轮询重复账号修复已发布（提交链 f3044fd→eff0fff→28ebe6b，CI run 33081084377）。真实页面交互验证待做（CPA 宿主走一遍 OAuth 登录轮询，确认面板不再出现重复账号）。
-- 【本轮】workbuddy 0.14.11 计数持久化重构已发布（提交链 3fabc9a→e80ef2a→8def6b2，CI run 32654838377）。真实页面交互验证待做（容器重启后访问面板确认「成功/失败」为重启前累计值而非 0 起跳，且落盘跟随保号 10min 节奏）。
-- 【本轮】workbuddy 0.14.10 成功/失败计数持久化已发布（提交链 a525feb→b1c25ea→4df0736）。真实页面交互验证待做（容器重启后访问面板确认「成功/失败」为重启前累计值而非 0 起跳）。
-- 账号面板「异步节流刷新」真实页面交互验证待做（CPA 宿主打开面板 → 直接渲染缓存 → 后台逐卡渐进 done，cgo-shim 无法覆盖这条 UI 链路）
-- 账号删除功能真实页面交互验证待做（在 CPA 宿主面板点 `×` 走一遍确认/取消/失败路径，确认卡片刷新与 Toast）
-- 账号面板移除「启用/禁用」功能真实页面交互验证待做（已发布 0.14.8，确认面板卡片底部不再出现「禁用/启用」按钮，但「刷新」「已签到/领取」「解除冻结」（如有）「×删除」仍正常）
-- 待确认 40x 换号重试的发版节奏（0.14.2 已含 429 切号，retry_on_4xx 预算是否上调待用户拍板）
+- 【本轮】traework 对齐五件套 + 面板代码完成（cgo-shim 全绿），**待发布**：bump 0.1.16 → 13 步发布链路 → 生产 store install 部署 → 面板/接口真实验证（保号池展示、keepalive 保号、lifecycle 停用、会话粘性路由）
+- 【低优】历史版本「真实页面交互验证」遗留项（0.14.12 登录轮询去重 / 0.14.11 计数持久化 / 异步刷新 / 删除账号 / 启用禁用移除）：核心链路已由生产面板日常使用间接验证，专项验证仅在上游报障时补做
+- 【观察】qoderwork 0.9.6 authFilePrefix 修复为预防性（服务器无 qoderwork 凭据，accounts 空属正常）；未来部署 qoderwork 凭据后确认账号列表可见
+- 【卫生】工作树残留并行会话未跟踪 tmp 脚本 `scripts/tmp_poll_0110.py`，归其所有者清理
 
 ## 阻断
 
@@ -69,15 +101,18 @@
 
 ## 验证
 
-- 插件验证：`python scripts/cgo-shim-build.py <plugin>`（build+vet+test 全绿）
-- 发布验证：下载 8 assets → sha256sum -c → publish-assets.py → validate-registry.py → 远端 raw URL 200
+- 插件验证：`python scripts/cgo-shim-build.py <plugin>`（build+vet+test 全绿）+ 面板 JS `node --check`（占位符替换后）
+- 发布验证：13 步链路（见项目 skill `project-cpa-workbuddy-plugin-release-rules`）→ 远端 raw 全量 sha256 → 生产 store install + hot reload 日志 + 接口 200
 
 ## 下一执行点
 
-- 【已完成】traework 0.1.3 面板凭据导入 json 指定 + 路径固定已发布（提交链 ecce53d→2c962aa→3711578，CI run 33179502785）。宿主侧加载新版本后实测：面板中文渲染、复制路径按钮复制结果、单文件 .json 选择器。
-- 【已完成】qoderwork 0.9.5 全量 1-9 对齐 workbuddy 已发布（本会话，提交链 64c3e70→6b9a23c→f7c5ba3，CI run 33180359855，Release qoderwork-provider-v0.9.5 8 assets，registry raw 200）。工作树 qoderwork/* 已全部提交无残留。宿主侧加载后实测：保号池/watchdog 生效、session 粘性、面板保号展示、计数跨重启不归零。
-- 【待办】qoderwork 全量 1-9 同步 ⑨ 项明细核对（差异盘点发生在更早会话，明细未保留在当前上下文；用户已确认发布，如有遗留项下轮盘点）。
-- 待确认 40x 换号重试的发版节奏（0.14.2 已含 429 切号，retry_on_4xx 预算是否上调待用户拍板）
+- 当前首要执行点：**traework 0.1.30 + 0.1.31 已发布部署，生产验收 PASS**（双循环闭环完成，见「已完成」0.1.30/0.1.31 条目与活动会话首行）。0.1.30 生产验收形态 A 短请求 + 形态 B 长推理全绿；0.1.31 FIX-D 生产复验 stream 2999 深度思考 490.7s 完整返回（首包 26.4s 流式放行）。**待观察**：用户真实 CodeBuddy 流量（若再现深度思考类请求应不再 504；死号 225774 若仍被导入应被 401 核算冷却不再拖垮池）。
+- 生产验证中观察到深度思考（reasoning 长）首包延迟约 26s 起持续有字节（0.1.31 已流式放行 reasoning），后续若用户觉得 reasoning 首包仍慢可评估预连接/保活优化。
+- workbuddy-token-usage **SSE 实时通知已改码未提交**（feedNotifier + `/usage/events` + 前端 EventSource，cgo-shim 全绿）：等用户本轮显式提交授权后走发布链路（bump 版本 → commit → push → dispatch CI → 下载 assets → publish-assets → registry → 生产部署）。发布后需验证：dashboard 页面打开时 feed 新增 usage 数据能在 ~2s 内自动刷新（EventSource 短连接轮询），15s 轮询 fallback 仍在。
+- 上游断流源头排查（双管齐下第二路）：0.1.22 兜底只是缓解，根治需复现 qwen 长回答请求，抓上游 Trae 实际响应确认中途 EOF 是 Trae 服务端长回答限制还是网络层（请求期间 tcpdump / host 日志 / Trae 上游响应体抽样）。
+- 【低优历史技术债】`traework/host_bridge_decode_test.go` 与 `traework/usage_feed_test.go` 仍位于源码目录；TASK-004 新增的三份回归已归位 `test/traework/`，当前切片为 `STYLE: PASS`。
+- 本地 CPA 服务可用后补端到端长流：首包必须在上游完成前到达，生成期间持续收到 chunk，上游 `done` 后客户端只收到一个 stop；客户端取消必须关闭上游 stream。
+- store install 报 version not found 时按知识库笔记判定顺序处理（等几分钟重试）。
 
 <!-- BEGIN RECENT PROJECT SESSIONS -->
 
@@ -94,7 +129,7 @@
 {
   "version": 4,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "2026-08-28T14:37:29.472802Z",
+  "registry_updated_at": "2026-09-01T16:00:00Z",
   "projections": [
     {
       "projection_id": "SESSION/04cf5eabb75248877efa7344b93256256893bb44b74a8fd5dc500807f794938f",
@@ -145,6 +180,49 @@
         {
           "id": "REL-08",
           "step": "[REL-08] registry 提交推送 + 远端 raw 验证",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "projection_id": "SESSION/8cc82507ccabf8b481da00a42180fa29e3a3e5ba11f8faa972820e1b8360a7cc",
+      "session_id": "sess_3ce56d55-2881-4d50-90f2-a97c5d4f6e91",
+      "projection_origin": "persisted",
+      "synthesis_mode": "none",
+      "state": "active",
+      "plan_key": "BUG/TRAE-PSEUDO-SAME-REQUEST-001",
+      "source_document": ".zcode/plans/plan-sess_3ce56d55-2881-4d50-90f2-a97c5d4f6e91.md",
+      "plan_fingerprint": "499849b62eeaa4dea85e10da2542dc86b381ca3e70e4a07171f295caf0c799c3",
+      "updated_at": "2026-09-01T16:00:00Z",
+      "steps": [
+        {
+          "id": "TASK-001",
+          "step": "[TASK-001] 单次 SSE 健康门槛与零泄漏",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-002",
+          "step": "[TASK-002] 同步流式路径当前请求换号",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-003",
+          "step": "[TASK-003] 异步同 StreamID 协调器",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-004",
+          "step": "[TASK-004] 完整 local 回归与状态纠偏",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-005",
+          "step": "[TASK-005] 0.1.27 发布与生产部署",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-006",
+          "step": "[TASK-006] 生产真实 /v1/responses 验收（已完成：1607/1609 同请求换号闭环 + 池耗尽显式失败 + 失败核算冷却；健康恢复成功 NOT_OBSERVED 待观察）",
           "status": "completed"
         }
       ]

@@ -15,3 +15,8 @@ cpa-shim-*/
 # python bytecode cache
 __pycache__/
 *.pyc
+tmp_ws_probe
+
+# AI-host tool data dirs (CodeGraph DB / Codex plan projections)
+.codegraph/
+.zcode/
