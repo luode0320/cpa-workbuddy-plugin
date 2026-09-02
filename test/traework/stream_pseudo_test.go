@@ -65,7 +65,7 @@ func TestIsPseudoCompletion(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		if got := isPseudoCompletion(tc.chunks, tc.inputChars); got != tc.want {
+		if got := isPseudoCompletion(tc.chunks, tc.inputChars, false); got != tc.want {
 			t.Errorf("%s: isPseudoCompletion = %v, want %v", tc.name, got, tc.want)
 		}
 	}

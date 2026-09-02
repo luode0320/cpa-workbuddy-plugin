@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -86,12 +87,96 @@ func chunkDelta(requestID, model string, text, reasoning string, finishReason st
 	return json.Marshal(chunk)
 }
 
+// traeToolCallsToOpenAI 把上游 tool_calls 数组原始 JSON（function_call 变体
+// 键）转成 OpenAI 兼容的 delta 元素形态（function 键）。取证事实
+// （2026-09-03 直连 qwen3.8-max）：上游为快照式全量——单 output 事件可含多个
+// index 的完整调用，每 index 只出现一次，arguments 恒为全量字符串；因此按
+// 事件整块转换后由客户端 SDK 按 index 累积即得正确结果，无需自行拼接。
+// arguments 缺省时回退 partial_arguments（防御上游偶发分片形态）。
+// [参数] raw: normalizeOutput 过滤后的 tool_calls 数组 JSON。
+// [返回] OpenAI delta tool_calls 元素数组；解析失败或空输入返回 nil。
+// 最近修改时间：2026-09-03；改动原因：P0-③——下行 tool_calls 键适配。
+func traeToolCallsToOpenAI(raw json.RawMessage) []map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var calls []map[string]any
+	if err := json.Unmarshal(raw, &calls); err != nil {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(calls))
+	for _, call := range calls {
+		el := map[string]any{}
+		if idx, ok := call["index"]; ok {
+			el["index"] = idx
+		} else {
+			el["index"] = len(out)
+		}
+		if id, ok := call["id"].(string); ok && id != "" {
+			el["id"] = id
+		}
+		if typ, ok := call["type"].(string); ok && typ != "" {
+			el["type"] = typ
+		}
+		fc, ok := call["function_call"].(map[string]any)
+		if !ok {
+			continue
+		}
+		fn := map[string]any{}
+		if name, ok := fc["name"].(string); ok && name != "" {
+			fn["name"] = name
+		}
+		args := ""
+		if a, ok := fc["arguments"].(string); ok && a != "" {
+			args = a
+		} else if pa, ok := fc["partial_arguments"].(string); ok {
+			args = pa
+		}
+		fn["arguments"] = args
+		el["function"] = fn
+		out = append(out, el)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// toolCallDeltaChunk 渲染一个携带 tool_calls 的 chat.completion.chunk 分片
+// （流式工具调用响应）。与 chunkDelta 同构，delta 只挂 tool_calls。
+// [参数] requestID: 逻辑请求 ID；model: 客户端模型；calls: OpenAI 键形态调用数组。
+// [返回] 分片 JSON；calls 为空时返回 (nil, nil)。
+// 最近修改时间：2026-09-03；改动原因：P0-③——流式 tool_calls 分片构造。
+func toolCallDeltaChunk(requestID, model string, calls []map[string]any) ([]byte, error) {
+	if len(calls) == 0 {
+		return nil, nil
+	}
+	chunk := map[string]any{
+		"id":      "chatcmpl-" + requestID,
+		"object":  "chat.completion.chunk",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"delta": map[string]any{"tool_calls": calls},
+			},
+		},
+	}
+	return json.Marshal(chunk)
+}
+
 // completionAggregate renders the final chat.completion for non-streaming
-// requests from the accumulated text/reasoning.
-func completionAggregate(requestID, model, text, reasoning, finishReason string) ([]byte, error) {
+// requests from the accumulated text/reasoning. toolCalls（OpenAI function 键
+// 形态，可为 nil）非空时挂到 message.tool_calls，用于非流式工具调用响应。
+// 最近修改时间：2026-09-03；改动原因：P0-③——非流式 tool_calls 承载。
+func completionAggregate(requestID, model, text, reasoning, finishReason string, toolCalls []map[string]any) ([]byte, error) {
 	msg := map[string]any{"role": "assistant", "content": text}
 	if reasoning != "" {
 		msg["reasoning_content"] = reasoning
+	}
+	if len(toolCalls) > 0 {
+		msg["tool_calls"] = toolCalls
 	}
 	out := map[string]any{
 		"id":      "chatcmpl-" + requestID,
@@ -111,21 +196,30 @@ func completionAggregate(requestID, model, text, reasoning, finishReason string)
 
 // traeSSETerminal 记录本次 SSE 是否以可验证的业务事件结束。
 type traeSSETerminal struct {
-	hasOutput bool
-	hasDone   bool
+	hasOutput    bool
+	hasDone      bool
+	hasToolCalls bool
 }
 
 // recordOutput 解析输出事件，并只在可转换为客户端内容时将其标记为有效输出。
+// tool_calls 载荷（非 null/[]）同样视为有效输出：工具型任务中模型可能只输出
+// 推理 + 工具调用就终止，此类短流是正常中间态而非伪完成。
 // [参数] data: output 事件的原始 JSON 数据。
-// [返回] text: 正文片段；reasoning: 推理片段；ok: 是否为有效输出。
-// 最近修改时间：2026-08-30 21:01:25；改动原因：统一三条响应路径的有效输出判定，阻止异常正文被当作空成功。
-func (t *traeSSETerminal) recordOutput(data string) (text, reasoning string, ok bool) {
-	text, reasoning, _ = normalizeOutput(data)
-	if text == "" && reasoning == "" {
-		return "", "", false
+// [返回] text: 正文片段；reasoning: 推理片段；toolCalls: 原始 tool_calls 数组
+// JSON（null/[] 填充已过滤，需经 traeToolCallsToOpenAI 转客户端形态）；
+// ok: 是否为有效输出。
+// 最近修改时间：2026-09-03；改动原因：P0-③——把 tool_calls 原始载荷带出给
+// 三条下行路径（collect/aggregate/pump），供客户端分片转换使用。
+func (t *traeSSETerminal) recordOutput(data string) (text, reasoning string, toolCalls json.RawMessage, ok bool) {
+	text, reasoning, toolCalls = normalizeOutput(data)
+	if text == "" && reasoning == "" && len(toolCalls) == 0 {
+		return "", "", nil, false
 	}
 	t.hasOutput = true
-	return text, reasoning, true
+	if len(toolCalls) > 0 {
+		t.hasToolCalls = true
+	}
+	return text, reasoning, toolCalls, true
 }
 
 // recordDone 标记上游已明确发送完成事件。
@@ -189,9 +283,12 @@ func terminationLabel(t traeStreamTermination) string {
 // event:error it surfaces the upstream message via fmt.Errorf with the
 // canonical "upstream N:" prefix when status is known.
 // [参数] r: 上游 SSE 响应；model: 客户端模型；statusCode: 上游 HTTP 状态码。
-// [返回] chunks: 转换后的分片；error: 上游错误、缺少 done 或传输截断时的协议错误。
-// 最近修改时间：2026-08-30 23:40:18；改动原因：业务成功必须收到 done，部分 output 后 EOF 不得补成正常 stop。
-func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.ExecutorStreamChunk, error) {
+// [返回] chunks: 转换后的分片；hasToolCalls: 本次流是否含结构化工具调用（伪完成豁免信号）；
+//
+//	error: 上游错误、缺少 done 或传输截断时的协议错误。
+//
+// 最近修改时间：2026-09-03；改动原因：P1 止血——把 hasToolCalls 信号带出给同步路径伪完成判定。
+func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.ExecutorStreamChunk, bool, error) {
 	requestID := randomUUID()
 	started := time.Now()
 	var chunks []pluginapi.ExecutorStreamChunk
@@ -199,12 +296,19 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 	err := scanSSE(r, func(ev sseEvent) error {
 		switch ev.Event {
 		case "output":
-			text, reasoning, ok := terminal.recordOutput(ev.Data)
+			text, reasoning, toolCalls, ok := terminal.recordOutput(ev.Data)
 			if !ok {
 				return nil
 			}
 			if raw, err := chunkDelta(requestID, model, text, reasoning, ""); err == nil && raw != nil {
 				chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
+			}
+			if len(toolCalls) > 0 {
+				if calls := traeToolCallsToOpenAI(toolCalls); len(calls) > 0 {
+					if raw, err := toolCallDeltaChunk(requestID, model, calls); err == nil && raw != nil {
+						chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
+					}
+				}
 			}
 		case "done":
 			terminal.recordDone()
@@ -219,26 +323,30 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 	}, terminal.hasPayload)
 	if err != nil {
 		log.Printf("[traework] stream collect error: request_id=%s model=%s status=%d err=%s elapsed_ms=%d", requestID, model, statusCode, truncateRedacted(err.Error(), 200), time.Since(started).Milliseconds())
-		return nil, err
+		return nil, false, err
 	}
 	termination, err := terminal.classify(statusCode)
 	if err != nil {
 		log.Printf("[traework] stream collect invalid: request_id=%s model=%s status=%d err=%s elapsed_ms=%d", requestID, model, statusCode, truncateRedacted(err.Error(), 200), time.Since(started).Milliseconds())
-		return nil, err
+		return nil, false, err
 	}
 	// 收到 done 正常收尾；部分 output 后 EOF（上游中途断流）补 length 收尾，
 	// 让客户端保留已生成内容，而不是把可兜底的中断误判为致命错误。仅空响应才真正报错。
+	// 含工具调用的完整流以 tool_calls 终止（OpenAI 语义），客户端凭它触发工具执行。
 	finish := "stop"
-	if termination == terminationOutputEOF {
+	switch {
+	case termination == terminationOutputEOF:
 		finish = "length"
+	case terminal.hasToolCalls:
+		finish = "tool_calls"
 	}
 	raw, _ := chunkDelta(requestID, model, "", "", finish)
 	if raw != nil {
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
 	}
-	log.Printf("[traework] stream collect done: request_id=%s model=%s status=%d termination=%s chunks=%d finish=%s elapsed_ms=%d",
-		requestID, model, statusCode, terminationLabel(termination), len(chunks), finish, time.Since(started).Milliseconds())
-	return chunks, nil
+	log.Printf("[traework] stream collect done: request_id=%s model=%s status=%d termination=%s chunks=%d finish=%s tool_calls=%v elapsed_ms=%d",
+		requestID, model, statusCode, terminationLabel(termination), len(chunks), finish, terminal.hasToolCalls, time.Since(started).Milliseconds())
+	return chunks, terminal.hasToolCalls, nil
 }
 
 // aggregateTraeCompletion reads the upstream SSE stream and folds all output
@@ -251,13 +359,32 @@ func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte,
 	started := time.Now()
 	var text, reasoning strings.Builder
 	var terminal traeSSETerminal
+	// 工具调用按 index 合并：上游为快照式全量（单事件完整调用），跨事件同
+	// index 的 arguments 按流式分片语义拼接作为防御（正常路径不会触发）。
+	toolCalls := map[int]map[string]any{}
+	var toolOrder []int
 	err := scanSSE(r, func(ev sseEvent) error {
 		switch ev.Event {
 		case "output":
-			t, rz, ok := terminal.recordOutput(ev.Data)
+			t, rz, tcRaw, ok := terminal.recordOutput(ev.Data)
 			if ok {
 				text.WriteString(t)
 				reasoning.WriteString(rz)
+			}
+			if len(tcRaw) > 0 {
+				for _, call := range traeToolCallsToOpenAI(tcRaw) {
+					idx := 0
+					if v, ok := call["index"].(float64); ok {
+						idx = int(v)
+					}
+					merged, seen := toolCalls[idx]
+					if !seen {
+						merged = map[string]any{"index": idx}
+						toolCalls[idx] = merged
+						toolOrder = append(toolOrder, idx)
+					}
+					mergeTraeToolCall(merged, call)
+				}
 			}
 		case "done":
 			terminal.recordDone()
@@ -280,12 +407,60 @@ func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte,
 		return nil, err
 	}
 	finish := "stop"
-	if termination == terminationOutputEOF {
+	switch {
+	case termination == terminationOutputEOF:
 		finish = "length"
+	case len(toolOrder) > 0:
+		finish = "tool_calls"
 	}
-	log.Printf("[traework] stream aggregate done: request_id=%s model=%s status=%d termination=%s finish=%s chars=%d elapsed_ms=%d",
-		requestID, model, statusCode, terminationLabel(termination), finish, text.Len()+reasoning.Len(), time.Since(started).Milliseconds())
-	return completionAggregate(requestID, model, text.String(), reasoning.String(), finish)
+	var calls []map[string]any
+	if len(toolOrder) > 0 {
+		sort.Ints(toolOrder)
+		calls = make([]map[string]any, 0, len(toolOrder))
+		for _, idx := range toolOrder {
+			calls = append(calls, toolCalls[idx])
+		}
+	}
+	log.Printf("[traework] stream aggregate done: request_id=%s model=%s status=%d termination=%s finish=%s chars=%d tool_calls=%d elapsed_ms=%d",
+		requestID, model, statusCode, terminationLabel(termination), finish, text.Len()+reasoning.Len(), len(calls), time.Since(started).Milliseconds())
+	return completionAggregate(requestID, model, text.String(), reasoning.String(), finish, calls)
+}
+
+// mergeTraeToolCall 把单个 OpenAI 键形态的调用增量并入同 index 的聚合记录：
+// id/type/函数名首次写入后不再覆盖；arguments 按流式分片语义拼接（上游快照
+// 式全量时每 index 仅出现一次，拼接不会重复触发）。
+// [参数] dst: 同 index 的聚合目标；src: 新到达的调用增量。
+// [返回] 无。
+// 最近修改时间：2026-09-03；改动原因：P0-③——非流式聚合工具调用合并。
+func mergeTraeToolCall(dst, src map[string]any) {
+	if id, ok := src["id"].(string); ok && id != "" {
+		if _, exists := dst["id"]; !exists {
+			dst["id"] = id
+		}
+	}
+	if typ, ok := src["type"].(string); ok && typ != "" {
+		if _, exists := dst["type"]; !exists {
+			dst["type"] = typ
+		}
+	}
+	fn, ok := src["function"].(map[string]any)
+	if !ok {
+		return
+	}
+	dfn, exists := dst["function"].(map[string]any)
+	if !exists {
+		dfn = map[string]any{}
+		dst["function"] = dfn
+	}
+	if name, ok := fn["name"].(string); ok && name != "" {
+		if cur, _ := dfn["name"].(string); cur == "" {
+			dfn["name"] = name
+		}
+	}
+	if args, ok := fn["arguments"].(string); ok && args != "" {
+		cur, _ := dfn["arguments"].(string)
+		dfn["arguments"] = cur + args
+	}
 }
 
 // traeStreamPumpContext 保存异步流下发与用量发布共享的请求上下文。
@@ -331,8 +506,15 @@ const (
 // then answers tersely (long reasoning + short content) is healthy, and a
 // reasoning-only stream is a legitimate thinking trace, not a throttle. Only a
 // stream with near-nothing on BOTH axes (short content AND short/no reasoning)
-// is flagged.
-func isPseudoCompletion(chunks []pluginapi.ExecutorStreamChunk, inputChars int) bool {
+// is flagged. hasToolCalls exempts tool-invoking streams entirely: a model that
+// ends its turn with a structured tool call stops with very little content by
+// design — that is a normal mid-task state, not an account throttle.
+// 最近修改时间：2026-09-03；改动原因：P1 止血——含结构化工具调用的短流永不判伪
+// （上游取证：正常工具调用流 1.9s / 3 output 事件 / reasoning ~100 字符即 done）。
+func isPseudoCompletion(chunks []pluginapi.ExecutorStreamChunk, inputChars int, hasToolCalls bool) bool {
+	if hasToolCalls {
+		return false
+	}
 	contentChars, reasoningChars := 0, 0
 	for _, c := range chunks {
 		var ch struct {
@@ -373,6 +555,7 @@ type traeStreamAttemptResult struct {
 	Termination traeStreamTermination
 	Pseudo      bool
 	Emitted     bool
+	HasToolCalls bool
 	Err         error
 }
 
@@ -394,39 +577,58 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 	var terminal traeSSETerminal
 
 	// 1. 转换每个 output；长输入在 content+reasoning 合计达到健康门槛前只缓存，
-	//    不向客户端承诺当前账号（双轴都短的真伪完成全程零泄漏）。
+	//    不向客户端承诺当前账号（双轴都短的真伪完成全程零泄漏）。含结构化工具调用的
+	//    流立即放行——工具型任务以短输出 + tool_calls 终止是正常中间态，不受 gate 约束。
 	scanErr := scanSSE(r, func(ev sseEvent) error {
 		switch ev.Event {
 		case "output":
-			text, reasoning, ok := terminal.recordOutput(ev.Data)
+			text, reasoning, tcRaw, ok := terminal.recordOutput(ev.Data)
 			if !ok {
 				return nil
 			}
-			raw, err := chunkDelta(requestID, ctx.Model, text, reasoning, "")
-			if err != nil || raw == nil {
+			// 一个 output 事件可同时产出正文分片与 tool_calls 分片（上游工具
+			// 事件为快照式全量，整块转换后由客户端 SDK 按 index 累积）。
+			var raws [][]byte
+			if raw, err := chunkDelta(requestID, ctx.Model, text, reasoning, ""); err != nil {
 				return err
+			} else if raw != nil {
+				raws = append(raws, raw)
 			}
-			result.Chunks = append(result.Chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
-			healthChars += len(text) + len(reasoning)
-			if !gateOpen {
-				pending = append(pending, raw)
-				if healthChars < pseudoCompletionMaxChars {
-					return nil
-				}
-				gateOpen = true
-				for _, buffered := range pending {
-					if err := emit(buffered); err != nil {
+			if len(tcRaw) > 0 {
+				if calls := traeToolCallsToOpenAI(tcRaw); len(calls) > 0 {
+					if raw, err := toolCallDeltaChunk(requestID, ctx.Model, calls); err != nil {
 						return err
+					} else if raw != nil {
+						raws = append(raws, raw)
 					}
-					result.Emitted = true
 				}
-				pending = nil
+			}
+			if len(raws) == 0 {
 				return nil
 			}
-			if err := emit(raw); err != nil {
-				return err
+			healthChars += len(text) + len(reasoning)
+			for _, raw := range raws {
+				result.Chunks = append(result.Chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
+				if !gateOpen {
+					pending = append(pending, raw)
+					if healthChars < pseudoCompletionMaxChars && !terminal.hasToolCalls {
+						continue
+					}
+					gateOpen = true
+					for _, buffered := range pending {
+						if err := emit(buffered); err != nil {
+							return err
+						}
+						result.Emitted = true
+					}
+					pending = nil
+					continue
+				}
+				if err := emit(raw); err != nil {
+					return err
+				}
+				result.Emitted = true
 			}
-			result.Emitted = true
 		case "done":
 			terminal.recordDone()
 		case "error":
@@ -448,7 +650,8 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 	if result.Err != nil {
 		return result
 	}
-	if result.Termination == terminationDone && isPseudoCompletion(result.Chunks, ctx.InputChars) {
+	result.HasToolCalls = terminal.hasToolCalls
+	if result.Termination == terminationDone && isPseudoCompletion(result.Chunks, ctx.InputChars, terminal.hasToolCalls) {
 		result.Pseudo = true
 		return result
 	}
@@ -497,6 +700,8 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 		finish = "length"
 		failed = true
 		failureReason = "truncated: upstream stream ended without done"
+	} else if result.HasToolCalls {
+		finish = "tool_calls"
 	}
 	raw, err := chunkDelta(requestID, ctx.Model, "", "", finish)
 	if err == nil && raw != nil {
@@ -542,6 +747,9 @@ func stripProviderPrefix(model string) string {
 }
 
 // openAIRequest mirrors the chat-completions request body the host forwards.
+// Tools/ToolChoice 保持原始 any 形态接收（object/string 都来自客户端 SDK），
+// 上行前经 traeToolsFromOpenAI / normalizeTraeToolChoice 规整。
+// 最近修改时间：2026-09-03；改动原因：P0-①——工具调用上行入口字段。
 type openAIRequest struct {
 	Model       string           `json:"model"`
 	Messages    []map[string]any `json:"messages"`
@@ -549,6 +757,8 @@ type openAIRequest struct {
 	MaxTokens   int              `json:"max_tokens"`
 	Temperature *float64         `json:"temperature"`
 	TopP        *float64         `json:"top_p"`
+	Tools       []map[string]any `json:"tools"`
+	ToolChoice  any              `json:"tool_choice"`
 }
 
 // toTraeMessages normalizes OpenAI messages into the Trae messages shape.
@@ -556,13 +766,21 @@ type openAIRequest struct {
 // array ([{"type":"text","text":...}]) — a plain string fails with 4001
 // "cannot unmarshal string into ... []*LLMRawMessageContent". Multi-part
 // content arrays are mapped 1:1 onto text parts.
+//
+// P0-④ 工具语义保留（2026-09-03 多轮取证）：
+//   - assistant 携带 tool_calls 的消息必须保留，且键必须从 OpenAI 标准
+//     function 改为上游 protobuf 要求的 function_call（function 键直发会
+//     400 "ToolCall read field 4 'FunctionCall' error"）；content 为 null/缺省
+//     时补空 parts 数组（上游 LLMRawMessage.content 允许空数组）。
+//   - role=tool 的结果消息原样保留（role + tool_call_id + content parts）。
 func toTraeMessages(msgs []map[string]any) []map[string]any {
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
 		role, _ := m["role"].(string)
+		base := map[string]any{"role": role}
 		switch c := m["content"].(type) {
 		case string:
-			out = append(out, map[string]any{"role": role, "content": textParts(c)})
+			base["content"] = textParts(c)
 		case []any:
 			var parts []map[string]any
 			for _, item := range c {
@@ -573,11 +791,75 @@ func toTraeMessages(msgs []map[string]any) []map[string]any {
 				}
 			}
 			if len(parts) > 0 {
-				out = append(out, map[string]any{"role": role, "content": parts})
+				base["content"] = parts
+			} else if role == "assistant" || role == "tool" {
+				// 空数组：仅工具语义消息保留（assistant 工具调用消息的 content 可为空）。
+				base["content"] = []map[string]any{}
+			} else {
+				continue
 			}
 		default:
-			// Skip malformed messages rather than failing the whole request.
+			// content 为 nil/null 或缺省：仅 assistant（工具调用消息常见
+			// content:null）与 tool（工具结果可能无文本）两类保留并补空 parts；
+			// 其它角色无内容则丢弃。
+			switch role {
+			case "assistant", "tool":
+				base["content"] = []map[string]any{}
+			default:
+				continue
+			}
 		}
+		if tcs, ok := m["tool_calls"].([]any); ok && len(tcs) > 0 {
+			base["tool_calls"] = traeToolCallsFromOpenAIHistory(tcs)
+		}
+		if role == "tool" {
+			if id, ok := m["tool_call_id"].(string); ok && id != "" {
+				base["tool_call_id"] = id
+			}
+		}
+		out = append(out, base)
+	}
+	return out
+}
+
+// traeToolCallsFromOpenAIHistory 把客户端历史消息中的 OpenAI 标准 tool_calls
+// （function 键）转成上游 protobuf 要求的 function_call 变体键。id/type 原样
+// 保留；function.name/arguments 移入 function_call 子对象；arguments 已是
+// 字符串（OpenAI SDK 约定），无需再序列化。
+// 最近修改时间：2026-09-03；改动原因：P0-④——上行历史工具调用键适配。
+func traeToolCallsFromOpenAIHistory(tcs []any) []map[string]any {
+	out := make([]map[string]any, 0, len(tcs))
+	for _, item := range tcs {
+		call, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		rec := map[string]any{}
+		if id, ok := call["id"].(string); ok && id != "" {
+			rec["id"] = id
+		}
+		if typ, ok := call["type"].(string); ok && typ != "" {
+			rec["type"] = typ
+		}
+		fn, ok := call["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		fc := map[string]any{}
+		if name, ok := fn["name"].(string); ok && name != "" {
+			fc["name"] = name
+		}
+		switch args := fn["arguments"].(type) {
+		case string:
+			fc["arguments"] = args
+		case map[string]any:
+			// 防御：个别客户端把 arguments 发成对象，序列化为字符串。
+			if raw, err := json.Marshal(args); err == nil {
+				fc["arguments"] = string(raw)
+			}
+		}
+		rec["function_call"] = fc
+		out = append(out, rec)
 	}
 	return out
 }

@@ -114,8 +114,10 @@ func ideVersion() string {
 // buildTraePayload converts a normalized chat request into the Trae
 // llm_utils_chat body. Key rule (verified): when config_name is set, do NOT
 // add agent_type/device_id/ide_version — the server returns 4023 "model is
-// unknown".
-func buildTraePayload(messages []map[string]any, model string, stream bool, maxTokens int, temperature, topP *float64) map[string]any {
+// unknown". tools/toolChoice 是已按上游 schema 规整的形态（见
+// traeToolsFromOpenAI / normalizeTraeToolChoice）；toolChoice 为 "none" 时调用方
+// 已删除 tools 并置空串，本函数不再兜底。
+func buildTraePayload(messages []map[string]any, model string, stream bool, maxTokens int, temperature, topP *float64, tools []map[string]any, toolChoice string) map[string]any {
 	fn, configName := resolveModelOptions(model)
 	payload := map[string]any{
 		"messages": messages,
@@ -125,6 +127,12 @@ func buildTraePayload(messages []map[string]any, model string, stream bool, maxT
 	if configName != "" {
 		payload["config_name"] = configName
 		payload["model"] = configName
+	}
+	if len(tools) > 0 {
+		payload["tools"] = tools
+	}
+	if toolChoice != "" {
+		payload["tool_choice"] = toolChoice
 	}
 	// 流式路径缺省 max_tokens：客户端不传时上游 Trae 会给极小上限，导致
 	// solo 长任务刚开口就 done；补默认值仅作用于流式，非流式保持原样。
@@ -141,6 +149,110 @@ func buildTraePayload(messages []map[string]any, model string, stream bool, maxT
 		payload["top_p"] = *topP
 	}
 	return payload
+}
+
+// traeToolsFromOpenAI 把 OpenAI tools 定义转成 Trae llm_utils_chat 可接受形态。
+// 取证事实（2026-09-03 直连）：上游 FunctionDefinition.parameters 是 string
+// 强类型——客户端 SDK 常发 object，直接上行会 400 "cannot unmarshal object
+// into Go struct field FunctionDefinition.tools.function.parameters of type
+// string"，必须序列化为 JSON 字符串。非 function 类型与畸形条目直接剔除。
+// [参数] tools: 客户端请求中的 OpenAI tools 数组。
+// [返回] 规整后的工具定义数组（parameters 恒为字符串）。
+// 最近修改时间：2026-09-03；改动原因：P0-②——tools 上行 schema 适配。
+func traeToolsFromOpenAI(tools []map[string]any) []map[string]any {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
+		typ, _ := t["type"].(string)
+		if !strings.EqualFold(strings.TrimSpace(typ), "function") {
+			continue
+		}
+		fn, ok := t["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := fn["name"].(string)
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		// 深拷贝一层，避免改写调用方持有的 map。
+		f := map[string]any{}
+		for k, v := range fn {
+			f[k] = v
+		}
+		switch p := f["parameters"].(type) {
+		case string:
+			// 已是字符串，原样保留。
+		case map[string]any:
+			raw, err := json.Marshal(p)
+			if err != nil {
+				continue
+			}
+			f["parameters"] = string(raw)
+		default:
+			// nil 或畸形 parameters：补空 object schema，避免上游反序列化失败。
+			f["parameters"] = `{"type":"object","properties":{}}`
+		}
+		out = append(out, map[string]any{"type": "function", "function": f})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// normalizeTraeToolChoice 把 OpenAI tool_choice（string 或 object）转成上游
+// 接受的字符串形态。取证：上游 tool_choice 强类型 string，object 直发会被
+// 反序列化拒绝。语义对齐 workbuddy normalizeToolsInPlace：
+//   - "auto"/"required" → 原样字符串；
+//   - {"type":"function","function":{"name":...}} → 函数名；缺名回落 "auto"；
+//   - "none"（字符串或对象）→ 返回 suppress=true，调用方必须删除 tools
+//     （上游实测：tool_choice:none 带非空 tools 时仍会输出 tool_calls）；
+//   - 其它未知形态 → 返回 suppress=true（删除该字段最安全）。
+// [参数] tc: 客户端请求的 tool_choice 原始值（可为 nil）。
+// [返回] choice: 规范化后的字符串（空串表示不设置）；suppress: 是否要求删除 tools。
+// 最近修改时间：2026-09-03；改动原因：P0-①——tool_choice 上行 schema 适配。
+func normalizeTraeToolChoice(tc any) (choice string, suppress bool) {
+	switch v := tc.(type) {
+	case nil:
+		return "", false
+	case string:
+		s := strings.ToLower(strings.TrimSpace(v))
+		switch s {
+		case "none":
+			return "", true
+		case "auto", "required":
+			return s, false
+		default:
+			// 函数名字符串形态（上游 tool_choice 支持函数名）。
+			return strings.TrimSpace(v), false
+		}
+	case map[string]any:
+		typ, _ := v["type"].(string)
+		switch strings.ToLower(strings.TrimSpace(typ)) {
+		case "none":
+			return "", true
+		case "auto", "required":
+			return strings.ToLower(strings.TrimSpace(typ)), false
+		case "function":
+			name := ""
+			if fn, ok := v["function"].(map[string]any); ok {
+				name, _ = fn["name"].(string)
+			}
+			name = strings.TrimSpace(name)
+			if name == "" {
+				return "auto", false
+			}
+			return name, false
+		default:
+			return "", true
+		}
+	default:
+		// 数字/数组等畸形值：不设置并抑制 tools，避免上游反序列化失败。
+		return "", true
+	}
 }
 
 // resolveModelOptions 把客户端模型名映射到 SOLO 队列池与精确 config_name。
@@ -320,6 +432,9 @@ func scanSSE(r io.Reader, fn func(ev sseEvent) error, hasPayload func() bool) er
 // normalizeOutput parses an "output" event's JSON into text / reasoning /
 // tool_calls fragments. Both legacy ({response}) and 2026-05 formats
 // ({type:text, content}) are handled (port of normalizeLlmUtilsChunk).
+// tool_calls is only returned when it carries a real payload: the upstream
+// pads most events with tool_calls:null (and occasionally []), which must not
+// count as a tool-call signal.
 func normalizeOutput(data string) (text, reasoning string, toolCalls json.RawMessage) {
 	var chunk map[string]any
 	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
@@ -339,9 +454,12 @@ func normalizeOutput(data string) (text, reasoning string, toolCalls json.RawMes
 	if s, _ := chunk["reasoning"].(string); s != "" {
 		reasoning += s
 	}
-	if tc, ok := chunk["tool_calls"]; ok {
+	if tc, ok := chunk["tool_calls"]; ok && tc != nil {
 		if raw, err := json.Marshal(tc); err == nil {
-			toolCalls = raw
+			s := string(raw)
+			if s != "null" && s != "[]" {
+				toolCalls = raw
+			}
 		}
 	}
 	return text, reasoning, toolCalls

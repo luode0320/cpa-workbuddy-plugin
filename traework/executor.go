@@ -132,7 +132,15 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "empty messages")
 		return nil, fmt.Errorf("empty messages after normalization")
 	}
-	payload := buildTraePayload(messages, upstreamModel, false, oa.MaxTokens, oa.Temperature, oa.TopP)
+	tools := traeToolsFromOpenAI(oa.Tools)
+	toolChoice, suppressTools := normalizeTraeToolChoice(oa.ToolChoice)
+	if suppressTools {
+		// tool_choice=none 或未知形态：上游实测带非空 tools 仍会输出 tool_calls，
+		// 唯一可靠抑制是整组删除。
+		tools = nil
+		toolChoice = ""
+	}
+	payload := buildTraePayload(messages, upstreamModel, false, oa.MaxTokens, oa.Temperature, oa.TopP, tools, toolChoice)
 
 	budget := loadedRetryOn4xx()
 	curSA := a
@@ -221,7 +229,13 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("empty messages after normalization")
 	}
 	inputChars := estimateInputChars(messages)
-	payload := buildTraePayload(messages, upstreamModel, true, oa.MaxTokens, oa.Temperature, oa.TopP)
+	tools := traeToolsFromOpenAI(oa.Tools)
+	toolChoice, suppressTools := normalizeTraeToolChoice(oa.ToolChoice)
+	if suppressTools {
+		tools = nil
+		toolChoice = ""
+	}
+	payload := buildTraePayload(messages, upstreamModel, true, oa.MaxTokens, oa.Temperature, oa.TopP, tools, toolChoice)
 	headers := streamHeaders()
 	sseFramed := clientNeedsSSEFrame(req.Metadata)
 
@@ -397,6 +411,8 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 			finish = "length"
 			failed = true
 			failureReason = "truncated: upstream stream ended without done"
+		} else if result.HasToolCalls {
+			finish = "tool_calls"
 		}
 		finishRaw, finishErr := chunkDelta(requestID, ctx.Model, "", "", finish)
 		if finishErr == nil && finishRaw != nil {
@@ -479,9 +495,9 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 			continue
 		}
 
-		chunks, collectErr := collectTraeStream(bytes.NewReader(resp.Body), ctx.Model, resp.StatusCode)
+		chunks, hasToolCalls, collectErr := collectTraeStream(bytes.NewReader(resp.Body), ctx.Model, resp.StatusCode)
 		if collectErr == nil {
-			if isPseudoCompletion(chunks, ctx.InputChars) {
+			if isPseudoCompletion(chunks, ctx.InputChars, hasToolCalls) {
 				// 2. 伪完成按失败 attempt 核算并驱逐绑定；候选允许时丢弃当前 chunks 后继续。
 				reason := "pseudo completion: upstream returned done with near-empty output"
 				log.Printf("[traework] exec stream collect pseudo-done: model=%s auth_hash=%s attempt=%d chunks=%d", ctx.Model, authLogHash(curAuthID), attempt+1, len(chunks))

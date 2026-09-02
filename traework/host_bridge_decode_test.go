@@ -214,7 +214,7 @@ func (r *chunkReader) Read(p []byte) (int, error) {
 // 最近修改时间：2026-08-31 02:10:00；改动原因：0.1.21 把部分输出无 done 一律报 truncated 错误导致 IDE 中断，
 // 实际是上游中途断流，应补 length 正常收尾；仅空响应（无 output 无 done）才真正报错。
 func TestCollectTraeStreamFoldsOutputWithoutDoneToLength(t *testing.T) {
-	chunks, err := collectTraeStream(strings.NewReader(`event: output
+	chunks, _, err := collectTraeStream(strings.NewReader(`event: output
 data: {"response":"未完成"}
 
 `), "qwen3.8-max", 200)
@@ -242,7 +242,7 @@ data: {"response":"未完成"}
 // [参数] t: 当前测试。
 // [返回] 无。
 func TestCollectTraeStreamRejectsEmptyWithoutDone(t *testing.T) {
-	_, err := collectTraeStream(strings.NewReader(""), "qwen3.8-max", 200)
+	_, _, err := collectTraeStream(strings.NewReader(""), "qwen3.8-max", 200)
 	if err == nil {
 		t.Fatalf("empty response without done must be rejected, got nil")
 	}
@@ -281,7 +281,7 @@ func (r *streamErrReader) Read(p []byte) (int, error) {
 func TestCollectTraeStreamFoldsReadErrorAfterOutputToLength(t *testing.T) {
 	body := "event: output\ndata: {\"response\":\"未完成\"}\n\nevent: output\ndata: {\"response\":\"继续\"}\n\n"
 	r := &streamErrReader{data: []byte(body), err: errors.New("connection reset by peer")}
-	chunks, err := collectTraeStream(r, "qwen3.8-max", 200)
+	chunks, _, err := collectTraeStream(r, "qwen3.8-max", 200)
 	if err != nil {
 		t.Fatalf("collectTraeStream error = %v; want nil (read error after output is recoverable)", err)
 	}
@@ -310,7 +310,7 @@ func TestCollectTraeStreamFoldsReadErrorAfterOutputToLength(t *testing.T) {
 // 最近修改时间：2026-08-31 15:20:00；改动原因：读错误兜底仅限已有可交付内容的场景，零内容不得豁免。
 func TestCollectTraeStreamPropagatesReadErrorWithoutOutput(t *testing.T) {
 	r := &streamErrReader{data: []byte(""), err: errors.New("connection reset by peer")}
-	_, err := collectTraeStream(r, "qwen3.8-max", 200)
+	_, _, err := collectTraeStream(r, "qwen3.8-max", 200)
 	if err == nil {
 		t.Fatalf("read error without any output must be fatal, got nil")
 	}
