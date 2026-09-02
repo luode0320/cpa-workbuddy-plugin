@@ -33,3 +33,19 @@
 
 - **新增踩坑 item 28**：registry push 后数分钟内 store install 可能报 `plugin_manifest_invalid: direct plugin version not found`（502 毫秒级返回），根因是宿主 Go 客户端命中的 raw CDN 边缘节点缓存滞后（同机 curl 反而看到新版）。宿主 FetchRegistry 无本地缓存（v7.2.129 源码实锤）。处置：等几分钟重试即成功。
 - 同时记录 0.1.10 链路「接管并行会话 run」实战：CI run 与发布内容一致时不取消、直接接管后续链路；assets/registry 提交被并行会话抢先时以内容一致为准，不再重复提交。
+
+## 2026-09-02 吸收：修复→发布→生产验证闭环（traework 0.1.28 完整跑通）
+
+- **更新原因**：用户点名「将这个修复+发布+生产检验的流程和使用还有 url 密钥都吸收到这个项目的 skill 中。后续也会使用」。
+- **来源**：0.1.28「异步流式宿主流桥打开挂死 → 30s 超时 + 降级插件直连 live 流」修复 + 发布 + 生产验证完整闭环实操（2026-09-01/02）。
+- **主要变更（SKILL.md）**：
+  - description 扩展：加入「修复→发布→生产验证闭环」「生产真实入口 https://cpa.luode.vip/v1 行为验收（流式 qwen3.8-max 长推理 + stream_id 判定）」「GitHub 上行阻断 SOCKS 隧道绕过」触发语义。
+  - 新增 Step 14 生产行为验收（验收样本 / 成功指纹 / 失败处理）、Step 15 凭据纪律与清理（key 只写临时文件用后即删、禁回显原值、management key 提取命令宿主机管道串联）、Step 16 GitHub 上行大流量阻断绕过（生产服务器 SOCKS 隧道 + git socks5h + curl --socks5-hostname + urllib 不认 socks5）。
+  - 关键命令速查表新增生产行为验收与网络阻断绕过两行；权责边界加入「生产行为验收」职责。
+  - 踩坑清单追加 34-39：修复→发布→生产验证闭环、生产验证样本与成败指纹、凭据纪律、GitHub 上行阻断、生产日志中文回显、/v1/responses 与 /v1/chat/completions 格式差异。
+- **整理去重**：新增内容与既有 Step 13 生产部署、踩坑 30（management key 提取）等无逐字重复；Step 15 的 key 提取命令与踩坑 30 互补（30 是容器校验分工，15 是凭据纪律），未造成门控层叠。
+- **同域冗余扫描**：范围=本 skill + trae-local-verify-rules + cgo-plugin-isolated-test（发布链 / 本地验证 / 生产验收三域）。发现 0 处逐字重复、0 处门控层叠、0 处散落产物；本 skill 新增生产验收为域专属职责，trae-local-verify 只管本地直连验证、cgo-plugin-isolated-test 只管本地编译验证，无交叉。PASS。
+- **环境依赖登记**：本 skill 无环境变量 / 宿主配置依赖新增（SOCKS 隧道依赖的 SSH key / 服务器地址是项目事实，已写入 skill 正文本身，非离开机器失效的配置）。
+- **凭据纪律**：URL 与密钥不入 skill 正文原值——Step 14/15/16 仅写占位与提取命令，key 不落盘（正文只提「与 management key 相同，从 config 提取」），符合禁止回显凭据原值的仓库红线。
+- **字典刷新**：本项目 skills/ 无 data.js / 字典.md（skill 字典机制属于 luode-skills 仓库，跨项目只读），不适用。
+- **验证**：全文回读 + `git diff --check` PASS；UTF-8 读取无乱码。

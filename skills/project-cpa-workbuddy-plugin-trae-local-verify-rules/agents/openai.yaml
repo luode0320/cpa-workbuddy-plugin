@@ -1,0 +1,3 @@
+interface:
+  display_name: "cpa-workbuddy-plugin Trae 本地直连验证"
+  short_description: "本地直连 Trae 上游验证账号能否跑通推理（storage.json 解密→复用 traework 逻辑→判定 done/output_eof/invalid）。测试账号推理时自动加载。"
