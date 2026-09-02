@@ -315,21 +315,31 @@ type traeStreamPumpContext struct {
 const (
 	pseudoCompletionMaxChars      = 600
 	pseudoCompletionMinInputChars = 200
+	// pseudoRetryBudget 是同一账号在同一逻辑请求内被判伪完成后的同号重试次数。
+	// 伪完成常是上游对该账号的窗口性限流（2351 实证：同号约 30s 后恢复 18696
+	// tokens），立即 noteForcedAccountFailure（打入 1/3/10 分钟冷却）+ 换号在池中
+	// 只剩该健康账号时会直接 pool exhausted。同号重试一次让窗口性限流有机会自愈，
+	// 仍伪才核算 + 换号；不消耗跨账号 Budget，仅受本预算约束。
+	pseudoRetryBudget = 1
 )
 
 // isPseudoCompletion reports whether a done-terminated stream carried far less
 // output than a long-input task warrants — the signature of an account silently
 // throttled/flagged by the upstream. inputChars is the estimated prompt length;
 // a short prompt with a short answer is NOT treated as a pseudo completion.
-// It sums only content (not reasoning) deltas; a reasoning-heavy model that
-// answers tersely is not flagged either.
+// Reasoning counts as healthy output: a thinking model that reasons at length
+// then answers tersely (long reasoning + short content) is healthy, and a
+// reasoning-only stream is a legitimate thinking trace, not a throttle. Only a
+// stream with near-nothing on BOTH axes (short content AND short/no reasoning)
+// is flagged.
 func isPseudoCompletion(chunks []pluginapi.ExecutorStreamChunk, inputChars int) bool {
-	var chars int
+	contentChars, reasoningChars := 0, 0
 	for _, c := range chunks {
 		var ch struct {
 			Choices []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Content   string `json:"content"`
+					Reasoning string `json:"reasoning_content"`
 				} `json:"delta"`
 			} `json:"choices"`
 		}
@@ -337,10 +347,20 @@ func isPseudoCompletion(chunks []pluginapi.ExecutorStreamChunk, inputChars int) 
 			continue
 		}
 		for _, c2 := range ch.Choices {
-			chars += len(c2.Delta.Content)
+			contentChars += len(c2.Delta.Content)
+			reasoningChars += len(c2.Delta.Reasoning)
 		}
 	}
-	if chars <= 0 || chars >= pseudoCompletionMaxChars {
+	// Healthy axes: content ≥ threshold, or reasoning ≥ threshold (thinking model
+	// that reasoned fully), or pure reasoning trace (existing terminal contract:
+	// reasoning-only is never pseudo, regardless of length).
+	if contentChars >= pseudoCompletionMaxChars || reasoningChars >= pseudoCompletionMaxChars {
+		return false
+	}
+	if contentChars <= 0 && reasoningChars > 0 {
+		return false
+	}
+	if contentChars+reasoningChars <= 0 {
 		return false
 	}
 	return inputChars >= pseudoCompletionMinInputChars

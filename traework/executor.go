@@ -291,6 +291,11 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 	for attempt := 0; attempt <= ctx.Budget; attempt++ {
 		attemptsMade = attempt + 1
 		// 1. 每次账号尝试复用同一 payload 和 HostCallbackID，但拥有独立、及时关闭的上游句柄。
+		//    伪完成是上游对账号的窗口性限流信号；先核算 + 换号，仅当池中已无其它可用
+		//    候选（单号池或他号全冷却）时才对当前账号同号退避重试——生产实证 2351：
+		//    同号约 60s 后恢复完整长输出，直接判 pool exhausted 会让单号池的请求必败。
+		pseudoTries := 0
+	retrySameAuth:
 		upstream, statusCode, openErr := deps.Open(curSA, ctx.Payload, curAuthID, ctx.HostCallbackID)
 		if openErr != nil {
 			if statusCode == 0 {
@@ -300,9 +305,17 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 				requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, statusCode, truncateRedacted(openErr.Error(), 200))
 			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, statusCode, openErr.Error())
 			if !isAccountLevel4xx(statusCode) || attempt >= ctx.Budget {
+				if isAccountLevel4xx(statusCode) {
+					reconcileAfterExecutorError(curAuthID, statusCode, openErr.Error())
+					evictSessionBindingsForAuth(curAuthID)
+				}
 				emitTraeAsyncError(ctx.StreamID, openErr.Error(), deps)
 				return
 			}
+			// 账号级 4xx 必须核算冷却并驱逐绑定，否则下个请求的会话亲和仍会选回该死号
+			//（生产实证：225774 反复 401，host 每次 cache-miss 重绑死号 → pool exhausted）。
+			reconcileAfterExecutorError(curAuthID, statusCode, openErr.Error())
+			evictSessionBindingsForAuth(curAuthID)
 			nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID)
 			if !hasNext || nextSA == nil {
 				break
@@ -335,7 +348,7 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 			})
 		}()
 
-		// 2. 门槛前伪完成不产生任何客户端输出；记录失败后选择下一账号继续原逻辑请求。
+		// 2. 门槛前伪完成不产生任何客户端输出；核算失败后换号，仅当无候选才同号退避重试。
 		if result.Pseudo {
 			reason := "pseudo completion: upstream returned done with near-empty output"
 			log.Printf("[traework] exec stream async pseudo retry: request_id=%s stream_id=%s model=%s auth_hash=%s attempt=%d chunks=%d",
@@ -348,6 +361,14 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 			}
 			nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID)
 			if !hasNext || nextSA == nil {
+				// 无其它候选：不立即判池耗尽，先同号退避重试一次（窗口性限流自愈），
+				// 仍伪才由外层 attempt 预算收口为 pool exhausted。
+				if pseudoTries < pseudoRetryBudget {
+					pseudoTries++
+					log.Printf("[traework] exec stream async pseudo same-auth retry (pool exhausted candidates): request_id=%s stream_id=%s model=%s auth_hash=%s attempt=%d chunks=%d",
+						requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, len(result.Chunks))
+					goto retrySameAuth
+				}
 				break
 			}
 			if _, seen := triedAuthIDs[nextAuthID]; seen {
@@ -432,6 +453,9 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 		attemptsMade = attempt + 1
 		lastFailurePublished = false
 		// 1. 每次尝试重新调用上游；普通账号级错误沿用既有同请求换号契约。
+		//    伪完成仅在池中已无其它候选时同号退避重试（见下方伪完成分支）。
+		pseudoTries := 0
+	retrySameAuth:
 		resp, callErr := deps.CallLLM(curSA, payload, curAuthID)
 		if callErr != nil {
 			statusCode := parseUpstreamStatusFromErr(callErr)
@@ -458,7 +482,7 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 		chunks, collectErr := collectTraeStream(bytes.NewReader(resp.Body), ctx.Model, resp.StatusCode)
 		if collectErr == nil {
 			if isPseudoCompletion(chunks, ctx.InputChars) {
-				// 2. 伪完成按失败 attempt 核算并驱逐绑定；候选和预算允许时丢弃当前 chunks 后继续。
+				// 2. 伪完成按失败 attempt 核算并驱逐绑定；候选允许时丢弃当前 chunks 后继续。
 				reason := "pseudo completion: upstream returned done with near-empty output"
 				log.Printf("[traework] exec stream collect pseudo-done: model=%s auth_hash=%s attempt=%d chunks=%d", ctx.Model, authLogHash(curAuthID), attempt+1, len(chunks))
 				noteForcedAccountFailure(curAuthID, reason)
@@ -470,6 +494,13 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 				}
 				nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID)
 				if !hasNext || nextSA == nil {
+					// 无其它候选：不立即判池耗尽，先同号退避重试一次（窗口性限流自愈），
+					// 仍伪才由外层 attempt 预算收口为 pool exhausted。
+					if pseudoTries < pseudoRetryBudget {
+						pseudoTries++
+						log.Printf("[traework] exec stream collect pseudo same-auth retry (pool exhausted candidates): model=%s auth_hash=%s attempt=%d chunks=%d", ctx.Model, authLogHash(curAuthID), attempt+1, len(chunks))
+						goto retrySameAuth
+					}
 					break
 				}
 				if _, seen := triedAuthIDs[nextAuthID]; seen {

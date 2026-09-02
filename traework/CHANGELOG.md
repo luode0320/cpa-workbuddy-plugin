@@ -1,5 +1,19 @@
 # TraeWork Plugin Changelog
 
+## 0.1.30
+
+### Fix — 池耗尽根因三缺陷修复：async 401 核算驱逐 + 伪完成单号池同号退避 + reasoning 纳入伪完成判据
+
+生产取证（2026-09-02，0.1.29 部署后 21:26-21:30，stream_id 2331-2350）确认用户真实失败链 = **插件自身缺陷**而非账号需重导（用户明确「不是号有问题, 就是我们的插件有问题」）：死账号反复 `open error status=401`（async 路径不核算不驱逐绑定 → session 亲和每请求重绑死号）→ 拖累健康号被窗口性节流判伪 → 无同号退避重试 → `pool exhausted`。stream 2351 决定性反证：同一健康账号 30s 前被判伪，同号 30s 后恢复 18696 tokens 完整长推理。
+
+修复（`traework/stream.go` + `traework/executor.go`）：
+
+1. **FIX-B · async 401 核算 + 驱逐绑定**：`runTraeAsyncStream` 的 `open error` 账号级 4xx 分支补 `reconcileAfterExecutorError` + `evictSessionBindingsForAuth`（原来只 publishUsage，死号永不进冷却/异常 → 每请求被 host session 亲和重复选中）。同步路径既有核算，异步路径补平。
+2. **FIX-A · 伪完成同号退避重试**：sync/async 协调器收敛一致——伪完成先核算失败 + 驱逐绑定，`PickNextAuth` **仅当池中已无其它候选**（单号池或他号全冷却）时对当前账号同号退避重试一次（`pseudoRetryBudget=1`，不消耗跨账号 Budget；生产实证 2351：同号窗口性节流约 30s 自愈，直接 pool exhausted 让单号池请求必败）。有其它候选仍 A→B 切换，既有契约不回归。
+3. **FIX-C · reasoning 纳入伪完成判据**：`isPseudoCompletion` 从只数 content 改为 content+reasoning 双计健康度——任一达 600 字符即健康（思考型模型长 reasoning + 短正文不再误判）；content 0 + reasoning>0（reasoning-only 纯思考流）永不判伪；双零/双短且长输入才判伪。
+
+验证：新增 `test/traework/executor_same_auth_retry_test.go` 两用例（async+sync 单号池伪完成→同号退避→成功，成功后 `resetAccountFailover` 清零断言）；负向哨兵 + 定向 `t.Fatal` 探针双重证明新测试真实编译执行；既有 5 个伪完成回归（A→B 切换 / 池耗尽显式失败 / 同请求不重复选号 / reasoning-only 豁免）全绿。cgo-shim build/vet/test 全绿，gofmt 干净，UTF-8 通过。生产行为验收由发布后真实流量承接。
+
 ## 0.1.29
 
 ### Fix — 异步流式宿主流桥读取挂起：read 超时保护 + 降级插件直连，覆盖打开阶段未覆盖的卡死窗口
