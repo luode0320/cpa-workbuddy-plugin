@@ -149,7 +149,7 @@
       "id": "workbuddy-token-usage",
       "name": "WorkBuddy Token Usage",
       "description": "Token usage dashboard for workbuddy accounts (real consumption from the shared usage feed): per-model/account stats, trends, requests, costs. Third plugin of cpa-plugin.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "author": "luode (statistics core ported from AITNR/cap-token-usage-tracker)",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin",
@@ -159,51 +159,51 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.1/workbuddy-token-usage_0.2.1_darwin_amd64.zip",
-            "sha256": "eaa026bf0ae3599c4d4383b78b454eb3c585513ca959175f898f4ecbaf026e0f",
-            "size": 3169450
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.2/workbuddy-token-usage_0.2.2_darwin_amd64.zip",
+            "sha256": "1bd358c26bfbe3d357fc4b65500fc9f34db80654e11db314837f3ad4ddc59a0d",
+            "size": 3170960
           },
           {
             "goos": "darwin",
             "goarch": "arm64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.1/workbuddy-token-usage_0.2.1_darwin_arm64.zip",
-            "sha256": "20dda4a732fa6515ee861dc24cdaf24da7e8d1ac07fa3c2e946a6d5c4824f05a",
-            "size": 2942657
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.2/workbuddy-token-usage_0.2.2_darwin_arm64.zip",
+            "sha256": "487442bc6cc94544f6c39926dc4289c4a3349e25d4fa0379aa3c6d7dbba3cf1f",
+            "size": 2944022
           },
           {
             "goos": "freebsd",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.1/workbuddy-token-usage_0.2.1_freebsd_amd64.zip",
-            "sha256": "baaee42ae3b57ebb6b36af498ad083a03d6f7f3c3471724c83eea1e133a47734",
-            "size": 3252541
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.2/workbuddy-token-usage_0.2.2_freebsd_amd64.zip",
+            "sha256": "eae02f0e11edccfcf10a247498c1d6ecd1ac53ead3f77e389ceab2f3e0b0cb7b",
+            "size": 3253215
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.1/workbuddy-token-usage_0.2.1_linux_amd64.zip",
-            "sha256": "07a56e6979bd5a460eb7a2174ba7f9fed28ca8f706c61e352607be412eb23865",
-            "size": 3333903
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.2/workbuddy-token-usage_0.2.2_linux_amd64.zip",
+            "sha256": "f815ea4a6d2b2b8d94382234c11a0b686588f47d701ba70c4532102628785c97",
+            "size": 3334541
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.1/workbuddy-token-usage_0.2.1_linux_arm64.zip",
-            "sha256": "04627d88ab0bee5d850c55cf143e4bcdc2ede5553474701456fffab668cfa5ac",
-            "size": 3041196
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.2/workbuddy-token-usage_0.2.2_linux_arm64.zip",
+            "sha256": "39698420ea503b0b07ef0f5c57868f5b328d81e377dbe4d77b213c0ed1c3cbd5",
+            "size": 3042549
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.1/workbuddy-token-usage_0.2.1_windows_amd64.zip",
-            "sha256": "58a303517eb31c9f7cc421bce9760782bc07b7e855fabcc9205bdf36e61d6523",
-            "size": 3253067
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.2/workbuddy-token-usage_0.2.2_windows_amd64.zip",
+            "sha256": "1cddd453c82af3a2d139f77ad68932c68c0cd8a276193a935b18ea3d3fdb2531",
+            "size": 3254614
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.1/workbuddy-token-usage_0.2.1_windows_arm64.zip",
-            "sha256": "7488bcb17dbd2c39a3b86284c0a5da0d7542c5a1aa40626149dffd17c6f761f0",
-            "size": 3009483
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/workbuddy-token-usage-0.2.2/workbuddy-token-usage_0.2.2_windows_arm64.zip",
+            "sha256": "3340405f5e906ed37a97ee3f9f314ca109eb1a47c4ea412cb4a1cb65bba6096a",
+            "size": 3010002
           }
         ]
       }
