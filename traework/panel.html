@@ -96,7 +96,8 @@ button.danger:hover{background:var(--err);color:#fff}
 /* 不可用卡：删除线视觉上明确"这些积分不能参与路由" */
 .summary-item .v.muted{color:var(--mut);font-weight:600;text-decoration:line-through;text-decoration-color:var(--mut-border);text-decoration-thickness:1px}
 .summary-item .v.warn{color:var(--warn)}.summary-item .v.err{color:var(--err)}
-/* 积分进度条（账号卡用）：track 底槽 + bar 按消耗占比着色 */
+.summary .pb{margin-top:4px}
+/* 积分进度条（账号卡 + 汇总卡共用）：track 底槽 + bar 按消耗占比着色 */
 .pb{margin-top:10px}
 .pb-label{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin-bottom:6px}
 .pb-primary{display:flex;flex:1 1 220px;min-width:0;flex-wrap:wrap}
@@ -107,7 +108,6 @@ button.danger:hover{background:var(--err);color:#fff}
 .pb-meta{font-size:11px;color:var(--mut);margin-top:6px}
 .cooling-text{color:var(--warn)}
 /* 冷却倒计时由每秒 ticker 原地刷新 textContent，不重绘卡片 */
-.summary-item .d{color:var(--mut);font-size:11px;margin-top:3px;word-break:break-all}
 .row{display:flex;justify-content:space-between;padding:5px 0;border-top:1px dashed var(--border)}
 .row:first-of-type{border-top:0}.k{color:var(--mut)}.v{font-weight:600}
 .v.ok{color:var(--ok)}.v.warn{color:var(--warn)}.v.err{color:var(--err)}
@@ -466,7 +466,7 @@ async function confirmDeleteAuth(){
 
 /* ---------- 账号卡渲染 ---------- */
 let lastAccounts=[];
-let lastDash=null; // 最近一次 /accounts 完整响应（含子系统状态，供汇总卡读）
+let lastDash=null; // 最近一次 /accounts 完整响应（供用量汇总/筛选计数读取）
 let activeAuthId="";
 let currentFilter="all";
 
@@ -626,7 +626,28 @@ function updateFilterCounts(accounts){
   });
 }
 
-/* ---------- 汇总卡：子系统状态（保号池 / keepalive / lifecycle / 异常池） ---------- */
+/* ---------- 汇总卡：用量汇总（随筛选联动） ---------- */
+// 筛选范围内的账号集合。与 applyCardVisibility 的判定口径保持一致。
+function accountsForFilter(list){
+  const accounts=list||[];
+  if(currentFilter==="all")return accounts;
+  if(currentFilter==="failed"){
+    return accounts.filter(a=>(Number(a.failed_count)||0)>0||(Number(a.fail_count)||0)>0);
+  }
+  return accounts.filter(a=>{
+    const f=a.disabled?"disabled":(a.anomaly?"anomaly":(a.preserved?"preserve":(a.exhausted?"exhausted":"available")));
+    return f===currentFilter;
+  });
+}
+function creditOf(a){
+  const cr=a&&a.credits;
+  if(!cr)return {remain:0,used:0,size:0,known:false};
+  const remain=Number(cr.total_remain)||0;
+  const used=Number(cr.total_used)||0;
+  const size=Number(cr.total_size)||0;
+  const known=remain>0||used>0||size>0;
+  return {remain,used,size,known};
+}
 function renderSummary(){
   const box=document.getElementById("summaryBox");
   if(!box)return;
@@ -637,32 +658,37 @@ function renderSummary(){
     box.innerHTML="";
     return;
   }
+  const scoped=accountsForFilter(accounts);
+  // 5 卡片口径：剩余(可用) / 剩余(不可用) / 已用(消耗) / 额度池 / 消耗占比。
+  // 不可用 = 停用 / 异常 / 保号 / 耗尽，其积分独立统计（不能参与路由）。
+  let remainAvail=0,remainUnavail=0,used=0,size=0,knownN=0,unavailN=0,exhaustedN=0;
+  scoped.forEach(a=>{
+    const c=creditOf(a);
+    const isUnavailable=!!a.disabled||!!a.anomaly||!!a.preserved||!!a.exhausted;
+    if(c.known){
+      if(isUnavailable){remainUnavail+=c.remain;unavailN++;}
+      else{remainAvail+=c.remain;used+=c.used;size+=c.size;knownN++;}
+    }
+    if(a.exhausted)exhaustedN++;
+  });
+  const total=size>0?size:(remainAvail+used);
+  const pct=total>0?Math.round(used/total*100):0;
+  let barColor="var(--ok)"; if(pct>60)barColor="var(--warn)"; if(pct>85)barColor="var(--err)";
+  const scopeLabel=currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="preserve"?"保号账号":(currentFilter==="anomaly"?"异常账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="failed"?"失败账号":"停用账号")))));
   box.style.display="block";
-  box.innerHTML=renderSubsystem(d);
-}
-// 子系统状态行（保号池 / keepalive / lifecycle / 异常池 + 上次保号刷新）。
-// 数据随 /accounts 一起返回，仅在"全部"视图展示，避免与筛选口径混淆。
-function renderSubsystem(d){
-  const p=d.preserve||{};
-  const lc=d.lifecycle||{};
-  const ka=d.keepalive||{};
-  const last=ka.last_run||{};
-  const rows=(last.results||[]).map(r=>{
-    const stMap={refreshed:"ok",skipped:"muted",failed:"err","session-dead":"err",error:"err"};
-    return '<div class="row"><span class="k">'+esc(r.nickname||r.auth_index)+'</span><span class="v '+(stMap[r.status]||"muted")+'">'+esc(r.status||"")+"</span></div>";
-  }).join("");
-  return '<div class="summary-hd" style="margin-top:14px;margin-bottom:10px"><span class="summary-title">子系统状态'+(currentFilter==="all"?"":"（全部账号视图）")+"</span></div>"+
+  box.innerHTML=
+    '<div class="summary-hd"><span class="summary-title">用量汇总 · '+esc(scopeLabel)+"</span>"+
+    '<span class="summary-meta">'+scoped.length+" 个账号 · 可用 "+knownN+" · 不可用 "+unavailN+" · 耗尽 "+exhaustedN+"</span></div>"+
     '<div class="summary-grid">'+
-      '<div class="summary-item"><div class="k">保号池 watchdog</div><div class="v '+(p.enabled?"ok":"muted")+'">'+(p.enabled?"运行中":"已关闭")+"</div>"+
-        '<div class="d">阈值 '+esc(String(p.threshold))+" · 间隔 "+(p.interval_seconds||600)/60+" 分钟 · 当前 "+esc(String(p.pool_size||0))+" 个</div></div>"+
-      '<div class="summary-item"><div class="k">Token 保号 keepalive</div><div class="v '+(ka.enabled?"ok":"muted")+'">'+(ka.enabled?"开启":"关闭")+"</div>"+
-        '<div class="d">每日 '+(ka.schedule||[]).join("/")+" 时 · 上次 "+(last.when?esc(String(last.when).slice(0,16)):"-")+"</div></div>"+
-      '<div class="summary-item"><div class="k">生命周期 auto-disable</div><div class="v '+(lc.enabled?"ok":"muted")+'">'+(lc.enabled?"开启":"关闭")+"</div>"+
-        '<div class="d">积分耗尽自动停用，不自动复活</div></div>'+
-      '<div class="summary-item"><div class="k">异常池</div><div class="v '+(d.anomaly_pool_size?"warn":"ok")+'">'+esc(String(d.anomaly_pool_size||0))+"</div>"+
-        '<div class="d">每日 00:00 自动复活</div></div>'+
+      '<div class="summary-item"><div class="k">剩余(可用)</div><div class="v ok">'+remainAvail+"</div></div>"+
+      '<div class="summary-item"><div class="k">剩余(不可用)</div><div class="v muted">'+remainUnavail+"</div></div>"+
+      '<div class="summary-item"><div class="k">已用(消耗)</div><div class="v '+(pct>85?"err":(pct>60?"warn":""))+'">'+used+"</div></div>"+
+      '<div class="summary-item"><div class="k">额度池</div><div class="v">'+(total||"-")+"</div></div>"+
+      '<div class="summary-item"><div class="k">消耗占比</div><div class="v '+(pct>85?"err":(pct>60?"warn":"ok"))+'">'+(total?pct+"%":"-")+"</div></div>"+
     "</div>"+
-    (rows?'<div class="summary-hd" style="margin-top:12px"><span class="summary-title">上次保号刷新</span></div>'+rows:"");
+    '<div class="pb"><div class="pb-label"><span>消耗进度（已用/额度池）</span><span>'+(total?pct+"%":"-")+"</span></div>"+
+    '<div class="pb-track"><div class="pb-bar" style="width:'+(total?pct:0)+"%;background:"+barColor+'"></div></div>'+
+    '<div class="pb-meta">可用 '+remainAvail+" · 已用 "+used+" · 池 "+(total||0)+"（签到加包会抬高池和可用，不等于没消耗）</div></div>";
 }
 
 /* ---------- 数据加载 ---------- */
