@@ -24,6 +24,7 @@ type checkinResult struct {
 	OK      bool   `json:"ok"`
 	Message string `json:"message"`
 	Points  int64  `json:"points,omitempty"`
+	Already bool   `json:"already,omitempty"`
 }
 
 // deviceIDFor builds the per-account x-device-id. Trae dedupes check-in per
@@ -111,7 +112,7 @@ func checkinAccount(a *traeAuth) checkinResult {
 		}
 		msg := msgOf(data, "签到失败")
 		if AlreadyCheckedIn(msg) {
-			return checkinResult{OK: true, Message: "今日已签到"}
+			return checkinResult{OK: true, Message: "今日已签到", Already: true}
 		}
 		if DeviceBlocked(msg) {
 			return checkinResult{OK: false, Message: msg + "（设备级拦截，稍后重试）"}
@@ -124,40 +125,61 @@ func checkinAccount(a *traeAuth) checkinResult {
 	}
 }
 
-// accountPoints queries the account's remaining credits and caches them.
-func accountPoints(a *traeAuth) (int64, error) {
+// accountCredits queries the account's entitlement list and returns the full
+// quota snapshot (remain / used / size / pack count) for the panel progress
+// bar. Same upstream response as accountPoints — richer decode only.
+func accountCredits(a *traeAuth) (*traeCredits, error) {
 	if a == nil || !a.hasToken() {
-		return 0, fmt.Errorf("no credential")
+		return nil, fmt.Errorf("no credential")
 	}
 	host := a.checkinHost()
 	body, _ := json.Marshal(map[string]bool{"require_usage": true})
 	req, err := http.NewRequest(http.MethodPost, host+pointsPath, bytes.NewReader(body))
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	req.Header = checkinAuthHeaders(a, a.DeviceID)
 	resp, err := hostHTTPDo(req)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	raw := resp.Body
 	if isDefiniteHTTPFailure(resp.StatusCode) {
-		return 0, fmt.Errorf("points HTTP %d: %s", resp.StatusCode, truncateRedacted(string(raw), 120))
+		return nil, fmt.Errorf("points HTTP %d: %s", resp.StatusCode, truncateRedacted(string(raw), 120))
 	}
 	if len(raw) == 0 {
-		return 0, fmt.Errorf("points HTTP %d: empty response", resp.StatusCode)
+		return nil, fmt.Errorf("points HTTP %d: empty response", resp.StatusCode)
 	}
 	var data map[string]any
 	if err := json.Unmarshal(raw, &data); err != nil {
-		return 0, err
+		return nil, err
 	}
-	return extractRemainingCredits(data), nil
+	remain, used, size, packs := extractCreditsDetail(data)
+	return &traeCredits{
+		TotalRemain: remain,
+		TotalUsed:   used,
+		TotalSize:   size,
+		PackCount:   packs,
+		FetchedAt:   time.Now().Format(time.RFC3339),
+	}, nil
 }
 
-// extractRemainingCredits sums entitlement packs: credits_limit - credits_amount.
-func extractRemainingCredits(data map[string]any) int64 {
+// accountPoints queries the account's remaining credits and caches them.
+func accountPoints(a *traeAuth) (int64, error) {
+	cr, err := accountCredits(a)
+	if err != nil {
+		return 0, err
+	}
+	return cr.TotalRemain, nil
+}
+
+// extractCreditsDetail sums entitlement packs into (remain, used, size, pack
+// count): per pack, credits_limit is the granted quota and usage.credits_amount
+// the consumed part, so remain = limit - used (clamped at 0).
+func extractCreditsDetail(data map[string]any) (int64, int64, int64, int) {
 	packs, _ := data["user_entitlement_pack_list"].([]any)
-	var total int64
+	var remain, used, size int64
+	count := 0
 	for _, p := range packs {
 		pack, _ := p.(map[string]any)
 		base, _ := pack["entitlement_base_info"].(map[string]any)
@@ -167,10 +189,48 @@ func extractRemainingCredits(data map[string]any) int64 {
 			continue
 		}
 		usage, _ := pack["usage"].(map[string]any)
-		used := toInt64(usage["credits_amount"])
-		total += maxInt64(limit-used, 0)
+		packUsed := toInt64(usage["credits_amount"])
+		remain += maxInt64(limit-packUsed, 0)
+		used += packUsed
+		size += limit
+		count++
 	}
-	return total
+	return remain, used, size, count
+}
+
+// extractRemainingCredits sums entitlement packs: credits_limit - credits_amount.
+func extractRemainingCredits(data map[string]any) int64 {
+	remain, _, _, _ := extractCreditsDetail(data)
+	return remain
+}
+
+// -----------------------------------------------------------------------------
+// Today-checked-in state (panel badge)
+// -----------------------------------------------------------------------------
+
+// checkinDoneMu/checkinDone record the local wall-clock date of the last
+// successful claim (fresh or already) per auth_index so the panel can render
+// a disabled "已签到" button. In-memory only: after a restart the badge is
+// unknown until the next claim (the upstream answers "今日已签到" idempotently,
+// which re-records it) — acceptable for a UI hint, no upstream contract change.
+var (
+	checkinDoneMu sync.Mutex
+	checkinDone   = map[string]string{} // auth_index -> "2006-01-02"
+)
+
+func markCheckinDoneToday(authIndex string) {
+	if strings.TrimSpace(authIndex) == "" {
+		return
+	}
+	checkinDoneMu.Lock()
+	checkinDone[authIndex] = time.Now().Format("2006-01-02")
+	checkinDoneMu.Unlock()
+}
+
+func checkinDoneToday(authIndex string) bool {
+	checkinDoneMu.Lock()
+	defer checkinDoneMu.Unlock()
+	return checkinDone[authIndex] == time.Now().Format("2006-01-02")
 }
 
 // -----------------------------------------------------------------------------
@@ -255,23 +315,29 @@ func runFleetCheckin(source string) (int, []map[string]any, int) {
 			// A late success (retry queue or earlier failed run) clears
 			// any pending retry entry for this account.
 			cancelCheckinRetry(f.AuthIndex)
+			markCheckinDoneToday(f.AuthIndex)
 		} else if scheduleCheckinRetry(f.AuthIndex, f.ID, a.UserID, res.Message) {
 			scheduled++
 			results = append(results, map[string]any{
-				"auth_id": f.ID, "uid": a.UserID, "ok": false, "message": res.Message,
+				"auth_id": f.ID, "auth_index": f.AuthIndex, "uid": a.UserID,
+				"nickname": a.Nickname, "ok": false, "message": res.Message,
 				"retry_scheduled": true,
 			})
 			continue
 		}
-		results = append(results, map[string]any{"auth_id": f.ID, "uid": a.UserID, "ok": res.OK, "message": res.Message})
+		results = append(results, map[string]any{
+			"auth_id": f.ID, "auth_index": f.AuthIndex, "uid": a.UserID,
+			"nickname": a.Nickname, "ok": res.OK, "already": res.Already,
+			"message": res.Message, "points": res.Points,
+		})
 		// Refresh the credits cache after a successful claim. Use a live
 		// accountPoints query — res.Points is THIS checkin's reward (could be
 		// 200), NOT the account's total remaining quota. Writing the reward
 		// as TotalRemain would corrupt the panel and leave it pinned to the
 		// last check-in reward amount.
 		if res.OK {
-			if remain, qerr := accountPoints(a); qerr == nil {
-				cacheCredits(f.ID, &traeCredits{TotalRemain: remain, FetchedAt: time.Now().Format(time.RFC3339)})
+			if cr, cerr := accountCredits(a); cerr == nil {
+				cacheCredits(f.ID, cr)
 			}
 		}
 	}

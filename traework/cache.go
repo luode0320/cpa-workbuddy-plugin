@@ -8,9 +8,17 @@ import (
 	"time"
 )
 
-// traeCredits is a snapshot of one account's remaining Trae Work credits.
+// traeCredits is a snapshot of one account's Trae Work credits quota.
+// TotalUsed/TotalSize/PackCount come from the same entitlement-list response
+// as TotalRemain (pack-level credits_limit / usage.credits_amount); they power
+// the panel progress bar. Legacy cache entries persisted before these fields
+// existed decode with zero values — the panel treats unknown usage as "no
+// bar" rather than 0 used.
 type traeCredits struct {
 	TotalRemain int64  `json:"total_remain"`
+	TotalUsed   int64  `json:"total_used,omitempty"`
+	TotalSize   int64  `json:"total_size,omitempty"`
+	PackCount   int    `json:"pack_count,omitempty"`
 	FetchedAt   string `json:"fetched_at,omitempty"`
 }
 

@@ -9,9 +9,9 @@
 // hard-coded one-account-per-second cadence.
 //
 // Trigger sources (three entry points converge on one runner):
-//   1. panel enter (auto, no button)  — POST /refresh → EnqueueAll(source="panel")
-//   2. preserve watchdog 10m tick     — EnqueueAll(source="watchdog")
-//   3. GET /credits?track=1 (one card)— EnqueueOne(source="credits")
+//  1. panel enter (auto, no button)  — POST /refresh → EnqueueAll(source="panel")
+//  2. preserve watchdog 10m tick     — EnqueueAll(source="watchdog")
+//  3. GET /credits?track=1 (one card)— EnqueueOne(source="credits")
 //
 // All are idempotent. The runner keeps a per-account state machine
 // (pending → running → done|failed) so the panel can poll GET /refresh/status
@@ -272,17 +272,17 @@ func (r *refreshRunner) Snapshot() refreshSnapshot {
 }
 
 // doFetchOne refreshes one account's points snapshot through the existing
-// credits source (accountPoints → cacheCredits). It reports an error only
+// credits source (accountCredits → cacheCredits). It reports an error only
 // when the account's credits could not be read — the panel's core datum.
 func doFetchOne(authIndex, authID string) error {
 	sa, err := hostAuthGet(authIndex)
 	if err != nil {
 		return err
 	}
-	remain, err := accountPoints(sa)
+	cr, err := accountCredits(sa)
 	if err != nil {
 		return err
 	}
-	cacheCredits(authID, &traeCredits{TotalRemain: remain, FetchedAt: time.Now().Format(time.RFC3339)})
+	cacheCredits(authID, cr)
 	return nil
 }

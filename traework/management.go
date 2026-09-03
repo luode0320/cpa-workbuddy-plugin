@@ -132,6 +132,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleUnfreezeAuth(req)))
 	case req.Method == http.MethodPost && path == base+"/import":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportCredential(req)))
+	case req.Method == http.MethodGet && path == base+"/export":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleExportAuth()))
 	case req.Method == http.MethodGet && path == base+"/storage-path":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{"ok": true, "path": storageGlobalDir()}))
 	case req.Method == http.MethodPost && path == base+"/refresh":
@@ -171,6 +173,8 @@ func handleAccounts() map[string]any {
 			AuthID:    f.ID,
 			AuthIndex: f.AuthIndex,
 			Nickname:  a.Nickname,
+			Label:     f.Label,
+			Name:      f.Name,
 			UID:       a.UserID,
 			Disabled:  phys.Disabled || f.Disabled,
 			Anomaly:   isAnomaly(f.ID),
@@ -181,26 +185,30 @@ func handleAccounts() map[string]any {
 			ensureCounterLoaded(a.UserID, phys.JSON)
 			view.SuccessCount, view.FailedCount = counterSnapshot(a.UserID)
 		}
-		// Credits: cached snapshot first; live query when missing.
+		// Credits: cached snapshot first; live query when missing. The full
+		// quota snapshot (remain/used/size/packs) drives the panel progress
+		// bar; the flat Remain stays for backward-compatible consumers.
 		cr, cached := cachedCredits(f.ID)
 		if !cached {
-			if remain, qerr := accountPoints(a); qerr == nil {
-				cr = &traeCredits{TotalRemain: remain, FetchedAt: time.Now().Format(time.RFC3339)}
+			if live, qerr := accountCredits(a); qerr == nil {
+				cr = live
 				cacheCredits(f.ID, cr)
 			}
 		}
 		if cr != nil {
 			view.Remain = cr.TotalRemain
+			view.Credits = cr
 			view.Exhausted = isCreditsExhausted(cr)
 		}
-		// Failover snapshot.
+		// Failover snapshot. cool_until is Unix seconds (panel countdown ticker).
 		if count, until, ok := failoverStateSnapshot(f.ID); ok {
 			view.FailCount = count
 			view.CoolingDown = time.Now().Before(until)
 			if view.CoolingDown {
-				view.CooldownUntil = until.Format(time.RFC3339)
+				view.CooldownUntil = until.Unix()
 			}
 		}
+		view.CheckinToday = checkinDoneToday(f.AuthIndex)
 		view.Active = strings.TrimSpace(f.ID) == getActiveAuthID()
 		views = append(views, view)
 	}
@@ -248,9 +256,12 @@ func handleRefreshAll() map[string]any {
 }
 
 // handleRefreshStatus returns the async refresh progress snapshot for the
-// panel's incremental card updates.
-func handleRefreshStatus() map[string]any {
-	return map[string]any{"refresh": globalRefresh.Snapshot()}
+// panel's incremental card updates. The snapshot is returned FLAT (running /
+// total / done / failed / per_account on the top-level object) — the panel
+// reads those fields directly, so wrapping it in {"refresh": ...} would break
+// the whole polling chain.
+func handleRefreshStatus() any {
+	return globalRefresh.Snapshot()
 }
 
 // handleManualCheckin checks in one account (auth_index) or all. Failed
@@ -266,9 +277,29 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	authIndex := strings.TrimSpace(body.AuthIndex)
 	if authIndex == "" {
 		okCount, results, scheduled := runFleetCheckin("manual")
+		// Batch summary counters (panel contract, mirrors workbuddy):
+		// success = fresh claims, already = upstream said "今日已签到",
+		// fail = failed attempts, eligible = fresh + failed.
+		successN, alreadyN, failN := 0, 0, 0
+		for _, r := range results {
+			switch {
+			case r["error"] != nil:
+				failN++
+			case r["ok"] == true && r["already"] == true:
+				alreadyN++
+			case r["ok"] == true:
+				successN++
+			default:
+				failN++
+			}
+		}
 		return map[string]any{
 			"ok": true, "checked_in": okCount, "results": results,
 			"retries_scheduled": scheduled,
+			"summary": map[string]any{
+				"success": successN, "already": alreadyN,
+				"fail": failN, "eligible": successN + failN,
+			},
 		}
 	}
 	a, err := hostAuthGet(authIndex)
@@ -276,12 +307,14 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 		return map[string]any{"error": "account not found: " + authIndex}
 	}
 	res := checkinAccount(a)
-	out := map[string]any{"ok": res.OK, "message": res.Message, "auth_index": authIndex}
+	out := map[string]any{"ok": res.OK, "message": res.Message, "auth_index": authIndex, "already": res.Already}
+	out["nickname"] = a.Nickname
 	if res.Points > 0 {
 		out["points"] = res.Points
 	}
 	if res.OK {
 		cancelCheckinRetry(authIndex)
+		markCheckinDoneToday(authIndex)
 	}
 	// Locate the auth file ID once — used for retry queuing and the
 	// credits cache refresh below.
@@ -299,9 +332,10 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	}
 	// Refresh credits cache for the panel.
 	if fileID != "" {
-		if remain, qerr := accountPoints(a); qerr == nil {
-			cacheCredits(fileID, &traeCredits{TotalRemain: remain, FetchedAt: time.Now().Format(time.RFC3339)})
-			out["remain"] = remain
+		if cr, cerr := accountCredits(a); cerr == nil {
+			cacheCredits(fileID, cr)
+			out["remain"] = cr.TotalRemain
+			out["credits"] = cr
 		}
 	}
 	return out
@@ -332,22 +366,48 @@ func handleCheckinConfig(req pluginapi.ManagementRequest) map[string]any {
 }
 
 // handleCreditsQuery returns real-time credits for one account (auth_index
-// query) or all accounts, refreshing the cache.
+// query) or all accounts, refreshing the cache. With track=1 the single-account
+// branch enqueues a throttled background refresh instead of blocking on the
+// upstream call (panel lazy-refresh path, mirrors workbuddy).
 func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 	authIndex := strings.TrimSpace(req.Headers.Get("X-Auth-Index"))
 	if v := req.Query.Get("auth_index"); v != "" {
 		authIndex = v
 	}
 	if authIndex != "" {
+		files, lerr := hostAuthList()
+		if lerr != nil {
+			return map[string]any{"error": lerr.Error()}
+		}
+		var fileID string
+		for _, f := range files {
+			if f.AuthIndex == authIndex {
+				fileID = f.ID
+				break
+			}
+		}
+		if t := req.Query.Get("track"); t == "1" || t == "true" {
+			if fileID == "" {
+				return map[string]any{"error": "account not found: " + authIndex}
+			}
+			globalRefresh.EnqueueOne(authIndex, fileID, "credits")
+			return map[string]any{"queued": true, "auth_index": authIndex, "status": globalRefresh.Snapshot()}
+		}
 		a, err := hostAuthGet(authIndex)
 		if err != nil || a == nil {
 			return map[string]any{"error": "account not found: " + authIndex}
 		}
-		remain, qerr := accountPoints(a)
+		cr, qerr := accountCredits(a)
 		if qerr != nil {
 			return map[string]any{"error": qerr.Error(), "auth_index": authIndex}
 		}
-		return map[string]any{"ok": true, "auth_index": authIndex, "remain": remain}
+		if fileID != "" {
+			cacheCredits(fileID, cr)
+		}
+		return map[string]any{
+			"ok": true, "auth_index": authIndex, "remain": cr.TotalRemain,
+			"credits": cr, "exhausted": isCreditsExhausted(cr),
+		}
 	}
 	files, err := hostAuthList()
 	if err != nil {
@@ -573,6 +633,59 @@ func managementClientIP(req pluginapi.ManagementRequest) string {
 	return ""
 }
 
+// handleExportAuth returns every traework credential as a parsed JSON backup
+// ({version, exported_at, plugin, count, accounts:[{name, auth_index, uid,
+// nickname, credential}]}). The frontend downloads it as a dated file; the
+// same wrapper can be re-imported later. Carries full credentials — must stay
+// in mutatingManagementPath so the management key is required despite being GET.
+func handleExportAuth() map[string]any {
+	files, err := hostAuthList()
+	if err != nil {
+		return map[string]any{"error": "host.auth.list failed: " + err.Error(), "count": 0, "accounts": []any{}}
+	}
+	out := make([]map[string]any, 0, len(files))
+	for _, f := range files {
+		if strings.TrimSpace(f.AuthIndex) == "" {
+			continue
+		}
+		a, phys, gerr := hostAuthGetBundle(f.AuthIndex)
+		if gerr != nil || phys == nil {
+			out = append(out, map[string]any{
+				"name":       f.Name,
+				"auth_index": f.AuthIndex,
+				"load_error": errString(gerr),
+			})
+			continue
+		}
+		var cred any
+		_ = json.Unmarshal(phys.JSON, &cred)
+		entry := map[string]any{
+			"name":       f.Name,
+			"auth_index": f.AuthIndex,
+			"credential": cred,
+		}
+		if a != nil {
+			entry["uid"] = a.UserID
+			entry["nickname"] = a.Nickname
+		}
+		out = append(out, entry)
+	}
+	return map[string]any{
+		"version":     1,
+		"exported_at": time.Now().UTC().Format(time.RFC3339),
+		"plugin":      providerName,
+		"count":       len(out),
+		"accounts":    out,
+	}
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 func mutatingManagementPath(path string) bool {
 	base := loadedManagementBasePath() + "/plugins/" + providerName
 	switch path {
@@ -583,6 +696,7 @@ func mutatingManagementPath(path string) bool {
 		base + "/disable",
 		base + "/unfreeze",
 		base + "/import",
+		base + "/export",
 		base + "/delete":
 		return true
 	}

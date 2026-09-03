@@ -70,7 +70,7 @@ import (
 const (
 	providerName  = "traework-provider"
 	authFileName  = "traework.json"
-	pluginLogoURL = "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/Trae.png"
+	pluginLogoURL = "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/TraeWork.png"
 
 	// checkinRefreshInterval bounds how often the dashboard lazily refreshes
 	// credits for accounts without a cached snapshot.
@@ -278,7 +278,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.1.33"
+var version = "0.1.34"
 
 func wbRegistration() registration {
 	return registration{

@@ -87,21 +87,26 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 
 // traeAccountView is the dashboard's per-account card model.
 type traeAccountView struct {
-	AuthID        string `json:"auth_id"`
-	AuthIndex     string `json:"auth_index"`
-	Nickname      string `json:"nickname"`
-	UID           string `json:"uid"`
-	Remain        int64  `json:"remain"`
-	Exhausted     bool   `json:"exhausted"`
-	Disabled      bool   `json:"disabled"`
-	Anomaly       bool   `json:"anomaly"`
-	Preserved     bool   `json:"preserved"`
-	SuccessCount  int64  `json:"success_count,omitempty"`
-	FailedCount   int64  `json:"failed_count,omitempty"`
-	CoolingDown   bool   `json:"cooling_down"`
-	FailCount     int    `json:"fail_count"`
-	CooldownUntil string `json:"cooldown_until,omitempty"`
-	Active        bool   `json:"active"`
+	AuthID        string       `json:"auth_id"`
+	AuthIndex     string       `json:"auth_index"`
+	Nickname      string       `json:"nickname"`
+	Label         string       `json:"label,omitempty"`
+	Name          string       `json:"name,omitempty"`
+	UID           string       `json:"uid"`
+	Remain        int64        `json:"remain"`
+	Credits       *traeCredits `json:"credits,omitempty"`
+	Exhausted     bool         `json:"exhausted"`
+	Disabled      bool         `json:"disabled"`
+	Anomaly       bool         `json:"anomaly"`
+	Preserved     bool         `json:"preserved"`
+	CheckinToday  bool         `json:"checkin_today"`
+	SuccessCount  int64        `json:"success_count,omitempty"`
+	FailedCount   int64        `json:"failed_count,omitempty"`
+	CoolingDown   bool         `json:"cooling_down"`
+	FailCount     int          `json:"fail_count"`
+	CooldownUntil int64        `json:"cool_until,omitempty"`
+	Active        bool         `json:"active"`
+	Error         string       `json:"error,omitempty"`
 }
 
 // ensureDefaultActiveAuth keeps the panel selection consistent with routing

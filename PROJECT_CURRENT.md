@@ -83,6 +83,7 @@
 
 ## 待办
 
+- 【改码完成待发布】traework 面板对齐 workbuddy B 组 + 契约修复已完成（2026-09-03，本会话，0.1.34 bump 未提交未发布）：契约修复 3 处（/refresh/status 去包装、fetchAndPatchCredits 局部更新链、__traeThemeSync 启动）+ 面板 9 项（进度条/用量汇总5卡联动/签到已签态+summary/结果细分/排序三态/四字段搜索/export+mutating鉴权/冷却ticker/api健壮性）+ 后端配套（traeCredits 四元组、accountCredits、checkinDoneToday、/credits track=1）。验证：node --check 双块 PASS、cgo-shim build/vet/test 全绿、gofmt -w 六改动文件、git diff --check PASS。**待用户发布授权**（13 步链）。
 - 【本轮】traework 对齐五件套 + 面板代码完成（cgo-shim 全绿），**待发布**：bump 0.1.16 → 13 步发布链路 → 生产 store install 部署 → 面板/接口真实验证（保号池展示、keepalive 保号、lifecycle 停用、会话粘性路由）
 - 【低优】历史版本「真实页面交互验证」遗留项（0.14.12 登录轮询去重 / 0.14.11 计数持久化 / 异步刷新 / 删除账号 / 启用禁用移除）：核心链路已由生产面板日常使用间接验证，专项验证仅在上游报障时补做
 - 【观察】qoderwork 0.9.6 authFilePrefix 修复为预防性（服务器无 qoderwork 凭据，accounts 空属正常）；未来部署 qoderwork 凭据后确认账号列表可见

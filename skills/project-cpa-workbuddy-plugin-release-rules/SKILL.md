@@ -330,6 +330,7 @@ git -c http.proxy=socks5h://127.0.0.1:1080 push origin main
 37. **GitHub 上行大流量稳定阻断（2026-09-02 实测）**：本机对 GitHub push / 大对象上传稳定断流（curl 52/55/65 + `SSL UNEXPECTED_EOF`），下行正常 → **用生产服务器 SOCKS 隧道绕过**（`ssh -i ~/.ssh/id_ed25519_cpa-server -p 18998 -N -D 127.0.0.1:1080 root@45.207.222.65`）：git 加 `-c http.proxy=socks5h://127.0.0.1:1080 push`，HTTP 走 `curl --socks5-hostname`。**urllib 不认 socks5**（`Remote end closed connection`）→ 走代理的 HTTP 一律 curl。隧道用完 `kill`。
 38. **生产日志 grep 中文回显**：生产日志正文含中文（如「失败（HTTP 200）」），取日志经管道 / 重定向时用 `docker logs ... 2>&1 | grep ...`，终端回显中文乱码不影响判定；判定以 stream_id / attempt / chunks 等 ASCII 字段为准。
 39. **`/v1/responses` 与 `/v1/chat/completions` 的 JSON 差异**：responses 流式 body 是 `{"type":"response.output_text.delta","delta":"..."}` + 末尾 `response.completed`，chat/completions 是 `data: {"choices":[...]}` chunks + `[DONE]`；脚本解析前先确认端点与格式，不要混用解析器。
+40. **SSH 会话内 curl 偶发返回 000（2026-09-03 实测，traework 0.1.33 部署验收）**：经 SSH 在服务器侧 curl 127.0.0.1:8317（accounts/panel 等任意端点）偶发返回 000（连接层瞬时抖动），不代表服务异常——同一命令立即复测即恢复 200。判定铁律：000 先复测 2-3 次再下结论，不得基于单次 000 回滚或重装。另：生产 feed 文件长期运行会被轮换重建（0.1.33 验收时 22:28 重建为 3203 字节），重建后 grep 不到本插件记录属正常，需主动发轻量流量触发新记录再验证。
 
 ## 权责边界与不负责事项
 

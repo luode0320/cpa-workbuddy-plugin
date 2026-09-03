@@ -1,5 +1,31 @@
 # TraeWork Plugin Changelog
 
+## 0.1.34
+
+### Feat — 面板功能对齐 workbuddy（B 组 9 项）+ 修复 3 处前后端契约断裂
+
+traework 面板是 0.1.16 从 workbuddy 一次性裁剪的快照，0.14.10~0.14.18 期间 workbuddy 面板的多轮迭代未同步，且存在 3 处复制前端时未同步后端 handler 形态的契约 bug（差异全量清单见知识库《traework面板与workbuddy面板差异清单》）。
+
+**契约修复（前端功能的生效前置）**：
+
+1. `/refresh/status` 去掉 `{"refresh": ...}` 包装层，平铺返回 `globalRefresh.Snapshot()`（management.go）——前端按平铺读 `running/total/done/failed/per_account`，包装导致整个异步刷新轮询链第一次 tick 即静默停止：进度文本、卡片三态、逐卡局部刷新从未运行过。
+2. `pollRefreshStatus` 不再丢弃 `/credits` 返回值：新增 `fetchAndPatchCredits`（合并 credits/exhausted 进本地态）+ `updateOneCard`（排序激活时全量重排，否则原地替换卡片）——后台刷新 done 后卡片积分立即更新，不再等整页 load()。
+3. `window.__traeThemeSync` 补上启动调用——此前只定义未调用，嵌入 CPA 主面板切换暗色主题时面板不跟随（首屏 sync() 在 IIFE 内已跑，故仅后续变化失效）。
+
+**面板功能对齐（panel.html 重写核心区块）**：
+
+1. 账号卡积分改进度条（`.pb` 系列，与 workbuddy 同构）：可用/已用/占比/额度池/包数/快照时间，>60% 黄 >85% 红；成功/失败/连败/冷却段并入进度条首行。
+2. 汇总卡改为真"用量汇总"：剩余(可用)/剩余(不可用)/已用/额度池/消耗占比 5 卡 + 消耗进度条，随筛选 chip 联动（`accountsForFilter`）；保号池/keepalive/lifecycle/异常池子系统卡下移为"子系统状态"行（仅全部视图），消除"用量汇总"名下渲染子系统状态的错位。
+3. 签到状态化：后端新增 `checkinDoneToday` 内存记录（auth_index→当日日期，签到成功即写入），`/accounts` 返回 per-account `checkin_today`；前端"已签到"禁用态 + `markCheckinDone` 即时置灰（覆盖 busy 恢复快照防闪回）+ 乐观写本地态。
+4. 签到结果细分：`checkinResult` 增加 `Already`；批量 `/checkin` 返回 `summary{success,already,fail,eligible}`（契约同 workbuddy）；results 补 `already/auth_index/nickname` 字段；`checkinResultToast` 区分新签（+积分）/今日已签/失败。
+5. 排序三态切换：工具栏"积分 ↕/↑/↓"，激活时按 `credits.total_remain` 排序（未知 = -1 沉到"最少"端），积分变化触发全量重排；关闭时保留原停用>异常>保号>耗尽沉底默认序。
+6. 搜索扩为 nickname/label/name/uid 四字段并联动汇总卡；`traeAccountView` 补 `label/name` 字段。
+7. 凭据导出：`GET /export`（`{version, exported_at, plugin, count, accounts:[{name, auth_index, uid, nickname, credential}]}`）+ 前端一键下载 `traework-credentials-YYYY-MM-DD.json`；`/export` 列入 `mutatingManagementPath`（含凭据原文，GET 也强制 management key——比 workbuddy 现状更严格）。
+8. 冷却倒计时：`cool_until` 从 RFC3339 字符串改为 Unix 秒（对齐 workbuddy 字段名与语义），前端 1s ticker 原地刷新"冷却 Ns"。
+9. `api()` 健壮性：无 key 前置拦截、`authFailUntil` 请求前熔断、403 IP-banned 解析上游等待窗口（"Try again in Xm Ys"正则）全局退避（静默请求同样退避）、空/非 JSON/解析失败返回结构化 `{error}`（不 throw SyntaxError）；toast 上限 5 条 + err 6s。
+
+**后端配套**：`traeCredits` 扩展 `total_used/total_size/pack_count`（同一 entitlement 响应的 `quota.credits_limit`/`usage.credits_amount` 解析，旧缓存零值向后兼容）；`accountCredits` 四元组查询替代 `accountPoints`+手拼快照（缓存写入点 4 处升级）；`/credits?auth_index=` 返回补 `credits/exhausted/nickname`，新增 `track=1` 入队后台刷新（`EnqueueOne`，refresh_runner 注释预留的契约补齐）。
+
 ## 0.1.33
 
 ### Feat — usage feed 补齐会话与首字延迟：dashboard「会话」「首字延迟」列支持 traework 流量
