@@ -32,7 +32,7 @@ data: {}
 // [返回] 无。
 // 最近修改时间：2026-09-03；改动原因：P1 止血——同步路径伪完成豁免依赖该信号。
 func TestCollectTraeStreamReportsToolCalls(t *testing.T) {
-	chunks, hasToolCalls, _, err := collectTraeStream(strings.NewReader(toolCallSSE), "qwen3.8-max", 200)
+	chunks, hasToolCalls, _, _, err := collectTraeStream(strings.NewReader(toolCallSSE), "qwen3.8-max", 200)
 	if err != nil {
 		t.Fatalf("collectTraeStream error = %v; want nil (tool-call stream is valid)", err)
 	}
@@ -59,7 +59,7 @@ event: done
 data: {}
 
 `
-	_, hasToolCalls, _, err := collectTraeStream(strings.NewReader(sse), "qwen3.8-max", 200)
+	_, hasToolCalls, _, _, err := collectTraeStream(strings.NewReader(sse), "qwen3.8-max", 200)
 	if err != nil {
 		t.Fatalf("collectTraeStream error = %v; want nil", err)
 	}

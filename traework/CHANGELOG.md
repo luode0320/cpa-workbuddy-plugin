@@ -1,5 +1,19 @@
 # TraeWork Plugin Changelog
 
+## 0.1.37
+
+### Feat — 解析上游 event:token_usage 真实用量，dashboard Token 列不再依赖估算
+
+traework 此前从不解析上游 token 用量，usage feed 全靠 content 字符估算（InputTokens/ReasoningTokens 恒 0，OutputTokens=chars/4），导致 dashboard 的 trae 模型行输入/输出/思考/总 Token 无真实数据（2026-09-03 截图 qwen3.8-max 行）。2026-09-04 直连取证确认 llm_utils_chat 在 done 前发送 `event:token_usage`，data 为 OpenAI 风格 usage JSON 且 reasoning_tokens 位于顶层。本版三条路径（collect / aggregate / pump）统一接入真实用量，缺失时回退估算，行为与 0.1.36 一致。
+
+- `stream.go`：
+  - 新增 `traeUsageCollector`（feed/detail）与 `usageDetailFromTraeMap`：解析 prompt/completion/reasoning/total/cache 计数，数值类型容错（float64/int64/json.Number）；reasoning 顶层缺失时回退 `completion_tokens_details` 子对象（CodeBuddy 形态）；data 带 usage 包装键时自动解包
+  - `collectTraeStream` / `aggregateTraeCompletion` 增加 detail 返回值（5 值 / 3 值）；`traeStreamAttemptResult` 新增 Usage 字段；collect/aggregate/pump 三处 scanSSE 回调新增 `case "token_usage"` 分支
+  - 新增兜底 helper `usageDetailForAttempt`（流式）/ `usageDetailForCompletion`（非流式）：真实 total>0 原样发布，缺失回退 `estimateUsageFromChunks` / `estimateUsageFromCompletion`
+- `executor.go`：`handleExecExecute`（非流式）、`runTraeSyncStream`（同步流，pseudo/成功分支）、`runTraeAsyncStream`（异步协调 5 处）全部改发 usageDetailFor*；失败路径维持空 Detail 语义不变
+- 测试：9 处 collect/aggregate 调用点适配 5/3 返回值；新增 `token_usage_test.go` 8 用例（取证 JSON 顶层/嵌套解析、别名键、usage 包装解包、collect/aggregate 带出、无事件空 Detail、两 helper 兜底语义）
+- 验证：cgo-shim build/vet/test 全绿；gofmt 干净（本轮改动文件）
+
 ## 0.1.36
 
 ### Fix — 纠正 0.1.35 删除方向：恢复「用量汇总」，改删「子系统状态」

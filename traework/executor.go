@@ -157,10 +157,10 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	for attempt := 0; attempt <= budget; attempt++ {
 		resp, callErr := callLLM(curSA, payload, usedAuthID)
 		if callErr == nil {
-			completion, aggErr := aggregateTraeCompletion(bytes.NewReader(resp.Body), req.Model, resp.StatusCode)
+			completion, aggDetail, aggErr := aggregateTraeCompletion(bytes.NewReader(resp.Body), req.Model, resp.StatusCode)
 			if aggErr == nil {
 				resetAccountFailover(usedAuthID)
-				publishUsage(req.Model, upstreamModel, authUID, started, estimateUsageFromCompletion(completion), false, 0, "", "", 0, authUID, sessionKey)
+				publishUsage(req.Model, upstreamModel, authUID, started, usageDetailForCompletion(aggDetail, completion), false, 0, "", "", 0, authUID, sessionKey)
 				return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 			}
 			// SSE-layer business errors: the Trae llm_utils_chat upstream returns
@@ -384,7 +384,7 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 				requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, len(result.Chunks))
 			noteForcedAccountFailure(curAuthID, reason)
 			evictSessionBindingsForAuth(curAuthID)
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, reason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, statusCode, reason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 			if attempt >= ctx.Budget {
 				break
 			}
@@ -414,7 +414,7 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 				requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, statusCode, result.Emitted, truncateRedacted(result.Err.Error(), 200))
 			reconcileAfterExecutorError(curAuthID, statusCode, result.Err.Error())
 			emitTraeAsyncError(ctx.StreamID, result.Err.Error(), deps)
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, result.Err.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, statusCode, result.Err.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 			return
 		}
 
@@ -439,16 +439,16 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 		if finishErr != nil {
 			reconcileAfterExecutorError(curAuthID, statusCode, finishErr.Error())
 			emitTraeAsyncError(ctx.StreamID, finishErr.Error(), deps)
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, finishErr.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, statusCode, finishErr.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 			return
 		}
 		deps.Close(ctx.StreamID)
 		if failed {
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, failureReason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, statusCode, failureReason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 			return
 		}
 		resetAccountFailover(curAuthID)
-		publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), false, 0, "", "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
+		publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), false, 0, "", "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 		log.Printf("[traework] exec stream async done: request_id=%s stream_id=%s model=%s auth_hash=%s attempt=%d chunks=%d",
 			requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, len(result.Chunks))
 		return
@@ -510,7 +510,7 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 			continue
 		}
 
-		chunks, hasToolCalls, firstOutputAt, collectErr := collectTraeStream(bytes.NewReader(resp.Body), ctx.Model, resp.StatusCode)
+		chunks, hasToolCalls, firstOutputAt, detail, collectErr := collectTraeStream(bytes.NewReader(resp.Body), ctx.Model, resp.StatusCode)
 		if collectErr == nil {
 			if isPseudoCompletion(chunks, ctx.InputChars, hasToolCalls) {
 				// 2. 伪完成按失败 attempt 核算并驱逐绑定；候选允许时丢弃当前 chunks 后继续。
@@ -518,7 +518,7 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 				log.Printf("[traework] exec stream collect pseudo-done: model=%s auth_hash=%s attempt=%d chunks=%d", ctx.Model, authLogHash(curAuthID), attempt+1, len(chunks))
 				noteForcedAccountFailure(curAuthID, reason)
 				evictSessionBindingsForAuth(curAuthID)
-				publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(chunks), true, resp.StatusCode, reason, "", ttftNSBetween(ctx.Started, firstOutputAt), curAuthUID, ctx.SessionKey)
+				publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(detail, chunks), true, resp.StatusCode, reason, "", ttftNSBetween(ctx.Started, firstOutputAt), curAuthUID, ctx.SessionKey)
 				lastFailurePublished = true
 				if attempt >= ctx.Budget {
 					break
@@ -545,7 +545,7 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 			}
 			resetAccountFailover(curAuthID)
 			log.Printf("[traework] exec stream collect ok: model=%s auth_hash=%s attempt=%d chunks=%d", ctx.Model, authLogHash(curAuthID), attempt+1, len(chunks))
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, 0, "", "", ttftNSBetween(ctx.Started, firstOutputAt), curAuthUID, ctx.SessionKey)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(detail, chunks), false, 0, "", "", ttftNSBetween(ctx.Started, firstOutputAt), curAuthUID, ctx.SessionKey)
 			return chunks, nil
 		}
 

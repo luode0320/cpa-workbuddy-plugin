@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -194,6 +195,108 @@ func completionAggregate(requestID, model, text, reasoning, finishReason string,
 	return json.Marshal(out)
 }
 
+// traeUsageCollector 累积最近一个 event:token_usage 事件（Trae llm_utils_chat
+// 在 done 前发送，data 即 OpenAI 风格的 usage JSON 对象）。三条约流路径
+// （collect / aggregate / pump）在 scanSSE 回调里喂入，成功收尾时把
+// detail() 结果写入 usage feed，替代纯 content 字符估算（2026-09-04 直连
+// 取证：token_usage data 形如 {"prompt_tokens":69,"completion_tokens":34,
+// "reasoning_tokens":23,"total_tokens":103,"cache_read_input_tokens":0,
+// "cache_creation_input_tokens":0,"cluster":"normal_context"}）。
+type traeUsageCollector struct {
+	last map[string]any
+}
+
+// feed 解析一条 token_usage 事件 data 并保留最近一次（容错：非 JSON /
+// 空对象直接忽略）。兼容两种形态：data 直接是 usage 对象（Trae 实测），
+// 或带 usage 包装键（OpenAI 惯例）。
+// [参数] rawJSON: token_usage 事件的原始 data。
+// [返回] 无。
+// 最近修改时间：2026-09-04；改动原因：dashboard 输入/输出/思考/总 Token 列
+// 需要 traework 侧真实 usage（此前 InputTokens/ReasoningTokens 恒 0）。
+func (c *traeUsageCollector) feed(rawJSON string) {
+	if c == nil {
+		return
+	}
+	var obj map[string]any
+	if json.Unmarshal([]byte(rawJSON), &obj) != nil {
+		return
+	}
+	if u, ok := obj["usage"].(map[string]any); ok && len(u) > 0 {
+		obj = u
+	}
+	if len(obj) == 0 {
+		return
+	}
+	c.last = obj
+}
+
+// detail 返回收集到的真实 token 用量；未收到任何 token_usage 事件时为空。
+// [参数] 无。
+// [返回] usage.Detail: 上游真实计数（Input/Output/Reasoning/Total）。
+// 最近修改时间：2026-09-04；改动原因：同 feed。
+func (c *traeUsageCollector) detail() usage.Detail {
+	if c == nil {
+		return usage.Detail{}
+	}
+	return usageDetailFromTraeMap(c.last)
+}
+
+// usageDetailFromTraeMap 把 Trae token_usage 对象转成 usage.Detail，键兼容
+// OpenAI 蛇形命名：prompt_tokens/input_tokens、completion_tokens/output_tokens、
+// reasoning_tokens（顶层，Trae 实测形态；另兼容 completion_tokens_details
+// 子对象形态）、cache_read_input_tokens、cache_creation_input_tokens、
+// total_tokens。数值抖动（float64/int64/json.Number）统一容错。
+// [参数] m: token_usage 对象。
+// [返回] usage.Detail: 全部字段翻译；空输入返回空 Detail。
+// 最近修改时间：2026-09-04；改动原因：同 feed。
+func usageDetailFromTraeMap(m map[string]any) usage.Detail {
+	if len(m) == 0 {
+		return usage.Detail{}
+	}
+	num := func(keys ...string) int64 {
+		for _, k := range keys {
+			if v, ok := m[k]; ok {
+				switch n := v.(type) {
+				case float64:
+					return int64(n)
+				case int64:
+					return n
+				case json.Number:
+					i, _ := n.Int64()
+					return i
+				}
+			}
+		}
+		return 0
+	}
+	d := usage.Detail{
+		InputTokens:         num("prompt_tokens", "input_tokens"),
+		OutputTokens:        num("completion_tokens", "output_tokens"),
+		TotalTokens:         num("total_tokens"),
+		CacheReadTokens:     num("cache_read_input_tokens"),
+		CacheCreationTokens: num("cache_creation_input_tokens"),
+		ReasoningTokens:     num("reasoning_tokens"),
+	}
+	// OpenAI 惯例形态：reasoning_tokens 位于 completion_tokens_details 子对象
+	// （CodeBuddy 等）。Trae 顶层已命中时跳过，避免子对象零值覆盖。
+	if d.ReasoningTokens == 0 {
+		if ct, ok := m["completion_tokens_details"].(map[string]any); ok {
+			if v, ok := ct["reasoning_tokens"]; ok {
+				switch n := v.(type) {
+				case float64:
+					d.ReasoningTokens = int64(n)
+				case int64:
+					d.ReasoningTokens = n
+				case json.Number:
+					i, _ := n.Int64()
+					d.ReasoningTokens = i
+				}
+			}
+		}
+	}
+	return d
+}
+
 // traeSSETerminal 记录本次 SSE 是否以可验证的业务事件结束。
 type traeSSETerminal struct {
 	hasOutput    bool
@@ -286,17 +389,19 @@ func terminationLabel(t traeStreamTermination) string {
 // [返回] chunks: 转换后的分片；hasToolCalls: 本次流是否含结构化工具调用（伪完成豁免信号）；
 //
 //	firstOutputAt: 第一个有效 output 事件到达时间（首字延迟 TTFT 观测点，
-//	零值表示未观测到任何输出，如请求开启即失败）；error: 上游错误、缺少
-//	done 或传输截断时的协议错误。
+//	零值表示未观测到任何输出，如请求开启即失败）；detail: 上游 token_usage
+//	事件带出的真实用量（未收到该事件时为空 Detail，调用方应回退估算）；
+//	error: 上游错误、缺少 done 或传输截断时的协议错误。
 //
-// 最近修改时间：2026-09-03；改动原因：dashboard 首字延迟列——把首个有效 output
-// 事件的到达时间带出给同步流式路径的 usage feed（ttft_ns）。
-func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.ExecutorStreamChunk, bool, time.Time, error) {
+// 最近修改时间：2026-09-04；改动原因：dashboard 输入/输出/思考/总 Token 列——
+// 解析 event:token_usage 真实用量替代纯 content 估算（此前输入/思考恒 0）。
+func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.ExecutorStreamChunk, bool, time.Time, usage.Detail, error) {
 	requestID := randomUUID()
 	started := time.Now()
 	var chunks []pluginapi.ExecutorStreamChunk
 	var terminal traeSSETerminal
 	var firstOutputAt time.Time
+	var collector traeUsageCollector
 	err := scanSSE(r, func(ev sseEvent) error {
 		switch ev.Event {
 		case "output":
@@ -317,6 +422,8 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 					}
 				}
 			}
+		case "token_usage":
+			collector.feed(ev.Data)
 		case "done":
 			terminal.recordDone()
 		case "error":
@@ -330,12 +437,12 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 	}, terminal.hasPayload)
 	if err != nil {
 		log.Printf("[traework] stream collect error: request_id=%s model=%s status=%d err=%s elapsed_ms=%d", requestID, model, statusCode, truncateRedacted(err.Error(), 200), time.Since(started).Milliseconds())
-		return nil, false, time.Time{}, err
+		return nil, false, time.Time{}, usage.Detail{}, err
 	}
 	termination, err := terminal.classify(statusCode)
 	if err != nil {
 		log.Printf("[traework] stream collect invalid: request_id=%s model=%s status=%d err=%s elapsed_ms=%d", requestID, model, statusCode, truncateRedacted(err.Error(), 200), time.Since(started).Milliseconds())
-		return nil, false, time.Time{}, err
+		return nil, false, time.Time{}, usage.Detail{}, err
 	}
 	// 收到 done 正常收尾；部分 output 后 EOF（上游中途断流）补 length 收尾，
 	// 让客户端保留已生成内容，而不是把可兜底的中断误判为致命错误。仅空响应才真正报错。
@@ -353,19 +460,23 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 	}
 	log.Printf("[traework] stream collect done: request_id=%s model=%s status=%d termination=%s chunks=%d finish=%s tool_calls=%v elapsed_ms=%d",
 		requestID, model, statusCode, terminationLabel(termination), len(chunks), finish, terminal.hasToolCalls, time.Since(started).Milliseconds())
-	return chunks, terminal.hasToolCalls, firstOutputAt, nil
+	return chunks, terminal.hasToolCalls, firstOutputAt, collector.detail(), nil
 }
 
 // aggregateTraeCompletion reads the upstream SSE stream and folds all output
 // events into one chat.completion aggregate (non-streaming path).
 // [参数] r: 上游 SSE 响应；model: 客户端模型；statusCode: 上游 HTTP 状态码。
-// [返回] []byte: OpenAI 完成响应；error: 上游错误、缺少 done 或传输截断时的协议错误。
-// 最近修改时间：2026-08-30 23:40:18；改动原因：聚合响应必须收到 done，避免把部分输出后的 EOF 误判为完整完成。
-func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte, error) {
+// [返回] []byte: OpenAI 完成响应；usage.Detail: 上游 token_usage 事件带出的
+// 真实用量（未收到该事件时为空 Detail，调用方应回退估算）；error: 上游错误、
+// 缺少 done 或传输截断时的协议错误。
+// 最近修改时间：2026-09-04；改动原因：dashboard 输入/输出/思考/总 Token 列——
+// 非流式路径同样解析 event:token_usage 真实用量（此前输入/思考恒 0）。
+func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte, usage.Detail, error) {
 	requestID := randomUUID()
 	started := time.Now()
 	var text, reasoning strings.Builder
 	var terminal traeSSETerminal
+	var collector traeUsageCollector
 	// 工具调用按 index 合并：上游为快照式全量（单事件完整调用），跨事件同
 	// index 的 arguments 按流式分片语义拼接作为防御（正常路径不会触发）。
 	toolCalls := map[int]map[string]any{}
@@ -393,6 +504,8 @@ func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte,
 					mergeTraeToolCall(merged, call)
 				}
 			}
+		case "token_usage":
+			collector.feed(ev.Data)
 		case "done":
 			terminal.recordDone()
 		case "error":
@@ -406,12 +519,12 @@ func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte,
 	}, terminal.hasPayload)
 	if err != nil {
 		log.Printf("[traework] stream aggregate error: request_id=%s model=%s status=%d err=%s elapsed_ms=%d", requestID, model, statusCode, truncateRedacted(err.Error(), 200), time.Since(started).Milliseconds())
-		return nil, err
+		return nil, usage.Detail{}, err
 	}
 	termination, err := terminal.classify(statusCode)
 	if err != nil {
 		log.Printf("[traework] stream aggregate invalid: request_id=%s model=%s status=%d err=%s elapsed_ms=%d", requestID, model, statusCode, truncateRedacted(err.Error(), 200), time.Since(started).Milliseconds())
-		return nil, err
+		return nil, usage.Detail{}, err
 	}
 	finish := "stop"
 	switch {
@@ -430,7 +543,11 @@ func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte,
 	}
 	log.Printf("[traework] stream aggregate done: request_id=%s model=%s status=%d termination=%s finish=%s chars=%d tool_calls=%d elapsed_ms=%d",
 		requestID, model, statusCode, terminationLabel(termination), finish, text.Len()+reasoning.Len(), len(calls), time.Since(started).Milliseconds())
-	return completionAggregate(requestID, model, text.String(), reasoning.String(), finish, calls)
+	raw, aggErr := completionAggregate(requestID, model, text.String(), reasoning.String(), finish, calls)
+	if aggErr != nil {
+		return nil, usage.Detail{}, aggErr
+	}
+	return raw, collector.detail(), nil
 }
 
 // mergeTraeToolCall 把单个 OpenAI 键形态的调用增量并入同 index 的聚合记录：
@@ -584,7 +701,11 @@ type traeStreamAttemptResult struct {
 	// FirstOutputAt 是第一个有效 output 事件的到达时间（TTFT 观测点）；
 	// 零值表示该尝试未观测到任何输出（如开启即失败）。
 	FirstOutputAt time.Time
-	Err           error
+	// Usage 是上游 token_usage 事件带出的真实用量（未收到该事件时为空，
+	// 调用方应回退 estimateUsageFromChunks 估算，见 usageDetailForAttempt）。
+	// 最近修改时间：2026-09-04；改动原因：dashboard Token 列真实 usage。
+	Usage usage.Detail
+	Err   error
 }
 
 // traeStreamEmitter 下发一个已转换的客户端分片。
@@ -603,6 +724,7 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 	healthChars := 0
 	pending := make([][]byte, 0)
 	var terminal traeSSETerminal
+	var collector traeUsageCollector
 
 	// 1. 转换每个 output；长输入在 content+reasoning 合计达到健康门槛前只缓存，
 	//    不向客户端承诺当前账号（双轴都短的真伪完成全程零泄漏）。含结构化工具调用的
@@ -660,6 +782,8 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 				}
 				result.Emitted = true
 			}
+		case "token_usage":
+			collector.feed(ev.Data)
 		case "done":
 			terminal.recordDone()
 		case "error":
@@ -671,6 +795,8 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 		}
 		return nil
 	}, terminal.hasPayload)
+	// 无论成败都把真实用量带出（协调器在发布前对空 Detail 回退估算）。
+	result.Usage = collector.detail()
 	if scanErr != nil {
 		result.Err = scanErr
 		return result
@@ -698,6 +824,33 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 	return result
 }
 
+// usageDetailForAttempt 返回一次流式尝试的用量 detail：优先上游 token_usage
+// 真实值（total>0 即视为已收到），缺失时回退 content 字符估算——旧上游 /
+// 开启即失败 / 断流早于 token_usage 事件时保持与 0.1.35 一致的估算行为。
+// [参数] real: 尝试带出的真实用量（可为空）；chunks: 已收集分片（估算输入）。
+// [返回] usage.Detail: 发布到 feed / CPAMP 的最终用量。
+// 最近修改时间：2026-09-04；改动原因：dashboard Token 列真实 usage 的统一兜底。
+func usageDetailForAttempt(real usage.Detail, chunks []pluginapi.ExecutorStreamChunk) usage.Detail {
+	if real.TotalTokens > 0 {
+		return real
+	}
+	return estimateUsageFromChunks(chunks)
+}
+
+// usageDetailForCompletion 返回非流式请求的用量 detail：优先上游 token_usage
+// 真实值（total>0 即视为已收到），缺失时回退 content 字符估算——与
+// usageDetailForAttempt 的流式语义同构，保证非流式路径在旧上游 / 断流时
+// 保持与 0.1.35 一致的估算行为。
+// [参数] real: 聚合带出的真实用量（可为空）；completion: OpenAI 完成响应 JSON（估算输入）。
+// [返回] usage.Detail: 发布到 feed 的最终用量。
+// 最近修改时间：2026-09-04；改动原因：dashboard Token 列真实 usage 的非流式兜底。
+func usageDetailForCompletion(real usage.Detail, completion []byte) usage.Detail {
+	if real.TotalTokens > 0 {
+		return real
+	}
+	return estimateUsageFromCompletion(completion)
+}
+
 // pumpTraeStream 保留单次异步流入口；账号级协调与唯一终结由 executor 统一接管。
 func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	requestID := randomUUID()
@@ -710,7 +863,7 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 			requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, truncateRedacted(result.Err.Error(), 200), time.Since(started).Milliseconds())
 		reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, result.Err.Error())
 		streamEmitError(ctx.StreamID, result.Err.Error())
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, result.Err.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, ctx.StatusCode, result.Err.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 		return
 	}
 	if result.Pseudo {
@@ -720,7 +873,7 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 		noteForcedAccountFailure(ctx.AuthID, reason)
 		evictSessionBindingsForAuth(ctx.AuthID)
 		streamEmitError(ctx.StreamID, reason)
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, reason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, ctx.StatusCode, reason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 		return
 	}
 
@@ -744,16 +897,16 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	if err != nil {
 		reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, err.Error())
 		streamEmitError(ctx.StreamID, err.Error())
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, err.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, ctx.StatusCode, err.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 		return
 	}
 	streamClose(ctx.StreamID)
 	if failed {
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, failureReason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, ctx.StatusCode, failureReason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 		return
 	}
 	resetAccountFailover(ctx.AuthID)
-	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), false, 0, "", "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
+	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), false, 0, "", "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 }
 
 // clientNeedsSSEFrame reports whether the client expects raw SSE framing in

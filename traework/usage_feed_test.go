@@ -354,7 +354,7 @@ func TestTtftNSBetween(t *testing.T) {
 func TestCollectTraeStreamReportsFirstOutputAt(t *testing.T) {
 	before := time.Now()
 	sse := "event: output\ndata: {\"response\":\"首字\"}\n\nevent: done\ndata: {}\n\n"
-	_, _, firstOutputAt, err := collectTraeStream(strings.NewReader(sse), "qwen3.8-max", 200)
+	_, _, firstOutputAt, _, err := collectTraeStream(strings.NewReader(sse), "qwen3.8-max", 200)
 	if err != nil {
 		t.Fatalf("collectTraeStream error = %v", err)
 	}
@@ -365,7 +365,7 @@ func TestCollectTraeStreamReportsFirstOutputAt(t *testing.T) {
 		t.Fatalf("firstOutputAt %v earlier than call time %v", firstOutputAt, before)
 	}
 	// 空流报错路径不得携带非零观测点（不可观测即零值，feed 写 0）。
-	_, _, emptyAt, err := collectTraeStream(strings.NewReader(""), "qwen3.8-max", 200)
+	_, _, emptyAt, _, err := collectTraeStream(strings.NewReader(""), "qwen3.8-max", 200)
 	if err == nil {
 		t.Fatal("empty stream must be rejected")
 	}
