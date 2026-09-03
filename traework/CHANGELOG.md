@@ -1,5 +1,14 @@
 # TraeWork Plugin Changelog
 
+## 0.1.35
+
+### Fix — 面板移除「用量汇总」区块
+
+按用户要求删除面板顶部「用量汇总 · 全部账号」5 卡片与消耗进度条（剩余可用/剩余不可用/已用/额度池/消耗占比）。账号卡内各自的积分进度条保留；「子系统状态」（保号池/keepalive/生命周期/异常池）保留。
+
+- `panel.html`：`renderSummary()` 只渲染子系统状态；删除 `accountsForFilter()` / `creditOf()` 专属辅助函数；删除死 CSS `.summary .pb` 与过时注释
+- 验证：node --check 双 script 块 PASS
+
 ## 0.1.34
 
 ### Feat — 面板功能对齐 workbuddy（B 组 9 项）+ 修复 3 处前后端契约断裂
