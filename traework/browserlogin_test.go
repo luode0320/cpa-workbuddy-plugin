@@ -3,9 +3,12 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 // TestPKCEPair_RFC7636Shape verifies the verifier/challenge pair matches the
@@ -117,6 +120,65 @@ func TestBrowserLoginResultPendingKeepsSession(t *testing.T) {
 		t.Fatalf("unexpected outcome: %+v", s.Result)
 	}
 	browserLoginSessions.Delete(state)
+}
+
+// TestBrowserLoginStartPointsAtResourceCallback verifies the authorization
+// URL targets the UNAUTHENTICATED resource callback (the management prefix is
+// guarded by the host management-key middleware the Trae login page can never
+// satisfy) and carries the OAuth state echoed back on the bounce.
+func TestBrowserLoginStartPointsAtResourceCallback(t *testing.T) {
+	req := pluginapi.ManagementRequest{Body: []byte(`{"redirect_origin":"https://1.2.3.4:18998"}`)}
+	out := handleBrowserLoginStart(req)
+	if out["error"] != nil {
+		t.Fatalf("start failed: %v", out["error"])
+	}
+	authURL, _ := out["auth_url"].(string)
+	if authURL == "" {
+		t.Fatal("auth_url missing")
+	}
+	u, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("auth_url parse: %v", err)
+	}
+	q := u.Query()
+	cb := q.Get("auth_callback_url")
+	if wantPrefix := "https://1.2.3.4:18998" + browserLoginCallbackURLPath; cb != wantPrefix {
+		t.Fatalf("callback = %q, want %q", cb, wantPrefix)
+	}
+	if strings.Contains(cb, "/v0/management/") {
+		t.Fatalf("callback must not use the management prefix: %q", cb)
+	}
+	if q.Get("state") == "" {
+		t.Fatal("auth_url missing the OAuth state parameter")
+	}
+	if q.Get("code_challenge_method") != "S256" {
+		t.Fatalf("unexpected challenge method: %q", q.Get("code_challenge_method"))
+	}
+}
+
+// TestManagementRegistrationBrowserLoginCallbackIsResource verifies the
+// callback is declared ONLY as an unauthenticated resource route (never a
+// management route) and carries no Menu label so it never appears in the
+// management UI menu.
+func TestManagementRegistrationBrowserLoginCallbackIsResource(t *testing.T) {
+	reg := managementRegistration()
+	for _, r := range reg.Routes {
+		if strings.HasSuffix(r.Path, "/browser-login/callback") {
+			t.Fatalf("callback must not be a management route: %s %s", r.Method, r.Path)
+		}
+	}
+	found := false
+	for _, res := range reg.Resources {
+		if res.Path == "/browser-login/callback" {
+			found = true
+			if res.Menu != "" {
+				t.Fatalf("callback resource must not carry a Menu label (would show in the management UI menu): %q", res.Menu)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("resource callback route missing from managementRegistration().Resources")
+	}
 }
 
 // TestBrowserLoginHTMLPage_NoTargetShowsDetail verifies the error bounce page

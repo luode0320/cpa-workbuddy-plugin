@@ -71,7 +71,6 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/unfreeze", Description: "Remove one (body: {auth_index}) or all (empty body) accounts from the anomaly pool."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import one Trae SOLO credential (body: {filename, content}); whole storage.json or raw credential value accepted."},
 			{Method: http.MethodPost, Path: base + "/browser-login/start", Description: "Start a browser OAuth login: returns the Trae authorization URL (PKCE pair minted server-side)."},
-			{Method: http.MethodGet, Path: base + "/browser-login/callback", Description: "Trae login page redirect target (?code=&state=); exchanges the code and imports the account, then bounces to the panel."},
 			{Method: http.MethodPost, Path: base + "/browser-login/result", Description: "Fetch the one-time browser-login outcome for a state (body: {state}); read-once, credential-free."},
 			{Method: http.MethodGet, Path: base + "/storage-path", Description: "Return the detected Trae SOLO globalStorage directory for the panel hint."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
@@ -81,6 +80,11 @@ func managementRegistration() managementRegistrationResponse {
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "TraeWork", Description: "TraeWork dashboard: credits, check-in, enable/disable, failover status."},
+			// OAuth bounce target: MUST stay on the unauthenticated resource
+			// prefix (no Menu -> never shows up in the management UI menu).
+			// The Trae login page cannot present a management key; the
+			// one-time state value is the credential.
+			{Path: "/browser-login/callback", Description: "Trae login page redirect target (?code=&state=); exchanges the code and imports the account, then bounces to the panel."},
 		},
 	}
 }
@@ -92,10 +96,16 @@ func handleManagement(raw []byte) ([]byte, error) {
 	}
 	path := strings.TrimRight(req.Path, "/")
 
-	// Browser UI resource routes (unauthenticated).
+	// Browser UI resource routes (unauthenticated). /browser-login/callback
+	// is the OAuth bounce target: the Trae login page navigates here with a
+	// plain browser GET and cannot carry the management key, so it must be
+	// dispatched on this resource prefix (registered via .Resources above).
 	resPrefix := "/v0/resource/plugins/" + providerName
 	if req.Method == http.MethodGet && strings.HasPrefix(path, resPrefix) {
 		sub := strings.TrimPrefix(path, resPrefix)
+		if sub == "/browser-login/callback" {
+			return okEnvelope(handleBrowserLoginCallback(req))
+		}
 		return okEnvelope(mgmtHTMLResponse(servePanel(sub)))
 	}
 
@@ -137,9 +147,6 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportCredential(req)))
 	case req.Method == http.MethodPost && path == base+"/browser-login/start":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleBrowserLoginStart(req)))
-	case req.Method == http.MethodGet && path == base+"/browser-login/callback":
-		// HTML bounce page wrapped like the panel resource response.
-		return okEnvelope(handleBrowserLoginCallback(req))
 	case req.Method == http.MethodPost && path == base+"/browser-login/result":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleBrowserLoginResult(req)))
 	case req.Method == http.MethodGet && path == base+"/export":

@@ -22,10 +22,13 @@
 //
 // This module replays that flow without an IDE install: the plugin mints the
 // PKCE pair + a throwaway EC P-256 device key, points auth_callback_url at
-// the plugin's own management callback route (the user's browser navigates
-// there after login), exchanges the code server-side, imports the account
-// into the host auth store, and bounces the browser back to the panel with a
-// one-time result handle. Tokens never travel in URLs.
+// the plugin's own UNAUTHENTICATED resource callback route
+// (/v0/resource/plugins/<id>/browser-login/callback — the management prefix is
+// guarded by the host management-key middleware, which the Trae login page can
+// never supply; the one-time state value IS the credential here), exchanges
+// the code server-side, imports the account into the host auth store, and
+// bounces the browser back to the panel with a one-time result handle. Tokens
+// never travel in URLs.
 //
 // Token renewal afterwards is device-independent: the keepalive refresh call
 // (POST /cloudide/api/v3/trae/oauth/ExchangeToken) carries only
@@ -71,6 +74,12 @@ const (
 // resourcePanelPrefix mirrors the resource route prefix in
 // handleManagement (management.go); the panel redirect URL is built on it.
 const resourcePanelPrefix = "/v0/resource/plugins/" + providerName + "/panel"
+
+// browserLoginCallbackURLPath is the OAuth bounce target served on the
+// plugin's unauthenticated resource prefix (host constant, deliberately NOT
+// under the configurable management base path: the Trae login page cannot
+// present a management key). Registered in managementRegistration().Resources.
+const browserLoginCallbackURLPath = "/v0/resource/plugins/" + providerName + "/browser-login/callback"
 
 // browserLoginSession holds one pending (or finished) login attempt.
 type browserLoginSession struct {
@@ -220,7 +229,10 @@ func handleBrowserLoginStart(req pluginapi.ManagementRequest) map[string]any {
 	deviceID := randomDeviceID()
 	state := randomHex(24)
 
-	callbackURL := origin + loadedManagementBasePath() + "/plugins/" + providerName + "/browser-login/callback"
+	// The callback lives on the unauthenticated resource prefix: the Trae
+	// login page navigates here with a plain browser GET and cannot carry
+	// the host management key.
+	callbackURL := origin + browserLoginCallbackURLPath
 	q := url.Values{}
 	q.Set("login_version", "1")
 	q.Set("auth_from", "solo")
@@ -243,6 +255,12 @@ func handleBrowserLoginStart(req pluginapi.ManagementRequest) map[string]any {
 	q.Set("x_app_type", "stable")
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
+	// OAuth state: the authorization server must echo it back on the
+	// callback (?code=&state=) so handleBrowserLoginCallback can match the
+	// bounce to the minted session. Without it the callback cannot find
+	// the session and every login would fail after the exchange-less
+	// state lookup.
+	q.Set("state", state)
 	q.Set("hide_saas_login", "true")
 	q.Set("channel_name", "common")
 
@@ -262,12 +280,15 @@ func handleBrowserLoginStart(req pluginapi.ManagementRequest) map[string]any {
 	}
 }
 
-// handleBrowserLoginCallback implements GET /browser-login/callback. The Trae
+// handleBrowserLoginCallback implements the OAuth bounce target registered as
+// a RESOURCE route: /v0/resource/plugins/<id>/browser-login/callback. The Trae
 // login page navigates here with ?code=...&state=... after a successful
-// login. This route is intentionally free of the management key: the one-time
-// state value IS the credential for finishing the flow (only the browser
-// session that started the flow knows it), mirroring how the native client's
-// 127.0.0.1 callback server accepts any local request.
+// login. This route is intentionally free of the management key (resource
+// routes bypass the host management-key middleware, and their responses skip
+// the host HTML escaping applied to management JSON): the one-time state
+// value IS the credential for finishing the flow (echoed back by the
+// authorization server from the ?state= minted at start), mirroring how the
+// native client's 127.0.0.1 callback server accepts any local request.
 //
 // On success the account is imported into the host auth store, a result
 // snapshot is stored under the state key, and the browser is bounced back to

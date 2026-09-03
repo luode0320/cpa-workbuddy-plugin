@@ -1,5 +1,15 @@
 # TraeWork Plugin Changelog
 
+## 0.1.39
+
+### Fix — 浏览器授权登录三个生产级缺陷（0.1.38 端到端验证发现）
+
+- **callback 改挂免鉴权 resource 前缀**：0.1.38 把 `GET /browser-login/callback` 注册在 management 前缀下，宿主（CLIProxyAPI v7.2.129 `pluginManagementNoRoute`）对 management 全路由（含 GET）强制 management key 中间件，TRAE 登录页跳回的普通浏览器 GET 无法携带 key，回调在生产必 401。修复：callback 移入 `managementRegistration().Resources`（`/v0/resource/plugins/traework-provider/browser-login/callback`，宿主对该前缀不走鉴权中间件；无 Menu 标签不进管理 UI 菜单），`handleManagement` 的 resPrefix 分支加子路径分发，management 路由表删除该条目
+- **授权 URL 补 OAuth `state` 参数**：start 生成的授权 URL 此前未携带 `state`，授权服务器无法按 RFC 6749 原样回传，callback 的 state 查会话必然落空。修复：`q.Set("state", state)`，回传值与 minted 会话键一致
+- **面板 `auth_url` 还原 HTML 实体**：宿主 `ServeManagementHTTP` 对 management JSON 响应体强制 `htmlsanitize`（递归 `html.EscapeString`），`&` 全部变成 `&amp;`，浏览器按字面打开会把 `amp;xxx` 当独立参数，授权页参数解析必挂。修复：面板 `browserLogin()` 打开前 `replaceAll("&amp;","&")`（resource 路由响应不转义，callback 回跳页不受影响）
+- 测试新增 2 项契约：start 指向 resource 回调 + 携带 state + S256；注册表 callback 仅存在于 Resources 且无 Menu
+- 验证：cgo-shim build/vet/test 全绿
+
 ## 0.1.38
 
 ### Feat — 面板「浏览器授权登录」：免 IDE 完整 OAuth 导入账号

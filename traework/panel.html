@@ -1144,8 +1144,9 @@ async function doImport(file){
 
 /* ---------- 浏览器授权登录 ---------- */
 /* 无需 IDE 的 OAuth 授权导入：后端生成 PKCE 对并把回调指到本插件的
-   management callback 路由，用户在 TRAE 授权页登录成功后浏览器会跳回
-   callback（服务器完成换 token 与入库），再 302/页面跳转回本面板，
+   免鉴权 resource callback 路由（/v0/resource/plugins/<id>/browser-login/
+   callback），用户在 TRAE 授权页登录成功后浏览器会跳回 callback（服务器
+   完成 state 匹配、换 token 与入库），再页面跳转回本面板，
    本页凭 ?auth_cb=<state> 读取一次性结果（不含凭据）。 */
 const BROWSER_LOGIN_PANEL_PATH="/v0/resource/plugins/traework-provider/panel";
 async function browserLogin(btn){
@@ -1153,7 +1154,10 @@ async function browserLogin(btn){
     busy(btn,true);
     const r=await api("/browser-login/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({redirect_origin:window.location.origin})});
     if(r.error||!r.auth_url){toast("无法发起授权","err",r.error||"响应缺少授权地址");return}
-    const w=window.open(r.auth_url,"_blank");
+    /* 宿主对 management JSON 响应体强制 HTML 转义（& 变 &amp;），打开授权页前必须还原，
+       否则 TRAE 会把 amp;xxx 当成独立参数、授权链路直接失效。 */
+    const authUrl=String(r.auth_url).replaceAll("&amp;","&");
+    const w=window.open(authUrl,"_blank");
     if(!w){toast("弹窗被浏览器拦截","err","请允许本站弹出窗口后重试");return}
     const mins=Math.round((r.expires_in||600)/60);
     toast("已打开 TRAE 授权页","ok","登录后点击「登录并打开 TraeWork」，本页将在 "+mins+" 分钟内自动完成导入");
