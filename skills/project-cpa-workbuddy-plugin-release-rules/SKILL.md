@@ -331,6 +331,8 @@ git -c http.proxy=socks5h://127.0.0.1:1080 push origin main
 38. **生产日志 grep 中文回显**：生产日志正文含中文（如「失败（HTTP 200）」），取日志经管道 / 重定向时用 `docker logs ... 2>&1 | grep ...`，终端回显中文乱码不影响判定；判定以 stream_id / attempt / chunks 等 ASCII 字段为准。
 39. **`/v1/responses` 与 `/v1/chat/completions` 的 JSON 差异**：responses 流式 body 是 `{"type":"response.output_text.delta","delta":"..."}` + 末尾 `response.completed`，chat/completions 是 `data: {"choices":[...]}` chunks + `[DONE]`；脚本解析前先确认端点与格式，不要混用解析器。
 40. **SSH 会话内 curl 偶发返回 000（2026-09-03 实测，traework 0.1.33 部署验收）**：经 SSH 在服务器侧 curl 127.0.0.1:8317（accounts/panel 等任意端点）偶发返回 000（连接层瞬时抖动），不代表服务异常——同一命令立即复测即恢复 200。判定铁律：000 先复测 2-3 次再下结论，不得基于单次 000 回滚或重装。另：生产 feed 文件长期运行会被轮换重建（0.1.33 验收时 22:28 重建为 3203 字节），重建后 grep 不到本插件记录属正常，需主动发轻量流量触发新记录再验证。
+41. **本机 SSH push 瞬时断流先复测、后隧道（2026-09-04 实测，traework 0.1.36）**：`git push origin main` 偶发报 `Please make sure you have the correct access rights`（SSH 出站瞬时断，`ls-remote` 同时 `Connection closed by 198.18.0.98`），几分钟内自愈——**判定顺序：ls-remote 复测 2 次 → 仍败才开 SOCKS 隧道**（踩坑 37），不要一败就切隧道。另：Windows git 的 `GIT_ASKPASS` 指向 `.sh` 脚本不生效（git.exe 无法 spawn shell 脚本），push 挂起无输出直至强杀——HTTPS 回退的 askpass 必须用 `.cmd`/`.exe` 形态，或干脆等 SSH 复测恢复直连。
+42. **截图圈选删除任务先确认区块归属（2026-09-04 实测，traework 0.1.35 误删）**：用户截图红框 + 「这个删掉」时，红框指向与文字描述可能不一致（0.1.35 实指下方「子系统状态」，被误读为上方「用量汇总」并发布上线）。铁律：动手前用文字向用户复述「删除 X、保留 Y」边界，或与上一版本基线 diff 核对目标区块函数归属；已发布错误时用前向修复新版本（revert 会回到含目标区块的旧版，非用户要的中间态）。
 
 ## 权责边界与不负责事项
 
