@@ -1,5 +1,21 @@
 # TraeWork Plugin Changelog
 
+## 0.1.38
+
+### Feat — 面板「浏览器授权登录」：免 IDE 完整 OAuth 导入账号
+
+traework 此前仅支持从 storage.json 粘贴/选文件导入凭据（0.1.38 之前 login.go 判定"Trae 无浏览器 OAuth 端点"）。2026-09-04 逆向 TRAE SOLO CN 0.1.62 客户端确认其登录走标准浏览器授权码 + PKCE(S256) 流程，本版在插件侧完整复刻该流程：面板一键发起，浏览器登录 TRAE 后 code 自动回到插件服务器换 token 入库，全程无需安装 IDE。
+
+- `browserlogin.go`（新增）：
+  - `POST /browser-login/start`：服务器生成 RFC 7636 PKCE 对（64B verifier → S256 challenge）、一次性 EC P-256 设备密钥（SPKI PEM，对应客户端 DevicePublicKey）、随机设备指纹（machine_id 64hex / device_id 16 位数字），返回 `www.trae.cn/authorization` 授权 URL（参数形状照抄 SOLO 客户端：auth_from=solo、client_id=en1oxy7wnw8j9n、hide_saas_login=true 等）；body `{redirect_origin}` 仅接受裸 origin（开放跳转防护）
+  - `GET /browser-login/callback`：TRAE 登录页导航回调（免 Bearer——一次性 state 即凭证），服务端 `POST /trae/api/v3/oauth/ExchangeToken` 换 token（body `{ClientID, AuthCode, CodeVerifier, DeviceInfo, IDEVersion}`，响应 Result 双大小写容错）→ `POST /cloudide/api/v3/trae/GetUserInfo` 取 userId/昵称 → UserID 去重后入库（authFileNameFor 命名，Host 留空走插件默认链路）；凭据只落 auth 文件，回跳 URL 仅带 `?auth_cb=<state>`
+  - `POST /browser-login/result`：面板回跳后读一次性结果快照（读后即焚、不含凭据）；过早轮询返回 pending 且不消费会话；会话 TTL 10 分钟
+- `management.go`：注册 3 条路由；mutatingManagementPath 补 start/result（面板 Bearer 鉴权）
+- `panel.html`：工具栏新增「🔑 浏览器授权登录」按钮（弹窗拦截提示）；`?auth_cb=` 回跳检测（清参数、等 management key 就绪后取结果、成功后刷新账号列表）
+- `browserlogin_test.go`（新增）：PKCE RFC 7636 形状、origin 校验（8 非法样本）、设备指纹形状、结果会话读后即焚契约、回跳页三重跳转机制
+- 验证：cgo-shim build/vet/test 全绿；panel 内联 JS node 逐块语法通过
+- 已知边界：真机端到端待生产验证（解析层已做 PascalCase/camelCase 双容错）；客户端版本常量（2.3.79943 / 0.1.62）上游收紧版本校验时需同步更新
+
 ## 0.1.37
 
 ### Feat — 解析上游 event:token_usage 真实用量，dashboard Token 列不再依赖估算

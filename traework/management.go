@@ -70,6 +70,9 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/disable", Description: "Disable one (body: {auth_index}) or all (empty body) accounts."},
 			{Method: http.MethodPost, Path: base + "/unfreeze", Description: "Remove one (body: {auth_index}) or all (empty body) accounts from the anomaly pool."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import one Trae SOLO credential (body: {filename, content}); whole storage.json or raw credential value accepted."},
+			{Method: http.MethodPost, Path: base + "/browser-login/start", Description: "Start a browser OAuth login: returns the Trae authorization URL (PKCE pair minted server-side)."},
+			{Method: http.MethodGet, Path: base + "/browser-login/callback", Description: "Trae login page redirect target (?code=&state=); exchanges the code and imports the account, then bounces to the panel."},
+			{Method: http.MethodPost, Path: base + "/browser-login/result", Description: "Fetch the one-time browser-login outcome for a state (body: {state}); read-once, credential-free."},
 			{Method: http.MethodGet, Path: base + "/storage-path", Description: "Return the detected Trae SOLO globalStorage directory for the panel hint."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
@@ -132,6 +135,13 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleUnfreezeAuth(req)))
 	case req.Method == http.MethodPost && path == base+"/import":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportCredential(req)))
+	case req.Method == http.MethodPost && path == base+"/browser-login/start":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleBrowserLoginStart(req)))
+	case req.Method == http.MethodGet && path == base+"/browser-login/callback":
+		// HTML bounce page wrapped like the panel resource response.
+		return okEnvelope(handleBrowserLoginCallback(req))
+	case req.Method == http.MethodPost && path == base+"/browser-login/result":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleBrowserLoginResult(req)))
 	case req.Method == http.MethodGet && path == base+"/export":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleExportAuth()))
 	case req.Method == http.MethodGet && path == base+"/storage-path":
@@ -696,6 +706,8 @@ func mutatingManagementPath(path string) bool {
 		base + "/disable",
 		base + "/unfreeze",
 		base + "/import",
+		base + "/browser-login/start",
+		base + "/browser-login/result",
 		base + "/export",
 		base + "/delete":
 		return true

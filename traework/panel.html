@@ -205,6 +205,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     </div>
   </div>
   <div class="bar">
+    <button class="sec" onclick="browserLogin(this)" title="无需 IDE：打开 TRAE 授权页登录，成功后自动换取凭据并导入本插件">🔑 浏览器授权登录</button>
     <button class="sec" onclick="pickFile()" title="选择 Trae SOLO 客户端导出的 storage.json 文件导入凭据">📁 导入 storage.json</button>
     <button class="sec" onclick="pickDir()" title="备选入口：从 Trae 凭据目录中挑 storage.json（仅浏览器不支持单文件选择时使用）">选择目录</button>
     <button class="sec" onclick="copyStorageDir()" title="复制 Trae SOLO 凭据目录路径到剪贴板">复制路径</button>
@@ -1140,6 +1141,49 @@ async function doImport(file){
     await load();
   }catch(e){toast("导入失败","err",e&&e.message||String(e))}
 }
+
+/* ---------- 浏览器授权登录 ---------- */
+/* 无需 IDE 的 OAuth 授权导入：后端生成 PKCE 对并把回调指到本插件的
+   management callback 路由，用户在 TRAE 授权页登录成功后浏览器会跳回
+   callback（服务器完成换 token 与入库），再 302/页面跳转回本面板，
+   本页凭 ?auth_cb=<state> 读取一次性结果（不含凭据）。 */
+const BROWSER_LOGIN_PANEL_PATH="/v0/resource/plugins/traework-provider/panel";
+async function browserLogin(btn){
+  try{
+    busy(btn,true);
+    const r=await api("/browser-login/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({redirect_origin:window.location.origin})});
+    if(r.error||!r.auth_url){toast("无法发起授权","err",r.error||"响应缺少授权地址");return}
+    const w=window.open(r.auth_url,"_blank");
+    if(!w){toast("弹窗被浏览器拦截","err","请允许本站弹出窗口后重试");return}
+    const mins=Math.round((r.expires_in||600)/60);
+    toast("已打开 TRAE 授权页","ok","登录后点击「登录并打开 TraeWork」，本页将在 "+mins+" 分钟内自动完成导入");
+  }catch(e){toast("授权发起失败","err",e&&e.message||String(e))}
+  finally{busy(btn,false)}
+}
+/* 授权完成回跳：读取 ?auth_cb=<state> 的一次性结果。
+   结果由服务器读后即焚；key 未就绪时轮询等待（用户先输入管理密钥）。 */
+(function(){
+  const usp=new URLSearchParams(window.location.search);
+  const st=usp.get("auth_cb");
+  if(!st)return;
+  usp.delete("auth_cb");
+  const qs=usp.toString();
+  history.replaceState(null,"",window.location.pathname+(qs?"?"+qs:""));
+  const started=Date.now();
+  const timer=setInterval(async()=>{
+    if(!getKey()){
+      if(Date.now()-started<5*60*1000)return; // 等用户输入 management key
+      clearInterval(timer);return;
+    }
+    clearInterval(timer);
+    try{
+      const r=await api("/browser-login/result",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({state:st})});
+      if(r.pending){toast("授权尚未完成","err",r.error||"请先在 TRAE 授权页完成登录");return}
+      if(r.ok){toast("浏览器授权登录成功","ok",r.label||"账号已导入");await load()}
+      else toast("浏览器授权登录失败","err",r.error||"未知错误");
+    }catch(e){toast("授权结果获取失败","err",e&&e.message||String(e))}
+  },800);
+})();
 document.addEventListener("dragover",e=>e.preventDefault());
 document.addEventListener("drop",async e=>{
   e.preventDefault();
