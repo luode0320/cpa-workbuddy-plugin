@@ -59,10 +59,10 @@ func TestTraeToolsFromOpenAI_StringifiesParameters(t *testing.T) {
 
 func TestNormalizeTraeToolChoice(t *testing.T) {
 	cases := []struct {
-		name          string
-		in            any
-		wantChoice    string
-		wantSuppress  bool
+		name         string
+		in           any
+		wantChoice   string
+		wantSuppress bool
 	}{
 		{name: "nil no-op", in: nil, wantChoice: "", wantSuppress: false},
 		{name: "auto string", in: "auto", wantChoice: "auto", wantSuppress: false},
@@ -188,7 +188,7 @@ func toolFlowSSE(toolEvent string) string {
 
 func TestCollectTraeStream_EmitsToolCallDeltaAndFinish(t *testing.T) {
 	sse := toolFlowSSE(upstreamToolCallEvent)
-	chunks, hasToolCalls, err := collectTraeStream(strings.NewReader(sse), "qwen3.8-max", 200)
+	chunks, hasToolCalls, _, err := collectTraeStream(strings.NewReader(sse), "qwen3.8-max", 200)
 	if err != nil {
 		t.Fatalf("collectTraeStream error = %v", err)
 	}
@@ -298,7 +298,7 @@ func TestPumpTraeStreamAttempt_ReportsHasToolCalls(t *testing.T) {
 // 仍以 stop 收尾、无 tool_calls 分片。
 func TestCollectTraeStream_PlainTextStreamUnchanged(t *testing.T) {
 	sse := "event: output\ndata: {\"response\":\"你好\"}\n\nevent: output\ndata: {\"response\":\"世界\"}\n\nevent: done\ndata: {}\n\n"
-	chunks, hasToolCalls, err := collectTraeStream(strings.NewReader(sse), "qwen3.8-max", 200)
+	chunks, hasToolCalls, _, err := collectTraeStream(strings.NewReader(sse), "qwen3.8-max", 200)
 	if err != nil {
 		t.Fatalf("collectTraeStream error = %v", err)
 	}

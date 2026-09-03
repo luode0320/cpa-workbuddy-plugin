@@ -71,8 +71,18 @@ func handleUsage(raw []byte) ([]byte, error) {
 
 // publishUsage is the executor-side compatibility path. It is fire-and-forget
 // so the executor hot path never blocks on the CPAMP round-trip or a slow
-// feed filesystem.
-func publishUsage(requestedModel, upstreamModel, authID string, started time.Time, detail usage.Detail, failed bool, statusCode int, errBody string) {
+// feed filesystem. reasoningEffort is the reasoning_effort value sent upstream
+// ("" — the Trae upstream has no such knob, kept for feed-schema parity with
+// workbuddy). ttftNS is the time-to-first-token in nanoseconds (0 when not
+// observable, e.g. non-streaming paths or transport failures before any
+// output event). accountLabel is the account identifier surfaced in the
+// tracker dashboard's 来源 (source) column (traework has no nickname concept,
+// so every call site passes the auth UID). sessionKey is the same
+// per-conversation key scheduler.pick used to pin the account (extracted from
+// req.Headers + req.Metadata at the executor entry), written to the shared
+// feed so the tracker dashboard can show which conversation each request
+// belongs to; empty when no session signal was present.
+func publishUsage(requestedModel, upstreamModel, authID string, started time.Time, detail usage.Detail, failed bool, statusCode int, errBody, reasoningEffort string, ttftNS uint64, accountLabel, sessionKey string) {
 	// Cumulative success/failure counter (plugin-owned, persisted; counter.go).
 	// authID is the account UID at every call site (authUID in executor.go), so
 	// keying on it matches the scheduler / failover / counter-flush layers.
@@ -95,7 +105,7 @@ func publishUsage(requestedModel, upstreamModel, authID string, started time.Tim
 		// cross-plugin data path for plugin executors (host UsagePlugin
 		// broadcast never fires for plugin executors). Runs inside the
 		// goroutine so a slow filesystem never stalls the executor.
-		recordUsageFeed(alias, model, authID, started, normalizeUsageDetail(detail), failed, statusCode)
+		recordUsageFeed(alias, model, authID, started, normalizeUsageDetail(detail), failed, statusCode, reasoningEffort, ttftNS, accountLabel, sessionKey)
 		forwardUsageToCPAMP(alias, model, authID, started, normalizeUsageDetail(detail), failed, statusCode, errBody)
 	}()
 }

@@ -1,5 +1,25 @@
 # TraeWork Plugin Changelog
 
+## 0.1.33
+
+### Feat — usage feed 补齐会话与首字延迟：dashboard「会话」「首字延迟」列支持 traework 流量
+
+token-usage-tracker dashboard 上 traework 请求的「会话」「首字延迟」两列恒为「—」：traework 的 `recordUsageFeed` 把 `session_key` / `ttft_ns` 硬编码为零值（0.1.15 适配 feed 时的遗留），而 workbuddy 侧早已上报真实值。消费端 token-usage-tracker 的 feed 解析与 dashboard 列无需任何改动（字段一直在 schema 里，只是 traework 恒写空值）。
+
+对齐 workbuddy 的 12 参数 `publishUsage` 链路（`traework/usage.go` + `usage_feed.go` + `executor.go` + `stream.go`）：
+
+1. **会话列**：执行器入口（`handleExecExecute` / `handleExecStream`）用与 `scheduler.pick` 同一优先链的 `extractSessionKeyFromSources(req.Headers, req.Metadata)` 提取会话亲和键，经 `traeSyncStreamContext` / `traeAsyncStreamContext` / `traeStreamPumpContext` 泵入全部 22 处 `publishUsage` 调用点，跨换号尝试冻结（req 不随 attempt 变化），写入 feed 的 `session_key` 列。
+2. **首字延迟列**：`collectTraeStream` 改四值返回带出首个有效 output 事件到达时间；`pumpTraeStreamAttempt` 结果结构新增 `FirstOutputAt`；新增 `ttftNSBetween`（零值/负差返回 0，与 workbuddy `sseUsageCollector.ttftNS` 语义一致），流式路径按真实观测写 `ttft_ns`；非流式与开启即失败路径写 0（与 workbuddy 行为对齐）。
+3. `reasoning_effort` 保持空串（Trae 上游无此旋钮），参数链对齐 workbuddy 保持 feed schema 一致；`source` 列语义不变（traework 传账号 UID 作 label）。
+
+验证：新增 `TestTtftNSBetween`（4 断言）+ `TestCollectTraeStreamReportsFirstOutputAt`（观测点非零/空流零值）+ `TestRecordUsageFeedAppendsNDJSON` 扩展 session_key/ttft_ns 落盘断言；既有 8 处 `collectTraeStream` 测试调用适配四值解构。cgo-shim build/vet/test 全绿。
+
+## 0.1.32
+
+### Fix — 工具调用链路 P1+P0：伪完成豁免工具短流 + Trae 私有协议完整工具链转换
+
+P1 止血：`collectTraeStream` 三值返回带出 `hasToolCalls`，含结构化 tool_calls 的短流永不判伪完成（上游取证：正常工具调用流 ~1.9s / 3 output 事件即 done+tool_calls，被 600 字符健康门槛误判换号/裁剪）；pump gate 收到 tool-call 信号即放行。P0 根治：上行 `tools`/`tool_choice` 透传（parameters object→JSON string、tool_choice 规范化）、历史 assistant tool_calls 键 function→function_call 翻译、role=tool 原样回填、下行 function_call→function 键 + arguments 空回退 partial_arguments、collect/aggregate/pump 三路径注入 tool_calls delta、工具流 finish="tool_calls"。新增 toolchain_test.go 8 用例 + pseudo_toolcalls_test.go 4 用例；真实上游双阶段 e2e 闭环。
+
 ## 0.1.31
 
 ### Fix — 思考型长推理 reasoning 阶段零字节 504：pump gate 纳入 reasoning 双轴健康度流式放行

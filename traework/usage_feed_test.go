@@ -75,8 +75,8 @@ func TestRecordUsageFeedAppendsNDJSON(t *testing.T) {
 		ReasoningTokens: 50,
 		TotalTokens:     350,
 	}
-	recordUsageFeed("alias-m", "deepseek-v4", "u-1", started, detail, false, 200)
-	recordUsageFeed("alias-m", "deepseek-v4", "u-2", started.Add(time.Second), detail, true, 502)
+	recordUsageFeed("alias-m", "deepseek-v4", "u-1", started, detail, false, 200, "", uint64(650*time.Millisecond), "acct-nick", "sess-abc")
+	recordUsageFeed("alias-m", "deepseek-v4", "u-2", started.Add(time.Second), detail, true, 502, "", 0, "u-2", "")
 
 	raw, err := os.ReadFile(feedPath)
 	if err != nil {
@@ -106,10 +106,11 @@ func TestRecordUsageFeedAppendsNDJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
 		t.Fatalf("decode line 0: %v", err)
 	}
-	// Source mirrors the oauth account UID (traework has no nickname label);
-	// provider must be the plugin id so the tracker dashboard's provider
-	// dimension separates traework records from workbuddy ones.
-	if rec.Source != "u-1" || rec.Provider != providerName || rec.ExecutorType != "traework" {
+	// Source mirrors the account label (traework passes the auth UID as the
+	// dashboard 来源 label); provider must be the plugin id so the tracker
+	// dashboard's provider dimension separates traework records from
+	// workbuddy ones.
+	if rec.Source != "acct-nick" || rec.Provider != providerName || rec.ExecutorType != "traework" {
 		t.Fatalf("record = %+v", rec)
 	}
 	if rec.AuthIndex != "u-1" {
@@ -127,10 +128,17 @@ func TestRecordUsageFeedAppendsNDJSON(t *testing.T) {
 	if rec.StatusCode != 200 {
 		t.Fatalf("line 0 status_code = %d", rec.StatusCode)
 	}
-	// Fields traework cannot observe are still written with zero values so
-	// the feed schema stays self-documenting (the tracker decodes them).
-	if rec.SessionKey != "" || rec.ReasoningEffort != "" || rec.TTFTNS != 0 {
-		t.Fatalf("line 0 zero-value fields = %+v", rec)
+	// Session/TTFT dimensions must round-trip into the feed so the tracker
+	// dashboard's 会话 / 首字延迟 columns light up for traework traffic
+	// (parity with workbuddy records).
+	if rec.SessionKey != "sess-abc" {
+		t.Fatalf("line 0 session_key = %q, want sess-abc", rec.SessionKey)
+	}
+	if rec.TTFTNS != int64(650*time.Millisecond) {
+		t.Fatalf("line 0 ttft_ns = %d, want %d", rec.TTFTNS, int64(650*time.Millisecond))
+	}
+	if rec.ReasoningEffort != "" {
+		t.Fatalf("line 0 reasoning_effort = %q, want empty (Trae upstream has no such knob)", rec.ReasoningEffort)
 	}
 	// Line 2: failed request.
 	if err := json.Unmarshal([]byte(lines[1]), &rec); err != nil {
@@ -311,5 +319,57 @@ data: {"response":"部分内容"}
 	}
 	if !ok {
 		t.Fatal("upstream truncation must not reset account failover (cooldown cleared)")
+	}
+}
+
+// TestTtftNSBetween 锁定 TTFT 计算助手语义：正差返回纳秒、零值输入或负差
+// （时钟抖动）一律返回 0，与 workbuddy 的 sseUsageCollector.ttftNS 一致。
+//
+// [参数] t: 当前测试。
+// [返回] 无；断言失败时由 testing 终止用例。
+// 最近修改时间：2026-09-03；改动原因：dashboard 首字延迟列——traework 侧 ttft_ns 采集对齐 workbuddy。
+func TestTtftNSBetween(t *testing.T) {
+	started := time.Now()
+	if got := ttftNSBetween(time.Time{}, started); got != 0 {
+		t.Fatalf("ttftNSBetween(zero started) = %d, want 0", got)
+	}
+	if got := ttftNSBetween(started, time.Time{}); got != 0 {
+		t.Fatalf("ttftNSBetween(zero firstOutput) = %d, want 0", got)
+	}
+	if got := ttftNSBetween(started.Add(time.Second), started); got != 0 {
+		t.Fatalf("ttftNSBetween(negative gap) = %d, want 0", got)
+	}
+	want := uint64(1500 * time.Millisecond)
+	if got := ttftNSBetween(started, started.Add(1500*time.Millisecond)); got != want {
+		t.Fatalf("ttftNSBetween(1.5s) = %d, want %d", got, want)
+	}
+}
+
+// TestCollectTraeStreamReportsFirstOutputAt 锁定同步收集路径把首个有效 output
+// 事件到达时间带出（TTFT 观测点）：有输出时非零且不早于调用时刻，空流错误路径返回零值。
+//
+// [参数] t: 当前测试。
+// [返回] 无；断言失败时由 testing 终止用例。
+// 最近修改时间：2026-09-03；改动原因：dashboard 首字延迟列——collect 路径 TTFT 观测点回归锁定。
+func TestCollectTraeStreamReportsFirstOutputAt(t *testing.T) {
+	before := time.Now()
+	sse := "event: output\ndata: {\"response\":\"首字\"}\n\nevent: done\ndata: {}\n\n"
+	_, _, firstOutputAt, err := collectTraeStream(strings.NewReader(sse), "qwen3.8-max", 200)
+	if err != nil {
+		t.Fatalf("collectTraeStream error = %v", err)
+	}
+	if firstOutputAt.IsZero() {
+		t.Fatal("firstOutputAt is zero; want the first output event arrival time")
+	}
+	if firstOutputAt.Before(before) {
+		t.Fatalf("firstOutputAt %v earlier than call time %v", firstOutputAt, before)
+	}
+	// 空流报错路径不得携带非零观测点（不可观测即零值，feed 写 0）。
+	_, _, emptyAt, err := collectTraeStream(strings.NewReader(""), "qwen3.8-max", 200)
+	if err == nil {
+		t.Fatal("empty stream must be rejected")
+	}
+	if !emptyAt.IsZero() {
+		t.Fatalf("empty stream firstOutputAt = %v, want zero", emptyAt)
 	}
 }

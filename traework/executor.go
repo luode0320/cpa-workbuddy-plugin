@@ -48,6 +48,9 @@ type traeSyncStreamContext struct {
 	Started       time.Time
 	InputChars    int
 	Budget        int
+	// SessionKey 是执行器入口提取的会话亲和键，随每条 publishUsage 写入
+	// usage feed 的 session_key 列；跨换号尝试冻结（req 不随 attempt 变化）。
+	SessionKey string
 }
 
 // traeAsyncUpstream 统一生产宿主流与测试内存流的读取、关闭契约。
@@ -87,6 +90,9 @@ type traeAsyncStreamContext struct {
 	Started        time.Time
 	InputChars     int
 	Budget         int
+	// SessionKey 是执行器入口提取的会话亲和键，随每条 publishUsage 写入
+	// usage feed 的 session_key 列；跨换号尝试冻结（req 不随 attempt 变化）。
+	SessionKey string
 }
 
 // authIDFor returns the account identity used for failover/credit bookkeeping
@@ -121,15 +127,18 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	upstreamModel := stripProviderPrefix(req.Model)
 	started := time.Now()
 	authUID := strings.TrimSpace(a.UserID)
+	// 会话亲和键：与 scheduler.pick 同一优先链（extractSessionKeyFromSources），
+	// 写入 usage feed 供 dashboard「会话」列区分会话归属；跨换号尝试冻结。
+	sessionKey := extractSessionKeyFromSources(req.Headers, req.Metadata)
 
 	oa := &openAIRequest{}
 	if err := json.Unmarshal(req.Payload, oa); err != nil && len(req.Payload) > 0 {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error())
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error(), "", 0, authUID, sessionKey)
 		return nil, fmt.Errorf("payload parse: %w", err)
 	}
 	messages := toTraeMessages(oa.Messages)
 	if len(messages) == 0 {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "empty messages")
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "empty messages", "", 0, authUID, sessionKey)
 		return nil, fmt.Errorf("empty messages after normalization")
 	}
 	tools := traeToolsFromOpenAI(oa.Tools)
@@ -151,7 +160,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			completion, aggErr := aggregateTraeCompletion(bytes.NewReader(resp.Body), req.Model, resp.StatusCode)
 			if aggErr == nil {
 				resetAccountFailover(usedAuthID)
-				publishUsage(req.Model, upstreamModel, authUID, started, estimateUsageFromCompletion(completion), false, 0, "")
+				publishUsage(req.Model, upstreamModel, authUID, started, estimateUsageFromCompletion(completion), false, 0, "", "", 0, authUID, sessionKey)
 				return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 			}
 			// SSE-layer business errors: the Trae llm_utils_chat upstream returns
@@ -162,7 +171,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			// branch below); otherwise surface it immediately.
 			if !isAccountFailure(resp.StatusCode, aggErr.Error()) || attempt >= budget || curSA == nil {
 				reconcileAfterExecutorError(usedAuthID, resp.StatusCode, aggErr.Error())
-				publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, resp.StatusCode, aggErr.Error())
+				publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, resp.StatusCode, aggErr.Error(), "", 0, authUID, sessionKey)
 				return nil, aggErr
 			}
 			reconcileAfterExecutorError(usedAuthID, resp.StatusCode, aggErr.Error())
@@ -180,7 +189,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		// 5xx and transport errors surface immediately (cooldown handles them).
 		if !isAccountLevel4xx(statusCode) || attempt >= budget || curSA == nil {
 			reconcileAfterExecutorError(usedAuthID, statusCode, callErr.Error())
-			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error())
+			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error(), "", 0, authUID, sessionKey)
 			return nil, callErr
 		}
 		nextAuthID, nextSA, hasNext := pickNextAuth(usedAuthID)
@@ -192,7 +201,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	}
 	errFinal := fmt.Errorf("upstream account pool exhausted after %d attempt(s)", budget+1)
 	reconcileAfterExecutorError(usedAuthID, 0, errFinal.Error())
-	publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, errFinal.Error())
+	publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, errFinal.Error(), "", 0, authUID, sessionKey)
 	return nil, errFinal
 }
 
@@ -213,6 +222,9 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	upstreamModel := stripProviderPrefix(req.Model)
 	started := time.Now()
 	authUID := strings.TrimSpace(a.UserID)
+	// 会话亲和键：与 handleExecExecute 同一规则（extractSessionKeyFromSources），
+	// 泵入两条流路径的 ctx，让流式 usage 行也带会话身份。
+	sessionKey := extractSessionKeyFromSources(req.Headers, req.Metadata)
 
 	bodyRaw := req.Payload
 	if len(bodyRaw) == 0 {
@@ -220,12 +232,12 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	}
 	oa := &openAIRequest{}
 	if err := json.Unmarshal(bodyRaw, oa); err != nil && len(bodyRaw) > 0 {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error())
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error(), "", 0, authUID, sessionKey)
 		return nil, fmt.Errorf("payload parse: %w", err)
 	}
 	messages := toTraeMessages(oa.Messages)
 	if len(messages) == 0 {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "empty messages")
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "empty messages", "", 0, authUID, sessionKey)
 		return nil, fmt.Errorf("empty messages after normalization")
 	}
 	inputChars := estimateInputChars(messages)
@@ -251,6 +263,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			Started:       started,
 			InputChars:    inputChars,
 			Budget:        loadedRetryOn4xx(),
+			SessionKey:    sessionKey,
 		}, defaultTraeSyncStreamDeps)
 		if streamErr != nil {
 			return nil, streamErr
@@ -278,6 +291,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			Started:        started,
 			InputChars:     inputChars,
 			Budget:         loadedRetryOn4xx(),
+			SessionKey:     sessionKey,
 		}, deps)
 	}()
 	log.Printf("[traework] exec stream async scheduled: model=%s auth_hash=%s stream_id=%s", req.Model, authLogHash(usedAuthID), req.StreamID)
@@ -299,7 +313,7 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 		if recovered := recover(); recovered != nil {
 			panicErr := fmt.Errorf("Trae stream coordinator panic: %v", recovered)
 			emitTraeAsyncError(ctx.StreamID, panicErr.Error(), deps)
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, 0, panicErr.Error())
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, 0, panicErr.Error(), "", 0, curAuthUID, ctx.SessionKey)
 		}
 	}()
 	for attempt := 0; attempt <= ctx.Budget; attempt++ {
@@ -317,7 +331,7 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 			}
 			log.Printf("[traework] exec stream async open error: request_id=%s stream_id=%s model=%s auth_hash=%s attempt=%d status=%d err=%s",
 				requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, statusCode, truncateRedacted(openErr.Error(), 200))
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, statusCode, openErr.Error())
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, statusCode, openErr.Error(), "", 0, curAuthUID, ctx.SessionKey)
 			if !isAccountLevel4xx(statusCode) || attempt >= ctx.Budget {
 				if isAccountLevel4xx(statusCode) {
 					reconcileAfterExecutorError(curAuthID, statusCode, openErr.Error())
@@ -357,6 +371,7 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 				AuthUID:       curAuthUID,
 				Started:       ctx.Started,
 				InputChars:    ctx.InputChars,
+				SessionKey:    ctx.SessionKey,
 			}, requestID, func(payload []byte) error {
 				return deps.Emit(ctx.StreamID, payload)
 			})
@@ -369,7 +384,7 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 				requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, len(result.Chunks))
 			noteForcedAccountFailure(curAuthID, reason)
 			evictSessionBindingsForAuth(curAuthID)
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, reason)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, reason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 			if attempt >= ctx.Budget {
 				break
 			}
@@ -399,7 +414,7 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 				requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, statusCode, result.Emitted, truncateRedacted(result.Err.Error(), 200))
 			reconcileAfterExecutorError(curAuthID, statusCode, result.Err.Error())
 			emitTraeAsyncError(ctx.StreamID, result.Err.Error(), deps)
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, result.Err.Error())
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, result.Err.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 			return
 		}
 
@@ -424,16 +439,16 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 		if finishErr != nil {
 			reconcileAfterExecutorError(curAuthID, statusCode, finishErr.Error())
 			emitTraeAsyncError(ctx.StreamID, finishErr.Error(), deps)
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, finishErr.Error())
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, finishErr.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 			return
 		}
 		deps.Close(ctx.StreamID)
 		if failed {
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, failureReason)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, statusCode, failureReason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 			return
 		}
 		resetAccountFailover(curAuthID)
-		publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), false, 0, "")
+		publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), false, 0, "", "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 		log.Printf("[traework] exec stream async done: request_id=%s stream_id=%s model=%s auth_hash=%s attempt=%d chunks=%d",
 			requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, len(result.Chunks))
 		return
@@ -478,7 +493,7 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 			if !isAccountLevel4xx(statusCode) || attempt >= ctx.Budget || curSA == nil {
 				log.Printf("[traework] exec stream upstream error: model=%s auth_hash=%s status=%d err=%s", ctx.Model, authLogHash(curAuthID), statusCode, truncateRedacted(callErr.Error(), 200))
 				reconcileAfterExecutorError(curAuthID, statusCode, callErr.Error())
-				publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, statusCode, callErr.Error())
+				publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, statusCode, callErr.Error(), "", 0, curAuthUID, ctx.SessionKey)
 				return nil, callErr
 			}
 			nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID)
@@ -495,7 +510,7 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 			continue
 		}
 
-		chunks, hasToolCalls, collectErr := collectTraeStream(bytes.NewReader(resp.Body), ctx.Model, resp.StatusCode)
+		chunks, hasToolCalls, firstOutputAt, collectErr := collectTraeStream(bytes.NewReader(resp.Body), ctx.Model, resp.StatusCode)
 		if collectErr == nil {
 			if isPseudoCompletion(chunks, ctx.InputChars, hasToolCalls) {
 				// 2. 伪完成按失败 attempt 核算并驱逐绑定；候选允许时丢弃当前 chunks 后继续。
@@ -503,7 +518,7 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 				log.Printf("[traework] exec stream collect pseudo-done: model=%s auth_hash=%s attempt=%d chunks=%d", ctx.Model, authLogHash(curAuthID), attempt+1, len(chunks))
 				noteForcedAccountFailure(curAuthID, reason)
 				evictSessionBindingsForAuth(curAuthID)
-				publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(chunks), true, resp.StatusCode, reason)
+				publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(chunks), true, resp.StatusCode, reason, "", ttftNSBetween(ctx.Started, firstOutputAt), curAuthUID, ctx.SessionKey)
 				lastFailurePublished = true
 				if attempt >= ctx.Budget {
 					break
@@ -530,14 +545,14 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 			}
 			resetAccountFailover(curAuthID)
 			log.Printf("[traework] exec stream collect ok: model=%s auth_hash=%s attempt=%d chunks=%d", ctx.Model, authLogHash(curAuthID), attempt+1, len(chunks))
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, 0, "")
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, estimateUsageFromChunks(chunks), false, 0, "", "", ttftNSBetween(ctx.Started, firstOutputAt), curAuthUID, ctx.SessionKey)
 			return chunks, nil
 		}
 
 		// 3. HTTP 200 内的账号级 SSE 错误可继续换号，其余错误立即返回。
 		if !isAccountFailure(resp.StatusCode, collectErr.Error()) || attempt >= ctx.Budget || curSA == nil {
 			reconcileAfterExecutorError(curAuthID, resp.StatusCode, collectErr.Error())
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, resp.StatusCode, collectErr.Error())
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, resp.StatusCode, collectErr.Error(), "", ttftNSBetween(ctx.Started, firstOutputAt), curAuthUID, ctx.SessionKey)
 			return nil, collectErr
 		}
 		reconcileAfterExecutorError(curAuthID, resp.StatusCode, collectErr.Error())
@@ -557,7 +572,7 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 	errFinal := fmt.Errorf("upstream account pool exhausted after %d attempt(s)", attemptsMade)
 	log.Printf("[traework] exec stream auth pool exhausted: model=%s auth_hash=%s err=%s", ctx.Model, authLogHash(curAuthID), truncateRedacted(errFinal.Error(), 200))
 	if !lastFailurePublished {
-		publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, 0, errFinal.Error())
+		publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, 0, errFinal.Error(), "", 0, curAuthUID, ctx.SessionKey)
 	}
 	return nil, errFinal
 }

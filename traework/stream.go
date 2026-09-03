@@ -285,20 +285,27 @@ func terminationLabel(t traeStreamTermination) string {
 // [参数] r: 上游 SSE 响应；model: 客户端模型；statusCode: 上游 HTTP 状态码。
 // [返回] chunks: 转换后的分片；hasToolCalls: 本次流是否含结构化工具调用（伪完成豁免信号）；
 //
-//	error: 上游错误、缺少 done 或传输截断时的协议错误。
+//	firstOutputAt: 第一个有效 output 事件到达时间（首字延迟 TTFT 观测点，
+//	零值表示未观测到任何输出，如请求开启即失败）；error: 上游错误、缺少
+//	done 或传输截断时的协议错误。
 //
-// 最近修改时间：2026-09-03；改动原因：P1 止血——把 hasToolCalls 信号带出给同步路径伪完成判定。
-func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.ExecutorStreamChunk, bool, error) {
+// 最近修改时间：2026-09-03；改动原因：dashboard 首字延迟列——把首个有效 output
+// 事件的到达时间带出给同步流式路径的 usage feed（ttft_ns）。
+func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.ExecutorStreamChunk, bool, time.Time, error) {
 	requestID := randomUUID()
 	started := time.Now()
 	var chunks []pluginapi.ExecutorStreamChunk
 	var terminal traeSSETerminal
+	var firstOutputAt time.Time
 	err := scanSSE(r, func(ev sseEvent) error {
 		switch ev.Event {
 		case "output":
 			text, reasoning, toolCalls, ok := terminal.recordOutput(ev.Data)
 			if !ok {
 				return nil
+			}
+			if firstOutputAt.IsZero() {
+				firstOutputAt = time.Now()
 			}
 			if raw, err := chunkDelta(requestID, model, text, reasoning, ""); err == nil && raw != nil {
 				chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
@@ -323,12 +330,12 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 	}, terminal.hasPayload)
 	if err != nil {
 		log.Printf("[traework] stream collect error: request_id=%s model=%s status=%d err=%s elapsed_ms=%d", requestID, model, statusCode, truncateRedacted(err.Error(), 200), time.Since(started).Milliseconds())
-		return nil, false, err
+		return nil, false, time.Time{}, err
 	}
 	termination, err := terminal.classify(statusCode)
 	if err != nil {
 		log.Printf("[traework] stream collect invalid: request_id=%s model=%s status=%d err=%s elapsed_ms=%d", requestID, model, statusCode, truncateRedacted(err.Error(), 200), time.Since(started).Milliseconds())
-		return nil, false, err
+		return nil, false, time.Time{}, err
 	}
 	// 收到 done 正常收尾；部分 output 后 EOF（上游中途断流）补 length 收尾，
 	// 让客户端保留已生成内容，而不是把可兜底的中断误判为致命错误。仅空响应才真正报错。
@@ -346,7 +353,7 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 	}
 	log.Printf("[traework] stream collect done: request_id=%s model=%s status=%d termination=%s chunks=%d finish=%s tool_calls=%v elapsed_ms=%d",
 		requestID, model, statusCode, terminationLabel(termination), len(chunks), finish, terminal.hasToolCalls, time.Since(started).Milliseconds())
-	return chunks, terminal.hasToolCalls, nil
+	return chunks, terminal.hasToolCalls, firstOutputAt, nil
 }
 
 // aggregateTraeCompletion reads the upstream SSE stream and folds all output
@@ -473,6 +480,24 @@ type traeStreamPumpContext struct {
 	AuthUID       string    // 用量维度使用的 Trae 账号 UID。
 	Started       time.Time // 请求开始时间。
 	InputChars    int       // 请求输入估算字符数，用于伪完成检测的输入长度判据。
+	SessionKey    string    // 会话亲和键，写入 usage feed 的 session_key 列（空表示无会话信号）。
+}
+
+// ttftNSBetween 返回 started → firstOutputAt 的纳秒差（首字延迟 TTFT）。
+// 任一时间零值或差值为负（时钟抖动）时返回 0，与 workbuddy 的
+// sseUsageCollector.ttftNS 语义一致。
+// [参数] started: 请求开始时间；firstOutputAt: 首个有效输出事件到达时间。
+// [返回] 首字延迟纳秒数；不可观测时为 0。
+// 最近修改时间：2026-09-03；改动原因：token-usage-tracker dashboard 的首字延迟列需要 traework 侧真实 ttft_ns。
+func ttftNSBetween(started, firstOutputAt time.Time) uint64 {
+	if started.IsZero() || firstOutputAt.IsZero() {
+		return 0
+	}
+	d := firstOutputAt.Sub(started)
+	if d <= 0 {
+		return 0
+	}
+	return uint64(d)
 }
 
 // pumpTraeStream 读取 Trae 上游 SSE，向宿主推送分片，并在流结束时发布一次用量结果。
@@ -550,13 +575,16 @@ func isPseudoCompletion(chunks []pluginapi.ExecutorStreamChunk, inputChars int, 
 
 // traeStreamAttemptResult 保存单次上游流尝试的转换结果；逻辑请求协调器据此决定换号或唯一收尾。
 type traeStreamAttemptResult struct {
-	RequestID   string
-	Chunks      []pluginapi.ExecutorStreamChunk
-	Termination traeStreamTermination
-	Pseudo      bool
-	Emitted     bool
+	RequestID    string
+	Chunks       []pluginapi.ExecutorStreamChunk
+	Termination  traeStreamTermination
+	Pseudo       bool
+	Emitted      bool
 	HasToolCalls bool
-	Err         error
+	// FirstOutputAt 是第一个有效 output 事件的到达时间（TTFT 观测点）；
+	// 零值表示该尝试未观测到任何输出（如开启即失败）。
+	FirstOutputAt time.Time
+	Err           error
 }
 
 // traeStreamEmitter 下发一个已转换的客户端分片。
@@ -605,6 +633,9 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 			}
 			if len(raws) == 0 {
 				return nil
+			}
+			if result.FirstOutputAt.IsZero() {
+				result.FirstOutputAt = time.Now()
 			}
 			healthChars += len(text) + len(reasoning)
 			for _, raw := range raws {
@@ -679,7 +710,7 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 			requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, truncateRedacted(result.Err.Error(), 200), time.Since(started).Milliseconds())
 		reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, result.Err.Error())
 		streamEmitError(ctx.StreamID, result.Err.Error())
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, result.Err.Error())
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, result.Err.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 		return
 	}
 	if result.Pseudo {
@@ -689,7 +720,7 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 		noteForcedAccountFailure(ctx.AuthID, reason)
 		evictSessionBindingsForAuth(ctx.AuthID)
 		streamEmitError(ctx.StreamID, reason)
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, reason)
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, reason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 		return
 	}
 
@@ -713,16 +744,16 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	if err != nil {
 		reconcileAfterExecutorError(ctx.AuthID, ctx.StatusCode, err.Error())
 		streamEmitError(ctx.StreamID, err.Error())
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, err.Error())
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, err.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 		return
 	}
 	streamClose(ctx.StreamID)
 	if failed {
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, failureReason)
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), true, ctx.StatusCode, failureReason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 		return
 	}
 	resetAccountFailover(ctx.AuthID)
-	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), false, 0, "")
+	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, estimateUsageFromChunks(result.Chunks), false, 0, "", "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 }
 
 // clientNeedsSSEFrame reports whether the client expects raw SSE framing in

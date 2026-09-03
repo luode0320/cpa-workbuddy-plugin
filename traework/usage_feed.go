@@ -156,12 +156,22 @@ func cliProxyRootFromDir(dir string) (string, bool) {
 // forwardUsageToCPAMP's payload) so the tracker plugin, workbuddy records and
 // CPAMP see structurally identical data.
 //
-// Fields traework cannot observe are still written with their zero values
-// (session_key / reasoning_effort / ttft_ns) so the feed schema stays
-// self-documenting across NDJSON rotations. `source` carries the oauth
-// account UID (traework has no nickname concept) so the tracker dashboard's
-// 来源 (source) column can tell traework accounts apart.
-func recordUsageFeed(alias, model, authUID string, started time.Time, detail usage.Detail, failed bool, statusCode int) {
+// reasoningEffort is the reasoning_effort value sent upstream ("" — the Trae
+// upstream has no such knob, kept so the feed schema stays self-documenting
+// across NDJSON rotations). ttftNS is the time-to-first-token in nanoseconds
+// (0 when not observable, e.g. non-streaming paths or transport failures
+// before any output event). accountLabel is the account identifier written
+// into the record's `source` field so the tracker dashboard's 来源 (source)
+// column can tell traework accounts apart (traework has no nickname concept,
+// so callers pass the oauth account UID). sessionKey is the same
+// per-conversation key scheduler.pick used to pin this account (extracted
+// from the executor's req.Headers + req.Metadata) and is written into the
+// `session_key` field so the dashboard's 会话 column shows which conversation
+// each request belongs to — equal session_key values across rows mean the
+// same stickiness-bound session. The field is always written (empty string
+// when no session signal was present) so the feed schema stays
+// self-documenting across NDJSON rotations.
+func recordUsageFeed(alias, model, authUID string, started time.Time, detail usage.Detail, failed bool, statusCode int, reasoningEffort string, ttftNS uint64, accountLabel, sessionKey string) {
 	usageFeedMu.RLock()
 	enabled := usageFeedEnabled
 	path := usageFeedPath
@@ -186,7 +196,7 @@ func recordUsageFeed(alias, model, authUID string, started time.Time, detail usa
 	record := map[string]any{
 		"timestamp":        ts.UTC().Format(time.RFC3339Nano),
 		"latency_ms":       latencyMs,
-		"source":           strings.TrimSpace(authUID),
+		"source":           strings.TrimSpace(accountLabel),
 		"auth_index":       strings.TrimSpace(authUID),
 		"provider":         providerName,
 		"model":            model,
@@ -196,9 +206,9 @@ func recordUsageFeed(alias, model, authUID string, started time.Time, detail usa
 		"executor_type":    "traework",
 		"failed":           failed,
 		"status_code":      statusCode,
-		"session_key":      "",
-		"reasoning_effort": "",
-		"ttft_ns":          0,
+		"session_key":      sessionKey,
+		"reasoning_effort": strings.TrimSpace(reasoningEffort),
+		"ttft_ns":          ttftNS,
 		"tokens": map[string]any{
 			"input_tokens":          detail.InputTokens,
 			"output_tokens":         detail.OutputTokens,
