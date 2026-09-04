@@ -1,5 +1,18 @@
 # TraeWork Plugin Changelog
 
+## 0.1.44
+
+### Fix — 浏览器授权登录 GetUserInfo 401 时回落回调 URL 的 userInfo（SOLO 客户端同款策略）
+
+0.1.43 生产实测：exchange 已成功换到 token（不再报 HTML 解析错误），但下一步 GetUserInfo 报 `HTTP 401 {"Code":"20310","Message":"The user is not logged in"}`——该路由基于 cookie 会话鉴权，新换的 bearer token 不被认。SOLO 客户端 main.js 取证：`o = r ?? await this.getUserInfo(...)`——**客户端优先用回调 URL 里的 `userInfo` JSON 参数（含 UserID/ScreenName 完整档案），根本不依赖 GetUserInfo**。而 TRAE 授权页的回调 URL 恰好携带 `userInfo={"UserID":"...","ScreenName":"..."}`。
+
+- **`browserlogin.go`**：
+  - 新增 `parseBounceUserInfo`：从回调 URL `userInfo` JSON 参数提取 UserID/ScreenName（大小写变体容错）
+  - `finishBrowserLogin` 签名加 `bounceUserInfo`：GetUserInfo 失败时回落到回调 userInfo 提供身份（仍先尝试 GetUserInfo 保序）；两者都无才报错
+  - callback/submit 双通道把 `q.Get("userInfo")` 传入 settle 链
+- 测试：新增 `TestBrowserLoginSubmitUserInfoFallback`（exchange 成功 + GetUserInfo 401 + 回调带 userInfo → 流程必须越过获取用户信息阶段进入导入；GetUserInfo 必须先被尝试一次）
+- 涉及文件：`browserlogin.go` / `browserlogin_test.go` / `VERSION` / `main.go` / `CHANGELOG.md`
+
 ## 0.1.43
 
 ### Fix — 浏览器授权登录 ExchangeToken 打错域（www.trae.cn 返回 SPA HTML）

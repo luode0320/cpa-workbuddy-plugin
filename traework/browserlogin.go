@@ -200,6 +200,26 @@ func extractAuthCode(q url.Values) string {
 	return strings.TrimSpace(info.AuthCode)
 }
 
+// parseBounceUserInfo extracts (userID, nickname) from the userInfo JSON
+// query parameter the Trae authorization page attaches to the bounce URL
+// (live shape 2026-09-05: {"AIRegion":"CN","ScreenName":"用户24034744679",
+// "TenantID":"...","UserID":"3049391365297084",...}). The SOLO client treats
+// this as the PRIMARY identity source (main.js: r ?? await getUserInfo(...)),
+// so it is a trusted fallback when the token-based GetUserInfo call fails.
+func parseBounceUserInfo(raw string) (string, string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	var info map[string]any
+	if err := json.Unmarshal([]byte(raw), &info); err != nil {
+		return "", ""
+	}
+	userID := pickString(info, "UserID", "userId")
+	nickname := pickString(info, "ScreenName", "screenName", "Nickname", "nickname", "Username", "username")
+	return userID, nickname
+}
+
 // newestPendingSession returns the key and session of the most recently
 // created unsettled session. The Trae authorization page never echoes the
 // OAuth state back (2026-09-05 live probe), so when neither the pasted URL
@@ -430,7 +450,7 @@ func handleBrowserLoginCallback(req pluginapi.ManagementRequest) pluginapi.Manag
 	}
 	session := rawSession.(*browserLoginSession)
 	panelURL := session.RedirectURI + resourcePanelPrefix + "?auth_cb=" + url.QueryEscape(state)
-	outcome := settleBrowserLogin(state, session, code, authErr)
+	outcome := settleBrowserLogin(state, session, code, authErr, strings.TrimSpace(q.Get("userInfo")))
 	logBrowserLoginOutcome(state, outcome)
 	return browserLoginHTMLPage(panelURL, "")
 }
@@ -442,13 +462,13 @@ func handleBrowserLoginCallback(req pluginapi.ManagementRequest) pluginapi.Manag
 // CreatedAt is preserved so the purge TTL also covers stale results). Shared
 // by the auto resource callback and the manual paste submit path; authErr
 // short-circuits the exchange (authorization-server-reported failure).
-func settleBrowserLogin(state string, session *browserLoginSession, code, authErr string) *browserLoginOutcome {
+func settleBrowserLogin(state string, session *browserLoginSession, code, authErr, bounceUserInfo string) *browserLoginOutcome {
 	browserLoginSessions.Delete(state)
 	var outcome *browserLoginOutcome
 	if authErr != "" {
 		outcome = &browserLoginOutcome{Error: "授权失败：" + authErr}
 	} else {
-		outcome = finishBrowserLogin(session, code)
+		outcome = finishBrowserLogin(session, code, bounceUserInfo)
 	}
 	browserLoginSessions.Store(state, &browserLoginSession{
 		Verifier:    session.Verifier,
@@ -550,7 +570,7 @@ func handleBrowserLoginSubmit(req pluginapi.ManagementRequest) map[string]any {
 	if code == "" && authErr == "" {
 		return map[string]any{"error": "回调地址缺少授权码（code）：请在登录成功后复制浏览器地址栏的完整网址"}
 	}
-	outcome := settleBrowserLogin(state, session, code, authErr)
+	outcome := settleBrowserLogin(state, session, code, authErr, strings.TrimSpace(q.Get("userInfo")))
 	logBrowserLoginOutcome(state, outcome)
 	return map[string]any{
 		"ok":    outcome.OK,
@@ -568,14 +588,26 @@ var (
 
 // finishBrowserLogin exchanges the auth code, fetches the user profile, and
 // imports the account. Returns the panel-facing outcome (never credentials).
-func finishBrowserLogin(session *browserLoginSession, code string) *browserLoginOutcome {
+// The bounce URL's userInfo query parameter (JSON with UserID/ScreenName)
+// serves as the identity fallback: the SOLO client itself prefers it over
+// calling GetUserInfo (main.js: o = r ?? await this.getUserInfo(...)), and
+// live testing 2026-09-05 showed the freshly-exchanged token can fail
+// GetUserInfo with 401 "The user is not logged in" (cookie-session based —
+// the bearer token alone does not authenticate that route).
+func finishBrowserLogin(session *browserLoginSession, code string, bounceUserInfo string) *browserLoginOutcome {
 	result, rawResult, err := browserLoginExchangeFn(session, code)
 	if err != nil {
 		return &browserLoginOutcome{Error: "换取 token 失败：" + err.Error()}
 	}
 	userID, nickname, err := browserLoginUserInfoFn(result.Token)
 	if err != nil {
-		return &browserLoginOutcome{Error: "获取用户信息失败：" + err.Error()}
+		// Fall back to the bounce URL's userInfo (the authorization page
+		// already knows who logged in — it put the profile in the callback).
+		fbID, fbNick := parseBounceUserInfo(bounceUserInfo)
+		if fbID == "" {
+			return &browserLoginOutcome{Error: "获取用户信息失败：" + err.Error()}
+		}
+		userID, nickname = fbID, fbNick
 	}
 	if strings.TrimSpace(userID) == "" {
 		return &browserLoginOutcome{Error: "上游未返回 userId，无法入库"}

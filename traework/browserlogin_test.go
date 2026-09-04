@@ -512,6 +512,66 @@ func TestBrowserLoginCallbackTraeShapeFallback(t *testing.T) {
 	}
 }
 
+// TestBrowserLoginSubmitUserInfoFallback pins the 2026-09-05 live finding:
+// the freshly-exchanged token can fail GetUserInfo with 401 (cookie-session
+// based route), and the SOLO client itself prefers the bounce URL's userInfo
+// JSON (main.js: r ?? await getUserInfo(...)). The submit path must fall
+// back to that profile and still import the account. The full import needs
+// the host auth RPCs; here the exchange succeeds, GetUserInfo fails, and
+// the flow must reach the import stage (proving the fallback kicked in).
+func TestBrowserLoginSubmitUserInfoFallback(t *testing.T) {
+	origExchange, origUserInfo := browserLoginExchangeFn, browserLoginUserInfoFn
+	defer func() { browserLoginExchangeFn, browserLoginUserInfoFn = origExchange, origUserInfo }()
+	browserLoginExchangeFn = func(session *browserLoginSession, code string) (*browserLoginToken, string, error) {
+		return &browserLoginToken{Token: "tok", RefreshToken: "rt"}, `{"Result":{"Token":"tok"}}`, nil
+	}
+	userInfoCalls := 0
+	browserLoginUserInfoFn = func(token string) (string, string, error) {
+		userInfoCalls++
+		return "", "", fmt.Errorf("HTTP 401 The user is not logged in")
+	}
+	// The live bounce shape: authCodeInfo + userInfo carrying UserID/ScreenName.
+	url := "http://127.0.0.1:8317/authorize?isRedirect=true&scope=solo" +
+		`&authCodeInfo=%7B%22AuthCode%22%3A%22realcode%22%7D` +
+		`&userInfo=%7B%22UserID%22%3A%223049391365297084%22%2C%22ScreenName%22%3A%22%E7%94%A8%E6%88%B724034744679%22%7D`
+	state := "userinfo-fallback"
+	browserLoginSessions.Store(state, &browserLoginSession{Verifier: "v", CreatedAt: time.Now()})
+	defer browserLoginSessions.Delete(state)
+	out := handleBrowserLoginSubmit(pluginapi.ManagementRequest{Body: []byte(`{"url":"` + url + `","state":"` + state + `"}`)})
+	if userInfoCalls != 1 {
+		t.Fatalf("GetUserInfo must be attempted once first, got %d calls", userInfoCalls)
+	}
+	// The flow must NOT stop at the GetUserInfo error: it proceeds to the
+	// import stage. Without the host auth RPCs (cgo shim) hostAuthList
+	// fails, so the expected outcome is the import-stage error, never the
+	// "获取用户信息失败" error.
+	errText := strValue(out["error"])
+	if strings.Contains(errText, "获取用户信息失败") {
+		t.Fatalf("userInfo fallback did not kick in: %v", out["error"])
+	}
+	// Parse the stored outcome: the identity must come from the bounce.
+	raw, ok := browserLoginSessions.Load(state)
+	if !ok {
+		t.Fatal("session missing after settle")
+	}
+	s := raw.(*browserLoginSession)
+	if s.Result == nil {
+		t.Fatal("outcome not stored")
+	}
+	if s.Result.OK {
+		// Import unexpectedly succeeded (host RPCs available) — then the
+		// label must carry the bounce ScreenName.
+		if !strings.Contains(s.Result.Label, "用户24034744679") {
+			t.Fatalf("imported label %q must use the bounce ScreenName", s.Result.Label)
+		}
+	}
+	// Without the fallback the error would be 获取用户信息失败; reaching the
+	// import stage at all proves parseBounceUserInfo supplied the identity.
+	if !s.Result.OK && !strings.Contains(s.Result.Error, "凭据") && !strings.Contains(s.Result.Error, "host") {
+		t.Fatalf("unexpected import-stage error: %v", s.Result.Error)
+	}
+}
+
 // strValue renders a map value for assertion messages.
 func strValue(v any) string {
 	if s, ok := v.(string); ok {
