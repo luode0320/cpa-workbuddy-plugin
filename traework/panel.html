@@ -431,6 +431,8 @@ function openDeleteModal(idx){
   const a=(lastAccounts||[]).find(x=>x.auth_index===idx);
   const who=a?(a.nickname||a.label||a.name||a.uid||idx):idx;
   pendingDeleteAuthIndex=idx;
+  // 防御性复位：无论上次是否正常复位，弹窗打开时确认按钮必须可用
+  busy(document.getElementById("deleteConfirmBtn"),false);
   document.getElementById("deleteModalHint").innerHTML='确定要删除账号 <b>'+esc(who)+'</b> 吗？';
   document.getElementById("deleteModal").classList.add("show");
 }
@@ -455,6 +457,8 @@ async function confirmDeleteAuth(){
     }
     const who=d.nickname||idx;
     toast("已删除账号","ok",who);
+    // 成功路径同样必须复位按钮：弹窗 DOM 是复用的，残留的处理中状态会阻塞下一次删除
+    busy(btn,false);
     closeDeleteModal();
     // 先从本地态移除，再软刷新以和服务端保持一致。
     lastAccounts=(lastAccounts||[]).filter(x=>x.auth_index!==idx);
@@ -1145,16 +1149,18 @@ async function doImport(file){
 /* ---------- 浏览器授权登录 ---------- */
 /* 无需 IDE 的 OAuth 授权导入。TRAE 授权页白名单只接受「回环 + /authorize」
    形状的回调（2026-09-04 五组对照实测），且回环地址上无需监听——登录成功后
-   浏览器会落在一个打不开的本地地址，地址栏仍保留 ?code=&state=。本页弹出
-   授权页后显示粘贴引导，用户复制地址栏完整网址回来提交，后端
-   /browser-login/submit 解析并完成换 token 与入库（与宿主手动粘贴
-   redirect_url 通道同构）。resource callback 自动回跳通道仍保留。 */
-const BROWSER_LOGIN_PANEL_PATH="/v0/resource/plugins/traework-provider/panel";
+   浏览器会落在一个打不开的本地地址。注意（2026-09-05 实测）：该跳转不是标准
+   OAuth 302，不回传 code/state——授权码在 authCodeInfo JSON 参数里。本页在
+   start 时记住返回的 state 并在提交时带回（服务端定位会话的主键；另有最新
+   pending 会话兜底），后端 /browser-login/submit 解析 authCodeInfo 完成换
+   token 与入库。resource callback 自动回跳通道仍保留。 */
+let browserLoginState="";
 async function browserLogin(btn){
   try{
     busy(btn,true);
     const r=await api("/browser-login/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({redirect_origin:window.location.origin})});
     if(r.error||!r.auth_url){toast("无法发起授权","err",r.error||"响应缺少授权地址");return}
+    browserLoginState=String(r.state||"");
     /* 宿主对 management JSON 响应体强制 HTML 转义（& 变 &amp;），打开授权页前必须还原，
        否则 TRAE 会把 amp;xxx 当成独立参数、授权链路直接失效。 */
     const authUrl=String(r.auth_url).replaceAll("&amp;","&");
@@ -1189,7 +1195,7 @@ function showBrowserLoginPaste(){
     const sb=document.getElementById("blPasteBtn");
     sb.disabled=true;sb.textContent="提交中…";
     try{
-      const r=await api("/browser-login/submit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:val})});
+      const r=await api("/browser-login/submit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:val,state:browserLoginState})});
       if(r.ok){toast("浏览器授权登录成功","ok",r.label||"账号已导入");await load();removeBrowserLoginPaste()}
       else{toast("浏览器授权登录失败","err",r.error||"未知错误");sb.disabled=false;sb.textContent="提交"}
     }catch(e){toast("提交失败","err",e&&e.message||String(e));sb.disabled=false;sb.textContent="提交"}

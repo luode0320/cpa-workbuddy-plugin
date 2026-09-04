@@ -1006,6 +1006,8 @@ function openDeleteModal(idx){
   const a=(lastAccounts||[]).find(x=>x.auth_index===idx);
   const who=a?(a.nickname||a.label||a.name||a.uid||idx):idx;
   pendingDeleteAuthIndex=idx;
+  // 防御性复位：无论上次是否正常复位，弹窗打开时确认按钮必须可用
+  busy(document.getElementById("deleteConfirmBtn"),false);
   document.getElementById("deleteModalHint").innerHTML='确定要删除账号 <b>'+esc(who)+'</b> 吗？';
   document.getElementById("deleteModal").classList.add("show");
 }
@@ -1030,6 +1032,8 @@ async function confirmDeleteAuth(){
     }
     const who=d.nickname||idx;
     toast("已删除账号","ok",who);
+    // 成功路径同样必须复位按钮：弹窗 DOM 是复用的，残留的处理中状态会阻塞下一次删除
+    busy(btn,false);
     closeDeleteModal();
     // 先从本地态移除，再软刷新以和服务端保持一致。
     lastAccounts=(lastAccounts||[]).filter(x=>x.auth_index!==idx);

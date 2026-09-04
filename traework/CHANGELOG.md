@@ -1,5 +1,13 @@
 # TraeWork Plugin Changelog
 
+## 0.1.41
+
+### Fix — 删除确认按钮 busy 状态泄漏导致无法连续删除账号
+
+与 workbuddy-provider 0.14.20 同构修复（逐函数适配）：删除账号成功后确认弹窗按钮停留在「处理中…」禁用态且从未复位，弹窗 DOM 静态复用导致下次打开不可点击。
+
+- 涉及文件：`panel.html`（`confirmDeleteAuth()` 成功分支补 `busy(btn,false)`；`openDeleteModal()` 打开时防御性复位按钮）。
+
 ## 0.1.40
 
 ### Fix — 浏览器授权登录回调形状适配 TRAE 授权页白名单（面板引导式粘贴闭环）
