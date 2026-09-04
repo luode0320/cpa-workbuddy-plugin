@@ -205,7 +205,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     </div>
   </div>
   <div class="bar">
-    <button class="sec" onclick="browserLogin(this)" title="无需 IDE：打开 TRAE 授权页登录，成功后自动换取凭据并导入本插件">🔑 浏览器授权登录</button>
+    <button class="sec" onclick="browserLogin(this)" title="无需 IDE：打开 TRAE 授权页登录，登录后把浏览器地址栏完整网址粘贴回本页完成导入">🔑 浏览器授权登录</button>
     <button class="sec" onclick="pickFile()" title="选择 Trae SOLO 客户端导出的 storage.json 文件导入凭据">📁 导入 storage.json</button>
     <button class="sec" onclick="pickDir()" title="备选入口：从 Trae 凭据目录中挑 storage.json（仅浏览器不支持单文件选择时使用）">选择目录</button>
     <button class="sec" onclick="copyStorageDir()" title="复制 Trae SOLO 凭据目录路径到剪贴板">复制路径</button>
@@ -1143,11 +1143,12 @@ async function doImport(file){
 }
 
 /* ---------- 浏览器授权登录 ---------- */
-/* 无需 IDE 的 OAuth 授权导入：后端生成 PKCE 对并把回调指到本插件的
-   免鉴权 resource callback 路由（/v0/resource/plugins/<id>/browser-login/
-   callback），用户在 TRAE 授权页登录成功后浏览器会跳回 callback（服务器
-   完成 state 匹配、换 token 与入库），再页面跳转回本面板，
-   本页凭 ?auth_cb=<state> 读取一次性结果（不含凭据）。 */
+/* 无需 IDE 的 OAuth 授权导入。TRAE 授权页白名单只接受「回环 + /authorize」
+   形状的回调（2026-09-04 五组对照实测），且回环地址上无需监听——登录成功后
+   浏览器会落在一个打不开的本地地址，地址栏仍保留 ?code=&state=。本页弹出
+   授权页后显示粘贴引导，用户复制地址栏完整网址回来提交，后端
+   /browser-login/submit 解析并完成换 token 与入库（与宿主手动粘贴
+   redirect_url 通道同构）。resource callback 自动回跳通道仍保留。 */
 const BROWSER_LOGIN_PANEL_PATH="/v0/resource/plugins/traework-provider/panel";
 async function browserLogin(btn){
   try{
@@ -1159,10 +1160,46 @@ async function browserLogin(btn){
     const authUrl=String(r.auth_url).replaceAll("&amp;","&");
     const w=window.open(authUrl,"_blank");
     if(!w){toast("弹窗被浏览器拦截","err","请允许本站弹出窗口后重试");return}
+    showBrowserLoginPaste();
     const mins=Math.round((r.expires_in||600)/60);
-    toast("已打开 TRAE 授权页","ok","登录后点击「登录并打开 TraeWork」，本页将在 "+mins+" 分钟内自动完成导入");
+    toast("已打开 TRAE 授权页","ok","登录后复制浏览器地址栏完整网址，回到本页粘贴提交（"+mins+" 分钟内有效）");
   }catch(e){toast("授权发起失败","err",e&&e.message||String(e))}
   finally{busy(btn,false)}
+}
+/* 粘贴引导卡片：动态插入 body（不占静态结构），随主题变量自适应。 */
+function showBrowserLoginPaste(){
+  removeBrowserLoginPaste();
+  const box=document.createElement("div");
+  box.id="blPasteBox";
+  box.style.cssText="position:fixed;right:16px;bottom:16px;z-index:9999;max-width:440px;background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.18);padding:14px 16px;font-size:13px;line-height:1.7";
+  box.innerHTML=
+    '<b>🔑 浏览器授权登录</b><br>'+
+    '1. 在已打开的 TRAE 授权页完成登录<br>'+
+    '2. 登录成功后浏览器会跳到一个<b>打不开的本地地址</b>（127.0.0.1…）——这是正常的，地址栏里保留着授权信息<br>'+
+    '3. 复制浏览器地址栏的完整网址，粘贴到下面提交：'+
+    '<div style="display:flex;gap:6px;margin-top:8px">'+
+    '<input id="blPasteInput" style="flex:1;min-width:0;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--fg);font-size:12px" placeholder="粘贴登录后地址栏的完整网址">'+
+    '<button id="blPasteBtn" class="sec" style="margin:0">提交</button></div>'+
+    '<div style="margin-top:6px;text-align:right"><a href="javascript:void(0)" id="blPasteClose" style="font-size:12px;color:var(--mut)">关闭</a></div>';
+  document.body.appendChild(box);
+  document.getElementById("blPasteClose").onclick=removeBrowserLoginPaste;
+  const doSubmit=async()=>{
+    const val=document.getElementById("blPasteInput").value.trim();
+    if(!val){toast("请先粘贴地址","err","");return}
+    const sb=document.getElementById("blPasteBtn");
+    sb.disabled=true;sb.textContent="提交中…";
+    try{
+      const r=await api("/browser-login/submit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:val})});
+      if(r.ok){toast("浏览器授权登录成功","ok",r.label||"账号已导入");await load();removeBrowserLoginPaste()}
+      else{toast("浏览器授权登录失败","err",r.error||"未知错误");sb.disabled=false;sb.textContent="提交"}
+    }catch(e){toast("提交失败","err",e&&e.message||String(e));sb.disabled=false;sb.textContent="提交"}
+  };
+  document.getElementById("blPasteBtn").onclick=doSubmit;
+  document.getElementById("blPasteInput").addEventListener("keydown",e=>{if(e.key==="Enter")doSubmit()});
+}
+function removeBrowserLoginPaste(){
+  const old=document.getElementById("blPasteBox");
+  if(old)old.remove();
 }
 /* 授权完成回跳：读取 ?auth_cb=<state> 的一次性结果。
    结果由服务器读后即焚；key 未就绪时轮询等待（用户先输入管理密钥）。 */

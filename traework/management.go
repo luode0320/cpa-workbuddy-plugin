@@ -71,6 +71,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/unfreeze", Description: "Remove one (body: {auth_index}) or all (empty body) accounts from the anomaly pool."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import one Trae SOLO credential (body: {filename, content}); whole storage.json or raw credential value accepted."},
 			{Method: http.MethodPost, Path: base + "/browser-login/start", Description: "Start a browser OAuth login: returns the Trae authorization URL (PKCE pair minted server-side)."},
+			{Method: http.MethodPost, Path: base + "/browser-login/submit", Description: "Finish a browser OAuth login from the pasted callback URL (body: {url}); parses code/state and imports the account."},
 			{Method: http.MethodPost, Path: base + "/browser-login/result", Description: "Fetch the one-time browser-login outcome for a state (body: {state}); read-once, credential-free."},
 			{Method: http.MethodGet, Path: base + "/storage-path", Description: "Return the detected Trae SOLO globalStorage directory for the panel hint."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
@@ -82,8 +83,10 @@ func managementRegistration() managementRegistrationResponse {
 			{Path: "/panel", Menu: "TraeWork", Description: "TraeWork dashboard: credits, check-in, enable/disable, failover status."},
 			// OAuth bounce target: MUST stay on the unauthenticated resource
 			// prefix (no Menu -> never shows up in the management UI menu).
-			// The Trae login page cannot present a management key; the
-			// one-time state value is the credential.
+			// Kept as the auto bounce target for setups that can reach it
+			// (e.g. a local forwarder); the authorization URL itself points
+			// at the loopback /authorize shape required by the Trae
+			// whitelist, so the regular path is the panel paste-submit flow.
 			{Path: "/browser-login/callback", Description: "Trae login page redirect target (?code=&state=); exchanges the code and imports the account, then bounces to the panel."},
 		},
 	}
@@ -147,6 +150,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportCredential(req)))
 	case req.Method == http.MethodPost && path == base+"/browser-login/start":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleBrowserLoginStart(req)))
+	case req.Method == http.MethodPost && path == base+"/browser-login/submit":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleBrowserLoginSubmit(req)))
 	case req.Method == http.MethodPost && path == base+"/browser-login/result":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleBrowserLoginResult(req)))
 	case req.Method == http.MethodGet && path == base+"/export":
@@ -714,6 +719,7 @@ func mutatingManagementPath(path string) bool {
 		base + "/unfreeze",
 		base + "/import",
 		base + "/browser-login/start",
+		base + "/browser-login/submit",
 		base + "/browser-login/result",
 		base + "/export",
 		base + "/delete":

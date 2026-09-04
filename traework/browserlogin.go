@@ -22,13 +22,21 @@
 //
 // This module replays that flow without an IDE install: the plugin mints the
 // PKCE pair + a throwaway EC P-256 device key, points auth_callback_url at
-// the plugin's own UNAUTHENTICATED resource callback route
-// (/v0/resource/plugins/<id>/browser-login/callback — the management prefix is
-// guarded by the host management-key middleware, which the Trae login page can
-// never supply; the one-time state value IS the credential here), exchanges
-// the code server-side, imports the account into the host auth store, and
-// bounces the browser back to the panel with a one-time result handle. Tokens
-// never travel in URLs.
+// http://127.0.0.1:<port>/authorize — the ONLY callback shape the Trae
+// authorization page accepts (2026-09-04 five-way probe: the whitelist
+// requires a loopback host AND the exact /authorize path; protocol and port
+// are irrelevant). Nothing listens on that address: after the login the
+// browser lands on a dead local URL that KEEPS ?code=&state= in the address
+// bar, and the panel asks the user to paste that URL back via
+// POST /browser-login/submit (mirroring the host's own manual
+// POST /v0/management/oauth/callback {redirect_url} channel). The legacy
+// unauthenticated resource callback route
+// (/v0/resource/plugins/<id>/browser-login/callback) is kept as the auto
+// bounce target for setups that can reach it (e.g. a local forwarder); it
+// shares the same state-keyed session flow as the paste path. The plugin
+// exchanges the code server-side, imports the account into the host auth
+// store, and hands the panel a credential-free outcome. Tokens never travel
+// in URLs.
 //
 // Token renewal afterwards is device-independent: the keepalive refresh call
 // (POST /cloudide/api/v3/trae/oauth/ExchangeToken) carries only
@@ -75,11 +83,35 @@ const (
 // handleManagement (management.go); the panel redirect URL is built on it.
 const resourcePanelPrefix = "/v0/resource/plugins/" + providerName + "/panel"
 
-// browserLoginCallbackURLPath is the OAuth bounce target served on the
+// browserLoginCallbackURLPath is the legacy OAuth bounce target served on the
 // plugin's unauthenticated resource prefix (host constant, deliberately NOT
 // under the configurable management base path: the Trae login page cannot
-// present a management key). Registered in managementRegistration().Resources.
+// present a management key). Kept as the auto bounce target for setups that
+// can reach it (e.g. a local forwarder); the authorization URL itself now
+// points at the loopback /authorize shape required by the Trae whitelist.
 const browserLoginCallbackURLPath = "/v0/resource/plugins/" + providerName + "/browser-login/callback"
+
+// browserLoginFallbackPort is used when the panel origin carries no explicit
+// port. The value is cosmetic only: the authorization page whitelist checks
+// the host and path, and nothing needs to listen on the port — the user past
+// the bounced URL back into the panel instead.
+const browserLoginFallbackPort = "8317"
+
+// browserLoginLocalCallback builds the authorization-page callback URL. The
+// Trae authorization page only accepts loopback hosts whose path is exactly
+// "/authorize" (2026-09-04 five-way probe; protocol and port irrelevant), so
+// the plugin mirrors the native client's shape and reuses the panel origin's
+// port for a deterministic address the user can recognise.
+func browserLoginLocalCallback(origin string) string {
+	port := ""
+	if u, err := url.Parse(origin); err == nil {
+		port = u.Port()
+	}
+	if port == "" {
+		port = browserLoginFallbackPort
+	}
+	return "http://127.0.0.1:" + port + "/authorize"
+}
 
 // browserLoginSession holds one pending (or finished) login attempt.
 type browserLoginSession struct {
@@ -229,10 +261,11 @@ func handleBrowserLoginStart(req pluginapi.ManagementRequest) map[string]any {
 	deviceID := randomDeviceID()
 	state := randomHex(24)
 
-	// The callback lives on the unauthenticated resource prefix: the Trae
-	// login page navigates here with a plain browser GET and cannot carry
-	// the host management key.
-	callbackURL := origin + browserLoginCallbackURLPath
+	// The callback must match the Trae authorization-page whitelist shape
+	// (loopback host + exact /authorize path). Nothing listens there: the
+	// panel asks the user to paste the bounced URL back via
+	// /browser-login/submit (see handleBrowserLoginSubmit).
+	callbackURL := browserLoginLocalCallback(origin)
 	q := url.Values{}
 	q.Set("login_version", "1")
 	q.Set("auth_from", "solo")
@@ -272,7 +305,7 @@ func handleBrowserLoginStart(req pluginapi.ManagementRequest) map[string]any {
 		RedirectURI: origin,
 		CreatedAt:   time.Now(),
 	})
-	log.Printf("[browser-login] session started: state=%s callback=%s", state[:8]+"...", truncateRedacted(callbackURL, 120))
+	log.Printf("[browser-login] session started: state=%s callback=%s", stateLogPrefix(state), truncateRedacted(callbackURL, 120))
 	return map[string]any{
 		"ok":         true,
 		"auth_url":   browserLoginHost + "/authorization?" + q.Encode(),
@@ -297,7 +330,11 @@ func handleBrowserLoginStart(req pluginapi.ManagementRequest) map[string]any {
 func handleBrowserLoginCallback(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	code := strings.TrimSpace(req.Query.Get("code"))
 	state := strings.TrimSpace(req.Query.Get("state"))
-	if code == "" || state == "" {
+	authErr := strings.TrimSpace(req.Query.Get("error"))
+	if authErr == "" {
+		authErr = strings.TrimSpace(req.Query.Get("error_description"))
+	}
+	if state == "" || (code == "" && authErr == "") {
 		return browserLoginHTMLPage("", "授权回调缺少 code/state 参数，请回到面板重新发起浏览器授权登录。")
 	}
 	rawSession, ok := browserLoginSessions.Load(state)
@@ -305,14 +342,27 @@ func handleBrowserLoginCallback(req pluginapi.ManagementRequest) pluginapi.Manag
 		return browserLoginHTMLPage("", "授权会话不存在或已过期（10 分钟有效期），请回到面板重新发起。")
 	}
 	session := rawSession.(*browserLoginSession)
-	// Consume the pending session up front: one state, one exchange attempt.
-	browserLoginSessions.Delete(state)
 	panelURL := session.RedirectURI + resourcePanelPrefix + "?auth_cb=" + url.QueryEscape(state)
+	outcome := settleBrowserLogin(state, session, code, authErr)
+	logBrowserLoginOutcome(state, outcome)
+	return browserLoginHTMLPage(panelURL, "")
+}
 
-	outcome := finishBrowserLogin(session, code)
-	// Re-store the state WITH the outcome so the panel can pick the result
-	// up read-once via /browser-login/result (tokens are never included).
-	// CreatedAt is preserved so the purge TTL also covers stale results.
+// settleBrowserLogin consumes the pending session (one state, one exchange
+// attempt), runs the code exchange + account import, and re-stores the
+// session WITH the outcome under the same state key so the panel can pick it
+// up read-once via /browser-login/result (tokens are never included;
+// CreatedAt is preserved so the purge TTL also covers stale results). Shared
+// by the auto resource callback and the manual paste submit path; authErr
+// short-circuits the exchange (authorization-server-reported failure).
+func settleBrowserLogin(state string, session *browserLoginSession, code, authErr string) *browserLoginOutcome {
+	browserLoginSessions.Delete(state)
+	var outcome *browserLoginOutcome
+	if authErr != "" {
+		outcome = &browserLoginOutcome{Error: "授权失败：" + authErr}
+	} else {
+		outcome = finishBrowserLogin(session, code)
+	}
 	browserLoginSessions.Store(state, &browserLoginSession{
 		Verifier:    session.Verifier,
 		DeviceID:    session.DeviceID,
@@ -322,22 +372,105 @@ func handleBrowserLoginCallback(req pluginapi.ManagementRequest) pluginapi.Manag
 		CreatedAt:   session.CreatedAt,
 		Result:      outcome,
 	})
-	if outcome.Error != "" {
-		log.Printf("[browser-login] exchange failed: state=%s error=%s", state[:8]+"...", truncateRedacted(outcome.Error, 200))
-	} else {
-		log.Printf("[browser-login] account imported: state=%s label=%s", state[:8]+"...", truncateRedacted(outcome.Label, 80))
-	}
-	return browserLoginHTMLPage(panelURL, "")
+	return outcome
 }
+
+// stateLogPrefix renders the redacted log prefix for a state value. The
+// submit path accepts user-pasted URLs, so the state may be any length.
+func stateLogPrefix(state string) string {
+	if len(state) <= 8 {
+		return state
+	}
+	return state[:8] + "..."
+}
+
+// logBrowserLoginOutcome emits the shared redacted outcome log line.
+func logBrowserLoginOutcome(state string, outcome *browserLoginOutcome) {
+	if outcome.Error != "" {
+		log.Printf("[browser-login] exchange failed: state=%s error=%s", stateLogPrefix(state), truncateRedacted(outcome.Error, 200))
+	} else {
+		log.Printf("[browser-login] account imported: state=%s label=%s", stateLogPrefix(state), truncateRedacted(outcome.Label, 80))
+	}
+}
+
+// handleBrowserLoginSubmit implements POST /browser-login/submit (management
+// key guarded). Body: {url} — the FULL bounced callback URL the user pasted
+// from the browser address bar. The Trae authorization page only accepts a
+// loopback /authorize callback and nothing listens there, so after the login
+// the browser lands on a dead local URL that still carries ?code=&state=;
+// the user copies it and pastes it back here — the same user action as the
+// host's own manual POST /v0/management/oauth/callback channel with
+// {redirect_url}. A bare "code=...&state=..." query string is accepted too.
+//
+// [参数]
+//   - req: 宿主转发来的管理 API 请求（Body 为 {url} JSON）
+//
+// [返回]
+//   - map[string]any: {ok, label?, error?}；结果同时写回 state 会话供
+//     /browser-login/result 读后即焚。
+func handleBrowserLoginSubmit(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(req.Body, &body); err != nil || trimSpace(body.URL) == "" {
+		return map[string]any{"error": "body {url} required"}
+	}
+	raw := strings.TrimSpace(body.URL)
+	if !strings.Contains(raw, "://") {
+		raw = "http://localhost/?" + strings.TrimPrefix(raw, "?")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return map[string]any{"error": "回调地址解析失败：" + err.Error()}
+	}
+	q := u.Query()
+	state := strings.TrimSpace(q.Get("state"))
+	code := strings.TrimSpace(q.Get("code"))
+	authErr := strings.TrimSpace(q.Get("error"))
+	if authErr == "" {
+		authErr = strings.TrimSpace(q.Get("error_description"))
+	}
+	if state == "" {
+		return map[string]any{"error": "回调地址缺少 state 参数：请在登录成功后复制浏览器地址栏的完整网址"}
+	}
+	rawSession, ok := browserLoginSessions.Load(state)
+	if !ok {
+		return map[string]any{"error": "授权会话不存在或已过期（10 分钟有效期），请回到面板重新发起浏览器授权登录"}
+	}
+	session, ok := rawSession.(*browserLoginSession)
+	if !ok || session == nil {
+		return map[string]any{"error": "授权会话数据异常，请重新发起浏览器授权登录"}
+	}
+	if session.Result != nil {
+		return map[string]any{"error": "该授权已被处理（结果只保留一次），如需重新登录请回到面板再次发起"}
+	}
+	if code == "" && authErr == "" {
+		return map[string]any{"error": "回调地址缺少 code 参数：请在登录成功后复制浏览器地址栏的完整网址"}
+	}
+	outcome := settleBrowserLogin(state, session, code, authErr)
+	logBrowserLoginOutcome(state, outcome)
+	return map[string]any{
+		"ok":    outcome.OK,
+		"label": outcome.Label,
+		"error": outcome.Error,
+	}
+}
+
+// Test seams: the exchange and profile calls hit the real Trae upstream via
+// the host HTTP bridge; tests swap these to fake upstream responses.
+var (
+	browserLoginExchangeFn = browserLoginExchange
+	browserLoginUserInfoFn = browserLoginUserInfo
+)
 
 // finishBrowserLogin exchanges the auth code, fetches the user profile, and
 // imports the account. Returns the panel-facing outcome (never credentials).
 func finishBrowserLogin(session *browserLoginSession, code string) *browserLoginOutcome {
-	result, rawResult, err := browserLoginExchange(session, code)
+	result, rawResult, err := browserLoginExchangeFn(session, code)
 	if err != nil {
 		return &browserLoginOutcome{Error: "换取 token 失败：" + err.Error()}
 	}
-	userID, nickname, err := browserLoginUserInfo(result.Token)
+	userID, nickname, err := browserLoginUserInfoFn(result.Token)
 	if err != nil {
 		return &browserLoginOutcome{Error: "获取用户信息失败：" + err.Error()}
 	}

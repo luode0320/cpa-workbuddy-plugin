@@ -1,5 +1,21 @@
 # TraeWork Plugin Changelog
 
+## 0.1.40
+
+### Fix — 浏览器授权登录回调形状适配 TRAE 授权页白名单（面板引导式粘贴闭环）
+
+浏览器实测（2026-09-04，headless + 用户真实浏览器双通道一致）证实 TRAE 授权页对 `auth_callback_url` 的白名单判据是**回环 host AND 路径恰好 `/authorize`**（五组对照：公网域名 https/http 与路径形状均被拒，回环 + 任意端口 + `/authorize` 放行）。0.1.38/0.1.39 把 callback 挂在 `/v0/resource/plugins/<id>/browser-login/callback` 的形状无论本机还是远程宿主都过不了白名单，宿主主端口又没有 `/authorize` 路由（插件无法注册宿主级路径）——唯一零依赖出路是「登录后浏览器落在打不开的回环地址（地址栏保留 `?code=&state=`），用户复制地址栏完整网址回面板粘贴提交」，与宿主本体 `POST /v0/management/oauth/callback`（`redirect_url` 整段粘贴）的手动通道同构。
+
+- **`browserlogin.go`**：
+  - start 的 `auth_callback_url` 改拼 `http://127.0.0.1:<面板 origin 端口>/authorize`（无显式端口回退 8317；新 helper `browserLoginLocalCallback`）——恰好满足白名单双条件，无需任何监听进程；`redirect_origin` 仍校验裸 origin
+  - 新增 `POST /browser-login/submit`（management key 鉴权，`mutatingManagementPath` 覆盖）：body `{url}` 接受整段回调地址或裸 query（`code=...&state=...`），解析 code/state/error 后复用既有 state 会话链路（换 token → GetUserInfo → UserID 去重入库 → 结果写回 state 键读后即焚）；授权服务器 `error` 参数短路不触 exchange；重复提交同一 URL 拒绝（code 单次有效，结果只保留一次）
+  - callback 与 submit 共享 `settleBrowserLogin`（消费会话 → exchange → 存回 outcome）；`error`/`error_description` query 参数支持；`state` 日志前缀加长度 guard（粘贴路径 state 长度不可信）
+  - resource callback 自动回跳路由保留（本地转发器场景仍可自动闭环）
+  - 新增测试 seam：`browserLoginExchangeFn`/`browserLoginUserInfoFn`（宿主 HTTP 桥上游注入）
+- **`panel.html`**：打开授权页后动态显示粘贴引导卡片（三步说明 + 输入框 + 提交按钮，主题变量自适应）；提交走 `/browser-login/submit` 成功后刷新账号列表；按钮 tooltip 与提示文案同步改为粘贴流程；`?auth_cb=` 自动回跳轮询通道保留
+- 测试更新 3 项：start 断言改为回环 + `/authorize` 形状（含无端口 origin 回退 8317）；注册表新增 submit 路由 + mutating 覆盖断言；submit 编排链 6 断言（缺 body/缺 state/未知会话/error 短路不触 exchange/exchange 失败存回/重复提交拒绝）。哨兵验证：临时破坏 callback 形状 → 测试 FAIL → 还原全绿，证明断言真实编译执行
+- 验证：cgo-shim build/vet/test 全绿（1.288s）；panel.html 双 script 块 node --check OK；gofmt 干净；git diff --check 干净
+
 ## 0.1.39
 
 ### Fix — 浏览器授权登录三个生产级缺陷（0.1.38 端到端验证发现）
