@@ -1,5 +1,17 @@
 # TraeWork Plugin Changelog
 
+## 0.1.43
+
+### Fix — 浏览器授权登录 ExchangeToken 打错域（www.trae.cn 返回 SPA HTML）
+
+0.1.42 生产实测：AuthCode 解析链已通（不再报缺 state），但 exchange 报「响应解析失败: invalid character '<'」——`www.trae.cn` 是官网/SPA 域，对 `/trae/api/v3/oauth/ExchangeToken` 返回 HTML 首页（实测 200 text/html 37KB），根本不是 API 域。用户回调 URL 里的 `host=https://api.trae.com.cn` 参数即 API host 提示；实测 `api.trae.cn` 与 `api.trae.com.cn` 双域都返回真 JSON API（400/401 凭据错误响应）。选 `api.trae.cn`：与生产凭据 `"host":"https://api.trae.cn"`、签到默认域 `defaultAPIHost` 同域。
+
+- **`browserlogin.go`**：
+  - 新增常量 `browserLoginAuthHost = "https://api.trae.cn"`（API 域）；`browserLoginHost`（www.trae.cn）只用于授权页 URL `auth_url`
+  - `browserLoginExchange` / `browserLoginUserInfo` 两处请求切到 `browserLoginAuthHost`
+  - `browserLoginUserInfo` 响应解析增强：补 `ResponseMetadata.Error` 上游错误分支 + `result`（camelCase）envelope 回落，与 exchange 解析同级容错
+- 涉及文件：`browserlogin.go` / `VERSION` / `main.go` / `CHANGELOG.md`
+
 ## 0.1.42
 
 ### Fix — 浏览器授权登录适配 TRAE 授权页真实回调形状（authCodeInfo，非标准 OAuth）

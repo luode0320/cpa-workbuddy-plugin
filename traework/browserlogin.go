@@ -77,9 +77,20 @@ import (
 // the shipping client versions mirrored in the authorization URL. Update
 // these if upstream tightens version checks.
 const (
-	browserLoginClientID     = "en1oxy7wnw8j9n"
-	browserLoginPluginVer    = "2.3.79943"
-	browserLoginAppVer       = "0.1.62"
+	browserLoginClientID  = "en1oxy7wnw8j9n"
+	browserLoginPluginVer = "2.3.79943"
+	browserLoginAppVer    = "0.1.62"
+	// browserLoginAuthHost serves the OAuth exchange + profile APIs. The Trae
+	// authorization PAGE lives on www.trae.cn, but ExchangeToken/GetUserInfo
+	// are API routes: www.trae.cn returns the SPA HTML shell for them
+	// (live-verified 2026-09-05: 200 text/html, json parse fails with
+	// "invalid character '<'"), while api.trae.cn answers JSON (400/401 on
+	// bad credentials = real API). Both api.trae.cn and api.trae.com.cn
+	// serve these routes; api.trae.cn matches the host stored in production
+	// credentials ("host":"https://api.trae.cn") and the check-in default
+	// (defaultAPIHost), so the plugin stays on one auth domain. The
+	// authorization URL itself (browserLoginHost) remains www.trae.cn.
+	browserLoginAuthHost     = "https://api.trae.cn"
 	browserLoginHost         = "https://www.trae.cn"
 	browserLoginExchangePath = "/trae/api/v3/oauth/ExchangeToken"
 	browserLoginUserInfoPath = "/cloudide/api/v3/trae/GetUserInfo"
@@ -667,7 +678,7 @@ func browserLoginExchange(session *browserLoginSession, code string) (*browserLo
 		"DeviceInfo":   deviceInfo,
 		"IDEVersion":   browserLoginAppVer,
 	})
-	req, err := http.NewRequest(http.MethodPost, browserLoginHost+browserLoginExchangePath, strings.NewReader(string(body)))
+	req, err := http.NewRequest(http.MethodPost, browserLoginAuthHost+browserLoginExchangePath, strings.NewReader(string(body)))
 	if err != nil {
 		return nil, "", err
 	}
@@ -720,7 +731,7 @@ func browserLoginUserInfo(token string) (string, string, error) {
 		"ReqSource":  "Lite",
 		"IDEVersion": browserLoginAppVer,
 	})
-	req, err := http.NewRequest(http.MethodPost, browserLoginHost+browserLoginUserInfoPath, strings.NewReader(string(body)))
+	req, err := http.NewRequest(http.MethodPost, browserLoginAuthHost+browserLoginUserInfoPath, strings.NewReader(string(body)))
 	if err != nil {
 		return "", "", err
 	}
@@ -734,10 +745,28 @@ func browserLoginUserInfo(token string) (string, string, error) {
 		return "", "", fmt.Errorf("HTTP %d %s", resp.StatusCode, truncateRedacted(string(resp.Body), 160))
 	}
 	var env struct {
+		ResponseMetadata *struct {
+			Error *struct {
+				Code    string `json:"Code"`
+				Message string `json:"Message"`
+			} `json:"Error"`
+		} `json:"ResponseMetadata"`
 		Result map[string]any `json:"Result"`
 	}
 	if err := json.Unmarshal(resp.Body, &env); err != nil {
 		return "", "", fmt.Errorf("响应解析失败: %w", err)
+	}
+	if env.ResponseMetadata != nil && env.ResponseMetadata.Error != nil && trimSpace(env.ResponseMetadata.Error.Code) != "" {
+		return "", "", fmt.Errorf("上游错误 %s: %s", env.ResponseMetadata.Error.Code, truncateRedacted(env.ResponseMetadata.Error.Message, 120))
+	}
+	if env.Result == nil {
+		// camelCase envelope variant observed on cloudide routes.
+		var envLower struct {
+			Result map[string]any `json:"result"`
+		}
+		if json.Unmarshal(resp.Body, &envLower) == nil && envLower.Result != nil {
+			env.Result = envLower.Result
+		}
 	}
 	if env.Result == nil {
 		return "", "", fmt.Errorf("响应缺少 Result: %s", truncateRedacted(string(resp.Body), 120))
