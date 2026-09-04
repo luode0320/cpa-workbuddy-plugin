@@ -26,17 +26,26 @@
 // authorization page accepts (2026-09-04 five-way probe: the whitelist
 // requires a loopback host AND the exact /authorize path; protocol and port
 // are irrelevant). Nothing listens on that address: after the login the
-// browser lands on a dead local URL that KEEPS ?code=&state= in the address
-// bar, and the panel asks the user to paste that URL back via
-// POST /browser-login/submit (mirroring the host's own manual
+// browser lands on a dead local URL. IMPORTANT (live-verified 2026-09-05):
+// the Trae authorization page is NOT a standard OAuth redirect — it never
+// echoes ?code=&state=. The bounce URL instead carries the authorization
+// code inside an authCodeInfo JSON query parameter:
+//
+//	http://127.0.0.1:<port>/authorize?isRedirect=true&scope=solo
+//	  &authCodeInfo=%7B%22AuthCode%22:...%7D&loginTraceID=...&host=...
+//	  &userRegion=cn&userInfo=%7B...%7D
+//
+// so both finish paths resolve the code from that JSON and locate the
+// session via the state the panel remembers from /start (freshest pending
+// session as fallback). The panel asks the user to paste the bounced URL
+// back via POST /browser-login/submit (mirroring the host's own manual
 // POST /v0/management/oauth/callback {redirect_url} channel). The legacy
 // unauthenticated resource callback route
 // (/v0/resource/plugins/<id>/browser-login/callback) is kept as the auto
 // bounce target for setups that can reach it (e.g. a local forwarder); it
-// shares the same state-keyed session flow as the paste path. The plugin
-// exchanges the code server-side, imports the account into the host auth
-// store, and hands the panel a credential-free outcome. Tokens never travel
-// in URLs.
+// shares the same session flow as the paste path. The plugin exchanges the
+// code server-side, imports the account into the host auth store, and hands
+// the panel a credential-free outcome. Tokens never travel in URLs.
 //
 // Token renewal afterwards is device-independent: the keepalive refresh call
 // (POST /cloudide/api/v3/trae/oauth/ExchangeToken) carries only
@@ -147,6 +156,62 @@ func browserLoginPurge() {
 		}
 		return true
 	})
+}
+
+// browserLoginAuthCodeInfo mirrors the JSON the Trae authorization page
+// attaches to the bounce URL as the authCodeInfo query parameter
+// (live-verified 2026-09-05: the page is NOT a standard OAuth 302 — it never
+// echoes code/state; the authorization code travels inside this JSON).
+type browserLoginAuthCodeInfo struct {
+	AuthCode       string `json:"AuthCode"`
+	ExpireAt       int64  `json:"ExpireAt"`
+	ExpireDuration int64  `json:"ExpireDuration"`
+}
+
+// extractAuthCode resolves the authorization code from a bounced callback
+// query: standard OAuth ?code= first, then the Trae page's authCodeInfo JSON
+// form (a case variant is accepted for safety; a malformed JSON yields "").
+func extractAuthCode(q url.Values) string {
+	if code := strings.TrimSpace(q.Get("code")); code != "" {
+		return code
+	}
+	raw := strings.TrimSpace(q.Get("authCodeInfo"))
+	if raw == "" {
+		raw = strings.TrimSpace(q.Get("AuthCodeInfo"))
+	}
+	if raw == "" {
+		return ""
+	}
+	var info browserLoginAuthCodeInfo
+	if err := json.Unmarshal([]byte(raw), &info); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(info.AuthCode)
+}
+
+// newestPendingSession returns the key and session of the most recently
+// created unsettled session. The Trae authorization page never echoes the
+// OAuth state back (2026-09-05 live probe), so when neither the pasted URL
+// nor the panel body carries one, the pending session is located by recency:
+// the panel is a single-operator page and the freshest start is the one the
+// user just logged in through. Settled sessions and expired ones are skipped.
+func newestPendingSession() (string, *browserLoginSession) {
+	var bestKey string
+	var best *browserLoginSession
+	now := time.Now()
+	browserLoginSessions.Range(func(key, value any) bool {
+		s, ok := value.(*browserLoginSession)
+		if !ok || s == nil || s.Result != nil || now.Sub(s.CreatedAt) > browserLoginTTL {
+			return true
+		}
+		if best == nil || s.CreatedAt.After(best.CreatedAt) {
+			if k, ok := key.(string); ok {
+				bestKey, best = k, s
+			}
+		}
+		return true
+	})
+	return bestKey, best
 }
 
 // randomTraceID mints a UUID-shaped trace id (random v4-like, no semantics).
@@ -307,8 +372,12 @@ func handleBrowserLoginStart(req pluginapi.ManagementRequest) map[string]any {
 	})
 	log.Printf("[browser-login] session started: state=%s callback=%s", stateLogPrefix(state), truncateRedacted(callbackURL, 120))
 	return map[string]any{
-		"ok":         true,
-		"auth_url":   browserLoginHost + "/authorization?" + q.Encode(),
+		"ok":       true,
+		"auth_url": browserLoginHost + "/authorization?" + q.Encode(),
+		// The panel remembers this and sends it back on /browser-login/submit:
+		// the Trae authorization page never echoes state on the bounce
+		// (2026-09-05 live probe), so this is the primary session locator.
+		"state":      state,
 		"expires_in": int(browserLoginTTL.Seconds()),
 	}
 }
@@ -328,14 +397,21 @@ func handleBrowserLoginStart(req pluginapi.ManagementRequest) map[string]any {
 // the panel with ?auth_cb=<state>. The panel then reads the (credential-free)
 // outcome via POST /browser-login/result.
 func handleBrowserLoginCallback(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
-	code := strings.TrimSpace(req.Query.Get("code"))
-	state := strings.TrimSpace(req.Query.Get("state"))
-	authErr := strings.TrimSpace(req.Query.Get("error"))
+	q := req.Query
+	state := strings.TrimSpace(q.Get("state"))
+	code := extractAuthCode(q)
+	authErr := strings.TrimSpace(q.Get("error"))
 	if authErr == "" {
-		authErr = strings.TrimSpace(req.Query.Get("error_description"))
+		authErr = strings.TrimSpace(q.Get("error_description"))
+	}
+	if state == "" {
+		// The Trae authorization page never echoes state (2026-09-05 live
+		// probe): locate the pending session by recency, mirroring the
+		// paste-submit path.
+		state, _ = newestPendingSession()
 	}
 	if state == "" || (code == "" && authErr == "") {
-		return browserLoginHTMLPage("", "授权回调缺少 code/state 参数，请回到面板重新发起浏览器授权登录。")
+		return browserLoginHTMLPage("", "授权回调缺少授权码，请回到面板重新发起浏览器授权登录。")
 	}
 	rawSession, ok := browserLoginSessions.Load(state)
 	if !ok {
@@ -394,23 +470,28 @@ func logBrowserLoginOutcome(state string, outcome *browserLoginOutcome) {
 }
 
 // handleBrowserLoginSubmit implements POST /browser-login/submit (management
-// key guarded). Body: {url} — the FULL bounced callback URL the user pasted
-// from the browser address bar. The Trae authorization page only accepts a
-// loopback /authorize callback and nothing listens there, so after the login
-// the browser lands on a dead local URL that still carries ?code=&state=;
-// the user copies it and pastes it back here — the same user action as the
-// host's own manual POST /v0/management/oauth/callback channel with
-// {redirect_url}. A bare "code=...&state=..." query string is accepted too.
+// key guarded). Body: {url, state?} — the FULL bounced callback URL the user
+// pasted from the browser address bar, plus the state the panel remembered
+// from /start (primary session locator; optional). The Trae authorization
+// page only accepts a loopback /authorize callback and nothing listens
+// there, so after the login the browser lands on a dead local URL. That
+// bounce is NOT standard OAuth (live-verified 2026-09-05): it carries the
+// authorization code inside authCodeInfo={AuthCode,...} and never echoes
+// code/state, so the code is resolved via extractAuthCode and the session is
+// located by body.state, then ?state=, then the freshest pending session
+// (single-operator panel). A bare "code=...&state=..." query string is
+// accepted too.
 //
 // [参数]
-//   - req: 宿主转发来的管理 API 请求（Body 为 {url} JSON）
+//   - req: 宿主转发来的管理 API 请求（Body 为 {url, state?} JSON）
 //
 // [返回]
 //   - map[string]any: {ok, label?, error?}；结果同时写回 state 会话供
 //     /browser-login/result 读后即焚。
 func handleBrowserLoginSubmit(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
-		URL string `json:"url"`
+		URL   string `json:"url"`
+		State string `json:"state"`
 	}
 	if err := json.Unmarshal(req.Body, &body); err != nil || trimSpace(body.URL) == "" {
 		return map[string]any{"error": "body {url} required"}
@@ -424,28 +505,39 @@ func handleBrowserLoginSubmit(req pluginapi.ManagementRequest) map[string]any {
 		return map[string]any{"error": "回调地址解析失败：" + err.Error()}
 	}
 	q := u.Query()
-	state := strings.TrimSpace(q.Get("state"))
-	code := strings.TrimSpace(q.Get("code"))
+	state := strings.TrimSpace(body.State)
+	if state == "" {
+		state = strings.TrimSpace(q.Get("state"))
+	}
+	code := extractAuthCode(q)
 	authErr := strings.TrimSpace(q.Get("error"))
 	if authErr == "" {
 		authErr = strings.TrimSpace(q.Get("error_description"))
 	}
-	if state == "" {
-		return map[string]any{"error": "回调地址缺少 state 参数：请在登录成功后复制浏览器地址栏的完整网址"}
-	}
-	rawSession, ok := browserLoginSessions.Load(state)
-	if !ok {
-		return map[string]any{"error": "授权会话不存在或已过期（10 分钟有效期），请回到面板重新发起浏览器授权登录"}
-	}
-	session, ok := rawSession.(*browserLoginSession)
-	if !ok || session == nil {
-		return map[string]any{"error": "授权会话数据异常，请重新发起浏览器授权登录"}
+	// Locate the pending session: explicit state (panel-remembered or URL
+	// echoed) first, freshest-pending fallback when absent.
+	var session *browserLoginSession
+	if state != "" {
+		rawSession, ok := browserLoginSessions.Load(state)
+		if !ok {
+			return map[string]any{"error": "授权会话不存在或已过期（10 分钟有效期），请回到面板重新发起浏览器授权登录"}
+		}
+		s, ok := rawSession.(*browserLoginSession)
+		if !ok || s == nil {
+			return map[string]any{"error": "授权会话数据异常，请重新发起浏览器授权登录"}
+		}
+		session = s
+	} else {
+		state, session = newestPendingSession()
+		if session == nil {
+			return map[string]any{"error": "无法定位授权会话：请回到面板重新发起浏览器授权登录，登录后再粘贴回调地址"}
+		}
 	}
 	if session.Result != nil {
 		return map[string]any{"error": "该授权已被处理（结果只保留一次），如需重新登录请回到面板再次发起"}
 	}
 	if code == "" && authErr == "" {
-		return map[string]any{"error": "回调地址缺少 code 参数：请在登录成功后复制浏览器地址栏的完整网址"}
+		return map[string]any{"error": "回调地址缺少授权码（code）：请在登录成功后复制浏览器地址栏的完整网址"}
 	}
 	outcome := settleBrowserLogin(state, session, code, authErr)
 	logBrowserLoginOutcome(state, outcome)

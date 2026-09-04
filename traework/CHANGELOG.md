@@ -1,5 +1,27 @@
 # TraeWork Plugin Changelog
 
+## 0.1.42
+
+### Fix — 浏览器授权登录适配 TRAE 授权页真实回调形状（authCodeInfo，非标准 OAuth）
+
+生产实测（2026-09-05 00:06，用户真实浏览器登录成功后粘贴回调地址）实锤：TRAE 授权页登录成功后的跳转**不是标准 OAuth 302**——不回传 `code`/`state` query 参数，而是前端 JS 把授权码放进 `authCodeInfo` JSON 参数拼向 redirect_uri。0.1.40 的 submit 只按 `?code=&state=` 形状解析，真实回调必报「回调地址缺少 state 参数」。真实回调形状：
+
+```
+http://127.0.0.1:<port>/authorize?isRedirect=true&scope=solo
+  &authCodeInfo={"AuthCode":"...","ExpireAt":<ms>,"ExpireDuration":600000}
+  &loginTraceID=<uuid>&host=https://api.trae.com.cn&userRegion=cn&userInfo={...UserID...}
+```
+
+- **`browserlogin.go`**：
+  - 新增 `extractAuthCode`：标准 `?code=` 优先，回落解 `authCodeInfo`（含 `AuthCodeInfo` 大小写变体）JSON 的 `AuthCode` 字段；`ExpireAt`/`ExpireDuration` 不做客户端预检（exchange 失败自然报错）
+  - 新增 `newestPendingSession`：TRAE 页面永不回传 state，submit/callback 的会话定位链 = **body.state（面板记住）→ URL state → 最新未处理 pending 会话兜底**（单操作者面板，最新 start 即用户刚登录的会话；已处理/过期会话跳过）
+  - `/browser-login/start` 响应新增 `state` 字段（面板提交时带回，主定位键）
+  - callback（resource 自动回跳通道）与 submit 双通道同构适配；错误消息更新（缺 code 提示语、无法定位会话提示语）
+- **`panel.html`**：`browserLogin()` 记住 start 返回的 `state`（模块级 `browserLoginState`），提交 body 带 `{url, state}`；粘贴卡片注释更新
+- 测试：新增 `TestBrowserLoginSubmitTraeAuthCodeInfoShape`（真实回调形状 + body.state/最新兜底/双 pending 取新/无会话报错 4 断言）、`TestBrowserLoginStartReturnsState`、`TestBrowserLoginCallbackTraeShapeFallback`；改写 submit 编排测试缺参用例（无 state 现走兜底，断言缺授权码报错 + 会话存活）
+- 附带：并行会话 0.1.41（`767029e`）只含前端带 state 改动（panel.html 被并行 commit 带走），后端解析在本版闭环——0.1.41 若先发布，粘贴提交仍报「缺少 state」，本版为完整修复
+- 涉及文件：`browserlogin.go` / `browserlogin_test.go`（`panel.html` 的 browserLogin 段已随 0.1.41 入库）
+
 ## 0.1.41
 
 ### Fix — 删除确认按钮 busy 状态泄漏导致无法连续删除账号

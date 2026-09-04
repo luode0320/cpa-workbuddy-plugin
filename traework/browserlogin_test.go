@@ -135,6 +135,11 @@ func TestBrowserLoginStartPointsAtLoopbackAuthorize(t *testing.T) {
 	if out["error"] != nil {
 		t.Fatalf("start failed: %v", out["error"])
 	}
+	// Clean up the minted sessions: with the freshest-pending fallback in
+	// place, leaked pending sessions would bleed into later tests.
+	if st, _ := out["state"].(string); st != "" {
+		defer browserLoginSessions.Delete(st)
+	}
 	authURL, _ := out["auth_url"].(string)
 	if authURL == "" {
 		t.Fatal("auth_url missing")
@@ -172,6 +177,9 @@ func TestBrowserLoginStartPointsAtLoopbackAuthorize(t *testing.T) {
 	out = handleBrowserLoginStart(pluginapi.ManagementRequest{Body: []byte(`{"redirect_origin":"https://cpa.example.com"}`)})
 	if out["error"] != nil {
 		t.Fatalf("start (no-port origin) failed: %v", out["error"])
+	}
+	if st, _ := out["state"].(string); st != "" {
+		defer browserLoginSessions.Delete(st)
 	}
 	authURL, _ = out["auth_url"].(string)
 	u, err = url.Parse(authURL)
@@ -285,16 +293,18 @@ func TestBrowserLoginSubmitValidationAndFlow(t *testing.T) {
 		t.Fatalf("missing url: %v", out["error"])
 	}
 
-	// 2) URL without state -> error, session untouched.
+	// 2) URL with neither an authorization code nor authCodeInfo -> the
+	// freshest-pending fallback locates the session but the missing code
+	// errors out; the session must survive.
 	state := "submit-test-state"
 	browserLoginSessions.Store(state, &browserLoginSession{Verifier: "v", CreatedAt: time.Now()})
 	defer browserLoginSessions.Delete(state)
-	out = handleBrowserLoginSubmit(pluginapi.ManagementRequest{Body: []byte(`{"url":"http://127.0.0.1:18998/authorize?code=abc"}`)})
-	if !strings.Contains(strValue(out["error"]), "state") {
-		t.Fatalf("state-less url: %v", out["error"])
+	out = handleBrowserLoginSubmit(pluginapi.ManagementRequest{Body: []byte(`{"url":"http://127.0.0.1:18998/authorize?isRedirect=true&scope=solo"}`)})
+	if !strings.Contains(strValue(out["error"]), "授权码") {
+		t.Fatalf("code-less url: %v", out["error"])
 	}
 	if _, ok := browserLoginSessions.Load(state); !ok {
-		t.Fatal("session must survive a state-less submit")
+		t.Fatal("session must survive a code-less submit")
 	}
 
 	// 3) Unknown state.
@@ -353,6 +363,152 @@ func TestBrowserLoginSubmitValidationAndFlow(t *testing.T) {
 	}
 	if exchangeCalls != 1 {
 		t.Fatalf("resubmit must not re-exchange, ran %d times", exchangeCalls)
+	}
+}
+
+// TestBrowserLoginSubmitTraeAuthCodeInfoShape pins the live bounce shape
+// observed 2026-09-05: the Trae authorization page redirects with
+// isRedirect/scope/authCodeInfo/loginTraceID/host/userRegion/userInfo — the
+// authorization code travels inside the authCodeInfo JSON and state is NEVER
+// echoed. Session location chain: body.state -> URL state -> freshest
+// pending session.
+func TestBrowserLoginSubmitTraeAuthCodeInfoShape(t *testing.T) {
+	origExchange, origUserInfo := browserLoginExchangeFn, browserLoginUserInfoFn
+	defer func() { browserLoginExchangeFn, browserLoginUserInfoFn = origExchange, origUserInfo }()
+	var gotCode string
+	exchangeCalls := 0
+	browserLoginExchangeFn = func(session *browserLoginSession, code string) (*browserLoginToken, string, error) {
+		exchangeCalls++
+		gotCode = code
+		return nil, "", fmt.Errorf("simulated upstream down")
+	}
+	browserLoginUserInfoFn = func(token string) (string, string, error) {
+		return "", "", nil
+	}
+	// The exact live bounce shape (2026-09-05 user paste, credentials
+	// trimmed): authCodeInfo carries the code, no code/state params at all.
+	liveURL := `http://127.0.0.1:8317/authorize?isRedirect=true&scope=solo` +
+		`&authCodeInfo=%7B%22AuthCode%22%3A%22RLN9_test_code%22%2C%22ExpireAt%22%3A1788538595350%2C%22ExpireDuration%22%3A600000%7D` +
+		`&loginTraceID=b189d893-70a6-b593-05a6-337b84a3df59&host=https%3A%2F%2Fapi.trae.com.cn&userRegion=cn` +
+		`&userInfo=%7B%22UserID%22%3A%223049391365297084%22%7D`
+
+	// a) body.state (panel-remembered) locates the session and the code is
+	// extracted from authCodeInfo.
+	stA := "trae-shape-body-state"
+	browserLoginSessions.Store(stA, &browserLoginSession{Verifier: "v", CreatedAt: time.Now()})
+	out := handleBrowserLoginSubmit(pluginapi.ManagementRequest{Body: []byte(`{"url":"` + liveURL + `","state":"` + stA + `"}`)})
+	if out["ok"] != false || !strings.Contains(strValue(out["error"]), "换取 token 失败") {
+		t.Fatalf("authCodeInfo+body.state flow: %v", out)
+	}
+	if gotCode != "RLN9_test_code" {
+		t.Fatalf("exchange got code %q, want the AuthCode from authCodeInfo", gotCode)
+	}
+	browserLoginSessions.Delete(stA)
+
+	// b) No state anywhere -> freshest-pending fallback consumes the session.
+	stB := "trae-shape-fallback"
+	browserLoginSessions.Store(stB, &browserLoginSession{Verifier: "v", CreatedAt: time.Now()})
+	out = handleBrowserLoginSubmit(pluginapi.ManagementRequest{Body: []byte(`{"url":"` + liveURL + `"}`)})
+	if !strings.Contains(strValue(out["error"]), "换取 token 失败") {
+		t.Fatalf("authCodeInfo fallback flow: %v", out)
+	}
+	if gotCode != "RLN9_test_code" || exchangeCalls != 2 {
+		t.Fatalf("fallback exchange: code=%q calls=%d", gotCode, exchangeCalls)
+	}
+	browserLoginSessions.Delete(stB) // settled result cleanup
+
+	// c) Two pending sessions -> the freshest one wins; body.state still
+	// overrides the fallback.
+	stOld := "trae-shape-old"
+	stNew := "trae-shape-new"
+	browserLoginSessions.Store(stOld, &browserLoginSession{Verifier: "v", CreatedAt: time.Now().Add(-time.Minute)})
+	browserLoginSessions.Store(stNew, &browserLoginSession{Verifier: "v", CreatedAt: time.Now()})
+	out = handleBrowserLoginSubmit(pluginapi.ManagementRequest{Body: []byte(`{"url":"` + liveURL + `"}`)})
+	if !strings.Contains(strValue(out["error"]), "换取 token 失败") {
+		t.Fatalf("recency flow: %v", out)
+	}
+	if raw, ok := browserLoginSessions.Load(stNew); !ok || raw.(*browserLoginSession).Result == nil {
+		t.Fatal("freshest session must be consumed (settled with an outcome) by the fallback")
+	}
+	if raw, ok := browserLoginSessions.Load(stOld); !ok || raw.(*browserLoginSession).Result != nil {
+		t.Fatal("older pending session must stay untouched by the fallback")
+	}
+	browserLoginSessions.Delete(stOld)
+	browserLoginSessions.Delete(stNew)
+
+	// d) No pending session and no state -> explicit guidance error. Purge
+	// every pending session first: earlier tests (e.g. /start contract
+	// tests) may have left unsettled sessions that the fallback would pick.
+	browserLoginSessions.Range(func(key, value any) bool {
+		if s, ok := value.(*browserLoginSession); ok && s != nil && s.Result == nil {
+			browserLoginSessions.Delete(key)
+		}
+		return true
+	})
+	out = handleBrowserLoginSubmit(pluginapi.ManagementRequest{Body: []byte(`{"url":"` + liveURL + `"}`)})
+	if !strings.Contains(strValue(out["error"]), "无法定位授权会话") {
+		t.Fatalf("no-session flow: %v", out)
+	}
+}
+
+// TestBrowserLoginStartReturnsState verifies /start hands the state back so
+// the panel can carry it on /submit (primary session locator — the Trae
+// authorization page never echoes state, 2026-09-05 live probe).
+func TestBrowserLoginStartReturnsState(t *testing.T) {
+	out := handleBrowserLoginStart(pluginapi.ManagementRequest{Body: []byte(`{"redirect_origin":"https://1.2.3.4:18998"}`)})
+	if out["error"] != nil {
+		t.Fatalf("start failed: %v", out["error"])
+	}
+	st, _ := out["state"].(string)
+	if st == "" {
+		t.Fatal("start response missing state field")
+	}
+	authURL, _ := out["auth_url"].(string)
+	u, _ := url.Parse(authURL)
+	if got := u.Query().Get("state"); got != st {
+		t.Fatalf("response state %q does not match auth_url state %q", st, got)
+	}
+	browserLoginSessions.Delete(st)
+}
+
+// TestBrowserLoginCallbackTraeShapeFallback verifies the resource bounce
+// route also resolves the authCodeInfo form and falls back to the freshest
+// pending session when state is absent (same contract as the paste path).
+func TestBrowserLoginCallbackTraeShapeFallback(t *testing.T) {
+	origExchange, origUserInfo := browserLoginExchangeFn, browserLoginUserInfoFn
+	defer func() { browserLoginExchangeFn, browserLoginUserInfoFn = origExchange, origUserInfo }()
+	browserLoginExchangeFn = func(session *browserLoginSession, code string) (*browserLoginToken, string, error) {
+		return nil, "", fmt.Errorf("simulated upstream down")
+	}
+	browserLoginUserInfoFn = func(token string) (string, string, error) {
+		return "", "", nil
+	}
+	st := "callback-trae-shape"
+	browserLoginSessions.Store(st, &browserLoginSession{
+		Verifier:    "v",
+		RedirectURI: "https://1.2.3.4:18998",
+		CreatedAt:   time.Now(),
+	})
+	q := url.Values{}
+	q.Set("authCodeInfo", `{"AuthCode":"CB_test_code","ExpireAt":1788538595350,"ExpireDuration":600000}`)
+	resp := handleBrowserLoginCallback(pluginapi.ManagementRequest{Query: q})
+	body := string(resp.Body)
+	if !strings.Contains(body, resourcePanelPrefix) {
+		t.Fatalf("bounce page must redirect to the panel: %s", body)
+	}
+	raw, ok := browserLoginSessions.Load(st)
+	if !ok {
+		t.Fatal("session missing after callback settle")
+	}
+	if s := raw.(*browserLoginSession); s.Result == nil || !strings.Contains(s.Result.Error, "换取 token 失败") {
+		t.Fatalf("failure outcome not stored back: %+v", raw.(*browserLoginSession).Result)
+	}
+	browserLoginSessions.Delete(st)
+
+	// No pending session + no state + no code -> guidance error page.
+	resp = handleBrowserLoginCallback(pluginapi.ManagementRequest{Query: url.Values{"isRedirect": {"true"}}})
+	if !strings.Contains(string(resp.Body), "授权回调缺少授权码") {
+		t.Fatalf("empty callback page: %s", string(resp.Body))
 	}
 }
 
