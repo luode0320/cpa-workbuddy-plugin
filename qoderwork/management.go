@@ -123,6 +123,8 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one (auth_index query) or all accounts."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import a QoderWork PAT (pt-...) by exchanging it for a jobToken pair and persisting."},
+			{Method: http.MethodPost, Path: base + "/import-cred", Description: "Restore one credential JSON previously exported by /export (structural check only, no upstream exchange)."},
+			{Method: http.MethodGet, Path: base + "/export", Description: "Export all QoderWork credentials as a single JSON backup document (raw physical files, re-importable via /import-cred)."},
 			{Method: http.MethodPost, Path: base + "/select", Description: "Select the active account card used for chat routing (body: {auth_index})."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodPost, Path: base + "/claim-pro", Description: "Claim one-time Pro upgrade pack for one account (auth_index)."},
@@ -184,6 +186,10 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCreditsQuery(req)))
 	case req.Method == http.MethodPost && path == base+"/import":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportPAT(req)))
+	case req.Method == http.MethodPost && path == base+"/import-cred":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportCred(req)))
+	case req.Method == http.MethodGet && path == base+"/export":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleExportAuth()))
 	case req.Method == http.MethodPost && path == base+"/select":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleSelectAuth(req)))
 	case req.Method == http.MethodPost && path == base+"/keepalive":
@@ -346,6 +352,8 @@ func mutatingManagementPath(path string) bool {
 		base + "/checkin",
 		base + "/checkin/config",
 		base + "/import",
+		base + "/import-cred",
+		base + "/export",
 		base + "/select",
 		base + "/keepalive",
 		base + "/claim-pro",
@@ -354,6 +362,60 @@ func mutatingManagementPath(path string) bool {
 		return true
 	}
 	return false
+}
+
+// handleExportAuth returns every QoderWork credential as a parsed JSON backup
+// ({version, exported_at, plugin, count, accounts:[{name, auth_index, uid,
+// nickname, credential}]}). The frontend downloads it as a dated file; the
+// same wrapper can be split by the panel and re-imported via /import-cred.
+// Carries full credentials — kept in mutatingManagementPath so the management
+// key is required despite being GET.
+func handleExportAuth() map[string]any {
+	files, err := hostAuthList()
+	if err != nil {
+		return map[string]any{"error": "host.auth.list failed: " + err.Error(), "count": 0, "accounts": []any{}}
+	}
+	out := make([]map[string]any, 0, len(files))
+	for _, f := range files {
+		if strings.TrimSpace(f.AuthIndex) == "" {
+			continue
+		}
+		a, phys, gerr := hostAuthGetBundle(f.AuthIndex)
+		if gerr != nil || phys == nil {
+			out = append(out, map[string]any{
+				"name":       f.Name,
+				"auth_index": f.AuthIndex,
+				"load_error": errString(gerr),
+			})
+			continue
+		}
+		var cred any
+		_ = json.Unmarshal(phys.JSON, &cred)
+		entry := map[string]any{
+			"name":       f.Name,
+			"auth_index": f.AuthIndex,
+			"credential": cred,
+		}
+		if a != nil {
+			entry["uid"] = a.Account.UID
+			entry["nickname"] = a.Account.Nickname
+		}
+		out = append(out, entry)
+	}
+	return map[string]any{
+		"version":     1,
+		"exported_at": time.Now().UTC().Format(time.RFC3339),
+		"plugin":      providerName,
+		"count":       len(out),
+		"accounts":    out,
+	}
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func mgmtJSONResponse(status int, v any) pluginapi.ManagementResponse {

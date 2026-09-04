@@ -70,6 +70,58 @@ func handleImportPAT(req pluginapi.ManagementRequest) map[string]any {
 	}
 }
 
+// handleImportCred restores one credential JSON previously produced by
+// GET /export (the panel splits a wrapper file into per-account credentials
+// and posts each one here). Unlike handleImportPAT this performs no upstream
+// exchange — the payload is persisted as-is after a parseStored structural
+// check, so a backup taken on another machine can be restored offline.
+// The credential is the raw physical auth file (nested form), so saving it
+// verbatim preserves fields a rebuild could drop.
+func handleImportCred(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		Cred json.RawMessage `json:"cred"`
+	}
+	_ = json.Unmarshal(req.Body, &body)
+	if len(body.Cred) == 0 {
+		return map[string]any{"success": false, "error": "missing cred field"}
+	}
+	sa, err := parseStored(body.Cred)
+	if err != nil || sa == nil {
+		return map[string]any{"success": false, "error": "credential parse: " + errString(err)}
+	}
+	if strings.TrimSpace(sa.Account.UID) == "" {
+		return map[string]any{"success": false, "error": "credential has empty uid"}
+	}
+	auth := toAuthData(sa)
+	saveReq := pluginapi.HostAuthSaveRequest{
+		Name: auth.FileName,
+		JSON: body.Cred,
+	}
+	saveBody, _ := json.Marshal(saveReq)
+	rawResp, err := hostCall(pluginabi.MethodHostAuthSave, saveBody)
+	if err != nil {
+		return map[string]any{"success": false, "error": "host.auth.save: " + err.Error()}
+	}
+	var env envelope
+	if err := json.Unmarshal(rawResp, &env); err != nil || !env.OK {
+		msg := "host.auth.save failed"
+		if env.Error != nil && env.Error.Message != "" {
+			msg = env.Error.Message
+		}
+		return map[string]any{"success": false, "error": msg}
+	}
+	var saveResp pluginapi.HostAuthSaveResponse
+	_ = json.Unmarshal(env.Result, &saveResp)
+	return map[string]any{
+		"success":  true,
+		"name":     saveResp.Name,
+		"path":     saveResp.Path,
+		"uid":      sa.Account.UID,
+		"nickname": sa.Account.Nickname,
+		"file":     auth.FileName,
+	}
+}
+
 func handleCheckinConfig(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		Enabled *bool `json:"enabled"`
