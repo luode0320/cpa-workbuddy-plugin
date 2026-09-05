@@ -1,5 +1,15 @@
 # TraeWork Plugin Changelog
 
+## 0.1.47
+
+### Fix — 账号面板导出按钮失效（`/export` 路由未注册）+ UX 简化导入流程
+
+- **导出 bug 根因**：`/export` 在 `handleManagement` 的 switch-case 有 handler、`mutatingManagementPath` 有声明，但**唯独漏了 `managementRegistration()` 的 Routes 注册表**——宿主不知道该路由存在，GET `/export` 永远 404，面板「导出备份」点击无下载。
+- **导入流程简化**：删除账号面板底部「Trae SOLO 凭据目录…」提示文字、`复制路径`/`选择目录`按钮、`fileInput`/`dirInput` 隐藏 input，以及整套旧导入 JS（`copyStorageDir`/`fallbackCopy`/`pickFile`/`pickDir`/`findStorageJson`/`doImport`/`idbGet`/`idbPut`/`IDB_NAME`/`TRAE_STORAGE_PATH`/`showDirectoryPicker`）与拖拽上传 handler。
+- **导入改为 workbuddy 同款模态框**：新增「导入凭证」按钮 + 导入模态框（粘贴 JSON textarea + 多选 `.json` 文件 + 批量展开 + 导入结果展示），支持 `storage.json` 整文件（提取 `iCubeAuthInfo://icube.cloudide`）、单条凭据、导出备份文件三种形态；适配后端 `{ok,label,message}` 契约。
+- **panel.go 清理**：`servePanel` 直接返回嵌入 HTML，删除 `bytes`/`json` import、`traeStoragePath` 常量与 `__STORAGE_DIR_*` 双占位替换。
+- 涉及文件：`management.go` / `panel.go` / `panel.html` / `VERSION` / `main.go` / `CHANGELOG.md`
+
 ## 0.1.46
 
 ### Fix — 桥接页 JS 只提取 code 丢失 userInfo，GetUserInfo 401 回落在宿主登录流失效（回归 0.1.44 修复）

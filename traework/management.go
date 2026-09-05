@@ -70,6 +70,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/disable", Description: "Disable one (body: {auth_index}) or all (empty body) accounts."},
 			{Method: http.MethodPost, Path: base + "/unfreeze", Description: "Remove one (body: {auth_index}) or all (empty body) accounts from the anomaly pool."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import one Trae SOLO credential (body: {filename, content}); whole storage.json or raw credential value accepted."},
+			{Method: http.MethodGet, Path: base + "/export", Description: "Export all TraeWork credentials as a single JSON document for backup/sharing (raw physical files, re-importable via /import)."},
 			{Method: http.MethodPost, Path: base + "/browser-login/start", Description: "Start a browser OAuth login: returns the Trae authorization URL (PKCE pair minted server-side)."},
 			{Method: http.MethodPost, Path: base + "/browser-login/submit", Description: "Finish a browser OAuth login from the pasted callback URL (body: {url}); parses code/state and imports the account."},
 			{Method: http.MethodPost, Path: base + "/browser-login/result", Description: "Fetch the one-time browser-login outcome for a state (body: {state}); read-once, credential-free."},
