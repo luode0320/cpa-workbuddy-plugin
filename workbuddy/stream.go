@@ -205,8 +205,8 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 // isAccountFailure (5xx, 0, 402) are still surfaced as errors but do NOT
 // trigger a same-request account rotation; the failover-cooldown layer
 // handles those across requests. 429 is included here so the next attempt
-// can route around a per-account rate limit without waiting for the
-// 1/3/10 min cooldown to expire; cross-request cooldown continues to apply
+// can route around a per-account rate limit without waiting for the fixed
+// 15s cooldown to expire; cross-request cooldown continues to apply
 // via isAccountFailure / recordAccountFailure on the failing account.
 func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector) ([]pluginapi.ExecutorStreamChunk, int, error) {
 	budget := loadedRetryOn4xx()

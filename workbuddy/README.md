@@ -160,7 +160,7 @@ plugins:
       # up. The failing account is also recorded in the cooldown
       # list so subsequent requests skip it.
       # 5xx/0/402 remain cooldown-only (they wait for the cross-
-      # request failover tier to expire). 400 is never retried
+      # request fixed-15s cooldown to expire). 400 is never retried
       # (request-shaped, can't recover via account swap).
       # Set to 0 to disable same-request rotation entirely (kill
       # switch during global outage recovery).

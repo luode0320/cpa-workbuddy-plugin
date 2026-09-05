@@ -1,4 +1,4 @@
-// accountFailover.go implements per-account exponential backoff for routing.
+// accountFailover.go implements per-account fixed cooldown for routing.
 //
 // When an upstream account fails (HTTP 429 / 402 / 5xx or a transport-level
 // error), the account enters a temporary cooldown window. While cooling down,
@@ -6,12 +6,10 @@
 // fail over to a healthy account instead of piling more failures onto the
 // same exhausted one.
 //
-// Backoff tiers follow the product requirement (1 / 3 / 10 minutes):
-//
-//	1st failure   -> cooldown 1 minute
-//	2nd failure   -> cooldown 3 minutes
-//	3rd failure   -> cooldown 10 minutes
-//	4+  failures  -> cooldown stays 10 minutes (capped)
+// The cooldown is a FIXED 15 seconds on every failure — no exponential
+// backoff. The consecutive-failure counter is still tracked (and drives the
+// anomaly quarantine threshold), but it no longer lengthens the cooldown:
+// each failure cools the account for exactly failoverCooldown.
 //
 // A successful request resets the counter and lifts the cooldown immediately.
 // Cooldown state is in-memory only: no auth files, no DB writes; a process
@@ -25,14 +23,10 @@ import (
 	"time"
 )
 
-// failoverTiers are the exponential backoff steps, indexed by consecutive
-// failure count - 1. Any count beyond the last tier keeps the last duration
-// (capped at 10 minutes).
-var failoverTiers = []time.Duration{
-	1 * time.Minute,
-	3 * time.Minute,
-	10 * time.Minute,
-}
+// failoverCooldown is the fixed cooldown applied after any account failure.
+// No exponential backoff: every failure cools the account for exactly this
+// long, regardless of the consecutive-failure count.
+const failoverCooldown = 15 * time.Second
 
 // failoverPruneInterval bounds how often stale (zero-count) failover states
 // are swept from memory. Aligned with the session-binding pruner.
@@ -79,16 +73,15 @@ func setFailoverEnabled(on bool) {
 	failoverEnabledMu.Unlock()
 }
 
-// failoverCooldownFor returns the cooldown duration for a consecutive failure
-// count, capped at the last tier. count <= 0 yields zero.
+// failoverCooldownFor returns the cooldown duration for a failure. The
+// window is fixed at failoverCooldown regardless of the consecutive-failure
+// count; count <= 0 yields zero. count is still tracked separately (in
+// recordAccountFailure) and drives the anomaly quarantine threshold.
 func failoverCooldownFor(count int) time.Duration {
 	if count <= 0 {
 		return 0
 	}
-	if count > len(failoverTiers) {
-		count = len(failoverTiers)
-	}
-	return failoverTiers[count-1]
+	return failoverCooldown
 }
 
 // isAccountFailure reports whether an upstream response counts as an account
@@ -120,10 +113,10 @@ func isAccountFailure(status int, body string) bool {
 // the upstream soft rate limit is usually per-account or per-tenant, so
 // rotating to the next candidate (filtered by cooldown + anomaly) is the
 // cheapest way to recover inside a single request. The cross-request
-// cooldown tier still applies in parallel via isAccountFailure /
+// cooldown still applies in parallel via isAccountFailure /
 // recordAccountFailure — i.e. a 429-triggered same-request rotation also
-// lifts the failed account's 1/3/10 min cooldown so subsequent requests
-// route away from it. When the upstream limit is genuinely global (shared
+// lifts the failed account's fixed cooldown so subsequent requests route
+// away from it. When the upstream limit is genuinely global (shared
 // IP/region quota across every qoderwork account), same-request rotation
 // burns the budget without progress; pickNextAuth still has to surface an
 // ok=false signal once the pool is exhausted.
@@ -140,8 +133,8 @@ func isAccountLevel4xx(status int) bool {
 }
 
 // recordAccountFailure increments the consecutive-failure counter for the
-// account and extends its cooldown window using the backoff tier for the new
-// count. Returns true when the failure was counted (i.e. isAccountFailure).
+// account and extends its cooldown window by the fixed failoverCooldown.
+// Returns true when the failure was counted (i.e. isAccountFailure).
 // Callers are expected to key on the same auth.ID the scheduler uses.
 //
 // When the new count crosses anomalyThreshold() (default 10, configurable

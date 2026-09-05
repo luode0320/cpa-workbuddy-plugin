@@ -634,7 +634,7 @@ const (
 	pseudoCompletionMinInputChars = 200
 	// pseudoRetryBudget 是同一账号在同一逻辑请求内被判伪完成后的同号重试次数。
 	// 伪完成常是上游对该账号的窗口性限流（2351 实证：同号约 30s 后恢复 18696
-	// tokens），立即 noteForcedAccountFailure（打入 1/3/10 分钟冷却）+ 换号在池中
+	// tokens），立即 noteForcedAccountFailure（打入固定 15s 冷却）+ 换号在池中
 	// 只剩该健康账号时会直接 pool exhausted。同号重试一次让窗口性限流有机会自愈，
 	// 仍伪才核算 + 换号；不消耗跨账号 Budget，仅受本预算约束。
 	pseudoRetryBudget = 1

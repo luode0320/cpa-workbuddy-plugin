@@ -9,7 +9,7 @@
 // global outage makes retries destructive.
 //
 // Note: 429 was added in v0.14.2 to recover from per-account rate limits
-// inside one request. The cross-request cooldown tier (1/3/10 min) also
+// inside one request. The cross-request cooldown (fixed 15s) also
 // lifts the failing account via recordAccountFailure, so a 429 here both
 // rotates the account AND starts the cooldown clock against the original.
 // 5xx/0/402 are intentionally NOT included — they wait for the cooldown

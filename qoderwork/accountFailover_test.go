@@ -6,17 +6,15 @@ import (
 	"time"
 )
 
-// resetFailover clears all failover state, restores the enabled flag and the
-// default tiers so each test starts from a clean slate.
+// resetFailover clears all failover state and restores the enabled flag so
+// each test starts from a clean slate.
 func resetFailover(t *testing.T) {
 	t.Helper()
 	clearFailoverStates()
 	oldEnabled := failoverActive()
-	oldTiers := append([]time.Duration(nil), failoverTiers...)
 	t.Cleanup(func() {
 		clearFailoverStates()
 		setFailoverEnabled(oldEnabled)
-		failoverTiers = oldTiers
 	})
 	setFailoverEnabled(true)
 }
@@ -38,17 +36,17 @@ func assertCooldownNear(t *testing.T, authID string, tier time.Duration) {
 	}
 }
 
-func TestFailoverCooldownFor_Tiers(t *testing.T) {
+func TestFailoverCooldownFor_Fixed(t *testing.T) {
 	cases := []struct {
 		count int
 		want  time.Duration
 	}{
 		{0, 0},
-		{1, time.Minute},
-		{2, 3 * time.Minute},
-		{3, 10 * time.Minute},
-		{4, 10 * time.Minute}, // capped
-		{99, 10 * time.Minute},
+		{1, 15 * time.Second},
+		{2, 15 * time.Second},
+		{3, 15 * time.Second},
+		{4, 15 * time.Second},
+		{99, 15 * time.Second},
 	}
 	for _, tc := range cases {
 		if got := failoverCooldownFor(tc.count); got != tc.want {
@@ -57,20 +55,13 @@ func TestFailoverCooldownFor_Tiers(t *testing.T) {
 	}
 }
 
-func TestRecordAccountFailure_BackoffTiers(t *testing.T) {
+func TestRecordAccountFailure_FixedCooldown(t *testing.T) {
 	resetFailover(t)
-	// 1st failure → 1 minute.
-	recordAccountFailure("acc-1", 429, "rate limit")
-	assertCooldownNear(t, "acc-1", time.Minute)
-	// 2nd failure → 3 minutes.
-	recordAccountFailure("acc-1", 429, "rate limit")
-	assertCooldownNear(t, "acc-1", 3*time.Minute)
-	// 3rd failure → 10 minutes.
-	recordAccountFailure("acc-1", 429, "rate limit")
-	assertCooldownNear(t, "acc-1", 10*time.Minute)
-	// 4th failure → still 10 minutes (capped).
-	recordAccountFailure("acc-1", 429, "rate limit")
-	assertCooldownNear(t, "acc-1", 10*time.Minute)
+	// Every failure — 1st, 2nd, 3rd, 4th — cools for exactly 15 seconds.
+	for i := 1; i <= 4; i++ {
+		recordAccountFailure("acc-1", 429, "rate limit")
+		assertCooldownNear(t, "acc-1", 15*time.Second)
+	}
 }
 
 func TestRecordAccountFailure_ResetOnSuccess(t *testing.T) {
@@ -105,11 +96,11 @@ func TestRecordAccountFailure_Business4xxExcluded(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("count = %d after two 400s, want 0", count)
 	}
-	// 429 counts on top of nothing; then another 429 → tier 2.
+	// 429 counts on top of nothing; another 429 also cools 15s (fixed).
 	recordAccountFailure("acc-1", 429, "rate limit")
-	assertCooldownNear(t, "acc-1", time.Minute)
+	assertCooldownNear(t, "acc-1", 15*time.Second)
 	recordAccountFailure("acc-1", 429, "rate limit")
-	assertCooldownNear(t, "acc-1", 3*time.Minute)
+	assertCooldownNear(t, "acc-1", 15*time.Second)
 }
 
 // TestRecordAccountFailure_AccountLevel4xxCounted locks in the v0.12
@@ -215,9 +206,9 @@ func TestFailoverCooldownExpiry(t *testing.T) {
 	if isAccountCoolingDown("acc-1") {
 		t.Fatal("account should be routable after cooldown expires")
 	}
-	// A new failure re-enters cooldown at tier 2 (count preserved).
+	// A new failure re-enters cooldown at the fixed 15s window.
 	recordAccountFailure("acc-1", 429, "rate limit")
-	assertCooldownNear(t, "acc-1", 3*time.Minute)
+	assertCooldownNear(t, "acc-1", 15*time.Second)
 }
 
 func TestFailoverDisabled(t *testing.T) {

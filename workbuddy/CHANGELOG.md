@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.21
+
+### Fix — 失败冷却改为固定 15s，不再指数退避（1/3/10 分钟）
+
+账号失败后的冷却窗口从「按连续失败次数指数退避（1/3/10 分钟封顶）」改为**每次失败一律固定 15s**。连续失败计数 count 仍保留并继续驱动异常池冻结（anomaly 阈值默认连续 10 次不变），只是 count 不再拉长冷却时间——路由层更快放行账号参与再次调度，缓解上游限流窗口比分钟级冷却更短时的可用性损失。
+
+- 涉及文件：`accountFailover.go`（删 `failoverTiers` 档位数组，改常量 `failoverCooldown = 15 * time.Second`；`failoverCooldownFor` 固定返回）、`accountFailover_test.go`（断言同步为固定 15s）、`retry_config.go`/`stream.go` 注释同步。
+- 同构修复同步至 qoderwork-provider 0.9.9 / traework-provider 0.1.49。
+
 ## 0.14.20
 
 ### Fix — 删除确认按钮 busy 状态泄漏导致无法连续删除账号
