@@ -16,9 +16,19 @@ import (
 func hostLoginTestEnv(t *testing.T, exchange func(*browserLoginSession, string) (*browserLoginToken, string, error), userInfo func(string) (string, string, error)) {
 	t.Helper()
 	origExchange, origUserInfo := browserLoginExchangeFn, browserLoginUserInfoFn
+	origSave := hostAuthSaveJSONFn
 	browserLoginExchangeFn = exchange
 	browserLoginUserInfoFn = userInfo
-	t.Cleanup(func() { browserLoginExchangeFn, browserLoginUserInfoFn = origExchange, origUserInfo })
+	// The cgo-shim sandbox has no host auth RPCs (hostCall fails), so the
+	// hostPersists flow's plugin-side save would error. Stub it to succeed so
+	// the happy-path tests reach the "登录成功" outcome; a dedicated test
+	// (TestHostLoginBridgeWritesAuthFile) asserts the file-write contract by
+	// swapping this seam to capture the call.
+	hostAuthSaveJSONFn = func(name string, raw []byte) error { return nil }
+	t.Cleanup(func() {
+		browserLoginExchangeFn, browserLoginUserInfoFn = origExchange, origUserInfo
+		hostAuthSaveJSONFn = origSave
+	})
 }
 
 // decodeLoginStart decodes an auth.login.start ok envelope.
@@ -435,9 +445,61 @@ func TestHostLoginBridgeURLParamNoCodeErrors(t *testing.T) {
 	}
 }
 
-// TestHostLoginPanelFlowUnchanged verifies the panel (non-host) flow still
-// persists credentials itself: settleBrowserLogin(hostPersists=false) stores
-// NO HostAuth on the outcome (the plugin writes the file via host.auth.save).
+// TestHostLoginBridgeWritesAuthFile is the 0.1.48 regression test: the host
+// OAuth flow must persist the credential file PLUGIN-SIDE (dedup-by-uid +
+// hostAuthSaveJSON), because on the production server the host's
+// savePluginLoginRecords does not write the file (qoderwork runs the same
+// contract yet yields zero qoderwork-*.json — field report 2026-09-05). This
+// overrides the save seam to capture the filename+payload and asserts the
+// write actually happens with the correct traework-<uid>.json name.
+func TestHostLoginBridgeWritesAuthFile(t *testing.T) {
+	hostLoginTestEnv(t,
+		func(session *browserLoginSession, code string) (*browserLoginToken, string, error) {
+			return &browserLoginToken{Token: "tok-write", RefreshToken: "rtok-write", ExpiredAt: "2030-01-01T00:00:00Z"}, `{"raw":"write"}`, nil
+		},
+		func(token string) (string, string, error) {
+			// Live shape: freshly-exchanged token is rejected by this
+			// cookie-session route — the bounce userInfo fallback must run.
+			return "", "", fmt.Errorf("HTTP 401 {\"Code\":\"20310\",\"Message\":\"The user is not logged in\"}")
+		},
+	)
+	var savedName string
+	var savedRaw []byte
+	origSave := hostAuthSaveJSONFn
+	hostAuthSaveJSONFn = func(name string, raw []byte) error {
+		savedName, savedRaw = name, raw
+		return nil
+	}
+	t.Cleanup(func() { hostAuthSaveJSONFn = origSave })
+
+	raw, err := handleStartLogin([]byte(`{}`))
+	start := decodeLoginStart(t, raw, err)
+	state := start.State
+	defer browserLoginSessions.Delete(state)
+
+	pasted := "http://127.0.0.1:8317/authorize?isRedirect=true&scope=solo" +
+		`&authCodeInfo=%7B%22AuthCode%22%3A%22AuthCode-write-1%22%2C%22ExpireAt%22%3A1790000000000%7D` +
+		`&userRegion=cn&userInfo=%7B%22UserID%22%3A%22438080225149472%22%2C%22ScreenName%22%3A%22%E7%94%A8%E6%88%B753849661984%22%7D`
+	done := handleBrowserLoginBridge(pluginapi.ManagementRequest{
+		Method: "GET",
+		Path:   "/v0/resource/plugins/" + providerName + "/browser-login/bridge",
+		Query:  url.Values{"state": {state}, "url": {pasted}},
+	})
+	if !strings.Contains(string(done.Body), "登录成功") || !strings.Contains(string(done.Body), "用户53849661984") {
+		t.Fatalf("host flow must reach success: %s", truncateRedacted(string(done.Body), 200))
+	}
+	if savedName == "" {
+		t.Fatal("hostPersists flow must call hostAuthSaveJSON (plugin-side fallback write)")
+	}
+	if !strings.HasPrefix(savedName, "traework-") || !strings.Contains(savedName, "438080225149472") {
+		t.Fatalf("saved file name %q must follow traework-<uid>.json", savedName)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(savedRaw, &stored); err != nil {
+		t.Fatalf("saved payload must be valid JSON: %v", err)
+	}
+}
+
 func TestHostLoginPanelFlowUnchanged(t *testing.T) {
 	hostLoginTestEnv(t,
 		func(session *browserLoginSession, code string) (*browserLoginToken, string, error) {

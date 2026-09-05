@@ -1,5 +1,17 @@
 # TraeWork Plugin Changelog
 
+## 0.1.48
+
+### Fix — 宿主「登录」按钮走通后账号不落盘：插件侧写盘兜底（宿主 savePluginLoginRecords 未生效）
+
+0.1.45-0.1.47 生产实锤（2026-09-05 23:43，state=trw-b7a3…）：宿主原生「登录」走完桥接页，页面「登录成功 / 账号已导入 用户53849661984」，但管理页「认证文件管理」与 TraeWork 面板**都没有该账号**。根因：0.1.45 把宿主 OAuth 流程改为「插件只返回 AuthData 给宿主、由宿主 `savePluginLoginRecords` 落盘」，但**本服务器 CLIProxyAPI 的 `savePluginLoginRecords` 并不真正写盘**——关键反证：qoderwork 走完全相同的契约，本服务器零 `qoderwork-*.json` 文件，证实是宿主侧实现问题而非插件契约。日志无 CREATE 事件、无 save/error 痕迹，宿主确认成功但未触盘。
+
+- **`browserlogin.go`**：`finishBrowserLogin` 的 `hostPersists=true` 分支增加**与面板流完全一致的 dedup-by-uid + 写盘**——`hostAuthList`/`hostAuthGetBundle` 按 `UserID` 查重 → `buildAuthFileJSON`（note 用「imported via host OAuth login」标识走的是宿主登录流）→ `hostAuthSaveJSON(authFileNameFor(a))` 落盘 `traework-<uid>.json`；`AuthData` 仍随 `outcome.HostAuth` 回传 PollLogin，宿主版本未来修好后可无缝接管（dedup 保证单 uid 单文件，不双写）
+  - 新增 seam `hostAuthSaveJSONFn = hostAuthSaveJSON`（镜像 `browserLoginExchangeFn` 模式）供 cgo-shim 沙箱测试 stub 落盘成功
+  - `toAuthDataOpts`/`buildAuthFileJSON`/`authFileNameFor`/`hostAuthList`/`hostAuthGetBundle` 等依赖复用现有，无新增
+- 测试：新增 `TestHostLoginBridgeWritesAuthFile`（**回归测试**：覆盖 save seam 捕获文件名+payload → 断言 hostPersists 流确实调用 `hostAuthSaveJSON`、文件名 `traework-438080225149472.json`、payload 可解析）；`hostLoginTestEnv` 默认 stub save 成功以保 happy-path 契约测试通过；哨兵：注释掉 save 调用 → 回归测试 FAIL（复现生产症状）→ 还原全绿
+- 涉及文件：`browserlogin.go` / `login_test.go` / `VERSION` / `main.go` / `CHANGELOG.md`
+
 ## 0.1.47
 
 ### Fix — 账号面板导出按钮失效（`/export` 路由未注册）+ UX 简化导入流程

@@ -589,10 +589,14 @@ func handleBrowserLoginSubmit(req pluginapi.ManagementRequest) map[string]any {
 }
 
 // Test seams: the exchange and profile calls hit the real Trae upstream via
-// the host HTTP bridge; tests swap these to fake upstream responses.
+// the host HTTP bridge; tests swap these to fake upstream responses. The
+// host-auth save call (hostPersists flow) is also routed through a seam so
+// tests can stub persistence to succeed (the cgo-shim sandbox has no host
+// auth RPCs) and verify the file-write contract.
 var (
 	browserLoginExchangeFn = browserLoginExchange
 	browserLoginUserInfoFn = browserLoginUserInfo
+	hostAuthSaveJSONFn     = hostAuthSaveJSON
 )
 
 // finishBrowserLogin exchanges the auth code, fetches the user profile, and
@@ -606,8 +610,11 @@ var (
 //
 // hostPersists=false (panel flow): the plugin persists via hostAuthSaveJSON
 // itself, matching the panel contract. hostPersists=true (host OAuth flow):
-// the account is NOT written here — the AuthData record rides the outcome so
-// login.go PollLogin can hand it to the host, which persists it itself.
+// the plugin STILL persists via hostAuthSaveJSON (dedup-by-uid, fallback for
+// hosts whose savePluginLoginRecords does not write), AND the AuthData record
+// rides the outcome so login.go PollLogin can hand it to the host — a host
+// that does persist can take over seamlessly without double-writing (the
+// dedup keeps a single file per uid).
 func finishBrowserLogin(session *browserLoginSession, code, bounceUserInfo string, hostPersists bool) *browserLoginOutcome {
 	result, rawResult, err := browserLoginExchangeFn(session, code)
 	if err != nil {
@@ -643,13 +650,50 @@ func finishBrowserLogin(session *browserLoginSession, code, bounceUserInfo strin
 	if label == "" {
 		label = a.UserID
 	}
-	// Host OAuth flow: build the AuthData record and let the HOST persist.
+	// Host OAuth flow: build the AuthData record, hand it to the host AND
+	// persist the credential file ourselves (fallback). On this production
+	// server the host's savePluginLoginRecords does not actually write the
+	// file (qoderwork runs the same contract yet yields zero
+	// qoderwork-*.json — evidence 2026-09-05), so the plugin mirrors the
+	// panel-flow dedup-by-uid + save below to guarantee the account shows
+	// up. AuthData still rides outcome.HostAuth for PollLogin so a future
+	// host version that does persist can take over seamlessly.
 	if hostPersists {
 		ad := toAuthDataOpts(a, false)
 		// Leave ID empty so the host derives it from the file path
 		// (authIDForPath) — mirrors handleParseAuth; setting ID=uid would
 		// create a second in-memory key for the same file → duplicate rows.
 		ad.ID = ""
+
+		// Dedup by UserID against the host auth list (same contract as the
+		// panel flow / handleImportCredential): re-importing an existing
+		// account must not create a second auth record.
+		duplicate := ""
+		if files, lerr := hostAuthList(); lerr == nil {
+			for _, f := range files {
+				if trimSpace(f.AuthIndex) == "" {
+					continue
+				}
+				ex, _, gerr := hostAuthGetBundle(f.AuthIndex)
+				if gerr != nil || ex == nil {
+					continue
+				}
+				if trimSpace(ex.UserID) != "" && trimSpace(ex.UserID) == trimSpace(a.UserID) {
+					duplicate = f.AuthIndex
+					break
+				}
+			}
+		}
+		if duplicate != "" {
+			return &browserLoginOutcome{OK: true, Label: label + "（账号已存在，未重复导入）", HostAuth: &ad}
+		}
+		raw, berr := buildAuthFileJSON(a, false, "imported via host OAuth login", nil)
+		if berr != nil {
+			return &browserLoginOutcome{Error: "凭据文件构建失败：" + berr.Error(), HostAuth: &ad}
+		}
+		if serr := hostAuthSaveJSONFn(authFileNameFor(a), raw); serr != nil {
+			return &browserLoginOutcome{Error: "凭据保存失败：" + serr.Error(), HostAuth: &ad}
+		}
 		return &browserLoginOutcome{OK: true, Label: label, HostAuth: &ad}
 	}
 	// Panel flow: dedup by UserID against the host auth list (same contract
