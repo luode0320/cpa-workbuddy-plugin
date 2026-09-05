@@ -1,5 +1,21 @@
 # TraeWork Plugin Changelog
 
+## 0.1.46
+
+### Fix — 桥接页 JS 只提取 code 丢失 userInfo，GetUserInfo 401 回落在宿主登录流失效（回归 0.1.44 修复）
+
+0.1.45 生产实测（2026-09-05 22:59，state=trw-94d9…）：宿主原生「登录」走完桥接页粘贴提交后报「获取用户信息失败：HTTP 401 "The user is not logged in"」——与 0.1.44 已修复的 panel 流症状相同。生产日志实锤根因：桥接页重载 URL 只有 `?state=&code=`，**没有 userInfo**。0.1.45 桥接页 JS 的 `extractCode` 只解析 `code`/`authCodeInfo` 的 AuthCode，把回调 URL 里的 `userInfo` 参数丢了 → `settleBrowserLogin` 收到空 `bounceUserInfo` → `parseBounceUserInfo("")` 返回空 → 401 回落分支不进 → 直接报错。同一时段 panel 流（23:00:15 `account imported`）正常，证明回落代码本身无恙，纯参数断链。
+
+**修复方式（架构级，消除整类漂移）**：粘贴 URL 不再由客户端 JS 解析，**整段透传回桥接页服务端解析**——JS 只做 `?url=<encodeURIComponent(整段)>` 重载；服务端 `handleBrowserLoginBridge` 镜像 panel submit 路径（`url.Parse` → `extractAuthCode` + `error`/`error_description`/`userInfo` 提取），单一事实源，Go 测试可直接覆盖（0.1.45 的洞正是 JS 解析逻辑不在测试面）。
+
+- **`browserlogin.go`**：
+  - `handleBrowserLoginBridge` 新增 `url` 参数服务端解析（`://` 缺失自动补 `http://localhost/?` 前缀，与 submit 路径同规）；`?code=`/`?userInfo=` 直传参数保留兼容（旧标签页缓存 JS 仍可用）
+  - 粘贴到达但解析不出授权码 → 渲染明确错误页（不再静默重显引导页，避免"按钮没反应"错觉）
+  - 桥接页 JS 删除客户端 `extractCode` 解析器，改为整段 URL 透传
+- 测试：新增 `TestHostLoginBridgeURLParamUserInfoFallback`（**回归测试**：真实回调形状 url 参数 + GetUserInfo 401 → userInfo 回落 → 登录成功 + PollLogin success 携带 AuthData 空ID）、`TestHostLoginBridgeURLParamNoCodeErrors`（粘贴无码 → 错误页）；改写 `TestHostLoginGuidePageSubmitsWholeURL`（断言 `&url='+encodeURIComponent(` 提交形状 + 无 extractCode 残留）
+- 哨兵：禁用 url→userInfo 传播 → 回归测试精确 FAIL（复现生产症状）→ 还原全绿
+- 涉及文件：`browserlogin.go` / `login_test.go` / `VERSION` / `main.go` / `CHANGELOG.md`
+
 ## 0.1.45
 
 ### Feat — 宿主管理界面原生「登录」按钮接入浏览器授权登录（桥接页闭环）

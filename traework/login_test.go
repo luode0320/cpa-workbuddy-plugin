@@ -341,10 +341,13 @@ func TestHostLoginBridgeGuards(t *testing.T) {
 	}
 }
 
-// TestHostLoginGuidePageParsesAuthCodeInfoJS verifies the injected client-side
-// parser handles the REAL Trae bounce shape (authCodeInfo JSON with the code)
-// and a bare ?code= shape — mirrors the page contract the user pastes into.
-func TestHostLoginGuidePageParsesAuthCodeInfoJS(t *testing.T) {
+// TestHostLoginGuidePageSubmitsWholeURL verifies the injected client-side
+// script submits the WHOLE pasted URL to the bridge as the url param — the
+// server parses code/authCodeInfo/userInfo (same extractAuthCode path as the
+// panel submit). No client-side parser may remain: the 0.1.45 JS-side
+// extractCode dropped the userInfo parameter and disabled the
+// GetUserInfo-401 fallback (field report "获取用户信息失败：HTTP 401").
+func TestHostLoginGuidePageSubmitsWholeURL(t *testing.T) {
 	raw, err := handleStartLogin([]byte(`{}`))
 	start := decodeLoginStart(t, raw, err)
 	defer browserLoginSessions.Delete(start.State)
@@ -354,13 +357,81 @@ func TestHostLoginGuidePageParsesAuthCodeInfoJS(t *testing.T) {
 		Query:  url.Values{"state": {start.State}},
 	})
 	html := string(page.Body)
-	// The parser must reference both accepted query keys.
-	if !strings.Contains(html, "authCodeInfo") || !strings.Contains(html, "'code'") {
-		t.Fatal("guide JS must parse authCodeInfo and plain code params")
+	// The submit must carry the whole URL, URL-encoded.
+	if !strings.Contains(html, "'&url='+encodeURIComponent(") {
+		t.Fatal("guide JS must submit the whole pasted URL as the url param")
 	}
 	// It must navigate to the bridge path with the state preserved.
 	if !strings.Contains(html, "/browser-login/bridge?state=") {
 		t.Fatal("guide JS must reload the bridge page with the state")
+	}
+	// No leftover client-side code parser (the server owns parsing now).
+	if strings.Contains(html, "extractCode") {
+		t.Fatal("guide JS must not carry a client-side code parser")
+	}
+}
+
+// TestHostLoginBridgeURLParamUserInfoFallback is the 0.1.46 regression test:
+// the paste box submits the whole callback URL via the url param; the server
+// must parse BOTH the authorization code (authCodeInfo JSON) and the bounce
+// userInfo JSON so the GetUserInfo-401 fallback still identifies the account.
+func TestHostLoginBridgeURLParamUserInfoFallback(t *testing.T) {
+	hostLoginTestEnv(t,
+		func(session *browserLoginSession, code string) (*browserLoginToken, string, error) {
+			if code != "AuthCode-live-1" {
+				t.Fatalf("exchange got code %q, want the authCodeInfo payload", code)
+			}
+			return &browserLoginToken{Token: "tok-fb", RefreshToken: "rtok-fb", ExpiredAt: "2030-01-01T00:00:00Z"}, `{"raw":"exchange"}`, nil
+		},
+		func(token string) (string, string, error) {
+			// Live shape 2026-09-05: the freshly-exchanged token is rejected
+			// by this cookie-session route — the fallback MUST kick in.
+			return "", "", fmt.Errorf("HTTP 401 {\"Code\":\"20310\",\"Message\":\"The user is not logged in\"}")
+		},
+	)
+	raw, err := handleStartLogin([]byte(`{}`))
+	start := decodeLoginStart(t, raw, err)
+	state := start.State
+	defer browserLoginSessions.Delete(state)
+
+	// The live bounce shape: authCodeInfo + userInfo JSON params, no ?code=,
+	// no state echo.
+	pasted := "http://127.0.0.1:8317/authorize?isRedirect=true&scope=solo" +
+		`&authCodeInfo=%7B%22AuthCode%22%3A%22AuthCode-live-1%22%2C%22ExpireAt%22%3A1790000000000%7D` +
+		`&loginTraceID=8f6b6e2a-0000-4000-8000-deadbeef0000&host=https%3A%2F%2Fapi.trae.com.cn&userRegion=cn` +
+		`&userInfo=%7B%22UserID%22%3A%223049391365297084%22%2C%22ScreenName%22%3A%22%E7%94%A8%E6%88%B724034744679%22%7D`
+	done := handleBrowserLoginBridge(pluginapi.ManagementRequest{
+		Method: "GET",
+		Path:   "/v0/resource/plugins/" + providerName + "/browser-login/bridge",
+		Query:  url.Values{"state": {state}, "url": {pasted}},
+	})
+	if !strings.Contains(string(done.Body), "登录成功") || !strings.Contains(string(done.Body), "用户24034744679") {
+		t.Fatalf("url-param settle must fall back to the bounce userInfo: %s", truncateRedacted(string(done.Body), 200))
+	}
+	pollRaw, pollErr := handlePollLogin(pollBody(t, pluginapi.AuthLoginPollRequest{State: state}))
+	poll := decodeLoginPoll(t, pollRaw, pollErr)
+	if poll.Status != pluginapi.AuthLoginStatusSuccess {
+		t.Fatalf("poll status %q msg %q", poll.Status, poll.Message)
+	}
+	if poll.Auth.Label != "用户24034744679" || poll.Auth.ID != "" {
+		t.Fatalf("auth label %q id %q — fallback identity must ride AuthData with empty ID", poll.Auth.Label, poll.Auth.ID)
+	}
+}
+
+// TestHostLoginBridgeURLParamNoCodeErrors verifies a pasted URL without any
+// code/authCodeInfo renders the parse error page instead of silently
+// re-showing the guide (the user would think the submit was ignored).
+func TestHostLoginBridgeURLParamNoCodeErrors(t *testing.T) {
+	raw, err := handleStartLogin([]byte(`{}`))
+	start := decodeLoginStart(t, raw, err)
+	defer browserLoginSessions.Delete(start.State)
+	done := handleBrowserLoginBridge(pluginapi.ManagementRequest{
+		Method: "GET",
+		Path:   "/v0/resource/plugins/" + providerName + "/browser-login/bridge",
+		Query:  url.Values{"state": {start.State}, "url": {"https://www.trae.cn/authorization?foo=1"}},
+	})
+	if !strings.Contains(string(done.Body), "未能从粘贴的地址中解析出授权码") {
+		t.Fatalf("pasted-no-code must render the parse error: %s", truncateRedacted(string(done.Body), 200))
 	}
 }
 

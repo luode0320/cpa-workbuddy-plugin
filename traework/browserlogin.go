@@ -915,12 +915,15 @@ func jsQuote(s string) string {
 // Resource routes are GET-only and unauthenticated (no management key in a
 // plain browser tab), which is exactly what this page needs:
 //
-//   - No code param: render the guide — login link (session.AuthURL), a
-//     paste box, and client-side JS that extracts AuthCode from the pasted
-//     authCodeInfo JSON and reloads this page with ?code=<AuthCode>&state=.
-//   - code param: settle the session server-side (exchange + identity,
-//     hostPersists=true so the HOST saves the credential via PollLogin) and
-//     render the outcome page telling the user to return to the host UI.
+//   - No code/url param: render the guide — login link (session.AuthURL)
+//     and a paste box whose JS submits the WHOLE pasted URL back to this
+//     page as ?url=<encoded> (the server parses it — single source of
+//     truth with the panel submit path; no client-side parser to drift).
+//   - code param, or url param carrying code/authCodeInfo: settle the
+//     session server-side (exchange + identity with the bounce userInfo
+//     fallback, hostPersists=true so the HOST saves the credential via
+//     PollLogin) and render the outcome page telling the user to return
+//     to the host UI.
 func handleBrowserLoginBridge(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	q := req.Query
 	state := strings.TrimSpace(q.Get("state"))
@@ -928,6 +931,34 @@ func handleBrowserLoginBridge(req pluginapi.ManagementRequest) pluginapi.Managem
 	authErr := strings.TrimSpace(q.Get("error"))
 	if authErr == "" {
 		authErr = strings.TrimSpace(q.Get("error_description"))
+	}
+	bounceUserInfo := strings.TrimSpace(q.Get("userInfo"))
+	// v0.1.46: the paste box submits the WHOLE callback URL as the url param
+	// and the SERVER parses it (extractAuthCode + userInfo), mirroring the
+	// panel submit path. The 0.1.45 client-side-only extraction dropped the
+	// userInfo parameter, which disabled the GetUserInfo-401 fallback and
+	// surfaced as "获取用户信息失败：HTTP 401 ... not logged in" (field report
+	// 2026-09-05 22:59, state=trw-94d9…: the reload carried only state+code).
+	pasted := false
+	if raw := strings.TrimSpace(q.Get("url")); raw != "" {
+		pasted = true
+		if !strings.Contains(raw, "://") {
+			raw = "http://localhost/?" + strings.TrimPrefix(raw, "?")
+		}
+		if pu, err := url.Parse(raw); err == nil {
+			pq := pu.Query()
+			if c := extractAuthCode(pq); c != "" {
+				code = c
+			}
+			if e := strings.TrimSpace(pq.Get("error")); e != "" {
+				authErr = e
+			} else if e := strings.TrimSpace(pq.Get("error_description")); e != "" {
+				authErr = e
+			}
+			if ui := strings.TrimSpace(pq.Get("userInfo")); ui != "" {
+				bounceUserInfo = ui
+			}
+		}
 	}
 	if state == "" {
 		return browserLoginBridgePage("", nil, nil, "缺少 state 参数：请从 CLIProxyAPI 管理页的「登录」入口重新发起。")
@@ -950,12 +981,18 @@ func handleBrowserLoginBridge(req pluginapi.ManagementRequest) pluginapi.Managem
 		return browserLoginBridgePage(state, nil, s.Result, "")
 	}
 	if code == "" && authErr == "" {
+		if pasted {
+			// The paste arrived but carried no authorization code: show the
+			// error instead of silently re-rendering the guide (otherwise
+			// the user would think the submit button was ignored).
+			return browserLoginBridgePage(state, nil, nil, "未能从粘贴的地址中解析出授权码：请确认复制的是登录后跳转页的完整地址栏网址（需包含 code 或 authCodeInfo 参数）。")
+		}
 		// Guide page: hand the login URL + paste form to the user.
 		return browserLoginBridgePage(state, s, nil, "")
 	}
 	// Finish: settle with hostPersists=true — the credential file is written
 	// by the HOST when PollLogin reports success with the AuthData record.
-	outcome := settleBrowserLogin(state, s, code, authErr, strings.TrimSpace(q.Get("userInfo")), true)
+	outcome := settleBrowserLogin(state, s, code, authErr, bounceUserInfo, true)
 	logBrowserLoginOutcome(state, outcome)
 	return browserLoginBridgePage(state, nil, outcome, "")
 }
@@ -1013,31 +1050,21 @@ func browserLoginBridgePage(state string, session *browserLoginSession, outcome 
 		b.WriteString("<textarea id=\"cb\" placeholder=\"http://127.0.0.1:8317/authorize?isRedirect=true&amp;scope=solo&amp;authCodeInfo=%7B...%7D...\"></textarea>")
 		b.WriteString("<button type=\"button\" id=\"go\">完成登录</button>")
 		b.WriteString("<div class=\"note\">此页面无需管理密钥，授权码只在本页使用一次。若提示会话过期，请回管理页重新发起。</div>")
-		// stateURL: base path with state only; JS appends &code=...
+		// The paste box submits the WHOLE pasted URL back to this page as the
+		// url param — the SERVER parses code/authCodeInfo/userInfo through
+		// the same extractAuthCode path as the panel submit, so the client
+		// carries no parsing logic that can drift out of sync (0.1.45
+		// lesson: a JS-side extractCode dropped userInfo and disabled the
+		// GetUserInfo-401 fallback).
 		bridgePath := "/v0/resource/plugins/" + providerName + "/browser-login/bridge?state=" + url.QueryEscape(state)
 		b.WriteString("<script>")
 		b.WriteString("(function(){")
 		b.WriteString("var btn=document.getElementById('go'),ta=document.getElementById('cb');")
-		b.WriteString("function extractCode(raw){")
-		b.WriteString(" raw=String(raw||'').trim();")
-		b.WriteString(" if(!raw)return '';")
-		b.WriteString(" var qi=raw.indexOf('?');if(qi<0)qi=raw.indexOf('#');")
-		b.WriteString(" if(qi<0)return '';")
-		b.WriteString(" var qs=raw.slice(qi+1);var pairs=qs.split('&');")
-		b.WriteString(" for(var i=0;i<pairs.length;i++){")
-		b.WriteString("  var kv=pairs[i].split('='),k=decodeURIComponent(kv[0]||''),v=decodeURIComponent((kv[1]||'').replace(/\\+/g,' '));")
-		b.WriteString("  if(k==='code')return v;")
-		b.WriteString("  if(k==='authCodeInfo'||k==='AuthCodeInfo'){")
-		b.WriteString("   try{var j=JSON.parse(v);if(j&&j.AuthCode)return String(j.AuthCode);}catch(e){}")
-		b.WriteString("  }")
-		b.WriteString(" }")
-		b.WriteString(" return '';")
-		b.WriteString("}")
 		b.WriteString("btn.addEventListener('click',function(){")
-		b.WriteString(" var code=extractCode(ta.value);")
-		b.WriteString(" if(!code){alert('未能从粘贴的地址中解析出授权码：请确认复制的是登录后跳转页的完整地址栏网址');return;}")
+		b.WriteString(" var v=String(ta.value||'').trim();")
+		b.WriteString(" if(!v){alert('请先粘贴回调地址');return;}")
 		b.WriteString(" var u=document.createElement('a');u.href=" + jsQuote(bridgePath) + ";")
-		b.WriteString(" u.search=u.search+'&code='+encodeURIComponent(code);")
+		b.WriteString(" u.search=u.search+'&url='+encodeURIComponent(v);")
 		b.WriteString(" location.href=u.href;")
 		b.WriteString("});")
 		b.WriteString("})();")
