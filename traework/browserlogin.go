@@ -141,6 +141,10 @@ type browserLoginSession struct {
 	DevicePem   string
 	RedirectURI string // panel origin, validated at start
 	CreatedAt   time.Time
+	// AuthURL is the Trae authorization URL minted at start. Carried on the
+	// session so the host-flow bridge page can re-render the login link even
+	// after the user navigated away from the host UI.
+	AuthURL string
 
 	// Result is filled by the callback handler; the panel picks it up via
 	// /browser-login/result (read-once). Tokens are NOT stored here — the
@@ -149,10 +153,14 @@ type browserLoginSession struct {
 }
 
 // browserLoginOutcome is the panel-facing result snapshot (no credentials).
+// HostAuth carries the imported AuthData record when the flow ran through the
+// host OAuth entry (login.go PollLogin reports it so the HOST persists the
+// credential — the plugin does not double-write in that path).
 type browserLoginOutcome struct {
-	OK    bool   `json:"ok"`
-	Label string `json:"label,omitempty"`
-	Error string `json:"error,omitempty"`
+	OK       bool                `json:"ok"`
+	Label    string              `json:"label,omitempty"`
+	Error    string              `json:"error,omitempty"`
+	HostAuth *pluginapi.AuthData `json:"-"`
 }
 
 // browserLoginSessions is keyed by the one-time state value.
@@ -450,7 +458,7 @@ func handleBrowserLoginCallback(req pluginapi.ManagementRequest) pluginapi.Manag
 	}
 	session := rawSession.(*browserLoginSession)
 	panelURL := session.RedirectURI + resourcePanelPrefix + "?auth_cb=" + url.QueryEscape(state)
-	outcome := settleBrowserLogin(state, session, code, authErr, strings.TrimSpace(q.Get("userInfo")))
+	outcome := settleBrowserLogin(state, session, code, authErr, strings.TrimSpace(q.Get("userInfo")), false)
 	logBrowserLoginOutcome(state, outcome)
 	return browserLoginHTMLPage(panelURL, "")
 }
@@ -462,13 +470,13 @@ func handleBrowserLoginCallback(req pluginapi.ManagementRequest) pluginapi.Manag
 // CreatedAt is preserved so the purge TTL also covers stale results). Shared
 // by the auto resource callback and the manual paste submit path; authErr
 // short-circuits the exchange (authorization-server-reported failure).
-func settleBrowserLogin(state string, session *browserLoginSession, code, authErr, bounceUserInfo string) *browserLoginOutcome {
+func settleBrowserLogin(state string, session *browserLoginSession, code, authErr, bounceUserInfo string, hostPersists bool) *browserLoginOutcome {
 	browserLoginSessions.Delete(state)
 	var outcome *browserLoginOutcome
 	if authErr != "" {
 		outcome = &browserLoginOutcome{Error: "授权失败：" + authErr}
 	} else {
-		outcome = finishBrowserLogin(session, code, bounceUserInfo)
+		outcome = finishBrowserLogin(session, code, bounceUserInfo, hostPersists)
 	}
 	browserLoginSessions.Store(state, &browserLoginSession{
 		Verifier:    session.Verifier,
@@ -476,6 +484,7 @@ func settleBrowserLogin(state string, session *browserLoginSession, code, authEr
 		MachineID:   session.MachineID,
 		DevicePem:   session.DevicePem,
 		RedirectURI: session.RedirectURI,
+		AuthURL:     session.AuthURL,
 		CreatedAt:   session.CreatedAt,
 		Result:      outcome,
 	})
@@ -570,7 +579,7 @@ func handleBrowserLoginSubmit(req pluginapi.ManagementRequest) map[string]any {
 	if code == "" && authErr == "" {
 		return map[string]any{"error": "回调地址缺少授权码（code）：请在登录成功后复制浏览器地址栏的完整网址"}
 	}
-	outcome := settleBrowserLogin(state, session, code, authErr, strings.TrimSpace(q.Get("userInfo")))
+	outcome := settleBrowserLogin(state, session, code, authErr, strings.TrimSpace(q.Get("userInfo")), false)
 	logBrowserLoginOutcome(state, outcome)
 	return map[string]any{
 		"ok":    outcome.OK,
@@ -594,7 +603,12 @@ var (
 // live testing 2026-09-05 showed the freshly-exchanged token can fail
 // GetUserInfo with 401 "The user is not logged in" (cookie-session based —
 // the bearer token alone does not authenticate that route).
-func finishBrowserLogin(session *browserLoginSession, code string, bounceUserInfo string) *browserLoginOutcome {
+//
+// hostPersists=false (panel flow): the plugin persists via hostAuthSaveJSON
+// itself, matching the panel contract. hostPersists=true (host OAuth flow):
+// the account is NOT written here — the AuthData record rides the outcome so
+// login.go PollLogin can hand it to the host, which persists it itself.
+func finishBrowserLogin(session *browserLoginSession, code, bounceUserInfo string, hostPersists bool) *browserLoginOutcome {
 	result, rawResult, err := browserLoginExchangeFn(session, code)
 	if err != nil {
 		return &browserLoginOutcome{Error: "换取 token 失败：" + err.Error()}
@@ -625,8 +639,21 @@ func finishBrowserLogin(session *browserLoginSession, code string, bounceUserInf
 		MachineID:     session.MachineID,
 		CredentialRaw: rawResult,
 	}
-	// Dedup by UserID against the host auth list (same contract as
-	// handleImportCredential): re-importing an existing account must not
+	label := a.Nickname
+	if label == "" {
+		label = a.UserID
+	}
+	// Host OAuth flow: build the AuthData record and let the HOST persist.
+	if hostPersists {
+		ad := toAuthDataOpts(a, false)
+		// Leave ID empty so the host derives it from the file path
+		// (authIDForPath) — mirrors handleParseAuth; setting ID=uid would
+		// create a second in-memory key for the same file → duplicate rows.
+		ad.ID = ""
+		return &browserLoginOutcome{OK: true, Label: label, HostAuth: &ad}
+	}
+	// Panel flow: dedup by UserID against the host auth list (same contract
+	// as handleImportCredential): re-importing an existing account must not
 	// create a second auth record.
 	duplicate := ""
 	if files, lerr := hostAuthList(); lerr == nil {
@@ -643,10 +670,6 @@ func finishBrowserLogin(session *browserLoginSession, code string, bounceUserInf
 				break
 			}
 		}
-	}
-	label := a.Nickname
-	if label == "" {
-		label = a.UserID
 	}
 	if duplicate != "" {
 		return &browserLoginOutcome{OK: true, Label: label + "（账号已存在，未重复导入）"}
@@ -881,4 +904,148 @@ func htmlEscape(s string) string {
 func jsQuote(s string) string {
 	raw, _ := json.Marshal(s)
 	return string(raw)
+}
+
+// handleBrowserLoginBridge implements the host-OAuth-flow bridge page:
+// GET /v0/resource/plugins/<id>/browser-login/bridge?state=<state>[&code=...][&error=...].
+//
+// The Trae authorization page bounces to a dead loopback URL carrying the
+// auth code inside authCodeInfo JSON (never ?code=&state=), and the host's
+// own paste channel cannot parse that shape — so the flow finishes HERE.
+// Resource routes are GET-only and unauthenticated (no management key in a
+// plain browser tab), which is exactly what this page needs:
+//
+//   - No code param: render the guide — login link (session.AuthURL), a
+//     paste box, and client-side JS that extracts AuthCode from the pasted
+//     authCodeInfo JSON and reloads this page with ?code=<AuthCode>&state=.
+//   - code param: settle the session server-side (exchange + identity,
+//     hostPersists=true so the HOST saves the credential via PollLogin) and
+//     render the outcome page telling the user to return to the host UI.
+func handleBrowserLoginBridge(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	q := req.Query
+	state := strings.TrimSpace(q.Get("state"))
+	code := strings.TrimSpace(q.Get("code"))
+	authErr := strings.TrimSpace(q.Get("error"))
+	if authErr == "" {
+		authErr = strings.TrimSpace(q.Get("error_description"))
+	}
+	if state == "" {
+		return browserLoginBridgePage("", nil, nil, "缺少 state 参数：请从 CLIProxyAPI 管理页的「登录」入口重新发起。")
+	}
+	rawSession, ok := browserLoginSessions.Load(state)
+	if !ok {
+		return browserLoginBridgePage(state, nil, nil, "授权会话不存在或已完成（结果只保留一次，10 分钟有效）。请回到管理页重新点击「登录」。")
+	}
+	s, ok := rawSession.(*browserLoginSession)
+	if !ok || s == nil {
+		return browserLoginBridgePage(state, nil, nil, "授权会话数据异常，请重新发起登录。")
+	}
+	if time.Now().Sub(s.CreatedAt) > browserLoginTTL {
+		browserLoginSessions.Delete(state)
+		return browserLoginBridgePage(state, nil, nil, "登录已超时（10 分钟）。请回到管理页重新点击「登录」。")
+	}
+	if s.Result != nil {
+		// Already settled (e.g. browser back button re-submits the code):
+		// show the stored outcome; do NOT exchange twice.
+		return browserLoginBridgePage(state, nil, s.Result, "")
+	}
+	if code == "" && authErr == "" {
+		// Guide page: hand the login URL + paste form to the user.
+		return browserLoginBridgePage(state, s, nil, "")
+	}
+	// Finish: settle with hostPersists=true — the credential file is written
+	// by the HOST when PollLogin reports success with the AuthData record.
+	outcome := settleBrowserLogin(state, s, code, authErr, strings.TrimSpace(q.Get("userInfo")), true)
+	logBrowserLoginOutcome(state, outcome)
+	return browserLoginBridgePage(state, nil, outcome, "")
+}
+
+// browserLoginBridgePage renders the bridge page HTML. session != nil →
+// guide mode (login link + paste form); outcome != nil → result mode.
+// JS notes: no markdown backticks anywhere (they truncate Go raw strings);
+// the paste parser runs client-side so the page never needs POST.
+func browserLoginBridgePage(state string, session *browserLoginSession, outcome *browserLoginOutcome, detail string) pluginapi.ManagementResponse {
+	var b strings.Builder
+	b.WriteString("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">")
+	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+	b.WriteString("<title>TraeWork 登录桥接</title>")
+	b.WriteString("<style>")
+	b.WriteString("body{font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;background:#f5f6f8;color:#1f2328;margin:0;padding:40px 16px;display:flex;justify-content:center}")
+	b.WriteString(".card{background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);max-width:600px;width:100%;padding:32px}")
+	b.WriteString("h1{font-size:20px;margin:0 0 12px}p{line-height:1.7;margin:8px 0;font-size:14px}")
+	b.WriteString("ol{padding-left:20px}ol li{margin:6px 0;font-size:14px;line-height:1.6}")
+	b.WriteString("code{background:#f0f1f3;border-radius:4px;padding:2px 6px;font-size:13px;word-break:break-all}")
+	b.WriteString("textarea{width:100%;box-sizing:border-box;min-height:96px;border:1px solid #d0d7de;border-radius:8px;padding:10px;font-size:13px;font-family:monospace;margin-top:8px}")
+	b.WriteString("button{margin-top:10px;background:#2563eb;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:14px;cursor:pointer}")
+	b.WriteString("button:hover{background:#1d4ed8}a{color:#2563eb}")
+	b.WriteString(".ok{background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px 14px;margin-top:16px;font-size:14px;color:#166534}")
+	b.WriteString(".err{background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 14px;margin-top:16px;font-size:14px;color:#991b1b}")
+	b.WriteString(".note{background:#fff7e6;border:1px solid #ffd591;border-radius:8px;padding:10px 14px;margin-top:16px;font-size:13px;color:#874d00}")
+	b.WriteString("</style></head><body><div class=\"card\">")
+
+	if detail != "" {
+		b.WriteString("<h1>无法完成登录</h1><div class=\"err\"><p>" + htmlEscape(detail) + "</p></div>")
+	} else if outcome != nil {
+		if outcome.OK {
+			b.WriteString("<h1>登录成功</h1>")
+			b.WriteString("<div class=\"ok\"><p>账号已导入：<strong>" + htmlEscape(outcome.Label) + "</strong></p>")
+			b.WriteString("<p>请回到 CLIProxyAPI 管理页，登录状态会自动变为完成；账号列表稍后刷新即可看到新账号。</p></div>")
+		} else {
+			b.WriteString("<h1>登录失败</h1>")
+			b.WriteString("<div class=\"err\"><p>" + htmlEscape(outcome.Error) + "</p>")
+			b.WriteString("<p>请回到管理页重新点击「登录」再试一次。</p></div>")
+		}
+	} else if session != nil {
+		authURL := ""
+		if session.AuthURL != "" {
+			authURL = session.AuthURL
+		}
+		b.WriteString("<h1>TraeWork 浏览器登录</h1>")
+		b.WriteString("<ol>")
+		b.WriteString("<li>点击下方按钮，在打开的 Trae 页面完成登录</li>")
+		b.WriteString("<li>登录后浏览器会跳转到一个<strong>打不开的本地地址</strong>（这是正常现象）</li>")
+		b.WriteString("<li>复制浏览器<strong>地址栏的完整网址</strong>，粘贴到下面的输入框，点击「完成登录」</li>")
+		b.WriteString("</ol>")
+		if authURL != "" {
+			b.WriteString("<p><a href=\"" + htmlEscape(authURL) + "\" target=\"_blank\" rel=\"noopener noreferrer\"><button type=\"button\">打开 Trae 登录页面</button></a></p>")
+		}
+		b.WriteString("<p><label for=\"cb\"><strong>粘贴回调地址</strong>（包含 authCodeInfo 或 code 参数的完整网址）：</label></p>")
+		b.WriteString("<textarea id=\"cb\" placeholder=\"http://127.0.0.1:8317/authorize?isRedirect=true&amp;scope=solo&amp;authCodeInfo=%7B...%7D...\"></textarea>")
+		b.WriteString("<button type=\"button\" id=\"go\">完成登录</button>")
+		b.WriteString("<div class=\"note\">此页面无需管理密钥，授权码只在本页使用一次。若提示会话过期，请回管理页重新发起。</div>")
+		// stateURL: base path with state only; JS appends &code=...
+		bridgePath := "/v0/resource/plugins/" + providerName + "/browser-login/bridge?state=" + url.QueryEscape(state)
+		b.WriteString("<script>")
+		b.WriteString("(function(){")
+		b.WriteString("var btn=document.getElementById('go'),ta=document.getElementById('cb');")
+		b.WriteString("function extractCode(raw){")
+		b.WriteString(" raw=String(raw||'').trim();")
+		b.WriteString(" if(!raw)return '';")
+		b.WriteString(" var qi=raw.indexOf('?');if(qi<0)qi=raw.indexOf('#');")
+		b.WriteString(" if(qi<0)return '';")
+		b.WriteString(" var qs=raw.slice(qi+1);var pairs=qs.split('&');")
+		b.WriteString(" for(var i=0;i<pairs.length;i++){")
+		b.WriteString("  var kv=pairs[i].split('='),k=decodeURIComponent(kv[0]||''),v=decodeURIComponent((kv[1]||'').replace(/\\+/g,' '));")
+		b.WriteString("  if(k==='code')return v;")
+		b.WriteString("  if(k==='authCodeInfo'||k==='AuthCodeInfo'){")
+		b.WriteString("   try{var j=JSON.parse(v);if(j&&j.AuthCode)return String(j.AuthCode);}catch(e){}")
+		b.WriteString("  }")
+		b.WriteString(" }")
+		b.WriteString(" return '';")
+		b.WriteString("}")
+		b.WriteString("btn.addEventListener('click',function(){")
+		b.WriteString(" var code=extractCode(ta.value);")
+		b.WriteString(" if(!code){alert('未能从粘贴的地址中解析出授权码：请确认复制的是登录后跳转页的完整地址栏网址');return;}")
+		b.WriteString(" var u=document.createElement('a');u.href=" + jsQuote(bridgePath) + ";")
+		b.WriteString(" u.search=u.search+'&code='+encodeURIComponent(code);")
+		b.WriteString(" location.href=u.href;")
+		b.WriteString("});")
+		b.WriteString("})();")
+		b.WriteString("</script>")
+	}
+	b.WriteString("</div></body></html>")
+	h := http.Header{}
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Cache-Control", "no-store")
+	return pluginapi.ManagementResponse{StatusCode: http.StatusOK, Headers: h, Body: []byte(b.String())}
 }

@@ -1,5 +1,27 @@
 # TraeWork Plugin Changelog
 
+## 0.1.45
+
+### Feat — 宿主管理界面原生「登录」按钮接入浏览器授权登录（桥接页闭环）
+
+宿主（CLIProxyAPI v7.2.129）OAuth 框架对支持 `supports_oauth` 的插件渲染原生「登录」卡片：`GET /v0/management/traework-provider-auth-url` → `auth.login.start`，UI 轮询 `get-auth-status` → `auth.login.poll`。0.1.44 前该入口是 data: 引导页假实现（恒报错误）；本版把它接到与面板导入同一套浏览器授权流程。
+
+**核心结论（宿主源码 + 线上 management.html 取证）**：Trae 回调是非标准形状（`authCodeInfo` JSON 参数、永不回传 state、落在死 loopback `/authorize`），宿主卡片自带粘贴框经 `$M` 直通后由 `handleOAuthCallback` 提取 code/state——两者皆空必 400，**宿主通用粘贴通道对 Trae 形状是死路**，闭环必须由插件自己的桥接页完成。因此 StartLogin 返回**桥接页相对 URL**（`/v0/resource/plugins/<id>/browser-login/bridge?state=...`，宿主 UI 从管理域 origin 打开，本地/远程部署都正确解析），而非 Trae 授权页 URL——否则用户登录完落在死 loopback 页无路可走。
+
+- **`login.go`**（整体重写）：
+  - `mintBrowserLoginSession`：从面板 start 流程抽出（PKCE S256 + 一次性 EC P-256 设备密钥 + loopback `/authorize` 回调白名单形状 + `trw-` 前缀 state）
+  - `handleStartLogin`：真实铸造会话，返回桥接页 URL + state + `Metadata{logo, bridge_url, prompt}`
+  - `handlePollLogin` 状态机：pending（未 settle）→ success（返回 `AuthData`，**由宿主持久化凭据**）/ error（缺会话/过期/结果缺凭据）；success 为 read-once 语义
+  - `browserLoginBridgeURL`：桥接页相对路径构造
+- **`browserlogin.go`**：
+  - `browserLoginSession` 新增 `AuthURL`；`browserLoginOutcome` 新增 `HostAuth *pluginapi.AuthData`（`json:"-"` 不进面板结果）
+  - `finishBrowserLogin`/`settleBrowserLogin` 增加 `hostPersists` 参数：host 流程构造 `AuthData`（`ID` 留空——宿主按文件路径派生，防重复账号铁律）交宿主落盘，插件不双写；面板流程保持原 dedup+`hostAuthSaveJSON` 行为
+  - 新增 `handleBrowserLoginBridge`（资源路由 GET 免 key）：引导模式（登录链接 + 粘贴框，前端 JS 解析 `?code=` 或 `authCodeInfo` JSON 后重载带参 URL）→ settle（hostPersists=true）→ 结果页；防重放（已 settle 会话重放结果）
+- **`management.go`**：`Resources` 注册 `/browser-login/bridge`，`handleManagement` 资源分发接桥接页
+- 兑换链完整复用面板流程：exchange（api.trae.cn）→ GetUserInfo → 回调 `userInfo` 回落 → 导入
+- 测试：新增 `login_test.go` 8 用例（start 契约含桥接页 URL/会话 AuthURL、poll pending/未知/过期、桥接页 settle+poll success、错误结果传播、guards、面板流程不变性）
+- 涉及文件：`login.go` / `browserlogin.go` / `management.go` / `login_test.go` / `VERSION` / `main.go` / `CHANGELOG.md`
+
 ## 0.1.44
 
 ### Fix — 浏览器授权登录 GetUserInfo 401 时回落回调 URL 的 userInfo（SOLO 客户端同款策略）

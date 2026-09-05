@@ -88,6 +88,11 @@ func managementRegistration() managementRegistrationResponse {
 			// at the loopback /authorize shape required by the Trae
 			// whitelist, so the regular path is the panel paste-submit flow.
 			{Path: "/browser-login/callback", Description: "Trae login page redirect target (?code=&state=); exchanges the code and imports the account, then bounces to the panel."},
+			// Host-OAuth-flow bridge page (login.go): the host UI「登录」button
+			// flow finishes here because the Trae callback shape (authCodeInfo
+			// JSON, no code/state echo) cannot travel through the host's own
+			// paste channel. GET-only, unauthenticated, one state per login.
+			{Path: "/browser-login/bridge", Description: "Host OAuth login bridge: opens the Trae authorization page and finishes the login from the pasted callback URL."},
 		},
 	}
 }
@@ -108,6 +113,9 @@ func handleManagement(raw []byte) ([]byte, error) {
 		sub := strings.TrimPrefix(path, resPrefix)
 		if sub == "/browser-login/callback" {
 			return okEnvelope(handleBrowserLoginCallback(req))
+		}
+		if sub == "/browser-login/bridge" {
+			return okEnvelope(handleBrowserLoginBridge(req))
 		}
 		return okEnvelope(mgmtHTMLResponse(servePanel(sub)))
 	}
