@@ -2,6 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -100,8 +104,10 @@ func TestTokenExpiry(t *testing.T) {
 	}
 }
 
-// TestIsRefreshDeadError classifies refresh failures: 4xx auth rejections are
-// dead-token; transport/5xx are transient.
+// TestIsRefreshDeadError classifies refresh failures: only business-level
+// 401/403 on the correct auth host are dead-token. 404 is a gateway page for
+// a route that does not exist on that host (the 2026-09-05 mass-disable
+// incident), 400 is parameter validation, 5xx/transport are transient.
 func TestIsRefreshDeadError(t *testing.T) {
 	if !isRefreshDeadError("ExchangeToken: HTTP 401 unauthorized") {
 		t.Fatal("401 must be dead-token")
@@ -109,10 +115,142 @@ func TestIsRefreshDeadError(t *testing.T) {
 	if !isRefreshDeadError("ExchangeToken: HTTP 403 forbidden") {
 		t.Fatal("403 must be dead-token")
 	}
+	if isRefreshDeadError("ExchangeToken: HTTP 404 <html>TLB 404 Not Found</html>") {
+		t.Fatal("404 (missing route / gateway page) must NOT be dead-token — it killed healthy accounts on 2026-09-05")
+	}
+	if isRefreshDeadError("ExchangeToken: HTTP 400 {\"code\":10101,\"message\":\"无效参数\"}") {
+		t.Fatal("400 (parameter validation) must NOT be dead-token")
+	}
 	if isRefreshDeadError("ExchangeToken: HTTP 500 internal") {
 		t.Fatal("500 must NOT be dead-token")
 	}
 	if isRefreshDeadError("dial tcp: connection refused") {
 		t.Fatal("transport error must NOT be dead-token")
+	}
+}
+
+// TestKeepaliveExchangeHostFixed pins the ExchangeToken auth host to
+// defaultAPIHost (api.trae.cn) regardless of the account's stored sa.Host —
+// reusing the chat/account host caused the 2026-09-05 mass-disable incident
+// (TLB 404 on trae-api-cn.mchost.guru was misread as a dead refresh token).
+func TestKeepaliveExchangeHostFixed(t *testing.T) {
+	orig := hostHTTPDoFn
+	var capturedURL string
+	hostHTTPDoFn = func(req *http.Request) (*hostHTTPResponse, error) {
+		capturedURL = req.URL.Scheme + "://" + req.URL.Host + req.URL.Path
+		return nil, fmt.Errorf("stub: no network in tests")
+	}
+	t.Cleanup(func() { hostHTTPDoFn = orig })
+
+	sa := &traeAuth{
+		Host:         "https://some-chat-host.example.com",
+		RefreshToken: "tok",
+		UserID:       "u1",
+	}
+	if _, err := keepaliveExchange(sa); err == nil {
+		t.Fatal("expected stub error from keepaliveExchange")
+	}
+	want := defaultAPIHost + "/cloudide/api/v3/trae/oauth/ExchangeToken"
+	if capturedURL != want {
+		t.Fatalf("ExchangeToken host must be fixed to %s, got %s", want, capturedURL)
+	}
+}
+
+// retryTargetsLen mirrors retryFailedRefreshes' target filter: how many
+// accounts would the 10-minute retry tick pick up right now.
+func retryTargetsLen() int {
+	refreshRetryMu.Lock()
+	defer refreshRetryMu.Unlock()
+	n := 0
+	for _, e := range refreshRetry {
+		if e.retryable && !e.maxed && !e.inFlight && e.attempts < refreshRetryMax {
+			n++
+		}
+	}
+	return n
+}
+
+// TestRefreshRetryBudget verifies the per-account 50-attempt daily budget:
+// failures consume it, exhaustion removes the account from the retry
+// scheduler, and a successful refresh resets everything.
+func TestRefreshRetryBudget(t *testing.T) {
+	orig := refreshOneAuthFn
+	calls := 0
+	refreshOneAuthFn = func(authIndex, authID string) (string, error) {
+		calls++
+		return "failed", fmt.Errorf("ExchangeToken: HTTP 400 bad param")
+	}
+	t.Cleanup(func() { refreshOneAuthFn = orig })
+	resetRetryBudgets()
+	t.Cleanup(resetRetryBudgets)
+
+	for i := 0; i < refreshRetryMax; i++ {
+		if st, _ := refreshAuthGuarded("idx-a", "id-a"); st != "failed" {
+			t.Fatalf("attempt %d: want failed, got %s", i+1, st)
+		}
+	}
+	if calls != refreshRetryMax {
+		t.Fatalf("expected exactly %d underlying refresh calls, got %d", refreshRetryMax, calls)
+	}
+	if n := retryTargetsLen(); n != 0 {
+		t.Fatalf("exhausted account must not be retried, targets=%d", n)
+	}
+
+	// A successful refresh resets the budget (retryable cleared).
+	refreshOneAuthFn = func(authIndex, authID string) (string, error) {
+		return "refreshed", nil
+	}
+	if st, _ := refreshAuthGuarded("idx-a", "id-a"); st != "refreshed" {
+		t.Fatalf("want refreshed, got %s", st)
+	}
+	if n := retryTargetsLen(); n != 0 {
+		t.Fatalf("successful account must not be retryable, targets=%d", n)
+	}
+}
+
+// TestPerAuthRefreshMutex verifies the user-mandated rule that the same
+// account is never refreshed concurrently: 10 parallel guarded calls for one
+// authID must serialize to a peak in-flight count of exactly 1.
+func TestPerAuthRefreshMutex(t *testing.T) {
+	orig := refreshOneAuthFn
+	var cur, peak int32
+	refreshOneAuthFn = func(authIndex, authID string) (string, error) {
+		c := atomic.AddInt32(&cur, 1)
+		for {
+			p := atomic.LoadInt32(&peak)
+			if c <= p || atomic.CompareAndSwapInt32(&peak, p, c) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond) // widen the race window
+		atomic.AddInt32(&cur, -1)
+		return "failed", fmt.Errorf("ExchangeToken: HTTP 400 bad param")
+	}
+	t.Cleanup(func() { refreshOneAuthFn = orig })
+	resetRetryBudgets()
+	t.Cleanup(resetRetryBudgets)
+
+	const n = 10
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = refreshAuthGuarded("idx-m", "id-m")
+		}()
+	}
+	wg.Wait()
+
+	if atomic.LoadInt32(&peak) != 1 {
+		t.Fatalf("same-account refresh must never run concurrently, peak=%d", peak)
+	}
+	// Only 1 of the 10 calls actually executed: the other 9 hit the in-flight
+	// mutex and were rejected as skipped (NOT queued), so exactly 1 attempt
+	// is recorded.
+	refreshRetryMu.Lock()
+	e := refreshRetry["id-m"]
+	refreshRetryMu.Unlock()
+	if e == nil || e.attempts != 1 {
+		t.Fatalf("expected exactly 1 recorded attempt (9 concurrent calls must be rejected, not queued), got %+v", e)
 	}
 }

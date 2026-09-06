@@ -278,7 +278,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.1.49"
+var version = "0.1.50"
 
 func wbRegistration() registration {
 	return registration{
@@ -308,6 +308,7 @@ func wbRegistration() registration {
 				{Name: "preserve_watchdog_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用保号看护循环（默认开启）：关闭后保号池不再自动维护，仅保留手动路由。"},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每日 token 保号刷新（本地时间 22:00，默认开启）：access token 临近过期时通过 ExchangeToken 自动续期；刷新令牌失效的账号自动标记禁用待重新导入。"},
 				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用积分生命周期自动停用（默认开启）：账号积分耗尽（remain<=0）后自动禁用，避免浪费请求；不自动复活，需面板手动启用或重新导入。"},
+				{Name: "auth_flag_guard", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用禁用标记守护（默认开启）：每 5 分钟核对已停用账号的物理文件，若宿主自动刷新重建时抹掉了 disabled 标记则自动写回，防止停用账号悄悄回到路由池。"},
 			},
 		},
 		Capabilities: registrationCapability{

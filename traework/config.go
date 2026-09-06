@@ -47,6 +47,7 @@ type traeConfig struct {
 //     (api.trae.cn has no /api/agent/v3/* routes — TLB 404, verified).
 //   - defaultAPIHost: check-in/points routes live on api.trae.cn
 //     (checkin_credits/* 404s on mchost.guru, verified 2026-08-30).
+//
 // Stored credentials normally carry their own host — defaults are only the
 // fallback when neither config nor credential carries one.
 const (
@@ -224,6 +225,10 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 		case "lifecycle_auto":
 			if b, ok := parseYAMLBool(val); ok {
 				setLifecycleEnabled(b)
+			}
+		case "auth_flag_guard":
+			if b, ok := parseYAMLBool(val); ok {
+				setGuardEnabled(b)
 			}
 		case "preserve_threshold":
 			if n, ok := parsePositiveIntLine(ln); ok {

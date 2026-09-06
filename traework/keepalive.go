@@ -97,14 +97,21 @@ func needsKeepalive(sa *traeAuth) bool {
 	return time.Now().Add(keepaliveLeadWindow).After(exp)
 }
 
+// Test seam: keepaliveExchange routes its upstream call through this var so
+// tests can capture the outbound request (URL/auth host) without hitting the
+// network — hostHTTPDo itself falls back to a real direct HTTP call when the
+// host bridge is unavailable (unit tests).
+var hostHTTPDoFn = hostHTTPDo
+
 // keepaliveExchange calls the cloudide ExchangeToken endpoint with the stored
-// refresh token and returns the rotated token envelope. The refresh token is
-// sent as-is (no extra headers — the endpoint authenticates via the body).
+// refresh token and returns the rotated token envelope. The auth host is
+// FIXED to defaultAPIHost (api.trae.cn): the ExchangeToken route lives there
+// (verified 2026-09-06 — TLB 404 on the chat host trae-api-cn.mchost.guru),
+// and reusing sa.Host (a chat/account host) is what caused the 2026-09-05
+// keepalive mass-disable incident. The refresh token is sent as-is (no extra
+// headers — the endpoint authenticates via the body).
 func keepaliveExchange(sa *traeAuth) (*traeCredential, error) {
-	host := strings.TrimSpace(sa.Host)
-	if host == "" {
-		host = defaultChatAPIHost
-	}
+	host := defaultAPIHost
 	body, _ := json.Marshal(map[string]string{
 		"ClientID":     oauthClientID,
 		"RefreshToken": strings.TrimSpace(sa.RefreshToken),
@@ -116,7 +123,7 @@ func keepaliveExchange(sa *traeAuth) (*traeCredential, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := hostHTTPDo(req)
+	resp, err := hostHTTPDoFn(req)
 	if err != nil {
 		return nil, err
 	}
@@ -192,9 +199,14 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 }
 
 // isRefreshDeadError reports whether a refresh failure means the refresh
-// token itself is dead (4xx auth rejection), not a transient network/5xx.
+// token itself is dead (business-level auth rejection on the correct auth
+// host), not a transport/gateway/parameter problem. Only 401/403 count: 404
+// here is the TLB gateway page for a route that does not exist on that host
+// (the 2026-09-05 mass-disable incident killed healthy accounts this way),
+// 400 is request-parameter validation (the token is never evaluated), and
+// 5xx/transport are transient.
 func isRefreshDeadError(msg string) bool {
-	for _, marker := range []string{"HTTP 401", "HTTP 403", "HTTP 404"} {
+	for _, marker := range []string{"HTTP 401", "HTTP 403"} {
 		if strings.Contains(msg, marker) {
 			return true
 		}
@@ -266,7 +278,8 @@ func markSessionDead(authIndex, authID string, sa *traeAuth) error {
 		return err
 	}
 	doc["disabled"] = true
-	doc["note"] = "Session expired (refresh token dead): re-login required"
+	note := "Session expired (refresh token dead): re-login required"
+	doc["note"] = note
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		return err
@@ -275,7 +288,132 @@ func markSessionDead(authIndex, authID string, sa *traeAuth) error {
 	if name == "" {
 		name = authFileNameFor(sa)
 	}
-	return persistAuthDirect(name, phys.Path, "", raw)
+	if err := persistAuthDirect(name, phys.Path, "", raw); err != nil {
+		return err
+	}
+	// Protect the flag from host auto-refresh rebuilds (authguard).
+	guardRegister(authIndex, authID, note, "session-dead")
+	return nil
+}
+
+// refreshRetryMax is the per-account daily retry budget for failed refreshes
+// (user decision 2026-09-06: retry every 10 minutes, at most 50 attempts per
+// account, never concurrently for the same account; the 22:00 daily pass
+// resets the budget).
+const refreshRetryMax = 50
+
+// refreshRetryEntry tracks one account's refresh attempts since the last
+// daily pass. retryable marks a failed refresh worth re-running; maxed marks
+// an account whose budget is exhausted for the day.
+type refreshRetryEntry struct {
+	authIndex string
+	attempts  int
+	retryable bool
+	maxed     bool
+	inFlight  bool
+}
+
+var (
+	refreshRetryMu sync.Mutex
+	refreshRetry   = map[string]*refreshRetryEntry{} // key: authID (empty → authIndex)
+)
+
+// Test seam: refreshAuthGuarded delegates the actual refresh here so the
+// retry-budget and in-flight-mutex behavior is unit-testable without the
+// host bridge.
+var refreshOneAuthFn = refreshOneAuth
+
+func resetRetryBudgets() {
+	refreshRetryMu.Lock()
+	refreshRetry = map[string]*refreshRetryEntry{}
+	refreshRetryMu.Unlock()
+}
+
+// refreshAuthGuarded runs the refresh under the per-account in-flight mutex
+// (the same account must never refresh concurrently — daily pass, retry
+// ticks and manual triggers all funnel through here) and maintains the retry
+// budget. Budget exhaustion only filters the retry scheduler's target list;
+// the daily pass resets budgets and manual single-account runs are never
+// blocked by it.
+func refreshAuthGuarded(authIndex, authID string) (string, error) {
+	key := strings.TrimSpace(authID)
+	if key == "" {
+		key = strings.TrimSpace(authIndex)
+	}
+	refreshRetryMu.Lock()
+	e := refreshRetry[key]
+	if e == nil {
+		e = &refreshRetryEntry{authIndex: authIndex}
+		refreshRetry[key] = e
+	}
+	if authIndex != "" {
+		e.authIndex = authIndex
+	}
+	if e.inFlight {
+		refreshRetryMu.Unlock()
+		return "skipped", fmt.Errorf("refresh already in flight for this account")
+	}
+	e.inFlight = true
+	refreshRetryMu.Unlock()
+
+	status, err := refreshOneAuthFn(authIndex, authID)
+
+	refreshRetryMu.Lock()
+	e.inFlight = false
+	switch status {
+	case "refreshed":
+		e.attempts, e.retryable, e.maxed = 0, false, false
+	case "failed":
+		e.attempts++
+		e.retryable = true
+		if e.attempts >= refreshRetryMax {
+			e.maxed = true
+		}
+	default: // skipped / session-dead / error — nothing worth retrying
+		e.retryable = false
+	}
+	refreshRetryMu.Unlock()
+	return status, err
+}
+
+// retryFailedRefreshes re-runs refreshes that failed since the last daily
+// pass, every 10 minutes, honouring the per-account daily budget. Cross-
+// account concurrency stays at 4 like the daily pass; per-account mutual
+// exclusion is enforced inside refreshAuthGuarded.
+func retryFailedRefreshes() {
+	refreshRetryMu.Lock()
+	type retryTarget struct{ authIndex, authID string }
+	var targets []retryTarget
+	for id, e := range refreshRetry {
+		if e.retryable && !e.maxed && !e.inFlight && e.attempts < refreshRetryMax {
+			targets = append(targets, retryTarget{authIndex: e.authIndex, authID: id})
+		}
+	}
+	refreshRetryMu.Unlock()
+	if len(targets) == 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
+	for _, tg := range targets {
+		tg := tg
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			status, err := refreshAuthGuarded(tg.authIndex, tg.authID)
+			if status == "skipped" && err == nil {
+				return
+			}
+			detail := ""
+			if err != nil {
+				detail = truncateRedacted(err.Error(), 200)
+			}
+			log.Printf("[keepalive] retry %s: %s (%s)", tg.authID, status, detail)
+		}()
+	}
+	wg.Wait()
 }
 
 // keepaliveSummary is one row set of the daily run, surfaced via the
@@ -314,6 +452,7 @@ func getLastKeepalive() *keepaliveSummary {
 // only the 22:00 auto-run.
 func runTokenKeepalive() *keepaliveSummary {
 	sum := &keepaliveSummary{When: time.Now()}
+	resetRetryBudgets() // daily pass resets the per-account retry budgets
 	files, err := hostAuthList()
 	if err != nil {
 		sum.Results = append(sum.Results, keepaliveRow{Status: "error", Detail: err.Error()})
@@ -334,7 +473,7 @@ func runTokenKeepalive() *keepaliveSummary {
 			if sa, err := hostAuthGet(f.AuthIndex); err == nil {
 				row.Nickname = sa.Nickname
 			}
-			status, err := refreshOneAuth(f.AuthIndex, f.ID)
+			status, err := refreshAuthGuarded(f.AuthIndex, f.ID)
 			row.Status = status
 			if err != nil {
 				row.Detail = truncateRedacted(err.Error(), 200)
@@ -366,7 +505,7 @@ func handleKeepaliveNow(req pluginapi.ManagementRequest) map[string]any {
 		return map[string]any{"error": err.Error()}
 	}
 	row := keepaliveRow{AuthIndex: authIndex, Nickname: sa.Nickname}
-	row.Status, err = refreshOneAuth(authIndex, "")
+	row.Status, err = refreshAuthGuarded(authIndex, authIndex)
 	if err != nil {
 		row.Detail = truncateRedacted(err.Error(), 200)
 	}
@@ -395,7 +534,9 @@ func shouldRunKeepaliveNow(now time.Time) bool {
 }
 
 // keepaliveLoop wakes every minute; when the local clock crosses a scheduled
-// keepalive hour it runs runTokenKeepalive once per day. Mirrors the anomaly
+// keepalive hour it runs runTokenKeepalive once per day, and every 10 minutes
+// it re-runs refreshes that failed since the daily pass (per-account budget:
+// 50 attempts/day, no same-account concurrency). Mirrors the anomaly
 // refresh loop's day-guard pattern.
 func keepaliveLoop() {
 	ticker := time.NewTicker(time.Minute)
@@ -406,27 +547,35 @@ func keepaliveLoop() {
 			continue
 		}
 		now := time.Now().Local()
-		if !shouldRunKeepaliveNow(now) {
-			continue
-		}
-		if now.Day() == lastDay {
-			continue
-		}
-		lastDay = now.Day()
-		sum := runTokenKeepalive()
-		refreshed, failed, dead := 0, 0, 0
-		for _, r := range sum.Results {
-			switch r.Status {
-			case "refreshed":
-				refreshed++
-			case "failed":
-				failed++
-			case "session-dead":
-				dead++
+		if shouldRunKeepaliveNow(now) && now.Day() != lastDay {
+			lastDay = now.Day()
+			sum := runTokenKeepalive()
+			refreshed, failed, dead := 0, 0, 0
+			for _, r := range sum.Results {
+				switch r.Status {
+				case "refreshed":
+					refreshed++
+				case "failed":
+					failed++
+				case "session-dead":
+					dead++
+				}
+			}
+			log.Printf("[keepalive] daily run: refreshed=%d failed=%d session_dead=%d total=%d",
+				refreshed, failed, dead, len(sum.Results))
+			// Per-account details into the container log — the summary line
+			// alone made the 2026-09-05 mass-disable undiagnosable without
+			// manually replaying refresh calls on the server.
+			for _, r := range sum.Results {
+				if r.Status == "skipped" {
+					continue
+				}
+				log.Printf("[keepalive]   %s: %s (%s)", r.Nickname, r.Status, r.Detail)
 			}
 		}
-		log.Printf("[keepalive] daily run: refreshed=%d failed=%d session_dead=%d total=%d",
-			refreshed, failed, dead, len(sum.Results))
+		if now.Minute()%10 == 0 {
+			retryFailedRefreshes()
+		}
 	}
 }
 

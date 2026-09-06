@@ -1,5 +1,21 @@
 # TraeWork Plugin Changelog
 
+## 0.1.50
+
+### Fix — keepalive 误杀：ExchangeToken 用错 host，404 被判「refresh token 死亡」批量停用账号
+
+生产实锤（2026-09-06 01:20，`[keepalive] daily run: refreshed=0 failed=0 session_dead=3 total=5`）：每日 22:00 保活任务把 3 个健康账号（2808303731/0424871282/36360053870）误标停用，非人工操作、不在异常/保号池。根因链：这批账号导入时凭证源缺 `expiredAt` → keepalive 按「宁可错杀」强制刷新 → ExchangeToken 走 `sa.Host`/`defaultChatAPIHost`（trae-api-cn.mchost.guru）→ **该 host 上 `/cloudide/api/v3/trae/oauth/ExchangeToken` 不存在（实测 TLB 404 页）** → `isRefreshDeadError` 把 404 也判 token 死 → `markSessionDead` 写 `disabled=true`。正确 host 是 `api.trae.cn`（假 token 实测返回 401 业务 JSON）。2 个带健康 `expiredAt` 的账号只是被 skipped 才幸免——同为定时炸弹。
+
+- **`keepalive.go`**：
+  - `keepaliveExchange` auth host **固定为 `defaultAPIHost`（api.trae.cn）**，不再复用 `sa.Host`（chat/account host，语义不同——本事故根源）；
+  - `isRefreshDeadError` 收紧为**只认 HTTP 401/403**（业务层拒绝）：404=网关路由缺失、400=参数校验、5xx/网络=瞬态，一律归 `failed` 不判死；
+  - 新增**重试调度**：daily run 后每 10 分钟对失败账号重试，每账号每日最多 50 次（22:00 daily run 重置），同账号刷新禁止并发（`refreshAuthGuarded` in-flight 互斥，用户指定节奏）；
+  - daily run 汇总行后逐账号打印 `Nickname: Status (Detail)` 进容器日志（此前只有计数行，误杀无法事后诊断）。
+- **`authguard.go`（新增）**：disabled 标记守护——生产同时实锤 core 的 15 分钟 auto-refresh 重建 auth 文件会**抹掉插件写入的 disabled/note**（「磁盘 enabled、面板停用」错位根源，且磁盘标记被抹后 keepalive 次日会再杀一遍）。手动停用与 session-dead 登记进守护注册表，每 5 分钟核对物理文件，发现标记丢失则 fold 写回（读最新→只改 disabled/note→写，保留宿主轮换的其他字段）；面板「启用」即解除守护。config 开关 `auth_flag_guard`（默认开启）。注册表在内存，插件重启后由下一次停用事件重建。
+- **已知限制**：JWT 型 refreshToken（新版 Trae 客户端，含 `.-_=` 字符）对正确 host 也返回 400 参数无效（10101），**ExchangeToken 无法为其续命**——access token 有效期内（约 6 天）账号正常服务，到期后需重新导入；重试调度会持续以 10 分钟间隔尝试（若上游日后兼容即自动恢复）。
+- 测试：`TestIsRefreshDeadError` 补 404/400→不判死断言；新增 `TestKeepaliveExchangeHostFixed`（seam `hostHTTPDoFn` 断言 host 固定 api.trae.cn）、`TestRefreshRetryBudget`（50 次预算耗尽→调度器不再选中；成功→清零）、`TestPerAuthRefreshMutex`（同账号 10 并发→峰值在飞数=1，9 个被拒非排队）、`TestReapplyDisabledFlag`（fold 保留宿主全部字段）。哨兵：404 判死复活→判定测试 FAIL；guard 返回原文→fold 测试 FAIL；均还原全绿。
+- 涉及文件：`keepalive.go` / `keepalive_test.go` / `authguard.go`（新）/ `authguard_test.go`（新）/ `management.go` / `config.go` / `main.go` / `VERSION` / `CHANGELOG.md`
+
 ## 0.1.49
 
 ### Fix — 失败冷却改为固定 15s，不再指数退避（1/3/10 分钟）

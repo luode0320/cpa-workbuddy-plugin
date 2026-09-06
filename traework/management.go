@@ -515,6 +515,12 @@ func handleToggleDisabled(req pluginapi.ManagementRequest, disable bool) map[str
 			}
 			if err := persistDisabledToggle(f.AuthIndex, f.ID, disable); err == nil {
 				n++
+				// Keep the guard registry in sync with the persisted flag.
+				if disable {
+					guardRegister(f.AuthIndex, f.ID, "", "manual")
+				} else {
+					guardUnregister(f.AuthIndex)
+				}
 			}
 		}
 		return map[string]any{"ok": true, "action": action, "count": n}
@@ -530,6 +536,9 @@ func handleToggleDisabled(req pluginapi.ManagementRequest, disable bool) map[str
 			}
 			if disable {
 				clearActiveAuthIfMatch(f.ID)
+				guardRegister(f.AuthIndex, f.ID, "", "manual")
+			} else {
+				guardUnregister(f.AuthIndex)
 			}
 			return map[string]any{"ok": true, "action": action, "auth_index": f.AuthIndex, "id": f.ID}
 		}
