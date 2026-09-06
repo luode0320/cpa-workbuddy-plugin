@@ -57,9 +57,11 @@ func TestFailoverCooldownFor_Fixed(t *testing.T) {
 
 func TestRecordAccountFailure_FixedCooldown(t *testing.T) {
 	resetFailover(t)
-	// Every failure — 1st, 2nd, 3rd, 4th — cools for exactly 15 seconds.
+	// Every HARD failure — 1st, 2nd, 3rd, 4th — cools for exactly 15 seconds.
+	// (403 is a hard account-level failure; 429 became soft-only in 0.1.52,
+	// see test/traework/account_failover_softfail_test.go.)
 	for i := 1; i <= 4; i++ {
-		recordAccountFailure("acc-1", 429, "rate limit")
+		recordAccountFailure("acc-1", 403, "forbidden")
 		assertCooldownNear(t, "acc-1", 15*time.Second)
 	}
 }
@@ -96,10 +98,11 @@ func TestRecordAccountFailure_Business4xxExcluded(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("count = %d after two 400s, want 0", count)
 	}
-	// 429 counts on top of nothing; another 429 also cools 15s (fixed).
-	recordAccountFailure("acc-1", 429, "rate limit")
+	// 403 counts on top of nothing; another 403 also cools 15s (fixed).
+	// (429 is soft-only since 0.1.52 — see test/traework/account_failover_softfail_test.go.)
+	recordAccountFailure("acc-1", 403, "forbidden")
 	assertCooldownNear(t, "acc-1", 15*time.Second)
-	recordAccountFailure("acc-1", 429, "rate limit")
+	recordAccountFailure("acc-1", 403, "forbidden")
 	assertCooldownNear(t, "acc-1", 15*time.Second)
 }
 
@@ -206,7 +209,7 @@ func TestIsAccountFailure_Classification(t *testing.T) {
 
 func TestFailoverCooldownExpiry(t *testing.T) {
 	resetFailover(t)
-	recordAccountFailure("acc-1", 429, "rate limit")
+	recordAccountFailure("acc-1", 403, "forbidden")
 	if !isAccountCoolingDown("acc-1") {
 		t.Fatal("account should be cooling down right after failure")
 	}
@@ -217,7 +220,7 @@ func TestFailoverCooldownExpiry(t *testing.T) {
 		t.Fatal("account should be routable after cooldown expires")
 	}
 	// A new failure re-enters cooldown at the fixed 15s window.
-	recordAccountFailure("acc-1", 429, "rate limit")
+	recordAccountFailure("acc-1", 403, "forbidden")
 	assertCooldownNear(t, "acc-1", 15*time.Second)
 }
 

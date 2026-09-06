@@ -112,6 +112,33 @@ func isSoftRateLimit(status int, body string) bool {
 		strings.Contains(lower, "throttl")
 }
 
+// isEmptyStreamBody reports whether the failure text describes an upstream
+// zero-byte stream: the gateway accepted the connection and then closed it
+// before delivering any payload (host-side empty_stream). The pump records
+// such attempts with the canonical text "upstream stream closed before
+// first payload".
+func isEmptyStreamBody(body string) bool {
+	return strings.Contains(body, "closed before first payload") ||
+		strings.Contains(body, "empty stream") ||
+		strings.Contains(body, "invalid SSE response: missing output and done event")
+}
+
+// isTransientThrottle classifies failures that are transient upstream
+// overload signals: 429 without credit markers, soft rate-limit wording,
+// or a zero-byte upstream stream. These self-heal once the gateway
+// recovers, so they only warrant the fixed cooldown + account rotation —
+// they must NEVER advance the consecutive-failure counter nor freeze the
+// account into the anomaly pool (hard-counting them quarantines healthy
+// accounts during a gateway blip; 2026-09-06 production evidence: one blip
+// zero-byte-failed 4 healthy accounts in a row). Hard credit errors are
+// excluded first: 429 + credit marker still means account exhaustion.
+func isTransientThrottle(status int, body string) bool {
+	if isHardCreditError(status, body) {
+		return false
+	}
+	return isSoftRateLimit(status, body) || isEmptyStreamBody(body)
+}
+
 // lifecycleActionFor chooses disable/delete/none from region + credits.
 // Does not consider reenable (that needs disabled flag).
 func lifecycleActionFor(region string, cr *creditsSummary) lifecycleAction {

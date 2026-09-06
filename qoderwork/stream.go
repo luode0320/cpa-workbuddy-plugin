@@ -252,6 +252,19 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			}
 			continue
 		}
+		if !emitted {
+			// Upstream zero-byte stream: the gateway accepted the connection
+			// and closed it before the first payload (the host judges this
+			// empty_stream / Retryable and retries across accounts). Keep the
+			// stream close behavior unchanged — only fix the accounting: the
+			// attempt is a TRANSIENT-THROTTLE failure (fixed cooldown via
+			// noteAccountFailure; no consecutive-failure bump, no freeze),
+			// not a success.
+			const emptyStreamErr = "upstream stream closed before first payload"
+			publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), true, statusCode, emptyStreamErr, "", collector.ttftNS(started), curAccountLabel, sessionKey)
+			noteAccountFailure(curAuthID, statusCode, emptyStreamErr)
+			return
+		}
 		publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), false, 0, "", "", collector.ttftNS(started), curAccountLabel, sessionKey)
 		invalidateAccountCredits(curAuthID, curAuthUID)
 		resetAccountFailover(curAuthID)

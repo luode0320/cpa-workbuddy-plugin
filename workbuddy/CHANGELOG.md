@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.23
+
+### Fix — 瞬时过载类失败（429/soft rate limit/零字节断流）与硬失败拆分
+
+- 新增 `isTransientThrottle`（policy.go）：429 非 credit marker、soft rate limit 文案、上游零字节断流文案（宿主 empty_stream 口径）归为瞬时过载；429 + credit marker 仍判账号耗尽（硬）。
+- `recordAccountFailure` 拆软/硬双通道（accountFailover.go）：瞬时过载只做固定 15s 冷却 + 换号（新增 `coolDownAccount`），**不推进连续失败计数、不冻结异常池**；硬失败（credit / 401/403/404/405 / 5xx / transport）维持原语义。
+- 流泵零字节断流记账修正（stream.go）：成功分支 `emitted=false`（上游在首个 payload 前关闭流）从「记成功 + 重置 failover」改为按瞬时过载软失败记账（`publishUsage` 记失败 + `noteAccountFailure` 固定冷却）；流关闭行为不变，宿主 empty_stream Retryable 防线继续负责跨账号重试。
+- 背景：2026-09-06 生产实证（trae 网关瞬时故障窗口内 4 账号相继零字节断流，宿主跨池兜底成功）。
+- 测试：新增 `accountFailover_softfail_test.go`；既有记账测试 429 fixture 改 403 以匹配硬语义。
+
 ## 0.14.22
 
 ### Fix — HTTP 200 承载的 SSE 业务错误（配额/限流）换号（防御性同构同步）

@@ -45,6 +45,33 @@ func isSoftRateLimit(status int, body string) bool {
 		strings.Contains(lower, "4011") // Trae WAF rate-limit event code
 }
 
+// isEmptyStreamBody reports whether the failure text describes an upstream
+// zero-byte stream: the gateway accepted the connection and then closed it
+// before delivering any payload (host-side empty_stream / the collect error
+// for a 200 SSE body carrying neither output nor done). Pumps and collectors
+// record such attempts with these canonical texts.
+func isEmptyStreamBody(body string) bool {
+	return strings.Contains(body, "closed before first payload") ||
+		strings.Contains(body, "empty stream") ||
+		strings.Contains(body, "invalid SSE response: missing output and done event")
+}
+
+// isTransientThrottle classifies failures that are transient upstream
+// overload signals: 429 without credit markers, soft rate-limit wording,
+// or a zero-byte upstream stream. These self-heal once the gateway
+// recovers, so they only warrant the fixed cooldown + account rotation —
+// they must NEVER advance the consecutive-failure counter nor freeze the
+// account into the anomaly pool (hard-counting them quarantines healthy
+// accounts during a gateway blip; 2026-09-06 production evidence: one blip
+// zero-byte-failed 4 healthy accounts in a row). Hard credit errors are
+// excluded first: 429 + credit marker still means account exhaustion.
+func isTransientThrottle(status int, body string) bool {
+	if isHardCreditError(status, body) {
+		return false
+	}
+	return isSoftRateLimit(status, body) || isEmptyStreamBody(body)
+}
+
 // DeviceBlocked reports whether the check-in body indicates a device-level
 // block (Trae dedupes check-in per device per day).
 func DeviceBlocked(body string) bool {

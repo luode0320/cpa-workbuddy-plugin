@@ -1,5 +1,14 @@
 # TraeWork Plugin Changelog
 
+## 0.1.52
+
+### Fix — 瞬时过载类失败（429/soft rate limit/零字节断流）与硬失败拆分
+
+- 新增 `isTransientThrottle`（policy.go）：429 非 credit marker、soft rate limit 文案（含 Trae WAF 4011 码）、上游零字节断流文案（宿主 empty_stream 口径 / collect 层 invalid SSE 口径）归为瞬时过载；429 + credit marker 仍判账号耗尽（硬）。
+- `recordAccountFailure` 拆软/硬双通道（accountFailover.go）：瞬时过载只做固定 15s 冷却 + 换号（新增 `coolDownAccount`），**不推进连续失败计数、不冻结异常池**；硬失败（credit / 401/403/404/405 / 5xx / transport）维持原语义。
+- 背景：2026-09-06 生产实证，Trae 网关瞬时故障窗口内 4 个健康账号相继零字节断流（宿主判 empty_stream 并跨账号兜底成功），硬计数会把整池误冻结进异常池。traework collect 层零字节 EOF 已按错误收尾并经 `reconcileAfterExecutorError` 记账，软分类在记账层自动生效，泵收尾行为不变。
+- 测试：新增 `test/traework/account_failover_softfail_test.go`（软失败不推进计数、零字节文案软通道、429+credit 保持硬、硬失败回归、分类边界表驱动）；既有记账测试 429 fixture 改 403 以匹配硬语义。
+
 ## 0.1.51
 
 ### Fix — HTTP 200 承载的 SSE 业务错误（配额/限流）不再漏换号

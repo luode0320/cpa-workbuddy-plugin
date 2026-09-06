@@ -146,10 +146,33 @@ func shouldRotateOnUpstreamErr(status int, errBody string) bool {
 	return isAccountLevel4xx(status)
 }
 
+// coolDownAccount sets only the fixed cooldown window for an account,
+// without touching the consecutive-failure counter or the anomaly pool.
+// Used by the transient-throttle (soft) failure path: those failures
+// self-heal when the upstream gateway recovers, so counting them would
+// quarantine healthy accounts during a gateway blip.
+func coolDownAccount(authID string) bool {
+	failoverMu.Lock()
+	defer failoverMu.Unlock()
+	st := failoverStates[authID]
+	if st == nil {
+		st = &authFailoverState{}
+		failoverStates[authID] = st
+	}
+	st.cooldownUntil = time.Now().Add(failoverCooldown)
+	return true
+}
+
 // recordAccountFailure increments the consecutive-failure counter for the
 // account and extends its cooldown window by the fixed failoverCooldown.
 // Returns true when the failure was counted (i.e. isAccountFailure).
 // Callers are expected to key on the same auth.ID the scheduler uses.
+//
+// Transient-throttle failures (429 without credit markers, soft rate-limit
+// wording, upstream zero-byte stream — see isTransientThrottle) take the
+// SOFT path: cooldown only, never a counter bump nor a freeze. Hard
+// failures (credit / 401/403/404/405 / 5xx / transport) keep the original
+// semantics below.
 //
 // When the new count crosses anomalyThreshold() (default 10, configurable
 // via `anomaly_pool_threshold:`), the account is moved into the anomaly set
@@ -158,8 +181,14 @@ func shouldRotateOnUpstreamErr(status int, errBody string) bool {
 // background goroutine because it touches host.auth.list + direct file
 // write and would otherwise stall the request hot path.
 func recordAccountFailure(authID string, status int, body string) bool {
-	if !failoverActive() || !isAccountFailure(status, body) {
+	if !failoverActive() {
 		return false
+	}
+	if !isAccountFailure(status, body) && !isTransientThrottle(status, body) {
+		return false
+	}
+	if isTransientThrottle(status, body) {
+		return coolDownAccount(authID)
 	}
 	now := time.Now()
 	var shouldFreeze bool
