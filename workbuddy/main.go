@@ -336,7 +336,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.14.21"
+var version = "0.14.22"
 
 func wbRegistration() registration {
 	return registration{
@@ -744,11 +744,14 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			}
 			break
 		}
-		// Decide whether to retry on the next account. We re-classify
-		// the surfaced upstream N (doExecuteOnce encoded it via the
-		// standard "upstream N:" prefix).
+		// Decide whether to retry on the next account. Account-level 4xx
+		// (401/403/404/405) and 429 rotate as before; an in-stream error
+		// frame on a 200 body rotates only when isAccountFailure
+		// classifies the body as account-level (quota/rate-limit markers).
+		// 5xx/0/402 keep the cooldown-only path (cross-request rotation
+		// via recordAccountFailure) and skip this loop.
 		statusCode := parseUpstreamStatusFromErr(completionErr)
-		if !isAccountLevel4xx(statusCode) || attempt >= budget || curSA == nil {
+		if !shouldRotateOnUpstreamErr(statusCode, completionErr.Error()) || attempt >= budget || curSA == nil {
 			break
 		}
 		currentID := strings.TrimSpace(curSA.Auth.AccessToken)

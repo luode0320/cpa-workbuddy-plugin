@@ -153,16 +153,25 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		}
 		// Success — pump chunks to the host stream. From here on this
 		// attempt owns the response stream and must close it before
-		// returning.
+		// returning. An in-stream error frame ({"error": ...} on a 200
+		// body) is a business failure: with zero chunks emitted it can
+		// still rotate accounts on the SAME request; once anything has
+		// reached the client the error is surfaced instead.
 		collector := &sseUsageCollector{}
 		scanner := bufio.NewScanner(newHostStreamReader(stream))
 		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+		var sseErr string
+		emitted := false
 		for scanner.Scan() {
 			content := stripDataPrefix(scanner.Text())
 			if content == "" || content == "[DONE]" {
 				continue
 			}
 			collector.feed(content)
+			if msg := sseErrorFrame(content); msg != "" {
+				sseErr = fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(msg, 200))
+				break
+			}
 			cleaned := cleanChunkJSON(content)
 			if cleaned == "" {
 				continue
@@ -176,6 +185,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 				publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), true, 0, "stream_emit: "+err.Error(), reasoningEffort, collector.ttftNS(started), curAccountLabel, sessionKey)
 				return
 			}
+			emitted = true
 		}
 		// A mid-stream read failure means the client received a truncated stream:
 		// surface it as an error frame and record the attempt as failed.
@@ -185,6 +195,35 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			noteAccountFailure(curAuthID, 0, err.Error())
 			streamEmitError(streamID, fmt.Sprintf("upstream stream read error: %v", err))
 			return
+		}
+		if sseErr != "" {
+			publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), true, statusCode, sseErr, reasoningEffort, collector.ttftNS(started), curAccountLabel, sessionKey)
+			// 200 内业务错误帧与 HTTP 4xx 同责：零泄漏（emitted=false）且账号级
+			// 分类命中且预算允许时换号续试；已泄漏分片时换号会造成输出重复或
+			// 拼接错乱，只能透传错误收尾。
+			if emitted || !shouldRotateOnUpstreamErr(statusCode, sseErr) || attempt >= budget {
+				streamEmitError(streamID, sseErr)
+				return
+			}
+			evictSessionBindingsForAuth(curAuthID)
+			nextID, nextSA, hasNext := pickNextAuth(curAuthID)
+			if !hasNext || nextSA == nil {
+				streamEmitError(streamID, sseErr)
+				return
+			}
+			nextReq, rebErr := rebuildRequestWithSA(curReq, nextSA)
+			if rebErr != nil {
+				streamEmitError(streamID, fmt.Sprintf("%s (retry rebuild failed: %v)", sseErr, rebErr))
+				return
+			}
+			curReq = nextReq
+			curAuthID = nextID
+			curAuthUID = nextSA.Account.UID
+			curAccountLabel = strings.TrimSpace(nextSA.Account.Nickname)
+			if curAccountLabel == "" {
+				curAccountLabel = curAuthUID
+			}
+			continue
 		}
 		publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), false, 0, "", reasoningEffort, collector.ttftNS(started), curAccountLabel, sessionKey)
 		invalidateAccountCredits(curAuthID, curAuthUID)
@@ -222,9 +261,10 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 		lastStatus = statusCode
 		lastErr = errOnce
 
-		// Same retry policy as pumpUpstreamStream: only account-level
-		// 4xx warrant a same-request account rotation.
-		if !isAccountLevel4xx(statusCode) {
+		// Same retry policy as pumpUpstreamStream: account-level 4xx and
+		// (new) account-classified 200 in-stream error frames warrant a
+		// same-request account rotation; 5xx/0/402 stay cooldown-only.
+		if !shouldRotateOnUpstreamErr(statusCode, errOnce.Error()) {
 			return chunks, statusCode, errOnce
 		}
 		if attempt >= budget {
@@ -275,7 +315,7 @@ func collectUpstreamStreamOnce(body []byte, sa *storedAuth, sseFramed bool, coll
 		}
 		return nil, statusCode, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(errPayload), 200))
 	}
-	chunks, errAgg := aggregateSSEWithCollector(reader, sseFramed, collector)
+	chunks, errAgg := aggregateSSEWithCollector(reader, statusCode, sseFramed, collector)
 	if errAgg != nil {
 		return chunks, statusCode, errAgg
 	}
@@ -308,7 +348,7 @@ func doExecuteOnce(body []byte, sa *storedAuth, requestedModel string) ([]byte, 
 		return nil, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200))
 	}
 	var firstByteAt time.Time
-	completion, err := aggregateCompletion(reader, requestedModel, &firstByteAt)
+	completion, err := aggregateCompletion(reader, requestedModel, statusCode, &firstByteAt)
 	if err != nil {
 		return nil, err
 	}
@@ -363,9 +403,14 @@ func clientNeedsSSEFrame(metadata map[string]any) bool {
 // translators; otherwise the payload is the raw JSON object and the host
 // chat-completions writer adds the framing itself. A mid-stream read error
 // aborts collection and is returned so the caller records the attempt as
-// failed. The collector, when non-nil, observes raw upstream chunks for usage
+// failed. An in-stream error frame ({"error": ...} on a 200 body) aborts
+// collection with the canonical "upstream N:" error so the caller's account
+// rotation can classify it; chunks collected before the frame are returned
+// alongside the error and discarded by every caller on err != nil.
+// The collector, when non-nil, observes raw upstream chunks for usage
 // extraction.
-func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageCollector) ([]pluginapi.ExecutorStreamChunk, error) {
+// 最近修改时间：2026-09-06 17:00:00；改动原因：同步 traework 的 200 SSE 业务错误换号修复。
+func aggregateSSEWithCollector(r io.Reader, statusCode int, sseFramed bool, collector *sseUsageCollector) ([]pluginapi.ExecutorStreamChunk, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	var chunks []pluginapi.ExecutorStreamChunk
@@ -376,6 +421,9 @@ func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageC
 		}
 		if collector != nil {
 			collector.feed(content)
+		}
+		if msg := sseErrorFrame(content); msg != "" {
+			return chunks, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(msg, 200))
 		}
 		cleaned := cleanChunkJSON(content)
 		if cleaned == "" {
@@ -453,7 +501,12 @@ func cleanChunkJSON(s string) string {
 	return string(out)
 }
 
-func aggregateCompletion(r io.Reader, model string, firstByteAt *time.Time) ([]byte, error) {
+// aggregateCompletion folds an upstream SSE stream into one chat.completion
+// payload. statusCode is the upstream HTTP status, used only to label an
+// in-stream error frame ({"error": ...} on a 200 body) with the canonical
+// "upstream N:" prefix so executor rotation can classify it.
+// 最近修改时间：2026-09-06 17:00:00；改动原因：同步 traework 的 200 SSE 业务错误换号修复。
+func aggregateCompletion(r io.Reader, model string, statusCode int, firstByteAt *time.Time) ([]byte, error) {
 	var content, reasoning, role, respModel, respID, finish string
 	var created int64
 	var usage map[string]any
@@ -475,6 +528,9 @@ func aggregateCompletion(r io.Reader, model string, firstByteAt *time.Time) ([]b
 		var chunk map[string]any
 		if json.Unmarshal([]byte(data), &chunk) != nil {
 			continue
+		}
+		if msg := sseErrorFrame(data); msg != "" {
+			return nil, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(msg, 200))
 		}
 		if firstByteAt != nil && firstByteAt.IsZero() {
 			*firstByteAt = time.Now()
@@ -605,6 +661,38 @@ func mergeToolCallDelta(merged, delta map[string]any) {
 		cur, _ := mfn["arguments"].(string)
 		mfn["arguments"] = cur + v
 	}
+}
+
+// sseErrorFrame extracts the message from an OpenAI-convention in-stream
+// error frame: data: {"error": {...}} or data: {"error": "..."}. The HTTP
+// status of such a stream is 200 — the business failure rides inside the
+// SSE body (production evidence: the Trae upstream carries quota/rate-limit
+// failures this way; see traework stream 389/391). Returns "" for any
+// non-error chunk so the hot path stays a single map lookup.
+// 最近修改时间：2026-09-06 17:00:00；改动原因：同步 traework 的 200 SSE 业务错误换号修复。
+func sseErrorFrame(content string) string {
+	var obj map[string]any
+	if json.Unmarshal([]byte(content), &obj) != nil {
+		return ""
+	}
+	v, present := obj["error"]
+	if !present || v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		msg, _ := t["message"].(string)
+		if msg == "" {
+			return ""
+		}
+		if code, _ := t["code"].(string); code != "" {
+			return code + ": " + msg
+		}
+		return msg
+	case string:
+		return t
+	}
+	return ""
 }
 
 func stripDataPrefix(s string) string {

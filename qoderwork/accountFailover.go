@@ -132,6 +132,20 @@ func isAccountLevel4xx(status int) bool {
 	return false
 }
 
+// shouldRotateOnUpstreamErr is the unified same-request rotation gate shared
+// by the execute loop and the stream paths. HTTP 200 means the transport
+// succeeded, but the SSE body may still carry a business-level failure (an
+// OpenAI-convention error frame); those are classified through
+// isAccountFailure (credit / rate-limit markers). Any other status keeps the
+// account-level 4xx heuristic. （同步自 workbuddy：200 SSE 业务错误换号，
+// 2026-09-06）
+func shouldRotateOnUpstreamErr(status int, errBody string) bool {
+	if status == http.StatusOK {
+		return isAccountFailure(status, errBody)
+	}
+	return isAccountLevel4xx(status)
+}
+
 // recordAccountFailure increments the consecutive-failure counter for the
 // account and extends its cooldown window by the fixed failoverCooldown.
 // Returns true when the failure was counted (i.e. isAccountFailure).

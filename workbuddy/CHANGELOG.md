@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.14.22
+
+### Fix — HTTP 200 承载的 SSE 业务错误（配额/限流）换号（防御性同构同步）
+
+上游可能把业务错误以 **HTTP 200 + SSE 错误帧**（OpenAI 惯例 `{"error":...}`）下发，此前流式路径只检查 HTTP statusCode ≥ 400，200 内错误帧会被当作普通 chunk 透传给客户端。traework 生产实锤（feed「失败（HTTP 200）」零泄漏日志）后全插件同构加固：
+
+- **`accountFailover.go`**：新增统一换号判定 `shouldRotateOnUpstreamErr(status, body)`——200 走 `isAccountFailure` body marker 分类（credit/rate-limit），其余状态维持 `isAccountLevel4xx` 启发式。
+- **`stream.go`**：新增 `sseErrorFrame` 错误帧提取（`{"error":{"message":...}}`/`{"error":"..."}`，非错误帧返回 ""）；`pumpUpstreamStream` 成功分支检测错误帧，零泄漏（`emitted=false`）+ 账号级命中 + 预算允许时 `evictSessionBindingsForAuth` + `pickNextAuth` + 重建签名换号续试，已泄漏则透传；`collectUpstreamStream`/`aggregateSSEWithCollector`/`aggregateCompletion` 同步检测，错误以 canonical `upstream 200: ...` 形态 fail-fast。
+- **`main.go`**：`handleExecExecute` 循环换号判定改用 `shouldRotateOnUpstreamErr`（200 错误帧纳入）。
+- **测试**：`stream_errorframe_test.go` 新增 5 组表驱动测试（提取契约/换号边界/聚合 fail-fast/健康流零误伤）。
+- 同构修复同步自 traework-provider 0.1.51（根源修复）/ qoderwork-provider 0.9.10。
+
 ## 0.14.21
 
 ### Fix — 失败冷却改为固定 15s，不再指数退避（1/3/10 分钟）

@@ -167,8 +167,14 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		}
 		// Success — pump chunks to the host stream. From here on this
 		// attempt owns the response stream and must close it before
-		// returning.
+		// returning. An in-stream error frame ({"error": ...} inside the
+		// unwrapped inner body on a 200 response) is a business failure:
+		// with zero chunks emitted it can still rotate accounts on the
+		// SAME request; once anything has reached the client the error is
+		// surfaced instead. （同步自 workbuddy 200 错误帧换号）
 		collector := &sseUsageCollector{}
+		var sseErr string
+		emitted := false
 		scanner := bufio.NewScanner(newHostStreamReader(stream))
 		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
@@ -189,6 +195,10 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 				break
 			}
 			collector.feed(bodyStr)
+			if msg := sseErrorFrame(bodyStr); msg != "" {
+				sseErr = fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(msg, 200))
+				break
+			}
 			cleaned := cleanChunkJSON(bodyStr)
 			if cleaned == "" {
 				continue
@@ -202,6 +212,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 				publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), true, 0, "stream_emit: "+err.Error(), "", collector.ttftNS(started), curAccountLabel, sessionKey)
 				return
 			}
+			emitted = true
 		}
 		// A mid-stream read failure means the client received a truncated stream:
 		// surface it as an error frame and record the attempt as failed.
@@ -211,6 +222,35 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			noteAccountFailure(curAuthID, 0, err.Error())
 			streamEmitError(streamID, fmt.Sprintf("upstream stream read error: %v", err))
 			return
+		}
+		if sseErr != "" {
+			publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), true, statusCode, sseErr, "", collector.ttftNS(started), curAccountLabel, sessionKey)
+			// 200 内业务错误帧与 HTTP 4xx 同责：零泄漏（emitted=false）且账号级
+			// 分类命中且预算允许时换号续试；已泄漏分片时换号会造成输出重复或
+			// 拼接错乱，只能透传错误收尾。
+			if emitted || !shouldRotateOnUpstreamErr(statusCode, sseErr) || attempt >= budget || encodedBody == "" {
+				streamEmitError(streamID, sseErr)
+				return
+			}
+			evictSessionBindingsForAuth(curAuthID)
+			nextID, nextSA, hasNext := pickNextAuth(curAuthID)
+			if !hasNext || nextSA == nil {
+				streamEmitError(streamID, sseErr)
+				return
+			}
+			nextReq, rebErr := rebuildRequestWithQoderAuth(nextSA, encodedBody, upstreamModel)
+			if rebErr != nil {
+				streamEmitError(streamID, fmt.Sprintf("%s (retry rebuild failed: %v)", sseErr, rebErr))
+				return
+			}
+			curReq = nextReq
+			curAuthID = nextID
+			curAuthUID = nextSA.Account.UID
+			curAccountLabel = strings.TrimSpace(nextSA.Account.Nickname)
+			if curAccountLabel == "" {
+				curAccountLabel = curAuthUID
+			}
+			continue
 		}
 		publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), false, 0, "", "", collector.ttftNS(started), curAccountLabel, sessionKey)
 		invalidateAccountCredits(curAuthID, curAuthUID)
@@ -269,6 +309,7 @@ func collectUpstreamStreamQoder(encodedBody string, sa *storedAuth, modelKey str
 			continue
 		}
 		chunks := make([]pluginapi.ExecutorStreamChunk, 0, 64)
+		var sseErrMsg string
 		scanner := bufio.NewScanner(newHostStreamReader(stream))
 		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
@@ -288,6 +329,12 @@ func collectUpstreamStreamQoder(encodedBody string, sa *storedAuth, modelKey str
 			if collector != nil {
 				collector.feed(bodyStr)
 			}
+			if msg := sseErrorFrame(bodyStr); msg != "" {
+				// 200 内业务错误帧（同步路径）：与 4xx 同责处理，跳出后
+				// 走统一换号判定。（同步自 workbuddy 200 错误帧换号）
+				sseErrMsg = msg
+				break
+			}
 			cleaned := cleanChunkJSON(bodyStr)
 			if cleaned == "" {
 				continue
@@ -298,6 +345,27 @@ func collectUpstreamStreamQoder(encodedBody string, sa *storedAuth, modelKey str
 			chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: json.RawMessage(cleaned)})
 		}
 		stream.Close()
+		if sseErrMsg != "" {
+			// Surface the in-stream failure with the canonical "upstream N:"
+			// shape so parseUpstreamStatusFromErr (caller side) sees 200.
+			// Zero-leak rule: chunks already collected means partial output
+			// was produced — propagate instead of rotating.
+			lastStatus = http.StatusOK
+			errResp := fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(sseErrMsg, 200))
+			if len(chunks) > 0 || !shouldRotateOnUpstreamErr(http.StatusOK, sseErrMsg) || attempt >= budget || curSA == nil {
+				return chunks, http.StatusOK, errResp
+			}
+			currentID := strings.TrimSpace(curSA.Auth.AccessToken)
+			if currentID == "" {
+				currentID = strings.TrimSpace(curSA.Account.UID)
+			}
+			_, nextSA, hasNext := pickNextAuth(currentID)
+			if !hasNext || nextSA == nil {
+				return chunks, http.StatusOK, errResp
+			}
+			curSA = nextSA
+			continue
+		}
 		if err := scanner.Err(); err != nil {
 			return chunks, 0, fmt.Errorf("upstream stream read error: %w", err)
 		}
@@ -383,7 +451,14 @@ func cleanChunkJSON(s string) string {
 	return string(out)
 }
 
-func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
+// aggregateCompletion folds a flat inner SSE stream (already unwrapped from
+// the QoderWork nested envelope by aggregateQoderSSE) into a single OpenAI
+// chat.completion object. statusCode is the upstream HTTP status (200 on the
+// aggregate path) and is echoed into the canonical "upstream N:" error when
+// an in-stream OpenAI error frame is detected — a business failure inside a
+// 200 body must fail fast instead of folding a bogus completion.
+// （同步自 workbuddy 200 错误帧 fail-fast）
+func aggregateCompletion(r io.Reader, model string, statusCode int) ([]byte, error) {
 	var content, reasoning, role, respModel, respID, finish string
 	var created int64
 	var usage map[string]any
@@ -394,6 +469,7 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 	toolCalls := map[int]map[string]any{}
 	var toolOrder []int
 	var scanErr error
+	var sseErr string
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -401,6 +477,13 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 		data := stripDataPrefix(scanner.Text())
 		if data == "" || data == "[DONE]" {
 			continue
+		}
+		if msg := sseErrorFrame(data); msg != "" {
+			// Business failure inside an HTTP 200 body: fail fast with the
+			// canonical "upstream N:" shape; the frame and everything after
+			// it must not be folded into the completion.
+			sseErr = fmt.Sprintf("upstream %d: %s", statusCode, msg)
+			break
 		}
 		var chunk map[string]any
 		if json.Unmarshal([]byte(data), &chunk) != nil {
@@ -459,6 +542,11 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 	if err := scanner.Err(); err != nil {
 		scanErr = err
 	}
+	// An in-stream business error frame (200 body) outranks a truncated read:
+	// the failure is definitive and must surface with the canonical prefix.
+	if sseErr != "" {
+		return nil, fmt.Errorf("%s", sseErr)
+	}
 	// A mid-stream read failure means the folded completion is truncated. The
 	// host discards the payload entirely when the plugin returns an error
 	// (sdk/api/handlers executeWithPluginExecutor), so fail fast here instead
@@ -510,11 +598,13 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 //
 // where `body` is a JSON-encoded string that itself contains an OpenAI-style
 // chunk: {"choices":[{"delta":{...}}],...}. We unwrap the outer envelope,
-// then aggregate the inner chunks using the same logic as aggregateCompletion.
+// then aggregate the inner chunks using the same logic as aggregateCompletion
+// (including the in-stream error-frame fail-fast; statusCode is echoed into
+// the canonical "upstream N:" error).
 //
 // Terminal frames: data:{"body":"[DONE]"} followed by an event:finish line
 // with timing metadata (ignored).
-func aggregateQoderSSE(r io.Reader, model string) ([]byte, error) {
+func aggregateQoderSSE(r io.Reader, model string, statusCode int) ([]byte, error) {
 	// Unwrap the nested SSE into an inner plain-text stream of OpenAI chunks,
 	// then delegate to aggregateCompletion. We materialise the inner stream
 	// into memory because the gateway's SSE is short-lived (one chat call)
@@ -549,7 +639,38 @@ func aggregateQoderSSE(r io.Reader, model string) ([]byte, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("qoder SSE read: %w", err)
 	}
-	return aggregateCompletion(strings.NewReader(inner.String()), model)
+	return aggregateCompletion(strings.NewReader(inner.String()), model, statusCode)
+}
+
+// sseErrorFrame extracts the message from an OpenAI-convention in-stream
+// error frame — `{"error":{"message":...}}` or `{"error":"..."}` — and
+// returns "" for any normal content chunk. Upstreams occasionally deliver
+// quota/rate-limit failures as HTTP 200 + an error frame instead of a 4xx
+// status; without this check those frames would be forwarded to the client
+// as if they were regular content. （同步自 workbuddy，2026-09-06）
+func sseErrorFrame(content string) string {
+	var obj map[string]any
+	if json.Unmarshal([]byte(content), &obj) != nil {
+		return ""
+	}
+	v, present := obj["error"]
+	if !present || v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		msg, _ := t["message"].(string)
+		if msg == "" {
+			return ""
+		}
+		if code, _ := t["code"].(string); code != "" {
+			return code + ": " + msg
+		}
+		return msg
+	case string:
+		return t
+	}
+	return ""
 }
 
 // mergeToolCallDelta folds one streaming tool_call fragment into the merged

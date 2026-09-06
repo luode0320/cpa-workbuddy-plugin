@@ -1,5 +1,17 @@
 # QoderWork Plugin Changelog
 
+## 0.9.10
+
+### Fix — HTTP 200 承载的 SSE 业务错误（配额/限流）换号（防御性同构同步）
+
+上游可能把业务错误以 **HTTP 200 + SSE 错误帧**（OpenAI 惯例 `{"error":...}`，嵌套信封的 inner 层）下发，此前流式路径只检查 HTTP statusCode ≥ 400，200 内错误帧会被当作普通 chunk 透传。traework 生产实锤后同构加固（逐函数适配旧版嵌套解包架构，未整文件覆盖）：
+
+- **`accountFailover.go`**：新增统一换号判定 `shouldRotateOnUpstreamErr`（200 走 body marker 分类，其余维持 `isAccountLevel4xx`）。
+- **`stream.go`**：新增 `sseErrorFrame` 错误帧提取；`pumpUpstreamStream` 成功分支检测 inner 错误帧，零泄漏（`emitted=false`）+ 账号级命中 + 预算允许时 `evictSessionBindingsForAuth` + `pickNextAuth` + `rebuildRequestWithQoderAuth` 换号续试，已泄漏则透传；`collectUpstreamStreamQoder` 同路径检测换号（已收 chunks 时零泄漏判定）；`aggregateCompletion`/`aggregateQoderSSE` 加 `statusCode` 参数并在 inner 层检测错误帧 fail-fast。
+- **`main.go`**：`handleExecExecute` 循环换号判定改用 `shouldRotateOnUpstreamErr`；`doExecuteOnceQoder` 向聚合层透传 statusCode。
+- **测试**：`stream_errorframe_test.go` 新增 6 组表驱动测试（含嵌套信封路径）。
+- 同构修复同步自 traework-provider 0.1.51（根源修复）/ workbuddy-provider 0.14.22。
+
 ## 0.9.9
 
 ### Fix — 失败冷却改为固定 15s，不再指数退避（1/3/10 分钟）

@@ -301,7 +301,8 @@ func handleExecStream(raw []byte) ([]byte, error) {
 // runTraeAsyncStream 协调一个宿主 StreamID 下的多账号上游尝试，并只在最终结果上收尾一次。
 // [参数] initialAuth: 初始账号；initialAuthID: 初始账号标识；ctx: 逻辑请求上下文；deps: 上游与宿主流依赖。
 // [返回] 无；最终正文、错误和关闭通过 deps 发送，所有 attempt 的用量分别按实际账号记录。
-// 最近修改时间：2026-09-01 23:50:00；改动原因：异步伪完成必须保持原 StreamID 打开并在当前请求内切到健康账号。
+// 最近修改时间：2026-09-06 16:40:00；改动原因：HTTP 200 + event:error 的账号级业务失败
+// （配额/限流 SSE 帧）在未泄漏分片时与 HTTP 4xx 同责换号，并驱逐会话绑定防亲和钉死死号。
 func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsyncStreamContext, deps traeAsyncStreamDeps) {
 	curSA := initialAuth
 	curAuthID := initialAuthID
@@ -413,9 +414,32 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 			log.Printf("[traework] exec stream async attempt error: request_id=%s stream_id=%s model=%s auth_hash=%s attempt=%d status=%d emitted=%v err=%s",
 				requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, statusCode, result.Emitted, truncateRedacted(result.Err.Error(), 200))
 			reconcileAfterExecutorError(curAuthID, statusCode, result.Err.Error())
-			emitTraeAsyncError(ctx.StreamID, result.Err.Error(), deps)
+			// 每个 attempt 的用量先按实际账号记失败（与 openErr / pseudo 分支同款），
+			// 再决定透传错误还是换号续试。
 			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, statusCode, result.Err.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
-			return
+			// HTTP 200 + event:error 是上游的业务失败通道（配额 14018 / 限流 4011
+			// 等以 200 SSE 帧下发，生产实证 stream 389/391），账号级分类命中时与
+			// HTTP 4xx 同责：未向客户端泄漏任何分片且预算允许时在同一请求内换号。
+			// emitted=true 说明客户端已收到部分正文，换号会造成输出重复或拼接错乱，
+			// 只能透传错误收尾。
+			if result.Emitted || !isAccountFailure(statusCode, result.Err.Error()) || attempt >= ctx.Budget {
+				emitTraeAsyncError(ctx.StreamID, result.Err.Error(), deps)
+				return
+			}
+			evictSessionBindingsForAuth(curAuthID)
+			nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID)
+			if !hasNext || nextSA == nil {
+				emitTraeAsyncError(ctx.StreamID, result.Err.Error(), deps)
+				return
+			}
+			if _, seen := triedAuthIDs[nextAuthID]; seen {
+				break
+			}
+			triedAuthIDs[nextAuthID] = struct{}{}
+			curSA = nextSA
+			curAuthID = nextAuthID
+			curAuthUID = strings.TrimSpace(nextSA.UserID)
+			continue
 		}
 
 		// 3. 只有最终可交付 attempt 能发送 finish；随后恰好关闭一次宿主 StreamID。

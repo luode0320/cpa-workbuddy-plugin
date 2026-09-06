@@ -1,5 +1,15 @@
 # TraeWork Plugin Changelog
 
+## 0.1.51
+
+### Fix — HTTP 200 承载的 SSE 业务错误（配额/限流）不再漏换号
+
+生产实锤（feed 记录「失败（HTTP 200）」，日志 `status=200 emitted=false err=upstream 200: Your requests have exceeded the quota.`）：上游把配额/限流类业务错误以 **HTTP 200 + SSE 错误帧**下发（OpenAI 惯例 `{"error":{"message":...}}`），HTTP 层成功、业务层失败；而异步流式路径 `runTraeAsyncStream` 只在 4xx 时换号，200 错误帧被当作普通失败直接透传——客户端看到「失败（HTTP 200）」且账号不轮换，同一耗尽账号被反复命中。
+
+- **`executor.go`**：`runTraeAsyncStream` 的 `result.Err` 分支补齐同请求换号——零泄漏（`emitted=false`，客户端未收到任何分片）且 `isAccountFailure(200, body)` 命中且预算允许时，`evictSessionBindingsForAuth` 防会话亲和钉死后 `pickNextAuth` 换号重试；已泄漏分片时透传错误（防输出重复/拼接错乱）。同步路径原有换号不受影响。
+- **`test/traework/async_stream_failover_test.go`**：新增 2 个测试——`TestRunTraeAsyncStreamRetriesSSEQuotaErrorOnSameRequest`（200+quota 错误 A→B 换号零泄漏，健康账号完整输出）与 `TestRunTraeAsyncStreamSSEErrorAfterEmitDoesNotRotate`（泄漏后不换号）。
+- 同构修复同步至 workbuddy-provider 0.14.22 / qoderwork-provider 0.9.10。
+
 ## 0.1.50
 
 ### Fix — keepalive 误杀：ExchangeToken 用错 host，404 被判「refresh token 死亡」批量停用账号

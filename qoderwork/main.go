@@ -338,7 +338,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.9"
+var version = "0.9.10"
 
 func wbRegistration() registration {
 	return registration{
@@ -744,10 +744,14 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		// Decide whether to retry on the next account. We re-classify
 		// the surfaced upstream N (doExecuteOnceQoder encoded it via the
 		// standard "upstream N:" prefix). Business 400 is request-shaped
-		// and would fail identically on every account; 5xx/0/429/402 are
+		// and would fail identically on every account; 5xx/0/402 are
 		// surfaced immediately (cooldown handles long-term failure).
+		// 200 is also eligible: doExecuteOnceQoder folds an in-stream
+		// OpenAI error frame into "upstream 200: ..." and
+		// shouldRotateOnUpstreamErr classifies the body via the account
+		// failure markers. （同步自 workbuddy 200 错误帧换号）
 		statusCode := parseUpstreamStatusFromErr(completionErr)
-		if !isAccountLevel4xx(statusCode) || attempt >= budget || curSA == nil {
+		if !shouldRotateOnUpstreamErr(statusCode, completionErr.Error()) || attempt >= budget || curSA == nil {
 			break
 		}
 		currentID := strings.TrimSpace(curSA.Auth.AccessToken)
@@ -815,7 +819,7 @@ func doExecuteOnceQoder(encodedBody string, sa *storedAuth, upstreamModel, reque
 		}
 		return nil, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(payload, 200))
 	}
-	return aggregateQoderSSE(reader, requestedModel)
+	return aggregateQoderSSE(reader, requestedModel, statusCode)
 }
 
 // stripProviderPrefix removes the leading "qoder/" (or any "<provider>/")

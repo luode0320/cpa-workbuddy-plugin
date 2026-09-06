@@ -100,6 +100,19 @@ func isAccountFailure(status int, body string) bool {
 	return isAccountLevel4xx(status)
 }
 
+// shouldRotateOnUpstreamErr 判定一次上游失败是否值得在同请求内换号。
+// 账号级 4xx（401/403/404/405）与 429 沿用既有契约；HTTP 200 内的 SSE
+// 业务错误帧（上游以 200 承载配额/限流等失败，见 traework 生产实证）
+// 走 body-marker 分类，命中账号级同样换号。5xx/0/402 维持跨请求冷却
+// 路径，不在同请求内烧预算。
+// 最近修改时间：2026-09-06 17:00:00；改动原因：同步 traework 的 200 SSE 业务错误换号修复。
+func shouldRotateOnUpstreamErr(status int, errBody string) bool {
+	if status == http.StatusOK {
+		return isAccountFailure(status, errBody)
+	}
+	return isAccountLevel4xx(status)
+}
+
 // isAccountLevel4xx reports whether a 4xx status reflects an account-level
 // problem (the credential/endpoint on this account is wrong) rather than a
 // request-level problem. 401/403/404/405 mean the upstream rejected access

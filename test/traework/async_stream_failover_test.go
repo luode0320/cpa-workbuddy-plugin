@@ -276,3 +276,111 @@ func (r *hostHTTPResponse) BodyString() string {
 	}
 	return string(r.Body)
 }
+
+// TestRunTraeAsyncStreamRetriesSSEQuotaErrorOnSameRequest 验证 HTTP 200 + event:error 的
+// 账号级业务失败（配额超限）在同一 StreamID 内换号，而不是把 200 失败直接透传给客户端。
+// [参数] t: 当前测试。
+// [返回] 无；断言失败时由 testing 终止用例。
+// 最近修改时间：2026-09-06 16:40:00；改动原因：生产实证 stream 389/391——200 SSE 配额错误未换号直接失败。
+func TestRunTraeAsyncStreamRetriesSSEQuotaErrorOnSameRequest(t *testing.T) {
+	disableUsageOutputs(t)
+	resetFailover(t)
+	authA := &traeAuth{Token: "token-a", UserID: "uid-a"}
+	authB := &traeAuth{Token: "token-b", UserID: "uid-b"}
+	opened := make([]string, 0, 2)
+	clientCloses := 0
+	var emitted [][]byte
+	deps := traeAsyncStreamDeps{
+		Open: func(_ *traeAuth, _ map[string]any, authID, _ string) (traeAsyncUpstream, int, error) {
+			opened = append(opened, authID)
+			if authID == "auth-a" {
+				body := "event: error\ndata: {\"code\":14018,\"message\":\"Your requests have exceeded the quota.\"}\n\n"
+				return traeAsyncUpstream{Reader: strings.NewReader(body), Close: func() {}}, 200, nil
+			}
+			return traeAsyncUpstream{
+				Reader: strings.NewReader(streamTestResponse(strings.Repeat("HEALTHY_SECOND_ACCOUNT_OUTPUT_", 30)).BodyString()),
+				Close:  func() {},
+			}, 200, nil
+		},
+		PickNextAuth: func(currentAuthID string) (string, *traeAuth, bool) {
+			if currentAuthID != "auth-a" {
+				t.Fatalf("unexpected current auth: %s", currentAuthID)
+			}
+			return "auth-b", authB, true
+		},
+		Emit: func(_ string, payload []byte) error {
+			emitted = append(emitted, bytes.Clone(payload))
+			return nil
+		},
+		Close: func(string) { clientCloses++ },
+	}
+	runTraeAsyncStream(authA, "auth-a", traeAsyncStreamContext{
+		StreamID: "client-stream-sse-quota", Model: "qwen-max-latest", UpstreamModel: "qwen3.8-max",
+		Payload: map[string]any{"stream": true},
+		Started: time.Now(), InputChars: 3000, Budget: 1,
+	}, deps)
+
+	if len(opened) != 2 || opened[0] != "auth-a" || opened[1] != "auth-b" {
+		t.Fatalf("opened = %v, want [auth-a auth-b]", opened)
+	}
+	if clientCloses != 1 {
+		t.Fatalf("client closes = %d, want 1", clientCloses)
+	}
+	joined := bytes.Join(emitted, nil)
+	if bytes.Contains(joined, []byte("exceeded the quota")) {
+		t.Fatal("quota error leaked into client stream")
+	}
+	if !bytes.Contains(joined, []byte("HEALTHY_SECOND_ACCOUNT")) {
+		t.Fatal("second account result missing from client stream")
+	}
+	if countFinishReason(emitted, "stop") != 1 {
+		t.Fatalf("stop count = %d, want 1", countFinishReason(emitted, "stop"))
+	}
+	if count, _, _ := failoverStateSnapshot("auth-a"); count != 1 {
+		t.Fatalf("auth-a failure count = %d, want 1", count)
+	}
+}
+
+// TestRunTraeAsyncStreamSSEErrorAfterEmitDoesNotRotate 验证客户端已收到分片（emitted=true）后
+// 出现 SSE 错误不得换号（避免输出重复或拼接错乱），只能透传错误收尾。
+// [参数] t: 当前测试。
+// [返回] 无；断言失败时由 testing 终止用例。
+// 最近修改时间：2026-09-06 16:40:00；改动原因：锁定换号仅限零泄漏分片的边界。
+func TestRunTraeAsyncStreamSSEErrorAfterEmitDoesNotRotate(t *testing.T) {
+	disableUsageOutputs(t)
+	resetFailover(t)
+	authA := &traeAuth{Token: "token-a", UserID: "uid-a"}
+	openCount := 0
+	clientCloses := 0
+	var emitted [][]byte
+	deps := traeAsyncStreamDeps{
+		Open: func(_ *traeAuth, _ map[string]any, _ string, _ string) (traeAsyncUpstream, int, error) {
+			openCount++
+			body := "event: output\ndata: {\"response\":\"partial healthy text\"}\n\n" +
+				"event: error\ndata: {\"code\":\"4011\",\"message\":\"rate limit exceeded\"}\n\n"
+			return traeAsyncUpstream{Reader: strings.NewReader(body), Close: func() {}}, 200, nil
+		},
+		PickNextAuth: func(string) (string, *traeAuth, bool) {
+			t.Fatal("post-emit SSE error must not select another account")
+			return "", nil, false
+		},
+		Emit: func(_ string, payload []byte) error {
+			emitted = append(emitted, bytes.Clone(payload))
+			return nil
+		},
+		Close: func(string) { clientCloses++ },
+	}
+	runTraeAsyncStream(authA, "auth-a", traeAsyncStreamContext{
+		StreamID: "client-stream-post-emit", Model: "qwen-max-latest", UpstreamModel: "qwen3.8-max",
+		Started: time.Now(), InputChars: 50, Budget: 3,
+	}, deps)
+	if openCount != 1 {
+		t.Fatalf("open count = %d, want 1", openCount)
+	}
+	if clientCloses != 1 {
+		t.Fatalf("client closes = %d, want 1", clientCloses)
+	}
+	if !bytes.Contains(bytes.Join(emitted, nil), []byte("rate limit exceeded")) {
+		t.Fatalf("post-emit error not surfaced: %q", emitted)
+	}
+}
