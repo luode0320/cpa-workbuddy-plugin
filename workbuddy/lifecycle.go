@@ -1,5 +1,5 @@
 // lifecycle.go implements credit-based auth lifecycle for workbuddy:
-//   - CN exhausted  → disable auth file (disabled:true), re-enable after check-in when credits return
+//   - CN exhausted  → update note but do NOT write disabled:true (manual-toggle-only policy)
 //   - Global exhausted → delete auth file (one-shot quota)
 //   - Unknown credits → no-op (never mis-kill)
 //   - Hard credit errors from executor → recheck credits then apply policy
@@ -67,11 +67,15 @@ func pruneLifecycleState() {
 	})
 }
 
-// disableAuth writes disabled:true for a CN (or fallback) account.
+// disableAuth writes disabled:true only when the caller passes a manual
+// toggle marker (extra contains manual_disable:true). Auto lifecycle paths
+// (extra=nil) only update the note — the user explicitly requested that only
+// manual panel toggle controls the disabled flag. Auto-failover routing
+// handles exhausted accounts via anomaly/failure counters.
 // extra merges additional top-level keys into the auth file (the panel toggle
 // passes {"manual_disable":true}). An existing manual_disable marker is ALWAYS
-// carried forward, so an auto-disable (exhausted) of an already-manually-
-// disabled account never erases the user's choice.
+// carried forward, so an auto note refresh of an already-manually-disabled
+// account never erases the user's choice.
 func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string, extra map[string]any) error {
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
@@ -94,12 +98,49 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 	if err == nil && manualDisableFromAuthJSON(phys.JSON) {
 		merged["manual_disable"] = true
 	}
-	// Skip the write only when state+note are unchanged AND nothing new to
-	// merge — a manual toggle must persist even inside the lifecycle TTL.
-	if len(merged) == 0 && lifecycleStateUnchanged(authID, true, note) {
+	// Determine whether this is a manual toggle or an auto-lifecycle call.
+	// Only the manual toggle (extra contains manual_disable:true) writes
+	// disabled:true — auto-lifecycle paths keep the existing disabled flag
+	// unchanged and only update the note.
+	_, isManualToggle := extra["manual_disable"]
+	if !isManualToggle {
+		// Auto-lifecycle: preserve the existing disabled flag from disk.
+		existingDisabled := false
+		physOK := err == nil
+		if physOK {
+			existingDisabled = parseDisabledFromAuthJSON(phys.JSON)
+			note = displayNote(sa, cr, existingDisabled)
+			// When the physical file is already disabled (manual toggle),
+			// carry the manual_disable marker forward.
+			if existingDisabled && manualDisableFromAuthJSON(phys.JSON) {
+				merged["manual_disable"] = true
+			}
+		}
+		// Skip the write when state+note are unchanged.
+		if lifecycleStateUnchanged(authID, existingDisabled, note) {
+			return nil
+		}
+		name := authFileNameFor(sa)
+		path := ""
+		legacyPath := ""
+		if phys != nil {
+			name, path, legacyPath = resolveAuthFileTarget(sa, phys)
+		}
+		raw, err := buildAuthFileJSON(sa, existingDisabled, note, merged)
+		if err != nil {
+			return err
+		}
+		if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
+			return err
+		}
+		rememberLifecycleState(authID, false, note)
+		accountCache.Delete(authID)
 		return nil
 	}
-	if err == nil && parseDisabledFromAuthJSON(phys.JSON) && len(merged) == 0 {
+	// Manual toggle path: write disabled:true.
+	// Skip the write only when state+note are unchanged AND nothing new to
+	// merge — a manual toggle must persist even inside the lifecycle TTL.
+	if lifecycleStateUnchanged(authID, true, note) {
 		// already disabled; still refresh note if needed
 		if lifecycleStateUnchanged(authID, true, note) {
 			return nil
@@ -188,13 +229,14 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 		}
 	}
 	if path == "" {
-		// Last resort: disable instead of silent no-op (never invent a random path).
-		note := displayNote(sa, nil, true) + " · 应删除但无 path"
+		// Last resort: preserve the existing disabled flag (never auto-disable).
+		existingDisabled := parseDisabledFromAuthJSON(phys.JSON)
+		note := displayNote(sa, nil, existingDisabled)
 		extra := map[string]any{}
 		if manualDisableFromAuthJSON(phys.JSON) {
 			extra["manual_disable"] = true
 		}
-		raw, berr := buildAuthFileJSON(sa, true, note, extra)
+		raw, berr := buildAuthFileJSON(sa, existingDisabled, note, extra)
 		if berr != nil {
 			return fmt.Errorf("no path and build failed: %w", berr)
 		}

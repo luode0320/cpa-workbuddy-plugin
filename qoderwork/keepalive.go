@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -194,10 +195,10 @@ func persistAuthTokens(authIndex string, sa *storedAuth) error {
 	return hostAuthSaveJSON(name, raw)
 }
 
-// markSessionDead flags an auth disabled via the host's standard `disabled`
-// field (CPA natively skips disabled auths in scheduling). The note records
-// the reason so the panel can surface "session dead, re-login required"
-// without needing a custom [SESSION-DEAD] marker.
+// markSessionDead logs the session-dead condition but does NOT write
+// disabled:true — the user explicitly requested that only manual panel
+// toggle controls the disabled flag. Auto-failover routing handles dead
+// accounts via anomaly/failure counters without needing disabled:true.
 func markSessionDead(authIndex, authID string, sa *storedAuth) error {
 	phys, err := hostAuthGetPhysical(authIndex)
 	if err != nil {
@@ -206,11 +207,11 @@ func markSessionDead(authIndex, authID string, sa *storedAuth) error {
 	if phys.Disabled {
 		return nil // already disabled; nothing to do
 	}
+	log.Printf("[keepalive] session dead for %s (auth_index=%s): refresh token expired, not auto-disabling (manual-toggle-only policy)", authID, authIndex)
 	var doc map[string]any
 	if err := json.Unmarshal(phys.JSON, &doc); err != nil {
 		return err
 	}
-	doc["disabled"] = true
 	doc["note"] = "Session dead (TOKEN_EXPIRE): re-login required"
 	raw, err := json.Marshal(doc)
 	if err != nil {

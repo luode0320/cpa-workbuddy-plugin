@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.24
+
+### Fix — 停用策略改为 manual-toggle-only：自动生命周期不再写 disabled
+
+- 背景：2026-09-06 用户确认策略——**停用只能由面板手动控制**；账号故障（refresh token 死亡、积分耗尽等）交由 failover 换号兜底（不可用账号会被自动切换，不影响请求），不再自动停用。生产实锤：账号 392978863762272 被 keepalive 自动停用（ExchangeToken 10101 refresh token 失效），非人工操作。
+- `keepalive.go`：`markSessionDead` 不再写 `disabled:true`，只更新 note（`Session expired (refresh token dead): re-login required`）并记日志，路由层按失败核算自然避开该账号。
+- `lifecycle.go`：`disableAuth` 拆分手动/自动双路径——仅面板手动停用（extra 含 `manual_disable:true`）写 `disabled:true`；自动生命周期路径（extra=nil）保留磁盘现有 disabled 标志不变，只更新 note；已手动停用账号的 `manual_disable` 标记在自动 note 刷新时永远携带（防抹掉用户选择）；`deleteAuth` 的无 path fallback 不再强制写 disabled。
+- 修复过程中消除 nil pointer 隐患：磁盘文件不可读（phys=nil）时 `parseDisabledFromAuthJSON` 不再解引用。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.14.23
 
 ### Fix — 瞬时过载类失败（429/soft rate limit/零字节断流）与硬失败拆分

@@ -1,5 +1,5 @@
 // lifecycle.go implements credit-based auth lifecycle for qoderwork:
-//   - CN exhausted  → disable auth file (disabled:true), re-enable after check-in when credits return
+//   - CN exhausted  → update note but do NOT write disabled:true (manual-toggle-only policy)
 //   - exhausted → delete auth file (one-shot quota)
 //   - Unknown credits → no-op (never mis-kill)
 //   - Hard credit errors from executor → recheck credits then apply policy
@@ -68,29 +68,33 @@ func pruneLifecycleState() {
 	})
 }
 
-// disableAuth writes disabled:true for a CN (or fallback) account.
+// disableAuth updates the note for an exhausted account but does NOT write
+// disabled:true — the user explicitly requested that only manual panel toggle
+// controls the disabled flag. Auto-failover routing handles exhausted accounts
+// via anomaly/failure counters without needing disabled:true.
 func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string) error {
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
 	defer mu.Unlock()
 
-	note := displayNote(sa, cr, true)
+	// Preserve the existing disabled flag from disk — never auto-disable.
+	phys, err := hostAuthGetPhysical(authIndex)
+	existingDisabled := false
+	if err == nil {
+		existingDisabled = parseDisabledFromAuthJSON(phys.JSON)
+	}
+	note := displayNote(sa, cr, existingDisabled)
 	if reason != "" && !strings.Contains(note, reason) {
-		// keep note short; reason only if room
 		if len(note)+len(reason) < 75 {
 			note = note + " · " + reason
 		}
 	}
-	if lifecycleStateUnchanged(authID, true, note) {
+	if lifecycleStateUnchanged(authID, existingDisabled, note) {
 		return nil
 	}
-	// Prefer live physical file to preserve any extra fields if present.
-	phys, err := hostAuthGetPhysical(authIndex)
-	if err == nil && parseDisabledFromAuthJSON(phys.JSON) {
-		// already disabled; still refresh note if needed
-		if lifecycleStateUnchanged(authID, true, note) {
-			return nil
-		}
+	// Skip the write if already disabled and nothing changed.
+	if err == nil && existingDisabled && lifecycleStateUnchanged(authID, true, note) {
+		return nil
 	}
 	name := authFileNameFor(sa)
 	path := ""
@@ -98,14 +102,14 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 	if phys != nil {
 		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
 	}
-	raw, err := buildAuthFileJSON(sa, true, note, nil)
+	raw, err := buildAuthFileJSON(sa, existingDisabled, note, nil)
 	if err != nil {
 		return err
 	}
 	if err := hostAuthPersistMigrate(name, path, legacyPath, raw); err != nil {
 		return err
 	}
-	rememberLifecycleState(authID, true, note)
+	rememberLifecycleState(authID, existingDisabled, note)
 	accountCache.Delete(authID)
 	return nil
 }
@@ -169,9 +173,10 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 		}
 	}
 	if path == "" {
-		// Last resort: disable instead of silent no-op (never invent a random path).
-		note := displayNote(sa, nil, true) + " · 应删除但无 path"
-		raw, berr := buildAuthFileJSON(sa, true, note, nil)
+		// Last resort: preserve the existing disabled flag (never auto-disable).
+		existingDisabled := parseDisabledFromAuthJSON(phys.JSON)
+		note := displayNote(sa, nil, existingDisabled) + " · 应删除但无 path"
+		raw, berr := buildAuthFileJSON(sa, existingDisabled, note, nil)
 		if berr != nil {
 			return fmt.Errorf("no path and build failed: %w", berr)
 		}

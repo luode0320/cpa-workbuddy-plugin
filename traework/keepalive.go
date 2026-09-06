@@ -262,22 +262,27 @@ func foldKeepaliveIntoDoc(base []byte, sa *traeAuth) []byte {
 	return raw
 }
 
-// markSessionDead flags an auth disabled + note so routing stops sending it
-// traffic until the user re-imports a fresh credential. Direct physical write
-// (host.auth.save would rebuild the record as Active).
+// markSessionDead logs the session-dead condition but does NOT write
+// disabled:true — the user explicitly requested that only manual panel
+// toggle controls the disabled flag. Auto-failover routing handles dead
+// accounts via anomaly/failure counters without needing disabled:true.
 func markSessionDead(authIndex, authID string, sa *traeAuth) error {
 	phys, err := hostAuthGetPhysical(authIndex)
 	if err != nil {
 		return err
 	}
 	if phys.Disabled {
-		return nil // already disabled; nothing to do
+		// Already manually disabled — nothing to do.
+		return nil
 	}
+	log.Printf("[keepalive] session dead for %s (auth_index=%s): refresh token expired, not auto-disabling (manual-toggle-only policy)", authID, authIndex)
+	// Write a note so the panel can surface the stale-session state, but
+	// do NOT set disabled:true — the routing layer will handle it via
+	// failover/anomaly counters.
 	var doc map[string]any
 	if err := json.Unmarshal(phys.JSON, &doc); err != nil {
 		return err
 	}
-	doc["disabled"] = true
 	note := "Session expired (refresh token dead): re-login required"
 	doc["note"] = note
 	raw, err := json.Marshal(doc)
@@ -288,12 +293,7 @@ func markSessionDead(authIndex, authID string, sa *traeAuth) error {
 	if name == "" {
 		name = authFileNameFor(sa)
 	}
-	if err := persistAuthDirect(name, phys.Path, "", raw); err != nil {
-		return err
-	}
-	// Protect the flag from host auto-refresh rebuilds (authguard).
-	guardRegister(authIndex, authID, note, "session-dead")
-	return nil
+	return persistAuthDirect(name, phys.Path, "", raw)
 }
 
 // refreshRetryMax is the per-account daily retry budget for failed refreshes

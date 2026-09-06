@@ -184,15 +184,19 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			continue
 		}
 
-		statusCode := parseUpstreamStatusFromErr(callErr)
-		// Retry only on account-level 4xx (401/403/404/405/429); business 400,
-		// 5xx and transport errors surface immediately (cooldown handles them).
-		if !isAccountLevel4xx(statusCode) || attempt >= budget || curSA == nil {
-			reconcileAfterExecutorError(usedAuthID, statusCode, callErr.Error())
-			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error(), "", 0, authUID, sessionKey)
-			return nil, callErr
-		}
-		nextAuthID, nextSA, hasNext := pickNextAuth(usedAuthID)
+	statusCode := parseUpstreamStatusFromErr(callErr)
+	// 换号判定用 isAccountFailure：open 阶段 transport 级错误（TTFB 超时等
+	// status=0，生产实证 stream 4553：上游对单账号挂起 60s 不回响应头）与
+	// 5xx / 429 / 账号级 4xx 同责换号（与流式路径对齐），400 业务错仍直通。
+	// 核算由 callLLM（upstream.go）统一记账，换号路径不重复计数；终局保留
+	// 既有核算入口。换号前驱逐绑定防会话亲和钉死死号。
+	if !isAccountFailure(statusCode, callErr.Error()) || attempt >= budget || curSA == nil {
+		reconcileAfterExecutorError(usedAuthID, statusCode, callErr.Error())
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error(), "", 0, authUID, sessionKey)
+		return nil, callErr
+	}
+	evictSessionBindingsForAuth(usedAuthID)
+	nextAuthID, nextSA, hasNext := pickNextAuth(usedAuthID)
 		if !hasNext || nextSA == nil {
 			break
 		}
@@ -301,8 +305,10 @@ func handleExecStream(raw []byte) ([]byte, error) {
 // runTraeAsyncStream 协调一个宿主 StreamID 下的多账号上游尝试，并只在最终结果上收尾一次。
 // [参数] initialAuth: 初始账号；initialAuthID: 初始账号标识；ctx: 逻辑请求上下文；deps: 上游与宿主流依赖。
 // [返回] 无；最终正文、错误和关闭通过 deps 发送，所有 attempt 的用量分别按实际账号记录。
-// 最近修改时间：2026-09-06 16:40:00；改动原因：HTTP 200 + event:error 的账号级业务失败
-// （配额/限流 SSE 帧）在未泄漏分片时与 HTTP 4xx 同责换号，并驱逐会话绑定防亲和钉死死号。
+// 最近修改时间：2026-09-06 23:40:00；改动原因：open 阶段 transport 级错误
+// （TTFB 超时等 status=0，生产实证 stream 4553：上游对单账号挂起 60s 不回响应头）
+// 原先被 isAccountLevel4xx 判为非账号级直接终局，池中健康候选未被尝试；改用
+// isAccountFailure 与 pump 阶段同责换号，400 业务错仍直通。
 func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsyncStreamContext, deps traeAsyncStreamDeps) {
 	curSA := initialAuth
 	curAuthID := initialAuthID
@@ -333,7 +339,13 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 			log.Printf("[traework] exec stream async open error: request_id=%s stream_id=%s model=%s auth_hash=%s attempt=%d status=%d err=%s",
 				requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, statusCode, truncateRedacted(openErr.Error(), 200))
 			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, statusCode, openErr.Error(), "", 0, curAuthUID, ctx.SessionKey)
-			if !isAccountLevel4xx(statusCode) || attempt >= ctx.Budget {
+			// 换号判定用 isAccountFailure 而非 isAccountLevel4xx：open 阶段的
+			// transport 级错误（TTFB 超时、连接重置等 status=0——生产实证 stream
+			// 4553：上游对单账号挂起 60s 不回响应头，池中健康候选未被尝试）与
+			// 5xx / 429 / 账号级 4xx 同责换号；400 业务错仍直通。核算已由
+			// upstream.go 打开失败路径统一记账（noteAccountFailure），此处仅对
+			// 4xx 维持既有二次核算（快速隔离死号），transport/5xx 不重复计数。
+			if !isAccountFailure(statusCode, openErr.Error()) || attempt >= ctx.Budget {
 				if isAccountLevel4xx(statusCode) {
 					reconcileAfterExecutorError(curAuthID, statusCode, openErr.Error())
 					evictSessionBindingsForAuth(curAuthID)
@@ -341,9 +353,11 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 				emitTraeAsyncError(ctx.StreamID, openErr.Error(), deps)
 				return
 			}
-			// 账号级 4xx 必须核算冷却并驱逐绑定，否则下个请求的会话亲和仍会选回该死号
+			// 可换号失败必须驱逐绑定，否则下个请求的会话亲和仍会选回该死号
 			//（生产实证：225774 反复 401，host 每次 cache-miss 重绑死号 → pool exhausted）。
-			reconcileAfterExecutorError(curAuthID, statusCode, openErr.Error())
+			if isAccountLevel4xx(statusCode) {
+				reconcileAfterExecutorError(curAuthID, statusCode, openErr.Error())
+			}
 			evictSessionBindingsForAuth(curAuthID)
 			nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID)
 			if !hasNext || nextSA == nil {
@@ -496,7 +510,9 @@ func emitTraeAsyncError(streamID, message string, deps traeAsyncStreamDeps) {
 // runTraeSyncStream 在同步流式请求内执行账号重试；伪完成分片在切号前直接丢弃。
 // [参数] initialAuth: 初始账号；payload: 上游负载；ctx: 重试与用量上下文；deps: 上游和候选选择依赖。
 // [返回] 最终健康账号分片；账号池耗尽或上游失败时返回错误且不返回伪完成分片。
-// 最近修改时间：2026-09-01 23:40:00；改动原因：HTTP 200 伪完成必须恢复当前请求，而不是把短结果返回后只影响下一请求。
+// 最近修改时间：2026-09-06 23:40:00；改动原因：open 阶段 transport 级错误（status=0）
+// 与 5xx 原先被 isAccountLevel4xx 判为非账号级直接终局，改用 isAccountFailure 同责
+// 换号（与 async 分支对齐）；换号路径补 evictSessionBindingsForAuth 防会话亲和钉死。
 func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSyncStreamContext, deps traeSyncStreamDeps) ([]pluginapi.ExecutorStreamChunk, error) {
 	curSA := initialAuth
 	curAuthID := ctx.AuthID
@@ -514,12 +530,23 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 		resp, callErr := deps.CallLLM(curSA, payload, curAuthID)
 		if callErr != nil {
 			statusCode := parseUpstreamStatusFromErr(callErr)
-			if !isAccountLevel4xx(statusCode) || attempt >= ctx.Budget || curSA == nil {
-				log.Printf("[traework] exec stream upstream error: model=%s auth_hash=%s status=%d err=%s", ctx.Model, authLogHash(curAuthID), statusCode, truncateRedacted(callErr.Error(), 200))
-				reconcileAfterExecutorError(curAuthID, statusCode, callErr.Error())
+			log.Printf("[traework] exec stream upstream error: model=%s auth_hash=%s status=%d err=%s", ctx.Model, authLogHash(curAuthID), statusCode, truncateRedacted(callErr.Error(), 200))
+			// 换号判定用 isAccountFailure：open 阶段 transport 级错误（TTFB 超时等
+			// status=0）与 5xx / 429 / 账号级 4xx 同责换号，400 业务错仍直通。核算
+			// 由 callLLM（upstream.go）统一记账；此处仅对 4xx 维持既有二次核算，
+			// transport/5xx 不重复计数，并驱逐绑定防会话亲和钉死死号。
+			if !isAccountFailure(statusCode, callErr.Error()) || attempt >= ctx.Budget || curSA == nil {
+				if isAccountLevel4xx(statusCode) {
+					reconcileAfterExecutorError(curAuthID, statusCode, callErr.Error())
+					evictSessionBindingsForAuth(curAuthID)
+				}
 				publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, statusCode, callErr.Error(), "", 0, curAuthUID, ctx.SessionKey)
 				return nil, callErr
 			}
+			if isAccountLevel4xx(statusCode) {
+				reconcileAfterExecutorError(curAuthID, statusCode, callErr.Error())
+			}
+			evictSessionBindingsForAuth(curAuthID)
 			nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID)
 			if !hasNext || nextSA == nil {
 				break

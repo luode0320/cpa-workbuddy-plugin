@@ -1,14 +1,14 @@
 // lifecycle.go implements credit-based auth lifecycle for traework:
 //
-//   - credits exhausted (remain <= 0, cached snapshot) → disable the auth file
-//     (disabled:true) so routing stops wasting requests on an account with no
-//     balance left.
+//   - credits exhausted (remain <= 0, cached snapshot) → report as exhausted
+//     but do NOT write disabled:true. The user explicitly requested that only
+//     manual panel toggle controls the disabled flag. Auto-failover routing
+//     handles exhausted accounts via anomaly/failure counters (see
+//     accountFailover.go / anomaly.go).
 //   - Unknown credits → no-op (never mis-kill an account we couldn't read).
 //   - No auto re-enable: a manually-disabled account must never be silently
 //     re-enabled, and an exhausted account comes back only via the panel's
-//     启用 button or a fresh import. (workbuddy re-enables CN accounts after
-//     check-in; traework keeps operator control — the panel already surfaces
-//     remain per account, so "enable when recharged" is one click.)
+//     启用 button or a fresh import.
 //
 // Trigger: the dashboard calls reconcileAllAccounts(force=true) after a
 // forced credits refresh (panel 刷新 button), so exhaust → disable is
@@ -51,9 +51,11 @@ type lifecycleReconcileRow struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
-// reconcileAllAccounts walks every traework auth and disables accounts whose
-// cached credits are exhausted. force=false skips the pass entirely (the
-// dashboard uses force=true after a refresh; nothing else calls it).
+// reconcileAllAccounts walks every traework auth and reports which accounts
+// have exhausted credits. It does NOT write disabled:true — the user
+// explicitly requested that only manual panel toggle controls the disabled
+// flag. Auto-failover routing handles exhausted accounts via anomaly/failure
+// counters without needing disabled:true. force=false skips the pass.
 // Returns the per-account rows for the panel's lifecycle section.
 func reconcileAllAccounts(force bool) []map[string]any {
 	if !force || !lifecycleEnabled() {
@@ -77,7 +79,6 @@ func reconcileAllAccounts(force bool) []map[string]any {
 		row.Nickname = sa.Nickname
 		cr, ok := cachedCredits(f.ID)
 		if !ok || cr == nil {
-			// Unknown credits: never auto-kill.
 			row.Action = "skipped"
 			row.Reason = "no credits snapshot"
 			out = append(out, rowMap(row))
@@ -90,19 +91,9 @@ func reconcileAllAccounts(force bool) []map[string]any {
 			out = append(out, rowMap(row))
 			continue
 		}
-		if phys.Disabled {
-			row.Action = "already_disabled"
-			out = append(out, rowMap(row))
-			continue
-		}
-		if err := persistDisabledToggle(f.AuthIndex, f.ID, true); err != nil {
-			row.Action = "skipped"
-			row.Reason = "disable failed: " + err.Error()
-			out = append(out, rowMap(row))
-			continue
-		}
-		row.Action = "disabled"
-		// Exhausted account can no longer carry the panel pin or sticky
+		row.Action = "exhausted"
+		row.Reason = "credits exhausted; auto-failover handles routing (manual-toggle-only policy)"
+		// Exhausted account should not carry the panel pin or sticky
 		// conversations — release both so routing moves on.
 		clearActiveAuthIfMatch(f.ID)
 		evictSessionBindingsForAuth(f.ID)

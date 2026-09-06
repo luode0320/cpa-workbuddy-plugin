@@ -1,5 +1,19 @@
 # TraeWork Plugin Changelog
 
+## 0.1.53
+
+### Fix — open 阶段 transport 超时（status=0）同请求换号，trae 会话一次失败不再直接失败
+
+生产实锤（2026-09-06 23:11，stream 4553，账号 1993858382824235 / DeepSeek-V4-Flash）：trae 会话连续请求中上游对单账号挂起 **60s 不回响应头**（`net/http: timeout awaiting response headers`，宿主桥 TTFB 超时，status=0），旧判定 `isAccountLevel4xx(0)=false` 视为「非账号级」直接 `emitTraeAsyncError` 终局——**池中健康候选（auth_hash=e99c8102 同期正常服务）未被尝试**，客户端一次失败即整请求失败、重试列为空。这是 0.1.51「HTTP 200 SSE 业务错误」之外的又一漏换号路径：open 阶段判定用 `isAccountLevel4xx`，而 pump 阶段（0.1.51 起）用 `isAccountFailure`（status=0/5xx → 换号），两阶段判据不一致。
+
+- **`executor.go`** 三处对齐：
+  - `runTraeAsyncStream` open error 分支：换号判定 `isAccountLevel4xx` → `isAccountFailure`——transport（status=0）/ 5xx / 429 / 账号级 4xx 同责换号；400 业务错仍直通（kill switch 契约不变）。换号路径无条件 `evictSessionBindingsForAuth` 防会话亲和钉死死号（对齐 pump 分支与 0.1.30 FIX-B 语义）。
+  - `runTraeSyncStream` callErr 分支：同款判定对齐；换号路径补核算入账与绑定驱逐（原换号路径两者皆缺）。
+  - 非流式 completion 路径 callErr 分支：同款判定对齐 + 换号前驱逐绑定。
+- **核算口径不变**：open 错误的故障核算由 `upstream.go`（`callLLM`/`callLLMStream` 的 `noteAccountFailure`）统一记账，executor 端不重复计数（transport/5xx 单计）；4xx 维持既有二次核算（快速隔离死号）。transport 状态 0 归硬通道（0.1.52 软硬拆分语义不变），连续抖动最多推进冷却计数，成功一次即 `resetAccountFailover` 清零。
+- **设计边界**：workbuddy / qoderwork 的 open 阶段 5xx/transport 直通是各自有注释的策略决策（v0.14.2 / v0.9.1：同请求换号不保证下一个上游不是 5xx，跨请求冷却处理），本次不动；traework 因生产实证单账号挂起 + 池中健康候选 + pump 阶段既有同语义，判定为内部不一致修复。
+- 测试：新增 `executor_open_failover_test.go`——`TestAsyncOpenTransportTimeoutRotatesAuth`（A 超时→B 健康输出，超时错误不透传客户端）、`TestSyncOpenTransportTimeoutRotatesAuth`（sync 同构）、`TestAsyncOpenBusiness400DoesNotRotate`（400 业务错单次尝试直通，烧预算回归保护）。cgo-shim build+vet+test 全绿。
+
 ## 0.1.52
 
 ### Fix — 瞬时过载类失败（429/soft rate limit/零字节断流）与硬失败拆分

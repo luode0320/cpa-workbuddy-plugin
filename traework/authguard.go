@@ -1,15 +1,17 @@
-// authguard.go re-applies the plugin-owned disabled flag when the host's
-// auto-refresh rebuilds an auth file and silently drops it. Observed
-// 2026-09-05/06 on the production server: core's 15-minute auto-refresh
-// rewrote auth files and wiped the top-level disabled/note written by
-// markSessionDead / persistDisabledToggle, leaving the panel and the disk
-// out of sync and allowing dead accounts back into routing.
+// authguard.go re-applies the plugin-owned disabled flag (set by manual panel
+// toggle) when the host's auto-refresh rebuilds an auth file and silently
+// drops it. Observed 2026-09-05/06 on the production server: core's 15-minute
+// auto-refresh rewrote auth files and wiped the top-level disabled/note
+// written by persistDisabledToggle, leaving the panel and the disk out of
+// sync and allowing disabled accounts back into routing.
+// markSessionDead no longer writes disabled:true — only manual toggle
+// controls the disabled flag per user policy.
 //
-// Mechanics: registry entries are registered on manual disable and session
-// death, unregistered on enable. A 5-minute loop folds the flag back into
-// the CURRENT physical file content (read-latest → mutate → write), so any
-// token fields the host rotated are preserved — only disabled/note are
-// re-applied. Gate via config_yaml `auth_flag_guard: false`.
+// Mechanics: registry entries are registered on manual disable, unregistered
+// on enable. A 5-minute loop folds the flag back into the CURRENT physical
+// file content (read-latest → mutate → write), so any token fields the host
+// rotated are preserved — only disabled/note are re-applied. Gate via
+// config_yaml `auth_flag_guard: false`.
 package main
 
 import (
@@ -20,12 +22,13 @@ import (
 	"time"
 )
 
-// guardEntry is one protected disabled flag. authID (file id) is kept for
-// logging; the registry key is the host auth index used by hostAuthGetPhysical.
+// guardEntry is one protected disabled flag set by a manual panel toggle.
+// authID (file id) is kept for logging; the registry key is the host auth
+// index used by hostAuthGetPhysical.
 type guardEntry struct {
 	authID string
 	note   string
-	source string // "manual" | "session-dead"
+	source string // "manual" only (session-dead no longer writes disabled:true)
 }
 
 var (

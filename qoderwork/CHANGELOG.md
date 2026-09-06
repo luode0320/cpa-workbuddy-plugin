@@ -1,5 +1,14 @@
 # QoderWork Plugin Changelog
 
+## 0.9.12
+
+### Fix — 停用策略改为 manual-toggle-only：自动生命周期不再写 disabled
+
+- 背景：2026-09-06 用户确认策略——**停用只能由面板手动控制**；账号故障（refresh token 死亡、积分耗尽等）交由 failover 换号兜底（不可用账号会被自动切换，不影响请求），不再自动停用。生产实锤：traework 侧账号 392978863762272 被 keepalive 自动停用，qoderwork 同构路径一并拆除。
+- `keepalive.go`：`markSessionDead` 不再写 `disabled:true`，只更新 note（`Session expired (refresh token dead): re-login required`）并记日志。
+- `lifecycle.go`：`disableAuth`（积分耗尽等自动生命周期专用）保留磁盘现有 disabled 标志不变，只更新 note（`buildAuthFileJSON(sa, existingDisabled, ...)`）；`deleteAuth` 的无 path fallback 不再强制写 disabled。面板手动停用链路不经此函数，行为不变。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.9.11
 
 ### Fix — 瞬时过载类失败（429/soft rate limit/零字节断流）与硬失败拆分
