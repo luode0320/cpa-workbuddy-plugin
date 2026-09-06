@@ -336,6 +336,7 @@ git -c http.proxy=socks5h://127.0.0.1:1080 push origin main
 43. **宿主对 management 响应强制 HTML 转义 + 全路由（含 GET）强制 management key（2026-09-04 实测，traework 0.1.38→0.1.39 三缺陷）**：宿主 v7.2.129 两条硬行为——①`ServeManagementHTTP` 写出前对 JSON body 递归 `html.EscapeString`（`&`→`&amp;`），插件侧无法关闭，URL 类字段交给浏览器前必须前端 `replaceAll("&amp;","&")` 还原；②`/v0/management/` 全部路由（含 GET）经 management key 中间件，浏览器直接导航的回调（OAuth bounce）必 401。**浏览器可见的回调/页面必须注册进 `Resources`**（挂 `/v0/resource/plugins/<id>/`，免 key 且响应不转义），`handleManagement` 的 resPrefix GET 分支按子路径分发。验证脚本解析被转义的 URL 前先 `replace("&amp;","&")`，否则 parse_qs 只出 1 个参数、后续参数全部被吞进前值（易误判为缺参数）。
 44. **release-assets 产物命名混合：目录连字符、zip 下划线（2026-09-05 实测）**：`download-release-assets.py` 产物目录是 `release-assets/<provider-id>-<ver>/`（连字符，如 `workbuddy-provider-0.14.20/`），目录内 zip 是 `<provider-id>_<ver>_<goos>_<goarch>.zip`（下划线，如 `workbuddy-provider_0.14.20_linux_amd64.zip`）。解压/脚本 glob 时目录段与文件段分隔符不同，写错任一都报找不到文件；`git add` 用连字符目录名。
 45. **三插件并行发布时 CI 轮询窗口需留足（2026-09-05 实测）**：三个 dispatch run 并行排队，15 分钟窗口只完成 1 个（runner 并发紧张），另 2 个在第二个 15 分钟窗口的第 1/8 分钟才完成——单轮询脚本超时不代表 CI 失败，先查 run 实际 status 再决定是否重试，直接对超时 run 起第二轮轮询即可。
+46. **`actions/runs?head_sha=` 过滤器必须传完整 40 位 SHA（2026-09-06 实测）**：传短 SHA（如 `c748f79`）恒返回空列表——dispatch 204 后轮询脚本 120s 查不到 run 会误判为「索引延迟」。先 `git rev-parse HEAD` 取完整 SHA 再查询；或改查 `actions/runs?event=workflow_dispatch&per_page=6` 按 `head_sha[:7]` 前缀匹配。
 
 ## 权责边界与不负责事项
 
