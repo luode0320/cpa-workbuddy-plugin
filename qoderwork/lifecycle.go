@@ -68,10 +68,14 @@ func pruneLifecycleState() {
 	})
 }
 
+// MANUAL-TOGGLE-ONLY POLICY (2026-09-08, user mandate): the ONLY thing that
+// may set disabled:true on a qoderwork auth file is the user's explicit
+// manual toggle. No automatic path may ever write disabled:true.
+//
 // disableAuth updates the note for an exhausted account but does NOT write
 // disabled:true — the user explicitly requested that only manual panel toggle
 // controls the disabled flag. Auto-failover routing handles exhausted accounts
-// via anomaly/failure counters without needing disabled:true.
+// via the failure cooldown (fixed 15s) without needing disabled:true.
 func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string) error {
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
@@ -212,7 +216,7 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 // clearDeletedAccountState removes every in-memory trace of a deleted account
 // for each provided key (auth.ID, auth_index, and account UID may each have
 // been used as a key by different code paths). Covers lifecycle state, cached
-// credits/plan/checkin, active selection, anomaly membership, and failover
+// credits/plan/checkin, active selection, and failover
 // cooldown/counter. （同步自 workbuddy 0.14.7 账号删除功能；保号池与
 // session 绑定清理随对应功能同步后在此补充）
 func clearDeletedAccountState(keys ...string) {
@@ -225,7 +229,6 @@ func clearDeletedAccountState(keys ...string) {
 		accountCache.Delete(k)
 		clearActiveAuthIfMatch(k)
 		preserveSetClear(k)
-		anomalySetClear(k)
 		clearFailoverStateForAuth(k)
 		evictSessionBindingsForAuth(k)
 	}

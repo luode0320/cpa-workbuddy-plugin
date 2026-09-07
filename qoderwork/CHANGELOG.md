@@ -1,5 +1,21 @@
 # QoderWork Plugin Changelog
 
+## 0.9.14
+
+### Feat — 移除异常池机制：失败一律走固定 15s 冷却（对齐 workbuddy 0.14.26 / traework 0.1.55）
+
+- 背景：用户确认异常池容易误触发（连续失败即永久隔离，需手动解冻），决定三插件同步彻底移除；账号故障统一交给固定 15s 失败冷却 + 换号兜底。
+- **删除** `anomaly.go` / `anomaly_config.go`：连败冻结（`freezeAccountForAnomaly`）、异常集合（`anomalySet`）、每日 00:00 自动复活、`/unfreeze` 管理路由与 `anomaly_pool_threshold` / `anomaly_refresh_enabled` 配置全部下线。
+- `accountFailover.go`：连败冻结判定删除，任何失败只推进冷却；连败计数保留（面板展示用）。
+- `scheduler.go` / `active_auth.go` / `failover_retry.go` / `session_auth.go`：删除全部 anomaly 过滤层与谓词。
+- `usage_config.go`：删除 anomaly 两个配置键的解析与应用。
+- `preserve.go`：迁入 `authFileErr` / `errAuthIndexRequired` / `errAuthMissing`（原在 anomaly.go 定义）。
+- `counter.go`：修正注释漂移——落盘节奏实际挂在 `preserveWatchdogLoop` 的 tick（watchdog.go:284 `flushCounters()`），非已删除的 anomalyRefreshLoop；首个计数落盘 tick 前新增一次性 `purgeLegacyAnomalyFlags()` 清扫。
+- **新增** `anomaly_purge.go` + `anomaly_purge_test.go`：watchdog 启动时剥离物理 auth 文件遗留 `anomaly:true` 死字段（幂等，坏文件不盲写）。
+- `panel.html`：删除异常徽标 / 全部解冻按钮 / `unfreezeOne` / `unfreezeAll` / 异常筛选 chip / 异常计数与汇总口径中的 anomaly 维度（JS node --check 全绿）。
+- 停用复扫：qoderwork 本就无 disabled:true 写入通道（`disableAuth` 只更新 note、透传既有 disabled）；`disableAuth` 入口固化 **MANUAL-TOGGLE-ONLY POLICY** 注释。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.9.13
 
 ### Feat — 自动签到与 token 保活调度从每日改为每 4 小时（对齐 workbuddy 0.14.25）

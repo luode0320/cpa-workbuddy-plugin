@@ -13,8 +13,7 @@ import (
 // 断流，若按硬失败计数会把整池误冻结进异常池。
 
 // TestTransientThrottle_Soft429DoesNotAdvanceCount 锁定软失败核心语义：
-// 连续 12 次 429 计数恒为 0、只有冷却生效。（qoderwork 包内无 anomaly
-// 测试 helper；冻结翻转语义由 workbuddy 同构测试覆盖。）
+// 连续 12 次 429 计数恒为 0、只有冷却生效。
 func TestTransientThrottle_Soft429DoesNotAdvanceCount(t *testing.T) {
 	resetFailover(t)
 	for i := 0; i < 12; i++ {

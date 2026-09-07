@@ -11,7 +11,7 @@
 // Persistence model (memory-first, JSON as best-effort backup):
 //   - recordOutcome increments an in-memory cumulative counter keyed by the
 //     account UID (the executor's stable account identity, same key the
-//     scheduler / failover / preserve / anomaly layers already use).
+//     scheduler / failover / preserve layers already use).
 //   - On startup, loadCountersFromDisk seeds the in-memory counters from the
 //     persisted success_count / failed_count, so a restart recovers the last
 //     flushed value. After that the in-memory counter is the source of truth —
@@ -207,7 +207,7 @@ func flushCounters() {
 // persistCounterDelta adds addSuccess / addFailed to the account's physical
 // auth file top-level success_count / failed_count. The write goes through
 // persistAuthDirect (NOT host.auth.save) so the host's file watcher re-syncs
-// the record without rebuilding it — the same rule as preserve / anomaly /
+// the record without rebuilding it — the same rule as preserve /
 // manual_disable, because host.auth.save drops top-level fields it doesn't
 // recognize.
 func persistCounterDelta(uid string, addSuccess, addFailed int64) error {
@@ -242,7 +242,7 @@ func foldCounterIntoDoc(base []byte, addSuccess, addFailed int64) []byte {
 	var doc map[string]any
 	if json.Unmarshal(base, &doc) != nil || doc == nil {
 		// Tolerant of malformed JSON: fold into a fresh doc, consistent with
-		// persistPreserveToggle / persistAnomalyToggle.
+		// persistPreserveToggle.
 		doc = map[string]any{}
 	}
 	prevSuccess, prevFailed := parseCountersFromAuthJSON(base)

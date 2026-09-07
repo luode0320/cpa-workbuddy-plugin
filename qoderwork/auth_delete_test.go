@@ -21,7 +21,7 @@ import (
 //     non-qoderwork files before any physical delete.
 //   - clearFailoverStateForAuth: single-key failover cooldown removal.
 //   - clearDeletedAccountState: the aggregate cleanup across every in-memory
-//     key dimension (lifecycle, cache, active selection, anomaly, failover).
+//     key dimension (lifecycle, cache, active selection, failover).
 //     （preserve 与 session 绑定清理随对应功能同步后在此补充断言。）
 // ---------------------------------------------------------------------------
 
@@ -79,7 +79,6 @@ func TestClearDeletedAccountState(t *testing.T) {
 	accountCache.Store(id, &accountCacheEntry{plan: "pro", credits: &creditsSummary{TotalRemain: 1}})
 	setActiveAuthID(id)
 	preserveSetPut(id)
-	anomalySetPut(id)
 	recordAccountFailure(id, 429, "rate limit")
 	sessionAuthMu.Lock()
 	sessionAuthBindings["conv-qo"] = sessionAuthBinding{AuthID: id, ExpiresAt: time.Now().Add(time.Hour)}
@@ -98,9 +97,6 @@ func TestClearDeletedAccountState(t *testing.T) {
 	}
 	if isPreserve(id) {
 		t.Fatal("preserve membership should be cleared")
-	}
-	if isAnomaly(id) {
-		t.Fatal("anomaly membership should be cleared")
 	}
 	if _, _, ok := failoverStateSnapshot(id); ok {
 		t.Fatal("failover state should be cleared")
@@ -122,7 +118,6 @@ func TestClearDeletedAccountState_MultiKeyDimension(t *testing.T) {
 		rememberLifecycleState(k, true, "x")
 		accountCache.Store(k, &accountCacheEntry{})
 		preserveSetPut(k)
-		anomalySetPut(k)
 		recordAccountFailure(k, 429, "rate limit")
 	}
 
@@ -137,9 +132,6 @@ func TestClearDeletedAccountState_MultiKeyDimension(t *testing.T) {
 		}
 		if isPreserve(k) {
 			t.Fatalf("preserve membership for %q should be cleared", k)
-		}
-		if isAnomaly(k) {
-			t.Fatalf("anomaly membership for %q should be cleared", k)
 		}
 		if _, _, ok := failoverStateSnapshot(k); ok {
 			t.Fatalf("failover state for %q should be cleared", k)

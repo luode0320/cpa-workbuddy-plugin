@@ -48,9 +48,6 @@ func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *traeAuth, ok
 		if isAccountCoolingDown(id) {
 			continue
 		}
-		if isAccountAnomaly(id) {
-			continue
-		}
 		if strings.TrimSpace(f.AuthIndex) == "" {
 			continue
 		}

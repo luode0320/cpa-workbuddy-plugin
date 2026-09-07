@@ -210,14 +210,6 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 			if n, ok := parseRetryOn4xxLine(ln); ok {
 				setRetryOn4xx(clampRetryOn4xx(n))
 			}
-		case "anomaly_pool_threshold":
-			if n, ok := parseAnomalyThresholdLine(ln); ok {
-				setAnomalyConfig(clampAnomalyThreshold(n), anomalyRefreshEnabled())
-			}
-		case "anomaly_refresh_enabled":
-			if b, ok := parseAnomalyRefreshEnabledLine(ln); ok {
-				setAnomalyConfig(anomalyThreshold(), b)
-			}
 		case "token_keepalive":
 			if b, ok := parseYAMLBool(val); ok {
 				setKeepaliveEnabled(b)

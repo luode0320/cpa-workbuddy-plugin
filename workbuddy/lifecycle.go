@@ -69,9 +69,15 @@ func pruneLifecycleState() {
 
 // disableAuth writes disabled:true only when the caller passes a manual
 // toggle marker (extra contains manual_disable:true). Auto lifecycle paths
-// (extra=nil) only update the note — the user explicitly requested that only
-// manual panel toggle controls the disabled flag. Auto-failover routing
-// handles exhausted accounts via anomaly/failure counters.
+// MANUAL-TOGGLE-ONLY POLICY (2026-09-08, user mandate): the ONLY thing that
+// may set disabled:true on a workbuddy auth file is the user's explicit
+// manual toggle. No automatic path — request failures, 401/403, token
+// expiry, consecutive failures (the anomaly pool was removed on 2026-09-08),
+// credit exhaustion, keepalive errors — may ever write disabled:true.
+// Auto-lifecycle callers of disableAuth (extra=nil) only update the note —
+// the user explicitly requested that only manual panel toggle controls the
+// disabled flag. Auto-failover routing
+// handles exhausted accounts via the failure cooldown (fixed 15s).
 // extra merges additional top-level keys into the auth file (the panel toggle
 // passes {"manual_disable":true}). An existing manual_disable marker is ALWAYS
 // carried forward, so an auto note refresh of an already-manually-disabled
@@ -273,7 +279,7 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 // clearDeletedAccountState removes every in-memory trace of a deleted account
 // for each provided key (auth.ID, auth_index, and account UID may each have
 // been used as a key by different code paths). Covers lifecycle state, cached
-// credits/plan/checkin, active selection, preserve flag, anomaly membership,
+// credits/plan/checkin, active selection, preserve flag,
 // failover cooldown/counter, and session bindings pinned to the account.
 // Idempotent — safe to call when maps are empty or keys already absent.
 func clearDeletedAccountState(keys ...string) {
@@ -286,7 +292,6 @@ func clearDeletedAccountState(keys ...string) {
 		accountCache.Delete(k)
 		clearActiveAuthIfMatch(k)
 		preserveSetClear(k)
-		anomalySetClear(k)
 		clearFailoverStateForAuth(k)
 		evictSessionBindingsForAuth(k)
 	}

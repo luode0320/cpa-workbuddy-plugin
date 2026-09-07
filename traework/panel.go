@@ -1,5 +1,5 @@
 // panel.go serves the TraeWork web panel (account credits, manual check-in,
-// points refresh, enable/disable, unfreeze, failover status, preserve pool,
+// points refresh, enable/disable, failover status, preserve pool,
 // keepalive, lifecycle, credential import). It is a self-contained HTML page
 // that talks to the management API routes registered in management.go.
 package main

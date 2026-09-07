@@ -127,9 +127,9 @@ func isEmptyStreamBody(body string) bool {
 // overload signals: 429 without credit markers, soft rate-limit wording,
 // or a zero-byte upstream stream. These self-heal once the gateway
 // recovers, so they only warrant the fixed cooldown + account rotation —
-// they must NEVER advance the consecutive-failure counter nor freeze the
-// account into the anomaly pool (hard-counting them quarantines healthy
-// accounts during a gateway blip; 2026-09-06 production evidence: one blip
+// they must NEVER advance the consecutive-failure counter (hard-counting
+// them used to quarantine healthy accounts in the anomaly pool during a
+// gateway blip; 2026-09-06 production evidence: one blip
 // zero-byte-failed 4 healthy accounts in a row). Hard credit errors are
 // excluded first: 429 + credit marker still means account exhaustion.
 func isTransientThrottle(status int, body string) bool {

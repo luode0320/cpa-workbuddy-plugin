@@ -253,6 +253,9 @@ func preserveWatchdogLoop() {
 	// Seed the in-memory success/failure counters from the persisted json so
 	// the panel reads restart-recovered values (memory-first; see counter.go).
 	loadCountersFromDisk()
+	// One-time sweep: strip the dead legacy top-level `anomaly` key from
+	// physical auth files (the anomaly pool was removed on 2026-09-08).
+	purgeLegacyAnomalyFlags()
 	runPreserveWatchdogTick()
 	for {
 		enabled := preserveWatchdogEnabled()

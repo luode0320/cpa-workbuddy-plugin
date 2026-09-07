@@ -1,5 +1,5 @@
 // management.go implements the traework management API: account dashboard
-// (nickname, credits, failover/anomaly status, disabled flag), manual /
+// (nickname, credits, failover status, disabled flag), manual /
 // auto check-in, points query, active-account selection, and enable/disable
 // toggles. It backs the web panel (panel.go).
 package main
@@ -68,7 +68,6 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/select", Description: "Select the active account card used for chat routing (body: {auth_index})."},
 			{Method: http.MethodPost, Path: base + "/enable", Description: "Enable one (body: {auth_index}) or all (empty body) accounts."},
 			{Method: http.MethodPost, Path: base + "/disable", Description: "Disable one (body: {auth_index}) or all (empty body) accounts."},
-			{Method: http.MethodPost, Path: base + "/unfreeze", Description: "Remove one (body: {auth_index}) or all (empty body) accounts from the anomaly pool."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import one Trae SOLO credential (body: {filename, content}); whole storage.json or raw credential value accepted."},
 			{Method: http.MethodGet, Path: base + "/export", Description: "Export all TraeWork credentials as a single JSON document for backup/sharing (raw physical files, re-importable via /import)."},
 			{Method: http.MethodPost, Path: base + "/browser-login/start", Description: "Start a browser OAuth login: returns the Trae authorization URL (PKCE pair minted server-side)."},
@@ -153,8 +152,6 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleToggleDisabled(req, false)))
 	case req.Method == http.MethodPost && path == base+"/disable":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleToggleDisabled(req, true)))
-	case req.Method == http.MethodPost && path == base+"/unfreeze":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleUnfreezeAuth(req)))
 	case req.Method == http.MethodPost && path == base+"/import":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportCredential(req)))
 	case req.Method == http.MethodPost && path == base+"/browser-login/start":
@@ -184,8 +181,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 }
 
 // handleAccounts builds the dashboard account list: for every traework auth
-// it merges the physical record (disabled/anomaly), cached or live credits,
-// and the failover snapshot. Also refreshes the active-auth pin.
+// it merges the physical record (disabled), cached or live credits, and the
+// failover snapshot. Also refreshes the active-auth pin.
 func handleAccounts() map[string]any {
 	files, err := hostAuthList()
 	if err != nil {
@@ -208,7 +205,6 @@ func handleAccounts() map[string]any {
 			Name:      f.Name,
 			UID:       a.UserID,
 			Disabled:  phys.Disabled || f.Disabled,
-			Anomaly:   isAnomaly(f.ID),
 			Preserved: isPreserve(f.ID),
 		}
 		// Cumulative success/failed counters (plugin-owned, survive restart).
@@ -245,11 +241,10 @@ func handleAccounts() map[string]any {
 	}
 	active := ensureDefaultActiveAuth(views)
 	return map[string]any{
-		"accounts":          views,
-		"active_id":         active,
-		"anomaly_pool_size": len(anomalySnapshot()),
-		"checkin_auto":      autoCheckinEnabled(),
-		"server_time":       time.Now().Format("2006-01-02 15:04:05"),
+		"accounts":     views,
+		"active_id":    active,
+		"checkin_auto": autoCheckinEnabled(),
+		"server_time":  time.Now().Format("2006-01-02 15:04:05"),
 		// Plugin subsystem state for the panel header (watchdog / keepalive /
 		// lifecycle toggles + their config). Kept in one /accounts payload so
 		// the panel renders with a single fetch.
@@ -549,6 +544,14 @@ func handleToggleDisabled(req pluginapi.ManagementRequest, disable bool) map[str
 // persistDisabledToggle writes the top-level disabled flag via host.auth.save
 // (the physical auth JSON round-trips through the host's rebuild, which
 // preserves recognized top-level fields).
+//
+// MANUAL-TOGGLE-ONLY POLICY (2026-09-08, user mandate): this function is the
+// ONLY writer of disabled:true in the traework plugin, and it is reachable
+// exclusively from the manual panel toggle. No automatic path — request
+// failures, 401/403, token expiry, consecutive failures (the anomaly pool was
+// removed on 2026-09-08), credit exhaustion, session-dead — may ever write
+// disabled:true; authguard.go only RE-APPLIES this manual flag after host
+// refreshes, never creates one.
 func persistDisabledToggle(authIndex, authID string, disabled bool) error {
 	phys, err := hostAuthGetPhysical(authIndex)
 	if err != nil {
@@ -734,7 +737,6 @@ func mutatingManagementPath(path string) bool {
 		base + "/select",
 		base + "/enable",
 		base + "/disable",
-		base + "/unfreeze",
 		base + "/import",
 		base + "/browser-login/start",
 		base + "/browser-login/submit",
@@ -827,9 +829,9 @@ func handleDeleteAuth(req pluginapi.ManagementRequest) map[string]any {
 // clearDeletedAccountState removes every in-memory trace of a deleted account
 // for each provided key (auth.ID, auth_index, and account UID may each have
 // been used as a key by different code paths). Covers cached credits/plan,
-// active selection, preserve flag, anomaly membership, failover
-// cooldown/counter, and session bindings pinned to the account. Idempotent —
-// safe to call when maps are empty or keys already absent.
+// active selection, preserve flag, failover cooldown/counter, and session
+// bindings pinned to the account. Idempotent — safe to call when maps are
+// empty or keys already absent.
 func clearDeletedAccountState(keys ...string) {
 	for _, k := range keys {
 		k = strings.TrimSpace(k)
@@ -839,7 +841,6 @@ func clearDeletedAccountState(keys ...string) {
 		accountCache.Delete(k)
 		clearActiveAuthIfMatch(k)
 		preserveSetClear(k)
-		anomalySetClear(k)
 		clearFailoverStateForAuth(k)
 		evictSessionBindingsForAuth(k)
 	}

@@ -59,14 +59,14 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 
 	cur := getActiveAuthID()
 	if cur != "" {
-		if c, ok := byID[cur]; ok && !c.Disabled && !c.Exhausted && !isAccountCoolingDown(cur) && !isAccountAnomaly(cur) {
+		if c, ok := byID[cur]; ok && !c.Disabled && !c.Exhausted && !isAccountCoolingDown(cur) {
 			return cur
 		}
 	}
 
 	var next string
 	for _, c := range candidates {
-		if !c.Disabled && !c.Exhausted && !isAccountCoolingDown(c.ID) && !isAccountAnomaly(c.ID) {
+		if !c.Disabled && !c.Exhausted && !isAccountCoolingDown(c.ID) {
 			next = c.ID
 			break
 		}
@@ -97,7 +97,6 @@ type traeAccountView struct {
 	Credits       *traeCredits `json:"credits,omitempty"`
 	Exhausted     bool         `json:"exhausted"`
 	Disabled      bool         `json:"disabled"`
-	Anomaly       bool         `json:"anomaly"`
 	Preserved     bool         `json:"preserved"`
 	CheckinToday  bool         `json:"checkin_today"`
 	SuccessCount  int64        `json:"success_count,omitempty"`
@@ -118,7 +117,7 @@ func ensureDefaultActiveAuth(accounts []traeAccountView) string {
 		live[a.AuthID] = a
 	}
 	if cur != "" {
-		if a, ok := live[cur]; ok && !a.Disabled && !a.Exhausted && !a.CoolingDown && !a.Anomaly {
+		if a, ok := live[cur]; ok && !a.Disabled && !a.Exhausted && !a.CoolingDown {
 			return cur
 		}
 	}
@@ -133,7 +132,7 @@ func ensureDefaultActiveAuth(accounts []traeAccountView) string {
 		if firstOK == "" {
 			firstOK = a.AuthID
 		}
-		if !a.Exhausted && !a.CoolingDown && !a.Anomaly && firstReady == "" {
+		if !a.Exhausted && !a.CoolingDown && firstReady == "" {
 			firstReady = a.AuthID
 		}
 	}

@@ -7,18 +7,16 @@ import (
 )
 
 // 软失败拆分（0.14.23）：瞬时过载类失败（429 非 credit / soft rate limit 文案 /
-// 上游零字节断流）只做固定冷却 + 换号，不推进连续失败计数、不冻结异常池；
-// 硬失败（credit / 401/403/404/405 / 5xx / transport）维持原语义。
+// 上游零字节断流）只做固定冷却 + 换号，不推进连续失败计数（异常池冻结机制已
+// 于 2026-09-08 移除，任何失败都不再触发停用或冻结）；硬失败（credit /
+// 401/403/404/405 / 5xx / transport）维持原语义。
 // 背景：2026-09-06 生产实证，Trae 网关瞬时故障窗口内 4 个健康账号相继零字节
-// 断流，若按硬失败计数会把整池误冻结进异常池。
+// 断流，若按硬失败计数会把整池误隔离。
 
 // TestTransientThrottle_Soft429DoesNotAdvanceCount 锁定软失败核心语义：
-// 连续 12 次 429 计数恒为 0、只有冷却生效，且永不冻结（阈值设 3，若误推
-// 计数第 3 次就会进冻结路径）。
+// 连续 12 次 429 计数恒为 0、只有冷却生效。
 func TestTransientThrottle_Soft429DoesNotAdvanceCount(t *testing.T) {
-	resetAnomalySet(t)
 	resetFailover(t)
-	setAnomalyConfig(3, true)
 	for i := 0; i < 12; i++ {
 		if !recordAccountFailure("acc-soft", 429, "rate limit exceeded") {
 			t.Fatalf("429 iteration %d must count as a (soft) failure", i)
@@ -33,9 +31,6 @@ func TestTransientThrottle_Soft429DoesNotAdvanceCount(t *testing.T) {
 		if remain := time.Until(until); remain <= 0 || remain > 15*time.Second {
 			t.Fatalf("iteration %d: cooldown remain = %v, want (0, 15s]", i, remain)
 		}
-	}
-	if isAnomaly("acc-soft") {
-		t.Fatal("soft failures must never freeze the account into the anomaly pool")
 	}
 }
 
@@ -67,12 +62,9 @@ func TestTransientThrottle_ZeroByteStreamIsSoft(t *testing.T) {
 }
 
 // TestTransientThrottle_429WithCreditMarkerStaysHard 锁定硬通道优先：
-// 429 + credit marker 是账号耗尽，仍推进连续失败计数（达到阈值后由既有
-// bumpFailoverState 逻辑冻结，此处只断言计数推进）。
+// 429 + credit marker 是账号耗尽，仍推进连续失败计数（此处只断言计数推进）。
 func TestTransientThrottle_429WithCreditMarkerStaysHard(t *testing.T) {
-	resetAnomalySet(t)
 	resetFailover(t)
-	setAnomalyConfig(3, true)
 	for i := 0; i < 5; i++ {
 		if !recordAccountFailure("acc-hard", 429, `{"error":"insufficient credit"}`) {
 			t.Fatalf("429+credit iteration %d must count as a hard failure", i)

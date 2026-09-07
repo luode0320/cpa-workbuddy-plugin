@@ -1,7 +1,7 @@
 // scheduler.go implements the CPA scheduler.pick capability for traework.
 //
 // Routing uses the panel-selected active account; when the selection is
-// exhausted/disabled/missing/cooling-down/anomalous, it switches to another
+// exhausted/disabled/missing/cooling-down, it switches to another
 // healthy candidate. Non-traework candidates are always deferred so the
 // built-in scheduler handles them. Only active when scheduler_mode: credits
 // is configured (default off).
@@ -52,9 +52,9 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
 
-	// Collect traework candidates only. Anomaly filter first, then cooldown;
-	// when EVERY candidate is filtered, keep the full list so the picker
-	// falls back to the current pin (mirrors the all-exhausted fallback).
+	// Collect traework candidates only. Cooldown filter applies last; when
+	// EVERY candidate is filtered, keep the full list so the picker falls
+	// back to the current pin (mirrors the all-exhausted fallback).
 	var wbCandidates []pluginapi.SchedulerAuthCandidate
 	for _, c := range req.Candidates {
 		if c.Provider != providerName {
@@ -70,7 +70,7 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	}
 	// Preserve filter: accounts the watchdog flagged (credits below
 	// preserve_threshold) are kept out of routing entirely so they keep a
-	// small credit buffer. Place this BEFORE the anomaly filter so the
+	// small credit buffer. Place this BEFORE the cooldown filter so the
 	// lastNonEmpty fallback can still see preserved accounts when every
 	// traework account is preserved — we don't want a fleet-wide credit
 	// reset to lock routing.
@@ -82,15 +82,6 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	}
 	if len(preserveFiltered) > 0 {
 		wbCandidates = preserveFiltered
-	}
-	anomalyFiltered := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
-	for _, c := range wbCandidates {
-		if !isAccountAnomaly(c.ID) {
-			anomalyFiltered = append(anomalyFiltered, c)
-		}
-	}
-	if len(anomalyFiltered) > 0 {
-		wbCandidates = anomalyFiltered
 	}
 	filtered := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
@@ -145,15 +136,9 @@ func candidateDisabled(c pluginapi.SchedulerAuthCandidate) bool {
 	return false
 }
 
-// isAccountAnomaly reports whether the account is in the anomaly set.
-func isAccountAnomaly(authID string) bool {
-	return isAnomaly(authID)
-}
-
 // isAccountPreserved reports whether the account is currently flagged by the
 // preserve watchdog and must be kept out of routing. Symmetric with
-// isAccountAnomaly / isAccountCoolingDown: every scheduler pick asks the
-// same predicate family.
+// isAccountCoolingDown: every scheduler pick asks the same predicate family.
 func isAccountPreserved(authID string) bool {
 	return isPreserve(authID)
 }

@@ -278,7 +278,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.1.54"
+var version = "0.1.55"
 
 func wbRegistration() registration {
 	return registration{
@@ -296,8 +296,6 @@ func wbRegistration() registration {
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用自动签到（每4小时一次，本地时间 00:00/04:00/08:00/12:00/16:00/20:00，默认开启）。"},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "可选模型列表。每个条目可为模型 id 字符串或 {id, name, ...} 对象；未配置时使用内置默认列表。"},
 				{Name: "retry_on_4xx", Type: pluginapi.ConfigFieldTypeString, Description: "账号级 4xx 时每次请求的换号重试预算（0-10，默认 10）。"},
-				{Name: "anomaly_pool_threshold", Type: pluginapi.ConfigFieldTypeString, Description: "连续失败次数阈值（1-50），达到后账号进入异常池（默认 10）。"},
-				{Name: "anomaly_refresh_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每日 00:00 异常池自动重置（默认开启）。"},
 				{Name: "management_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：管理类接口的 Bearer 密钥（纵深防御；留空则信任宿主中间件）。"},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：CPAMP 用量上报地址（NDJSON）。"},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：用量上报使用的 CPAMP 管理密钥。"},
@@ -306,8 +304,8 @@ func wbRegistration() registration {
 				{Name: "preserve_threshold", Type: pluginapi.ConfigFieldTypeString, Description: "保号池积分阈值（1-500，默认 50）：可用积分低于该值的账号自动进入保号池，仅在无其它可用账号时兜底路由。"},
 				{Name: "preserve_watchdog_interval", Type: pluginapi.ConfigFieldTypeString, Description: "保号看护（watchdog）检查间隔（分钟，默认 10）：周期性刷新积分快照并更新保号池归属。"},
 				{Name: "preserve_watchdog_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用保号看护循环（默认开启）：关闭后保号池不再自动维护，仅保留手动路由。"},
-				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每4小时 token 保号刷新（默认开启）：access token 临近过期时通过 ExchangeToken 自动续期；刷新令牌失效的账号自动标记禁用待重新导入。"},
-				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用积分生命周期自动停用（默认开启）：账号积分耗尽（remain<=0）后自动禁用，避免浪费请求；不自动复活，需面板手动启用或重新导入。"},
+				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每4小时 token 保号刷新（默认开启）：access token 临近过期时通过 ExchangeToken 自动续期；刷新令牌失效的账号仅记录过期备注不停用（停用需面板手动操作），路由层靠失败冷却自动避开。"},
+				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用积分生命周期巡检（默认开启）：账号积分耗尽（remain<=0）仅标记耗尽并让出活跃路由，不停用账号（manual-toggle-only 策略）；恢复积分后自动回到可用池。"},
 				{Name: "auth_flag_guard", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用禁用标记守护（默认开启）：每 5 分钟核对已停用账号的物理文件，若宿主自动刷新重建时抹掉了 disabled 标记则自动写回，防止停用账号悄悄回到路由池。"},
 			},
 		},

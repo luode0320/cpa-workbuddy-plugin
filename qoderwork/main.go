@@ -338,7 +338,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.13"
+var version = "0.9.14"
 
 func wbRegistration() registration {
 	return registration{
@@ -359,8 +359,6 @@ func wbRegistration() registration {
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 管理密钥。优先从环境变量 CPAMP_ADMIN_KEY / USAGE_REPORT_KEY 或密钥文件 /run/secrets/cpamp_admin_key 自动探测。"},
 				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
 				{Name: "usage_feed_path", Type: pluginapi.ConfigFieldTypeString, Description: "可选：共享用量数据流路径（默认 <CLIProxyAPI 根目录>/data/token-usage-feed.ndjson）。必须与 token-usage-tracker 的 usage_feed_path 保持一致。"},
-				{Name: "anomaly_pool_threshold", Type: pluginapi.ConfigFieldTypeString, Description: "连续失败次数阈值（1-50），达到后账号进入异常池并暂停路由。默认 10。设为 0 可彻底关闭自动隔离（安全开关）。缺省该键时保持当前值。"},
-				{Name: "anomaly_refresh_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每日 00:00（本地时间）异常池自动重置（默认开启）。开启后，被隔离账号次日获得一次重试机会；仍异常则再次隔离。"},
 			},
 		},
 		Capabilities: registrationCapability{

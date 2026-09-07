@@ -7,8 +7,9 @@
 // same exhausted one.
 //
 // The cooldown is a FIXED 15 seconds on every failure — no exponential
-// backoff. The consecutive-failure counter is still tracked (and drives the
-// anomaly quarantine threshold), but it no longer lengthens the cooldown:
+// backoff. The consecutive-failure counter is still tracked for panel
+// display only; it no longer freezes accounts (the anomaly pool was
+// removed on 2026-09-08) and no longer lengthens the cooldown:
 // each failure cools the account for exactly failoverCooldown.
 //
 // A successful request resets the counter and lifts the cooldown immediately.
@@ -76,7 +77,7 @@ func setFailoverEnabled(on bool) {
 // failoverCooldownFor returns the cooldown duration for a failure. The
 // window is fixed at failoverCooldown regardless of the consecutive-failure
 // count; count <= 0 yields zero. count is still tracked separately (in
-// recordAccountFailure) and drives the anomaly quarantine threshold.
+// recordAccountFailure) for panel display only.
 func failoverCooldownFor(count int) time.Duration {
 	if count <= 0 {
 		return 0
@@ -111,7 +112,7 @@ func isAccountFailure(status int, body string) bool {
 //
 // 429 (Too Many Requests / soft rate limit) is INCLUDED here as of v0.9.1:
 // the upstream soft rate limit is usually per-account or per-tenant, so
-// rotating to the next candidate (filtered by cooldown + anomaly) is the
+// rotating to the next candidate (filtered by cooldown) is the
 // cheapest way to recover inside a single request. The cross-request
 // cooldown still applies in parallel via isAccountFailure /
 // recordAccountFailure — i.e. a 429-triggered same-request rotation also
@@ -147,7 +148,7 @@ func shouldRotateOnUpstreamErr(status int, errBody string) bool {
 }
 
 // coolDownAccount sets only the fixed cooldown window for an account,
-// without touching the consecutive-failure counter or the anomaly pool.
+// without touching the consecutive-failure counter.
 // Used by the transient-throttle (soft) failure path: those failures
 // self-heal when the upstream gateway recovers, so counting them would
 // quarantine healthy accounts during a gateway blip.
@@ -170,16 +171,14 @@ func coolDownAccount(authID string) bool {
 //
 // Transient-throttle failures (429 without credit markers, soft rate-limit
 // wording, upstream zero-byte stream — see isTransientThrottle) take the
-// SOFT path: cooldown only, never a counter bump nor a freeze. Hard
+// SOFT path: cooldown only, never a counter bump. Hard
 // failures (credit / 401/403/404/405 / 5xx / transport) keep the original
 // semantics below.
 //
-// When the new count crosses anomalyThreshold() (default 10, configurable
-// via `anomaly_pool_threshold:`), the account is moved into the anomaly set
-// in anomaly.go — kept out of routing until operator-driven unfreeze or the
-// daily 00:00 refresh loop clears the set. The freeze is kicked off in a
-// background goroutine because it touches host.auth.list + direct file
-// write and would otherwise stall the request hot path.
+// The consecutive-failure counter no longer freezes accounts: the anomaly
+// pool was removed on 2026-09-08, so a hard failure now only cools the
+// account for the fixed window and every other effect is panel-visible
+// state (success_count / failed_count on the physical auth file).
 func recordAccountFailure(authID string, status int, body string) bool {
 	if !failoverActive() {
 		return false
@@ -191,7 +190,6 @@ func recordAccountFailure(authID string, status int, body string) bool {
 		return coolDownAccount(authID)
 	}
 	now := time.Now()
-	var shouldFreeze bool
 	failoverMu.Lock()
 	st := failoverStates[authID]
 	if st == nil {
@@ -200,13 +198,7 @@ func recordAccountFailure(authID string, status int, body string) bool {
 	}
 	st.count++
 	st.cooldownUntil = now.Add(failoverCooldownFor(st.count))
-	if threshold := int(anomalyThreshold()); threshold > 0 && st.count >= threshold && !isAnomaly(authID) {
-		shouldFreeze = true
-	}
 	failoverMu.Unlock()
-	if shouldFreeze {
-		go freezeAccountForAnomaly(authID)
-	}
 	return true
 }
 

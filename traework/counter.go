@@ -236,7 +236,7 @@ func foldCounterIntoDoc(base []byte, addSuccess, addFailed int64) []byte {
 	var doc map[string]any
 	if json.Unmarshal(base, &doc) != nil || doc == nil {
 		// Tolerant of malformed JSON: fold into a fresh doc, consistent with
-		// persistPreserveToggle / persistAnomalyToggle.
+		// persistPreserveToggle / stripAnomalyKey.
 		doc = map[string]any{}
 	}
 	prevSuccess, prevFailed := parseCountersFromAuthJSON(base)

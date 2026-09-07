@@ -7,9 +7,10 @@
 // same exhausted one.
 //
 // The cooldown is a FIXED 15 seconds on every failure — no exponential
-// backoff. The consecutive-failure counter is still tracked (and drives the
-// anomaly quarantine threshold), but it no longer lengthens the cooldown:
-// each failure cools the account for exactly failoverCooldown.
+// backoff. The consecutive-failure counter is still tracked for display and
+// diagnostics (panel "失败N次" badge), but it triggers no quarantine: the
+// anomaly pool was removed (2026-09-08) and every failure cools the account
+// for exactly failoverCooldown before it re-enters routing.
 //
 // A successful request resets the counter and lifts the cooldown immediately.
 // Cooldown state is in-memory only: no auth files, no DB writes; a process
@@ -76,8 +77,7 @@ func setFailoverEnabled(on bool) {
 // failoverCooldownFor returns the cooldown duration for a failure. The
 // window is fixed at failoverCooldown regardless of the consecutive-failure
 // count; count <= 0 yields zero. count is still tracked separately (in
-// recordAccountFailure / bumpFailoverState) and drives the anomaly
-// quarantine threshold.
+// recordAccountFailure / bumpFailoverState) for display and diagnostics only.
 func failoverCooldownFor(count int) time.Duration {
 	if count <= 0 {
 		return 0
@@ -157,16 +157,13 @@ func coolDownAccount(authID string) bool {
 //
 // Transient-throttle failures (429 without credit markers, soft rate-limit
 // wording, upstream zero-byte stream — see isTransientThrottle) take the
-// SOFT path: cooldown only, never a counter bump nor a freeze. Hard
-// failures (credit / 401/403/404/405 / 5xx / transport) keep the original
-// semantics below.
+// SOFT path: cooldown only, never a counter bump. Hard failures (credit /
+// 401/403/404/405 / 5xx / transport) keep the original semantics below.
 //
-// When the new count crosses anomalyThreshold() (default 10, configurable
-// via `anomaly_pool_threshold:`), the account is moved into the anomaly set
-// in anomaly.go — kept out of routing until operator-driven unfreeze or the
-// daily 00:00 refresh loop clears the set. The freeze is kicked off in a
-// background goroutine because it touches host.auth.list + direct file
-// write and would otherwise stall the request hot path.
+// The anomaly-pool quarantine that used to trip at a consecutive-failure
+// threshold was removed (2026-09-08): failures cooldown for exactly
+// failoverCooldown and the account then re-enters routing — no freeze, no
+// daily refresh loop, no manual unfreeze.
 func recordAccountFailure(authID string, status int, body string) bool {
 	if !failoverActive() {
 		return false
@@ -195,17 +192,12 @@ func recordForcedFailure(authID string, body string) bool {
 
 // bumpFailoverState increments the consecutive-failure counter for the
 // account and extends its cooldown window by the fixed failoverCooldown.
-// Returns true when the failure was counted.
-//
-// When the new count crosses anomalyThreshold() (default 10, configurable
-// via `anomaly_pool_threshold:`), the account is moved into the anomaly set
-// in anomaly.go — kept out of routing until operator-driven unfreeze or the
-// daily 00:00 refresh loop clears the set. The freeze is kicked off in a
-// background goroutine because it touches host.auth.list + direct file
-// write and would otherwise stall the request hot path.
+// Returns true when the failure was counted. The counter is display and
+// diagnostics only — it triggers no quarantine: the anomaly pool was removed
+// (2026-09-08) and each failure cools the account for exactly
+// failoverCooldown before it re-enters routing.
 func bumpFailoverState(authID string, body string) bool {
 	now := time.Now()
-	var shouldFreeze bool
 	failoverMu.Lock()
 	st := failoverStates[authID]
 	if st == nil {
@@ -214,13 +206,7 @@ func bumpFailoverState(authID string, body string) bool {
 	}
 	st.count++
 	st.cooldownUntil = now.Add(failoverCooldownFor(st.count))
-	if threshold := int(anomalyThreshold()); threshold > 0 && st.count >= threshold && !isAnomaly(authID) {
-		shouldFreeze = true
-	}
 	failoverMu.Unlock()
-	if shouldFreeze {
-		go freezeAccountForAnomaly(authID)
-	}
 	return true
 }
 

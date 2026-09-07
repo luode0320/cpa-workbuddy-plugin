@@ -84,15 +84,6 @@ func configure(raw []byte) {
 	nextRetryOn4xx := retryOn4xxDefault
 	retryOn4xxSeen := false
 
-	// anomaly_pool_threshold: consecutive-failure count at which an account
-	// is quarantined (see anomaly.go). Same Seen-pattern as retry_on_4xx
-	// — absent key preserves the current threshold (kill-switch safe).
-	// anomaly_refresh_enabled: toggles the daily 00:00 auto-reset loop.
-	nextAnomalyThreshold := int32(0)
-	anomalyThresholdSeen := false
-	nextAnomalyRefreshEnabled := anomalyRefreshEnabledDefault
-	anomalyRefreshSeen := false
-
 	cfgURL, cfgKey := "", ""
 	if len(raw) > 0 {
 		var req struct {
@@ -164,25 +155,13 @@ func configure(raw []byte) {
 					v = strings.Trim(v, "\"'")
 					nextPreserveEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
 				}
-				if strings.HasPrefix(line, "retry_on_4xx:") {
-					retryOn4xxSeen = true
-					if n, ok := parseRetryOn4xxLine(line); ok {
-						nextRetryOn4xx = clampRetryOn4xx(n)
-					}
+			if strings.HasPrefix(line, "retry_on_4xx:") {
+				retryOn4xxSeen = true
+				if n, ok := parseRetryOn4xxLine(line); ok {
+					nextRetryOn4xx = clampRetryOn4xx(n)
 				}
-				if strings.HasPrefix(line, "anomaly_pool_threshold:") {
-					if n, ok := parseAnomalyThresholdLine(line); ok {
-						nextAnomalyThreshold = n
-						anomalyThresholdSeen = true
-					}
-				}
-				if strings.HasPrefix(line, "anomaly_refresh_enabled:") {
-					if v, ok := parseAnomalyRefreshEnabledLine(line); ok {
-						nextAnomalyRefreshEnabled = v
-						anomalyRefreshSeen = true
-					}
-				}
-				if strings.HasPrefix(line, "models:") {
+			}
+			if strings.HasPrefix(line, "models:") {
 					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
 					// 交给 parseModelsConfig（显式配置优先于动态获取与
 					// 静态默认，见 models.go；同步自 workbuddy-provider
@@ -233,17 +212,6 @@ func configure(raw []byte) {
 	// budget (kill-switch safety).
 	if retryOn4xxSeen {
 		setRetryOn4xx(nextRetryOn4xx)
-	}
-
-	// Anomaly-pool threshold + refresh toggle. Same Seen-pattern:
-	// absent keys preserve the current running values (kill-switch safe).
-	// When present, threshold is clamped into [anomalyThresholdMin,
-	// anomalyThresholdMax]; values <= 0 disable auto-freeze entirely.
-	if anomalyThresholdSeen || anomalyRefreshSeen {
-		setAnomalyConfig(
-			clampAnomalyThreshold(nextAnomalyThreshold),
-			nextAnomalyRefreshEnabled,
-		)
 	}
 
 	// management key: config_yaml > env > keep existing. Empty stays empty

@@ -189,7 +189,7 @@ func pickSessionAuth(sessionKey string, candidates []activeAuthCandidate) string
 	usableSet := make(map[string]struct{}, len(candidates))
 	for _, c := range candidates {
 		live[c.ID] = struct{}{}
-		if !c.Disabled && !c.Exhausted && !isAccountCoolingDown(c.ID) && !isAccountAnomaly(c.ID) {
+		if !c.Disabled && !c.Exhausted && !isAccountCoolingDown(c.ID) {
 			usable = append(usable, c.ID)
 			usableSet[c.ID] = struct{}{}
 		}

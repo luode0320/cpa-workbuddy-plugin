@@ -25,7 +25,6 @@ type wbAccount struct {
 	Disabled  bool            `json:"disabled"`
 	Exhausted bool            `json:"exhausted"`
 	Selected  bool            `json:"selected"` // panel active routing card
-	Anomaly   bool            `json:"anomaly"`  // consecutive-failure trip; quarantined until daily refresh or operator unfreeze
 	Preserve  bool            `json:"preserve"` // watchdog parked this account; never routed
 	Credits   *creditsSummary `json:"credits,omitempty"`
 	Checkin   *checkinSummary `json:"checkin,omitempty"`
@@ -194,11 +193,6 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	// that no longer exist so the scheduler can't pin a session to a
 	// deleted auth. （同步自 workbuddy-provider）
 	preserveSize := refreshPreserveSetFromDisk()
-	// Sync anomaly markers from disk the same way workbuddy does (see
-	// anomaly.go) — refreshAnomalySetFromDisk also prunes entries for
-	// accounts that no longer exist so the scheduler can't pin a session
-	// to a deleted auth.
-	anomalySize := refreshAnomalySetFromDisk()
 	// On force refresh, reconcile preserve flags against the already-fetched
 	// credits so the badges in THIS response are correct without waiting for
 	// the next watchdog interval. Zero extra upstream QPS — `out` carries the
@@ -212,13 +206,12 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	}
 	// Aggregate credits for panel/API consumers (all accounts currently in out).
 	sum := summarizeCredits(out)
-	// Mark selected account in list for UI; preserve/anomaly come from the disk mirror.
+	// Mark selected account in list for UI; preserve comes from the disk mirror.
 	for i := range out {
 		out[i].Selected = out[i].AuthID == activeID
 		out[i].Preserve = isPreserve(out[i].AuthID)
-		out[i].Anomaly = isAnomaly(out[i].AuthID)
 		// Failover state is in-memory only; surface it so the panel can show
-		// consecutive failures + cooldown instead of the binary anomaly badge.
+		// consecutive failures + cooldown.
 		if count, until, ok := failoverStateSnapshot(out[i].AuthID); ok && count > 0 {
 			out[i].FailCount = count
 			if until.After(time.Now()) {
@@ -238,9 +231,6 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 		"server_time":             time.Now().Format("2006-01-02 15:04:05"),
 		"summary":                 sum,
 		"preserve_pool_size":      preserveSize,
-		"anomaly_pool_size":       anomalySize,
-		"anomaly_pool_threshold":  anomalyThreshold(),
-		"anomaly_refresh_enabled": anomalyRefreshEnabled(),
 	}
 	if len(life) > 0 {
 		resp["lifecycle"] = life

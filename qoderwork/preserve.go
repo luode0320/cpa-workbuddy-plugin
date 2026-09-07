@@ -22,7 +22,8 @@
 // must not lock routing).
 //
 // 同步自 workbuddy-provider preserve.go（qoderwork 的 authFileErr /
-// errAuthIndexRequired / errAuthMissing 在 anomaly.go 已有，不再重复定义）。
+// errAuthIndexRequired / errAuthMissing 原在 anomaly.go 定义，随异常池
+// 移除已迁至 preserve.go 本文件内）。
 package main
 
 import (
@@ -31,6 +32,16 @@ import (
 	"sync"
 	"time"
 )
+
+// authFileErr / errAuthIndexRequired / errAuthMissing are tiny helpers so
+// persist*Toggle-style writers return stable error values without allocating
+// fmt.Errorf strings. （原在 anomaly.go 定义，随异常池移除迁入本文件。）
+type authFileErr struct{ msg string }
+
+func (e *authFileErr) Error() string { return e.msg }
+
+func errAuthIndexRequired() error { return &authFileErr{msg: "auth_index is required"} }
+func errAuthMissing() error       { return &authFileErr{msg: "auth file missing or empty"} }
 
 // preserveConfig holds the runtime-tunable watchdog knobs. Populated from
 // plugin config_yaml in configure() (usage_config.go); readers take the RW
