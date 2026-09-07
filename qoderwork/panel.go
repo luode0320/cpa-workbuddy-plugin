@@ -234,7 +234,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 		"lifecycle_auto":          lifecycleEnabled(),
 		"preserve_auto":           preserveWatchdogEnabled(),
 		"preserve_threshold":      preserveThreshold(),
-		"schedule":                []string{"09:00", "21:00"},
+		"schedule":                []string{"00:00", "04:00", "08:00", "12:00", "16:00", "20:00"},
 		"server_time":             time.Now().Format("2006-01-02 15:04:05"),
 		"summary":                 sum,
 		"preserve_pool_size":      preserveSize,

@@ -1,5 +1,5 @@
 // checkin.go implements daily check-in for CN accounts: the manual
-// handleManualCheckin endpoint, the 09:00 / 21:00 auto scheduler, and the
+// handleManualCheckin endpoint, the every-4-hours auto scheduler, and the
 // per-account mutex that prevents duplicate check-ins from racing browser
 // tabs. Global accounts are excluded — they use one-shot trial claims instead.
 package main
@@ -36,8 +36,8 @@ func ensureScheduler() {
 func nextCheckinTime(now time.Time) time.Time {
 	var earliest time.Time
 	// Consider both checkin and keepalive schedules so the timer wakes up for
-	// whichever fires first (e.g. 21:00 checkin vs 22:00 keepalive → 21:00 wins,
-	// then 22:00 keepalive fires on the next tick).
+	// whichever fires first (e.g. 00:00 checkin vs 00:00 keepalive → 00:00 wins,
+	// then 04:00 keepalive fires on the next tick).
 	hours := append([]int{}, checkinHours...)
 	hours = append(hours, keepaliveHours...)
 	for _, h := range hours {
@@ -63,8 +63,8 @@ func schedulerLoop(stop chan struct{}) {
 		case <-timer.C:
 			runAutoCheckin()
 			// Fire keepalive if the current tick falls within its scheduled
-			// window (e.g. 22:00 keepalive fires on the 22:00 tick even though
-			// the previous checkin tick was 21:00).
+			// window (e.g. 04:00 keepalive fires on the 04:00 tick even though
+			// the previous checkin tick was 00:00).
 			if shouldRunKeepaliveNow(time.Now()) {
 				runTokenKeepalive()
 			}
@@ -72,9 +72,7 @@ func schedulerLoop(stop chan struct{}) {
 	}
 }
 
-// runAutoCheckin is the scheduled lifecycle tick (09:00 / 21:00).
-// CN: optional daily check-in, then reconcile (disable exhausted / reenable after credits).
-// Global: no auto trial (one-shot claim is manual only); reconcile may delete exhausted auths.
+// runAutoCheckin is the scheduled lifecycle tick (every 4 hours: 00:00 / 04:00 / 08:00 / 12:00 / 16:00 / 20:00).
 //
 // v0.6.31: per-account work runs concurrently (sem=4) — was serial, so N accounts
 // meant 3N serial HTTP round-trips on the billing API. Matches the pattern used

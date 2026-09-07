@@ -1,7 +1,7 @@
 // checkin.go implements Trae Work daily check-in and points queries, ported
 // from the verified prototype (trae-gateway-go/internal/checkin, itself a
-// port of trae-check electron/checkin.ts), plus the daily auto check-in
-// loop (09:00 / 21:00 local time).
+// port of trae-check electron/checkin.ts), plus the auto check-in loop
+// (every 4 hours local time).
 package main
 
 import (
@@ -234,7 +234,7 @@ func checkinDoneToday(authIndex string) bool {
 }
 
 // -----------------------------------------------------------------------------
-// Auto check-in scheduler (09:00 / 21:00 local)
+// Auto check-in scheduler (every 4 hours local)
 // -----------------------------------------------------------------------------
 
 var (
@@ -258,8 +258,8 @@ func autoCheckinEnabled() bool {
 // checkinTickInterval bounds how often the auto loop checks the wall clock.
 const checkinTickInterval = 1 * time.Minute
 
-// autoCheckinTimes are the local-time slots the loop targets.
-var autoCheckinTimes = []int{9, 21}
+// autoCheckinTimes are the local-time slots the loop targets (every 4 hours).
+var autoCheckinTimes = []int{0, 4, 8, 12, 16, 20}
 
 // autoCheckinLoop wakes every minute and runs a fleet check-in when the local
 // clock crosses one of the configured slots. The lastRun guard ensures each

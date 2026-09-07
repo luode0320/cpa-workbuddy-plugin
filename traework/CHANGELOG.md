@@ -1,5 +1,14 @@
 # TraeWork Plugin Changelog
 
+## 0.1.54
+
+### Feat — 自动签到与 token 保活调度从每日改为每 4 小时
+
+- `checkin.go`：`autoCheckinTimes` 从每日两班（09:00 / 21:00）改为每 4 小时六班（00:00 / 04:00 / 08:00 / 12:00 / 16:00 / 20:00，本地时间），签到频次提升 3 倍，降低断签与积分过期风险；文件头与调度器注释同步。
+- `keepalive.go`：`keepaliveHours` 从每日 22:00 单次改为与签到同节奏的每 4 小时（0/4/8/12/16/20），access-token 临近过期时提前续期，缩小离线会话失效窗口；`token_keepalive` / `checkin_auto` 面板 ConfigFields 描述同步。
+- 测试：`keepalive_test.go` 的 `TestShouldRunKeepaliveNow` 窗口用例对齐新首槽 00:00（23:59 否 / 00:00 是 / 00:30 是 / 01:00 否）。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.1.53
 
 ### Fix — open 阶段 transport 超时（status=0）同请求换号，trae 会话一次失败不再直接失败

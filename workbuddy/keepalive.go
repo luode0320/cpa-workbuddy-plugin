@@ -8,7 +8,7 @@
 // daily keeps the offline session alive, the same way a real client would.
 //
 // Design:
-//   - Runs on the existing schedulerLoop at 22:00 local (keepaliveHours is
+//   - Runs on the existing schedulerLoop every 4 hours (keepaliveHours is
 //     separate from checkinHours so the two cadences can evolve independently).
 //   - Iterates all workbuddy auths via host.auth.list/get, calls
 //     {realm-base}/v2/plugin/auth/token/refresh with X-Refresh-Token via
@@ -32,9 +32,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// keepaliveHours is the daily refresh schedule (local time). Kept separate
-// from checkinHours so the two cadences can evolve independently.
-var keepaliveHours = []int{22}
+// keepaliveHours is the token refresh schedule (local time). Runs every 4 hours
+// alongside the checkin schedule so the two cadences stay aligned.
+var keepaliveHours = []int{0, 4, 8, 12, 16, 20}
 
 // keepaliveAuto gates the daily refresh. Default true; configurable via
 // plugin config key "token_keepalive" (config_yaml line "token_keepalive: false").
@@ -152,7 +152,7 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 //
 // Bug A fix (both layers): the original json.Marshal(sa) OVERWROTE the whole
 // file and dropped every top-level key (disabled/note/type/provider/logo/
-// manual_disable) — each 22:00 keepalive refresh re-enabled accounts disabled
+// manual_disable) — each keepalive refresh re-enabled accounts disabled
 // via the panel. v0.9.2 fixed the doc merge; this fix replaces the final
 // host.auth.save hop, because that RPC rebuilds the auth record with
 // StatusActive hardcoded and resets the in-memory scheduler state to enabled
@@ -313,7 +313,7 @@ func shouldRunKeepaliveNow(now time.Time) bool {
 
 // handleKeepaliveNow triggers a manual refresh (all accounts, or one when the
 // body carries auth_index). Manual runs ignore the token_keepalive toggle —
-// the toggle gates only the 22:00 auto-run.
+// the toggle gates only the scheduled auto-run.
 func handleKeepaliveNow(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`

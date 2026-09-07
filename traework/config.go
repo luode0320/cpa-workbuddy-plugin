@@ -32,7 +32,7 @@ type traeConfig struct {
 	IDEVersionCode string
 	// SchedulerMode: "off" (defer to built-in) or "credits" (plugin picks).
 	SchedulerMode string
-	// CheckinAuto enables the daily auto check-in loop (09:00 / 21:00 local).
+	// CheckinAuto enables the auto check-in loop (every 4 hours local).
 	CheckinAuto bool
 	// ManagementKey optional defence-in-depth Bearer key for mutating routes.
 	ManagementKey string

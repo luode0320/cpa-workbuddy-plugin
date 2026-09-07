@@ -336,7 +336,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.14.24"
+var version = "0.14.25"
 
 func wbRegistration() registration {
 	return registration{
@@ -348,9 +348,9 @@ func wbRegistration() registration {
 			GitHubRepository: "https://github.com/luode0320/cpa-workbuddy-plugin",
 			Logo:             pluginLogoURL,
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每日自动签到（本地时间 09:00 与 21:00，CN 账号，默认开启）。"},
+				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用自动签到（每4小时一次，本地时间 00:00/04:00/08:00/12:00/16:00/20:00，CN 账号，默认开启）。"},
 				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "额度耗尽时自动禁用 CN / 删除 Global 账号；签到恢复额度后重新启用 CN（默认开启）。"},
-				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每日 22:00（本地时间）access-token 自动刷新，防止 Keycloak 离线会话过期（默认开启）。"},
+				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每4小时 access-token 自动刷新，防止 Keycloak 离线会话过期（默认开启）。"},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "可选模型列表。每个条目可包含 id、name、alias、context、max_tokens、enabled、reasoning 字段；配置后优先于自动获取的模型列表。"},
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeSession, schedulerModeCredits, schedulerModeOff}, Description: "多账号选择策略：session（按会话轮询，同一会话 1 小时内固定同一账号；默认）／credits（面板指定的固定账号）／off（交给内置逻辑）。注意：off 且 lifecycle_auto=false 时，额度耗尽的账号仍可能被路由——请启用 lifecycle_auto 或保持 session/credits。"},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 用量上报地址（默认 http://cpa-manager-plus:18317/v0/management/usage/import；也可用环境变量 USAGE_REPORT_URL）。"},

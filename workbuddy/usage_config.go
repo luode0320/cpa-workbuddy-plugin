@@ -14,8 +14,8 @@ import (
 	"time"
 )
 
-// check-in schedule: 09:00 and 21:00 local time.
-var checkinHours = []int{9, 21}
+// check-in schedule: every 4 hours starting at 00:00 local time.
+var checkinHours = []int{0, 4, 8, 12, 16, 20}
 
 // plugin-level config decoded from plugin.register/reconfigure config_yaml.
 var (

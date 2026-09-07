@@ -1,6 +1,6 @@
 // management.go implements the WorkBuddy management API and web panel:
 // account dashboard (nickname, credits, plan, check-in streak), manual/auto
-// check-in (daily at 09:00 and 21:00 local time), and quota refresh.
+// check-in (every 4 hours: 00:00 / 04:00 / 08:00 / 12:00 / 16:00 / 20:00 local time), and quota refresh.
 package main
 
 import (
@@ -92,7 +92,7 @@ type resourcePackage struct {
 }
 
 // -----------------------------------------------------------------------------
-// Auto check-in scheduler (09:00 / 21:00 local)
+// Auto check-in scheduler (every 4 hours: 00:00 / 04:00 / 08:00 / 12:00 / 16:00 / 20:00 local)
 // -----------------------------------------------------------------------------
 
 // Management API routes + handler

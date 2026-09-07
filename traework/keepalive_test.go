@@ -71,22 +71,22 @@ func TestFoldKeepaliveIntoDoc(t *testing.T) {
 	}
 }
 
-// TestShouldRunKeepaliveNow verifies the 22:00 local-time window.
+// TestShouldRunKeepaliveNow verifies the keepalive window for the first slot (00:00).
 func TestShouldRunKeepaliveNow(t *testing.T) {
 	loc := time.Local
-	// 21:59 → no; 22:00 → yes; 22:30 → yes; 23:00 → no.
+	// 23:59 → no; 00:00 → yes; 00:30 → yes; 01:00 → no.
 	at := func(h, m int) time.Time { return time.Date(2026, 8, 30, h, m, 0, 0, loc) }
-	if shouldRunKeepaliveNow(at(21, 59)) {
-		t.Fatal("21:59 must not run")
+	if shouldRunKeepaliveNow(at(23, 59)) {
+		t.Fatal("23:59 must not run")
 	}
-	if !shouldRunKeepaliveNow(at(22, 0)) {
-		t.Fatal("22:00 must run")
+	if !shouldRunKeepaliveNow(at(0, 0)) {
+		t.Fatal("00:00 must run")
 	}
-	if !shouldRunKeepaliveNow(at(22, 30)) {
-		t.Fatal("22:30 must run (within window)")
+	if !shouldRunKeepaliveNow(at(0, 30)) {
+		t.Fatal("00:30 must run (within window)")
 	}
-	if shouldRunKeepaliveNow(at(23, 0)) {
-		t.Fatal("23:00 must not run")
+	if shouldRunKeepaliveNow(at(1, 0)) {
+		t.Fatal("01:00 must not run")
 	}
 }
 

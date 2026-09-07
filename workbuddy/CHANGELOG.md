@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.25
+
+### Feat — 自动签到与 token 保活调度从每日改为每 4 小时
+
+- `checkin.go`：`checkinHours` 从每日两班（09:00 / 21:00）改为每 4 小时六班（00:00 / 04:00 / 08:00 / 12:00 / 16:00 / 20:00，本地时间），签到频次提升 3 倍；`nextCheckinTime` / `schedulerLoop` 注释与「runAutoCheckin」生命周期注释同步。
+- `keepalive.go`：`keepaliveHours` 从每日 22:00 单次改为与签到同节奏的每 4 小时（0/4/8/12/16/20），两班制合并为单一节奏，缩小 Keycloak 离线会话失效窗口；面板「schedule」展示与 `token_keepalive` / `checkin_auto` ConfigFields 描述同步。
+- 测试：`json_helper_test.go` 的 `nextCheckinTime` 三用例对齐新班表（07:00→08:00 / 10:00→12:00 / 22:00→次日 00:00）。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.14.24
 
 ### Fix — 停用策略改为 manual-toggle-only：自动生命周期不再写 disabled

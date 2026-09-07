@@ -1,5 +1,13 @@
 # QoderWork Plugin Changelog
 
+## 0.9.13
+
+### Feat — 自动签到与 token 保活调度从每日改为每 4 小时（对齐 workbuddy 0.14.25）
+
+- `checkin.go`：`autoCheckinTimes` 从每日两班（09:00 / 21:00）改为每 4 小时六班（00:00 / 04:00 / 08:00 / 12:00 / 16:00 / 20:00，本地时间），签到频次提升 3 倍；`nextCheckinTime` 注释与面板「schedule」展示同步。
+- `keepalive.go`：`keepaliveHours` 从每日 22:00 单次改为与签到同节奏的每 4 小时（0/4/8/12/16/20）；`token_keepalive` / `checkin_auto` 面板 ConfigFields 描述同步。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.9.12
 
 ### Fix — 停用策略改为 manual-toggle-only：自动生命周期不再写 disabled

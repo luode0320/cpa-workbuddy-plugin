@@ -9,7 +9,7 @@
 // keeps working without a manual storage.json re-import.
 //
 // Design:
-//   - Runs on its own daily loop at 22:00 local (keepaliveHours), checking
+//   - Runs every 4 hours (keepaliveHours: 0,4,8,12,16,20), checking
 //     each auth whose ExpiredAt is within keepaliveLeadWindow (24h) or past.
 //   - POST {host}/cloudide/api/v3/trae/oauth/ExchangeToken with the stored
 //     refresh token via the host HTTP bridge (host.http.do).
@@ -36,9 +36,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// keepaliveHours is the daily refresh schedule (local time). Kept separate
-// from checkinHours so the two cadences can evolve independently.
-var keepaliveHours = []int{22}
+// keepaliveHours is the token refresh schedule (local time). Runs every 4 hours
+// alongside the checkin schedule so the two cadences stay aligned.
+var keepaliveHours = []int{0, 4, 8, 12, 16, 20}
 
 // keepaliveLeadWindow is how far ahead of expiry we refresh. An account whose
 // token expires within this window (or already expired) gets refreshed.
@@ -298,7 +298,7 @@ func markSessionDead(authIndex, authID string, sa *traeAuth) error {
 
 // refreshRetryMax is the per-account daily retry budget for failed refreshes
 // (user decision 2026-09-06: retry every 10 minutes, at most 50 attempts per
-// account, never concurrently for the same account; the 22:00 daily pass
+// account, never concurrently for the same account; the scheduled pass
 // resets the budget).
 const refreshRetryMax = 50
 
@@ -449,7 +449,7 @@ func getLastKeepalive() *keepaliveSummary {
 
 // runTokenKeepalive refreshes every traework auth that needs it. Returns the
 // summary. Manual runs ignore the token_keepalive toggle — the toggle gates
-// only the 22:00 auto-run.
+// only the scheduled auto-run.
 func runTokenKeepalive() *keepaliveSummary {
 	sum := &keepaliveSummary{When: time.Now()}
 	resetRetryBudgets() // daily pass resets the per-account retry budgets
