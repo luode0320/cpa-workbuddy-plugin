@@ -18,9 +18,10 @@
 //     file via persistAuthDirect — keepalive never rewrites the client-
 //     encrypted credential blob (see parseTraeAuth priority note in
 //     credential.go: top-level runtime fields win over the blob).
-//   - On a 4xx refresh rejection (refresh token dead) the auth is flagged
-//     disabled + note "Session expired: re-login required" so it stops
-//     receiving traffic until manual re-import.
+//   - On a refresh rejection (refresh token dead) markSessionDead writes the
+//     re-login NOTE only — disabled:true is manual-toggle-only (user
+//     mandate 2026-09-08); routing failover keeps dead accounts out of
+//     rotation via the 15s cooldown without needing the disabled flag.
 package main
 
 import (
@@ -172,9 +173,9 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 	if err != nil {
 		if isRefreshDeadError(err.Error()) {
 			if derr := markSessionDead(authIndex, authID, sa); derr != nil {
-				return "session-dead", fmt.Errorf("refresh token dead; flag failed: %v", derr)
+				return "session-dead", fmt.Errorf("refresh token dead; note failed: %v", derr)
 			}
-			return "session-dead", fmt.Errorf("refresh token dead (4xx): flagged disabled")
+			return "session-dead", fmt.Errorf("refresh token dead (re-login required): noted, not disabled (manual-toggle-only policy)")
 		}
 		return "failed", fmt.Errorf("refresh rejected: %s", truncateRedacted(err.Error(), 160))
 	}
@@ -205,8 +206,14 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 // (the 2026-09-05 mass-disable incident killed healthy accounts this way),
 // 400 is request-parameter validation (the token is never evaluated), and
 // 5xx/transport are transient.
+//
+// Exception: HTTP 400 carrying "refresh token is not matched to the client"
+// IS a definitive business rejection (observed 2026-09-08 — the endpoint
+// validated the token and found it belongs to another client). Classifying
+// it as dead stops the pointless 50×/day retry churn; under the
+// manual-toggle-only policy session-dead only writes the re-login note.
 func isRefreshDeadError(msg string) bool {
-	for _, marker := range []string{"HTTP 401", "HTTP 403"} {
+	for _, marker := range []string{"HTTP 401", "HTTP 403", "refresh token is not matched to the client"} {
 		if strings.Contains(msg, marker) {
 			return true
 		}

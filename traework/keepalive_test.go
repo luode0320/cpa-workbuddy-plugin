@@ -108,6 +108,9 @@ func TestTokenExpiry(t *testing.T) {
 // 401/403 on the correct auth host are dead-token. 404 is a gateway page for
 // a route that does not exist on that host (the 2026-09-05 mass-disable
 // incident), 400 is parameter validation, 5xx/transport are transient.
+// Exception: the 400 body "refresh token is not matched to the client" IS a
+// definitive business rejection (observed 2026-09-08 on production — three
+// accounts retrying 50×/day against a permanently rejected token).
 func TestIsRefreshDeadError(t *testing.T) {
 	if !isRefreshDeadError("ExchangeToken: HTTP 401 unauthorized") {
 		t.Fatal("401 must be dead-token")
@@ -120,6 +123,9 @@ func TestIsRefreshDeadError(t *testing.T) {
 	}
 	if isRefreshDeadError("ExchangeToken: HTTP 400 {\"code\":10101,\"message\":\"无效参数\"}") {
 		t.Fatal("400 (parameter validation) must NOT be dead-token")
+	}
+	if !isRefreshDeadError(`ExchangeToken: HTTP 400 {"ResponseMetadata":{"Error":{"Code":"10101","Data":{"__Message.error":"refresh token is not matched to the client"}}}}`) {
+		t.Fatal("400 with 'refresh token is not matched to the client' must be dead-token (definitive business rejection)")
 	}
 	if isRefreshDeadError("ExchangeToken: HTTP 500 internal") {
 		t.Fatal("500 must NOT be dead-token")

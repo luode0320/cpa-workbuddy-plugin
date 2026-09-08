@@ -1,5 +1,15 @@
 # TraeWork Plugin Changelog
 
+## 0.1.57
+
+### Fix — 泄漏旧实例 22:00 重写停用标志事故：遗留 disabled 标志启动清扫 + refresh-token 失效指纹归类
+
+- **事故复盘**（2026-09-08 22:00，生产）：容器 09-06 启动后历经 0.1.55（03:00）/ 0.1.56（21:54）两次热重载，但 Go 插件 retire 后 goroutine 无法被杀死——**4 个 ≤0.1.54 旧实例的 keepaliveLoop（keepaliveHours={22}，每晚 22:00 触发）与 authFlagGuardLoop 仍在后台运行**。22:00:50 一个 pre-0.1.53 实例按旧版 markSessionDead 逻辑把 3 个 refresh token 已失效的账号写成 `disabled:true` + "Session expired" note，并注册 guard 循环每 5 分钟重放——0.1.55 的 MANUAL-TOGGLE-ONLY 修复只删了代码路径，清不掉已落盘的标志，更拦不住泄漏实例的再写入。
+- **新增 `purgeLegacyDisabledFlags`**（anomaly_purge.go，watchdog 启动时与 anomaly purge 同点执行一次）：指纹清扫遗留自动停用对——`disabled:true` 且 note 以 "Session expired" 开头（所有 ≤0.1.54 markSessionDead 的唯一指纹；现行代码写同款 note 时绝不携带 disabled）→ 重启为 `disabled:false`，note 保留（如实描述 refresh token 状态）。无 note / 其他 note 的 disabled 一律不碰（可能是合法手动停用，purge 不猜）。幂等、坏文件不盲写；`stripLegacyDisabledFlag` 纯函数七态单测覆盖（含生产指纹原样样本）。
+- **isRefreshDeadError 新增指纹**：HTTP 400 body 含 `refresh token is not matched to the client`（Trae 业务层明确拒绝，2026-09-08 生产观测）归类为 session-dead——此前被当作可重试 failed，每账号每天空转 50 次重试预算；归类后只写 re-login note（绝不写 disabled），重试预算停止消耗。
+- keepalive 文件头过期描述修正（"flagged disabled" → manual-toggle-only note-only）；session-dead 返回消息同步改写，不再误导排障。
+- 运维注记：插件热重载的 goroutine 泄漏是结构性约束——**发布后需重启 cli-proxy-api 容器**以收敛旧实例（本次已执行，22:34 重启 + 手工清除 3 个账号的遗留标志，备份在 `/usr/local/src/cli-proxy-api/auth-backup-20260908/`）。
+
 ## 0.1.56
 
 ### Fix — 面板 scopeLabel 未定义导致账号加载失败（0.1.55 回归）

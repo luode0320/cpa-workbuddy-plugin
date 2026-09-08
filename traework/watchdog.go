@@ -258,6 +258,10 @@ func preserveWatchdogLoop() {
 	// Strip the dead legacy `anomaly` key from physical auth files (the
 	// anomaly pool was removed; see anomaly_purge.go). Idempotent, runs once.
 	purgeLegacyAnomalyFlags()
+	// Re-enable accounts still carrying the pre-0.1.55 session-dead
+	// auto-disable pair (disabled:true + "Session expired" note) — the
+	// manual-toggle-only policy's legacy-flag sweep. Idempotent, runs once.
+	purgeLegacyDisabledFlags()
 	runPreserveWatchdogTick()
 	for {
 		enabled := preserveWatchdogEnabled()
