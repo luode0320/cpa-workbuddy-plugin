@@ -341,6 +341,7 @@ git -c http.proxy=socks5h://127.0.0.1:1080 push origin main
 48. **plugin-store install 对个别插件可能落盘但不热重载（2026-09-07 实测，qoderwork 0.9.12）**：traework/workbuddy install 后同秒 loaded+registered+hot reloaded，qoderwork install 返回 `status=installed, restart_required=false` 但**无任何 loaded/reloaded 日志**，重装一次（overwritten=true）也不触发——宿主 active 版本停在旧版（`.so` sha256 与本地一致，落盘本身正确）。处置：sha256 校验通过 + accounts/panel 200 即可接受「待宿主重启生效」；旧版继续服务且该插件生产无账号时无风险敞口，不必为此重启宿主（重启中断在线流量），把重启时机交用户决定。后续每次 install 后都要 `docker logs | grep "hot reloaded"` 确认 active_version，不能只信响应 JSON。（2026-09-08 复测 0.9.13：同版本族 install 后正常热重载，踩坑 48 形态非 qoderwork 必然，属偶发。）
 49. **CI 轮询 urllib 脚本必须 JSON 解析容错（2026-09-08 实测）**：api.github.com TLS 瞬时窗口（`SSL UNEXPECTED_EOF_WHILE_READING` 连续 5 次重试全败）时 call() 返回空串，裸 `json.loads(raw)` 直接崩溃退出——轮询脚本必须包 jcall（空响应跳过本轮继续轮询，多轮重试），否则一次网络抖动杀掉整个后台轮询还得重启脚本。
 50. **多插件批量改码后发布，Step 1 的 VERSION 文件极易漏 bump（2026-09-08 实测）**：会话内先改码收口、隔轮才授权发布时，main.go 的 `var version` 记得 bump 但三个 `VERSION` 纯文本文件仍是旧版——commit 前 push 前必须自查：`cat */VERSION && grep -h 'var version = ' */main.go` 两两核对一致；push 后才发现会造成 registry 版本与仓库 VERSION 不一致的中间态。
+51. **panel.html 改动仅凭 node --check 全绿就发布 = 生产事故（2026-09-08 实测，0.1.55→0.1.56 hotfix）**：`node --check` 只查语法，抓不到未定义标识符——0.1.55 清理把 `const scopeLabel=` 前缀删成孤立表达式，语法合法全绿发布，生产运行时 `ReferenceError` 使面板整体失败。HTML 内嵌 JS 改动后的发布前最低验证线：① vm + DOM stub 真实执行全部 `<script>` 顶层（抓 ReferenceError）；② 删除"带名字的定义"时 grep 复查定义处与使用处成对存在；③ 关键表达式（如三元链）逐分支运行时断言。三者缺一不可，Go build/test 全绿对内嵌 JS 零覆盖。
 
 ## 权责边界与不负责事项
 
