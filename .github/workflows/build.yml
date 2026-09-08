@@ -269,6 +269,8 @@ jobs:
           PY
 
       - name: Upload build artifact
+        id: upload_artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARCHIVE_NAME }}
@@ -276,6 +278,21 @@ jobs:
             ${{ env.ARCHIVE_NAME }}
             ${{ env.ARCHIVE_NAME }}.sha256
           if-no-files-found: error
+
+      # 2026-09-08: GitHub artifact blob storage had a window of intermittent
+      # failures ("Upload build artifact" failing on random matrix jobs while
+      # every build/test step stayed green). One retry with overwrite covers
+      # the transient case; a second failure still fails the job loudly.
+      - name: Retry upload build artifact
+        if: steps.upload_artifact.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.ARCHIVE_NAME }}.sha256
+          if-no-files-found: error
+          overwrite: true
 
   build-cross:
     name: ${{ matrix.id }} ${{ matrix.target }} (go-cross)
@@ -382,6 +399,8 @@ jobs:
             -checksum "${ARCHIVE_NAME}.sha256"
 
       - name: Upload build artifact
+        id: upload_artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARCHIVE_NAME }}
@@ -389,6 +408,21 @@ jobs:
             ${{ env.ARCHIVE_NAME }}
             ${{ env.ARCHIVE_NAME }}.sha256
           if-no-files-found: error
+
+      # 2026-09-08: GitHub artifact blob storage had a window of intermittent
+      # failures ("Upload build artifact" failing on random matrix jobs while
+      # every build/test step stayed green). One retry with overwrite covers
+      # the transient case; a second failure still fails the job loudly.
+      - name: Retry upload build artifact
+        if: steps.upload_artifact.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.ARCHIVE_NAME }}.sha256
+          if-no-files-found: error
+          overwrite: true
 
   release:
     name: Release
@@ -430,6 +464,15 @@ jobs:
           echo "Releasing $P v$V"
 
       - name: Download build artifacts
+        id: download_artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Retry download build artifacts
+        if: steps.download_artifacts.outcome == 'failure'
         uses: actions/download-artifact@v4
         with:
           path: dist
