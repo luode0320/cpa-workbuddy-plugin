@@ -331,6 +331,22 @@ func manualDisableFromAuthJSON(raw []byte) bool {
 	return m.ManualDisable
 }
 
+// exhaustedDisableFromAuthJSON reads the top-level exhausted_disable flag.
+// It is set by the automatic credit-exhaustion lifecycle (disableAuth auto
+// path) together with disabled:true, and cleared when reconcile re-enables
+// the account (credits recovered). Reconcile only auto-re-enables docs
+// carrying this marker — a disabled doc without it (manual toggle via the
+// host UI, or any other writer) is never auto-re-enabled. Mirrors the
+// manual_disable reader; the host surfaces it in coreauth.Auth.Metadata.
+
+func exhaustedDisableFromAuthJSON(raw []byte) bool {
+	var m struct {
+		ExhaustedDisable bool `json:"exhausted_disable"`
+	}
+	_ = json.Unmarshal(raw, &m)
+	return m.ExhaustedDisable
+}
+
 // isSafeWorkbuddyAuthPath rejects non-workbuddy filenames, empty paths, and
 // traversal attempts. It validates both the basename pattern AND that the path
 // does not escape via ".." segments. Callers that need to confine deletes to

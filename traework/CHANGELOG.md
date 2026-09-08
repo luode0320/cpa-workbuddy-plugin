@@ -1,5 +1,17 @@
 # TraeWork Plugin Changelog
 
+## 0.1.58
+
+### Feat — 耗尽自动停用 + 每 4 小时签到自动恢复（策略更新：耗尽停用保留，但必须能自愈）
+
+- **策略反转**（2026-09-08 用户指令）：耗尽→停用机制保留，但增加自动恢复——账号积分耗尽（remain<=0）自动写 `disabled:true` + **新标记 `exhausted_disable:true`**（独立顶层字段，不依赖 note 文本匹配）；每 4 小时签到循环刷新积分后自动 reconcile，**积分恢复>0 即清除标志对并重新启用**。手动停用（`manual_disable:true`）与宿主侧无标记停用永不自动覆盖。
+- **lifecycle.go 重写**：原 `reconcileAllAccounts` 只报告不写盘（且无调用方，实为死代码）。新增 `reconcileOneAccount`（force 时上游实查积分并刷缓存）双向决策：未停用+耗尽 → `persistExhaustedDisable`（disabled+exhausted_disable+note "耗尽停用 · 余X 已用Y"，同时释放面板钉选与会话粘绑定）；`exhausted_disable` 且非 `manual_disable` 且积分>0 → `persistExhaustedReenable`（清标志、note "恢复启用 · 签到积分到账"）。两个 persist 均先重读磁盘现状再写（并发手动 toggle 不被覆盖），走 `persistAuthDirect`（host.auth.save 丢未知顶层字段，exhausted_disable 会丢）。
+- **恢复/停用触发点全覆盖**：`runFleetCheckin`（4h 签到主循环）、`doFetchOne`（面板刷新 runner）、手动签到、`/credits` 单账号与全量查询——所有 `cacheCredits` 落点后接 `reconcileAfterCreditsRefresh`，停用与恢复都在同一 4h 周期内完成。
+- **persistDisabledToggle 加意图标记**：手动停用写 `manual_disable:true`，手动启用同时清除 `manual_disable` 与 `exhausted_disable`（用户显式操作优先于任何自动状态）；写通道从 host.auth.save 切换为 `persistAuthDirect`（同 keeper/counter/preserve 规则，防标记丢失）。
+- **legacy purge 防误伤**：`stripLegacyDisabledFlag` 对携带 `manual_disable` / `exhausted_disable` 的文件直接跳过（标记文件是现行机制的合法状态，不是 ≤0.1.54 遗留证据）；新增 `authDocFlags` 单解析三标记读取。
+- panel.html 停用筛选 title 同步（手动停用 / 耗尽自动停用可恢复 / refresh token 失效三类）；`lifecycle_auto` 配置描述同步。
+- 验证：`TestAuthDocFlags` + `TestStripLegacyDisabledFlag` 扩展用例（标记文件七态）；cgo-shim build/vet/test 全绿。
+
 ## 0.1.57
 
 ### Fix — 泄漏旧实例 22:00 重写停用标志事故：遗留 disabled 标志启动清扫 + refresh-token 失效指纹归类

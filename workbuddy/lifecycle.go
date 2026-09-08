@@ -1,6 +1,12 @@
 // lifecycle.go implements credit-based auth lifecycle for workbuddy:
-//   - CN exhausted  → update note but do NOT write disabled:true (manual-toggle-only policy)
+//   - CN exhausted → AUTO-DISABLE: write disabled:true + top-level marker
+//     exhausted_disable:true (policy update 2026-09-08, user mandate: 耗尽
+//     停用保留，但必须能自动恢复). The 4h check-in reconcile then re-enables
+//     the account automatically once refreshed credits are > 0.
 //   - Global exhausted → delete auth file (one-shot quota)
+//   - Manual disable (manual_disable marker, or a disabled doc without the
+//     exhausted_disable marker written by the host UI) is NEVER auto-touched:
+//     no automatic path re-enables or re-disables it.
 //   - Unknown credits → no-op (never mis-kill)
 //   - Hard credit errors from executor → recheck credits then apply policy
 //   - Soft rate limits → do not delete Global
@@ -67,21 +73,26 @@ func pruneLifecycleState() {
 	})
 }
 
-// disableAuth writes disabled:true only when the caller passes a manual
-// toggle marker (extra contains manual_disable:true). Auto lifecycle paths
-// MANUAL-TOGGLE-ONLY POLICY (2026-09-08, user mandate): the ONLY thing that
-// may set disabled:true on a workbuddy auth file is the user's explicit
-// manual toggle. No automatic path — request failures, 401/403, token
-// expiry, consecutive failures (the anomaly pool was removed on 2026-09-08),
-// credit exhaustion, keepalive errors — may ever write disabled:true.
-// Auto-lifecycle callers of disableAuth (extra=nil) only update the note —
-// the user explicitly requested that only manual panel toggle controls the
-// disabled flag. Auto-failover routing
-// handles exhausted accounts via the failure cooldown (fixed 15s).
-// extra merges additional top-level keys into the auth file (the panel toggle
-// passes {"manual_disable":true}). An existing manual_disable marker is ALWAYS
-// carried forward, so an auto note refresh of an already-manually-disabled
-// account never erases the user's choice.
+// disableAuth applies the exhausted-disable decision for one account.
+//
+// Dual-path semantics (policy update 2026-09-08):
+//   - Manual toggle path (extra contains manual_disable:true): writes
+//     disabled:true and carries the manual_disable intent marker. The
+//     reconcile never auto-re-enables a manually disabled account, even
+//     when credits recover.
+//   - Auto exhaustion path (extra=nil, the only remaining automatic caller
+//     set — applyExhaustedPolicy / reconcileOneAccount lifecycleDisable):
+//     writes disabled:true + exhausted_disable:true when the account is
+//     currently enabled (耗尽自动停用). The 4h check-in reconcile clears the
+//     pair once refreshed credits are > 0 (自动恢复). If the file is already
+//     disabled, the existing flag is preserved untouched: manual_disable
+//     carries forward, exhausted_disable carries forward, and a marker-less
+//     disabled doc (host-UI toggle or unknown writer) gains NO marker — it
+//     stays exactly as the user left it.
+//
+// An existing manual_disable marker is ALWAYS carried forward, so an auto
+// note refresh of an already-manually-disabled account never erases the
+// user's choice. extra merges additional top-level keys into the auth file.
 func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string, extra map[string]any) error {
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
@@ -105,25 +116,44 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 		merged["manual_disable"] = true
 	}
 	// Determine whether this is a manual toggle or an auto-lifecycle call.
-	// Only the manual toggle (extra contains manual_disable:true) writes
-	// disabled:true — auto-lifecycle paths keep the existing disabled flag
-	// unchanged and only update the note.
+	// Manual toggle (extra contains manual_disable:true) writes disabled:true
+	// with the intent marker. The auto exhaustion path (policy update
+	// 2026-09-08) writes disabled:true + exhausted_disable:true when the
+	// account is enabled; already-disabled files keep their existing flag and
+	// markers untouched (manual_disable carries forward via merged above).
 	_, isManualToggle := extra["manual_disable"]
 	if !isManualToggle {
-		// Auto-lifecycle: preserve the existing disabled flag from disk.
-		existingDisabled := false
-		physOK := err == nil
-		if physOK {
-			existingDisabled = parseDisabledFromAuthJSON(phys.JSON)
-			note = displayNote(sa, cr, existingDisabled)
-			// When the physical file is already disabled (manual toggle),
-			// carry the manual_disable marker forward.
-			if existingDisabled && manualDisableFromAuthJSON(phys.JSON) {
-				merged["manual_disable"] = true
+		// Auto-lifecycle: exhaustion disable with auto-recovery marker.
+		finalDisabled := false
+		if err == nil && phys != nil {
+			finalDisabled = parseDisabledFromAuthJSON(phys.JSON)
+			switch {
+			case manualDisableFromAuthJSON(phys.JSON):
+				// Manually disabled: user intent wins — the manual_disable
+				// marker is already carried in merged; never add
+				// exhausted_disable (must not become auto-recoverable).
+			case exhaustedDisableFromAuthJSON(phys.JSON):
+				// Already auto-disabled by this lifecycle: marker carries
+				// forward so recovery stays armed.
+				merged["exhausted_disable"] = true
+			case finalDisabled:
+				// Disabled by an unknown/manual writer without markers
+				// (e.g. host-UI toggle): leave the flag exactly as-is.
+			default:
+				// Enabled → exhausted auto-disable (可自动恢复).
+				finalDisabled = true
+				merged["exhausted_disable"] = true
+			}
+		}
+		note = displayNote(sa, cr, finalDisabled)
+		if reason != "" && !strings.Contains(note, reason) {
+			// keep note short; reason only if room
+			if len(note)+len(reason) < 75 {
+				note = note + " · " + reason
 			}
 		}
 		// Skip the write when state+note are unchanged.
-		if lifecycleStateUnchanged(authID, existingDisabled, note) {
+		if lifecycleStateUnchanged(authID, finalDisabled, note) {
 			return nil
 		}
 		name := authFileNameFor(sa)
@@ -132,14 +162,14 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 		if phys != nil {
 			name, path, legacyPath = resolveAuthFileTarget(sa, phys)
 		}
-		raw, err := buildAuthFileJSON(sa, existingDisabled, note, merged)
+		raw, err := buildAuthFileJSON(sa, finalDisabled, note, merged)
 		if err != nil {
 			return err
 		}
 		if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
 			return err
 		}
-		rememberLifecycleState(authID, false, note)
+		rememberLifecycleState(authID, finalDisabled, note)
 		accountCache.Delete(authID)
 		return nil
 	}
@@ -241,6 +271,9 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 		extra := map[string]any{}
 		if manualDisableFromAuthJSON(phys.JSON) {
 			extra["manual_disable"] = true
+		}
+		if exhaustedDisableFromAuthJSON(phys.JSON) {
+			extra["exhausted_disable"] = true
 		}
 		raw, berr := buildAuthFileJSON(sa, existingDisabled, note, extra)
 		if berr != nil {
@@ -351,9 +384,14 @@ func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 		// re-read disabled from disk as source of truth
 		disabled = parseDisabledFromAuthJSON(phys.JSON)
 		note = displayNote(sa, cr, disabled)
-		// carry the manual-disable marker forward (note refresh must not clear it)
+		// carry the manual-disable marker forward (note refresh must not
+		// clear it), same for the exhausted-disable marker (note refresh
+		// must not disarm auto-recovery)
 		if manualDisableFromAuthJSON(phys.JSON) {
 			extra["manual_disable"] = true
+		}
+		if exhaustedDisableFromAuthJSON(phys.JSON) {
+			extra["exhausted_disable"] = true
 		}
 	}
 	if lifecycleStateUnchanged(authID, disabled, note) {
@@ -417,12 +455,18 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 
 	region := accountRegion(sa)
 	if region == "cn" && disabled {
-		// Manual disable (panel toggle) must stick: never auto-re-enable an
-		// account the user explicitly disabled, even when credits recover.
-		// Without this guard, reconcile would fight the toggle on every tick
-		// (Bug B: it cannot distinguish manual disable from exhausted auto-
-		// disable — manual_disable makes the intent explicit).
+		// Manual disable (manual_disable marker) must stick: never
+		// auto-re-enable an account the user explicitly disabled, even when
+		// credits recover.
 		if phys != nil && manualDisableFromAuthJSON(phys.JSON) {
+			_ = syncAuthNote(authIndex, authID, sa, cr, true)
+			return lifecycleNone, nil
+		}
+		// Marker-gated recovery (policy update 2026-09-08): only docs this
+		// lifecycle auto-disabled (exhausted_disable:true) re-enable
+		// automatically once credits recover. A marker-less disabled doc is
+		// host-UI manual intent or an unknown writer — sticky by design.
+		if phys == nil || !exhaustedDisableFromAuthJSON(phys.JSON) {
 			_ = syncAuthNote(authIndex, authID, sa, cr, true)
 			return lifecycleNone, nil
 		}

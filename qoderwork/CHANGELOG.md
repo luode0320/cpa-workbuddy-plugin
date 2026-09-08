@@ -1,5 +1,17 @@
 # QoderWork Plugin Changelog
 
+## 0.9.15
+
+### Feat — 耗尽自动停用 + 每 4 小时签到自动恢复（策略更新：耗尽停用保留，但必须能自愈；对齐 workbuddy 0.14.27 / traework 0.1.58）
+
+- **策略反转**（2026-09-08 用户指令）：耗尽→停用机制保留，但增加自动恢复——CN 账号积分耗尽（remain<=0）自动写 `disabled:true` + **新标记 `exhausted_disable:true`**（独立顶层字段，不依赖 note 文本匹配）；每 4 小时签到循环的 reconcile（`processAutoCheckinAccount` → `reconcileOneAccount(force=true)`，既有挂点）刷新积分后，**积分恢复>0 即清标志对并重新启用**。手动停用（`manual_disable:true`）与宿主侧无标记停用（插件无停用路由，手动操作走宿主管理 UI）永不自动覆盖。
+- **`disableAuth` 重写**：enabled→disabled 转换写 `disabled+exhausted_disable`（可自动恢复）；已停用文件分三态——带 `manual_disable` 只透传、带 `exhausted_disable` 透传、无标记不添加（sticky）；`reenableAuth`（extra=nil 重建）清除两个意图标记；`syncAuthNote` 透传双标记（note 刷新不得解除恢复武装）；`deleteAuth` 无 path fallback 同步透传。
+- **`reconcileOneAccount` 恢复分支标记门控**：SESSION-DEAD/TOKEN_EXPIRE note 守卫保留；仅 `exhausted_disable:true` 的停用文件参与自动恢复；manual_disable / 无标记停用一律只刷 note。
+- **新增标记读取器**（authfile.go）：`manualDisableFromAuthJSON` + `exhaustedDisableFromAuthJSON`（与 workbuddy 同构）。
+- **写通道切换**：`disableAuth` / `reenableAuth` / `syncAuthNote` 从 `hostAuthPersistMigrate`（host.auth.save）改为 `persistAuthDirect`——host.auth.save 重建记录会丢未知顶层字段，exhausted_disable / manual_disable 标记会丢（与 preserve / counter 同规则）。
+- 测试：新增 `lifecycle_test.go`（`TestAuthMarkerReaders` + `TestBuildAuthFileJSONExhaustedMarker`）。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.9.14
 
 ### Feat — 移除异常池机制：失败一律走固定 15s 冷却（对齐 workbuddy 0.14.26 / traework 0.1.55）

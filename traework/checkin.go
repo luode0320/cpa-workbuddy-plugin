@@ -338,6 +338,11 @@ func runFleetCheckin(source string) (int, []map[string]any, int) {
 		if res.OK {
 			if cr, cerr := accountCredits(a); cerr == nil {
 				cacheCredits(f.ID, cr)
+				// 4h recovery/disable hook: the fresh snapshot feeds the
+				// exhausted lifecycle — an account with the exhausted_disable
+				// marker whose credits recovered (>0) is re-enabled in the
+				// same cycle; a newly exhausted account is auto-disabled.
+				reconcileAfterCreditsRefresh(f.AuthIndex, f.ID)
 			}
 		}
 	}

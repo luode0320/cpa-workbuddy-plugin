@@ -231,6 +231,33 @@ func parseDisabledFromAuthJSON(raw []byte) bool {
 	return m.Disabled
 }
 
+// manualDisableFromAuthJSON reads the top-level manual_disable flag (manual
+// panel/host toggle intent). Lifecycle reconcile honors it by never
+// auto-re-enabling a manually disabled account, even when credits recover.
+
+func manualDisableFromAuthJSON(raw []byte) bool {
+	var m struct {
+		ManualDisable bool `json:"manual_disable"`
+	}
+	_ = json.Unmarshal(raw, &m)
+	return m.ManualDisable
+}
+
+// exhaustedDisableFromAuthJSON reads the top-level exhausted_disable flag.
+// It is set by the automatic credit-exhaustion lifecycle (disableAuth auto
+// path) together with disabled:true, and cleared when reconcile re-enables
+// the account (credits recovered). Reconcile only auto-re-enables docs
+// carrying this marker — a disabled doc without it (manual toggle via the
+// host UI, or any other writer) is never auto-re-enabled.
+
+func exhaustedDisableFromAuthJSON(raw []byte) bool {
+	var m struct {
+		ExhaustedDisable bool `json:"exhausted_disable"`
+	}
+	_ = json.Unmarshal(raw, &m)
+	return m.ExhaustedDisable
+}
+
 // isSafeAuthPath rejects non-qoderwork filenames, empty paths, and
 // traversal attempts. It validates both the basename pattern AND that the path
 // does not escape via ".." segments. Callers that need to confine deletes to

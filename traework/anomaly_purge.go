@@ -17,7 +17,11 @@
 // persistDisabledToggle (panel), which never pairs it with a "Session
 // expired" note — so a doc carrying BOTH is provably legacy and safe to
 // re-enable. Docs with disabled:true and any other (or no) note are left
-// untouched: the purge never guesses.
+// untouched: the purge never guesses. Since 0.1.58 the exhausted lifecycle
+// also writes disabled:true, but always paired with the exhausted_disable
+// marker (and manual toggles pair it with manual_disable) — stripLegacy-
+// DisabledFlag skips marker-carrying docs so the purge can never fight the
+// current mechanisms.
 //
 // This file also hosts the shared auth-file error helpers (authFileErr /
 // errAuthIndexRequired / errAuthMissing) that used to live in anomaly.go and
@@ -71,14 +75,21 @@ func stripAnomalyKey(raw []byte) ([]byte, bool) {
 // The note itself is KEPT: it still truthfully describes the refresh token
 // state. Returns the (possibly unchanged) raw bytes and whether anything
 // changed. Unparsable input is returned unchanged — never blind-writes.
-// Docs that are not disabled, or disabled with a different/absent note, are
-// never touched (a manual toggle may be legitimate; the purge cannot tell).
+// Docs carrying manual_disable or exhausted_disable are never touched: those
+// markers are owned by the manual toggle / the current exhausted lifecycle
+// (2026-09-08 policy update), so a disabled doc with either marker is
+// legitimate state, not legacy evidence. Docs that are not disabled, or
+// disabled with a different/absent note, are also never touched (a manual
+// toggle may be legitimate; the purge never guesses).
 func stripLegacyDisabledFlag(raw []byte) ([]byte, bool) {
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil || doc == nil {
 		return raw, false
 	}
 	if disabled, _ := doc["disabled"].(bool); !disabled {
+		return raw, false
+	}
+	if _, manual, exhausted := authDocFlags(raw); manual || exhausted {
 		return raw, false
 	}
 	note, _ := doc["note"].(string)

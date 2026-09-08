@@ -242,7 +242,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button type="button" class="ftag" data-f="preserve" onclick="filterRegion('preserve',this)" title="积分低于保号阈值，watchdog 自动隔离兜底">保号 <span class="cnt" id="cntPreserve">0</span></button>
     <button type="button" class="ftag" data-f="exhausted" onclick="filterRegion('exhausted',this)" title="积分耗尽（remain &lt;= 0），lifecycle 自动停用">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
     <button type="button" class="ftag" data-f="failed" onclick="filterRegion('failed',this)" title="累计失败 &gt; 0 或连败中（fail_count &gt; 0）的账号">失败 <span class="cnt" id="cntFailed">0</span></button>
-    <button type="button" class="ftag" data-f="disabled" onclick="filterRegion('disabled',this)" title="手动停用或 refresh token 失效被标记的账号">停用 <span class="cnt" id="cntDisabled">0</span></button>
+    <button type="button" class="ftag" data-f="disabled" onclick="filterRegion('disabled',this)" title="手动停用、耗尽自动停用（积分恢复后签到自动启用）或 refresh token 失效被标记的账号">停用 <span class="cnt" id="cntDisabled">0</span></button>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>

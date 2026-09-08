@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.27
+
+### Feat — 耗尽自动停用 + 每 4 小时签到自动恢复（策略更新：耗尽停用保留，但必须能自愈）
+
+- **策略反转**（2026-09-08 用户指令）：耗尽→停用机制保留，但增加自动恢复——CN 账号积分耗尽（remain<=0）自动写 `disabled:true` + **新标记 `exhausted_disable:true`**（独立顶层字段，不依赖 note 文本匹配）；每 4 小时签到循环的 reconcile（`processAutoCheckinAccount` → `reconcileOneAccount(force=true)`，既有挂点）刷新积分后，**积分恢复>0 即清标志对并重新启用**。手动停用（`manual_disable:true`）与宿主侧无标记停用（面板无停用路由，手动操作走宿主管理 UI，落盘无标记）永不自动覆盖。
+- **`disableAuth` 自动路径翻转**：enabled→disabled 转换写 `disabled+exhausted_disable`（可自动恢复）；已停用文件分三态——带 `manual_disable` 只透传（用户意图优先）、带 `exhausted_disable` 透传（恢复保持武装）、无标记不添加（宿主 UI 手动停用，sticky）；`reenableAuth`（extra=nil 重建）天然清除两个意图标记；`syncAuthNote` 透传双标记（note 刷新不得解除恢复武装）；`deleteAuth` 无 path fallback 同步透传。
+- **`reconcileOneAccount` 恢复分支标记门控**：仅 `exhausted_disable:true` 的停用文件参与自动恢复；manual_disable / 无标记停用一律只刷 note。
+- **新增 `exhaustedDisableFromAuthJSON`**（authfile.go，与 manualDisableFromAuthJSON 同构）；写通道保持 `persistAuthDirect`（host.auth.save 丢未知顶层字段，标记会丢）。
+- 测试：`TestExhaustedDisableFromAuthJSON` + `TestBuildAuthFileJSONExhaustedMarker`（标记 set/clear 往返断言）。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.14.26
 
 ### Feat — 移除异常池机制：失败一律走固定 15s 冷却，停用入口固化 MANUAL-TOGGLE-ONLY POLICY

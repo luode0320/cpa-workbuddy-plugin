@@ -362,6 +362,8 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 			cacheCredits(fileID, cr)
 			out["remain"] = cr.TotalRemain
 			out["credits"] = cr
+			// Fresh snapshot feeds the exhausted lifecycle (disable/recover).
+			reconcileAfterCreditsRefresh(authIndex, fileID)
 		}
 	}
 	return out
@@ -429,6 +431,8 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 		}
 		if fileID != "" {
 			cacheCredits(fileID, cr)
+			// Fresh snapshot feeds the exhausted lifecycle (disable/recover).
+			reconcileAfterCreditsRefresh(authIndex, fileID)
 		}
 		return map[string]any{
 			"ok": true, "auth_index": authIndex, "remain": cr.TotalRemain,
@@ -459,6 +463,8 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 			continue
 		}
 		cacheCredits(f.ID, &traeCredits{TotalRemain: remain, FetchedAt: time.Now().Format(time.RFC3339)})
+		// Fresh snapshot feeds the exhausted lifecycle (disable/recover).
+		reconcileAfterCreditsRefresh(f.AuthIndex, f.ID)
 		out = append(out, entry{AuthIndex: f.AuthIndex, UID: a.UserID, Nickname: a.Nickname, Remain: remain})
 	}
 	return map[string]any{"ok": true, "accounts": out}
@@ -541,17 +547,24 @@ func handleToggleDisabled(req pluginapi.ManagementRequest, disable bool) map[str
 	return map[string]any{"error": "account not found: " + authIndex}
 }
 
-// persistDisabledToggle writes the top-level disabled flag via host.auth.save
-// (the physical auth JSON round-trips through the host's rebuild, which
-// preserves recognized top-level fields).
+// persistDisabledToggle writes the top-level disabled flag plus the
+// manual_disable intent marker onto the physical auth file.
 //
-// MANUAL-TOGGLE-ONLY POLICY (2026-09-08, user mandate): this function is the
-// ONLY writer of disabled:true in the traework plugin, and it is reachable
-// exclusively from the manual panel toggle. No automatic path — request
-// failures, 401/403, token expiry, consecutive failures (the anomaly pool was
-// removed on 2026-09-08), credit exhaustion, session-dead — may ever write
-// disabled:true; authguard.go only RE-APPLIES this manual flag after host
-// refreshes, never creates one.
+// MANUAL-TOGGLE-ONLY POLICY (2026-09-08, user mandate): the manual toggle is
+// the ONLY interactive writer of disabled:true in the traework plugin. The
+// exhausted lifecycle (lifecycle.go) also writes disabled:true but ALWAYS
+// pairs it with exhausted_disable:true, and it never touches a file carrying
+// manual_disable — a manually disabled account stays disabled until the user
+// re-enables it, even when credits recover.
+//
+// Manual re-enable clears BOTH intent markers: the user's explicit action
+// overrides any automatic exhausted-disable.
+//
+// The write goes through persistAuthDirect, NOT host.auth.save — the save
+// channel rebuilds the record and drops unknown top-level fields, which
+// would lose the manual_disable / exhausted_disable markers on the very
+// toggle that set them. authguard.go only RE-APPLIES the manual flag after
+// host refreshes, never creates one.
 func persistDisabledToggle(authIndex, authID string, disabled bool) error {
 	phys, err := hostAuthGetPhysical(authIndex)
 	if err != nil {
@@ -565,6 +578,14 @@ func persistDisabledToggle(authIndex, authID string, disabled bool) error {
 		doc = map[string]any{}
 	}
 	doc["disabled"] = disabled
+	if disabled {
+		// Manual intent marker: lifecycle reconcile never auto-re-enables a
+		// manually disabled account, even when credits recover.
+		doc["manual_disable"] = true
+	} else {
+		delete(doc, "manual_disable")
+		delete(doc, "exhausted_disable")
+	}
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		return err
@@ -573,7 +594,7 @@ func persistDisabledToggle(authIndex, authID string, disabled bool) error {
 	if name == "" {
 		name = "traework-" + sanitizeUIDForFileName(authID) + ".json"
 	}
-	return hostAuthSaveJSON(name, raw)
+	return persistAuthDirect(name, phys.Path, "", raw)
 }
 
 // -----------------------------------------------------------------------------

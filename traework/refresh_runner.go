@@ -284,5 +284,8 @@ func doFetchOne(authIndex, authID string) error {
 		return err
 	}
 	cacheCredits(authID, cr)
+	// Panel refresh doubles as the lifecycle reconcile trigger: the fresh
+	// snapshot drives both the exhausted-disable and the recovery direction.
+	reconcileAfterCreditsRefresh(authIndex, authID)
 	return nil
 }

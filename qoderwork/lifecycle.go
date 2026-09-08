@@ -1,7 +1,12 @@
 // lifecycle.go implements credit-based auth lifecycle for qoderwork:
-//   - CN exhausted  → update note but do NOT write disabled:true (manual-toggle-only policy)
-//   - exhausted → delete auth file (one-shot quota)
+//   - CN exhausted → AUTO-DISABLE: write disabled:true + top-level marker
+//     exhausted_disable:true (policy update 2026-09-08, user mandate: 耗尽
+//     停用保留，但必须能自动恢复). The 4h check-in reconcile then re-enables
+//     the account automatically once refreshed credits are > 0.
 //   - Unknown credits → no-op (never mis-kill)
+//   - Manual disable (manual_disable marker, or a disabled doc without the
+//     exhausted_disable marker written by the host UI) is NEVER auto-touched;
+//     session-dead note guards (SESSION-DEAD / TOKEN_EXPIRE) also stay.
 //   - Hard credit errors from executor → recheck credits then apply policy
 //   - Soft rate limits → do not delete CN
 package main
@@ -68,36 +73,57 @@ func pruneLifecycleState() {
 	})
 }
 
-// MANUAL-TOGGLE-ONLY POLICY (2026-09-08, user mandate): the ONLY thing that
-// may set disabled:true on a qoderwork auth file is the user's explicit
-// manual toggle. No automatic path may ever write disabled:true.
+// disableAuth applies the exhausted-disable decision for one account
+// (policy update 2026-09-08: 耗尽停用保留，但必须能自动恢复).
 //
-// disableAuth updates the note for an exhausted account but does NOT write
-// disabled:true — the user explicitly requested that only manual panel toggle
-// controls the disabled flag. Auto-failover routing handles exhausted accounts
-// via the failure cooldown (fixed 15s) without needing disabled:true.
+//   - Enabled account + exhaustion decision → writes disabled:true +
+//     exhausted_disable:true. The 4h check-in reconcile clears the pair once
+//     refreshed credits are > 0 (自动恢复).
+//   - Already-disabled account → flag preserved untouched: manual_disable /
+//     exhausted_disable carry forward; a marker-less disabled doc (host-UI
+//     toggle or unknown writer) gains NO marker and is never auto-re-enabled.
+//
+// All callers are automatic exhaustion paths (applyExhaustedPolicy /
+// reconcileOneAccount lifecycleDisable) — qoderwork has no in-plugin manual
+// toggle; the host UI writes disabled directly, which reconcile treats as
+// manual intent (sticky). Writes go through persistAuthDirect, NOT
+// host.auth.save: the save channel rebuilds the record and drops unknown
+// top-level fields, which would lose the intent markers.
 func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string) error {
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Preserve the existing disabled flag from disk — never auto-disable.
 	phys, err := hostAuthGetPhysical(authIndex)
-	existingDisabled := false
-	if err == nil {
-		existingDisabled = parseDisabledFromAuthJSON(phys.JSON)
+	finalDisabled := false
+	extra := map[string]any{}
+	if err == nil && phys != nil {
+		finalDisabled = parseDisabledFromAuthJSON(phys.JSON)
+		switch {
+		case manualDisableFromAuthJSON(phys.JSON):
+			// Manually disabled: user intent wins — carry the marker, never
+			// add exhausted_disable (must not become auto-recoverable).
+			extra["manual_disable"] = true
+		case exhaustedDisableFromAuthJSON(phys.JSON):
+			// Already auto-disabled by this lifecycle: marker carries
+			// forward so recovery stays armed.
+			extra["exhausted_disable"] = true
+		case finalDisabled:
+			// Disabled by an unknown/manual writer without markers: leave
+			// the flag exactly as-is, add nothing.
+		default:
+			// Enabled → exhausted auto-disable (可自动恢复).
+			finalDisabled = true
+			extra["exhausted_disable"] = true
+		}
 	}
-	note := displayNote(sa, cr, existingDisabled)
+	note := displayNote(sa, cr, finalDisabled)
 	if reason != "" && !strings.Contains(note, reason) {
 		if len(note)+len(reason) < 75 {
 			note = note + " · " + reason
 		}
 	}
-	if lifecycleStateUnchanged(authID, existingDisabled, note) {
-		return nil
-	}
-	// Skip the write if already disabled and nothing changed.
-	if err == nil && existingDisabled && lifecycleStateUnchanged(authID, true, note) {
+	if lifecycleStateUnchanged(authID, finalDisabled, note) {
 		return nil
 	}
 	name := authFileNameFor(sa)
@@ -106,19 +132,24 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 	if phys != nil {
 		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
 	}
-	raw, err := buildAuthFileJSON(sa, existingDisabled, note, nil)
+	raw, err := buildAuthFileJSON(sa, finalDisabled, note, extra)
 	if err != nil {
 		return err
 	}
-	if err := hostAuthPersistMigrate(name, path, legacyPath, raw); err != nil {
+	if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
 		return err
 	}
-	rememberLifecycleState(authID, existingDisabled, note)
+	rememberLifecycleState(authID, finalDisabled, note)
 	accountCache.Delete(authID)
 	return nil
 }
 
-// reenableAuth writes disabled:false when CN has credits again.
+// reenableAuth writes disabled:false when a recovered exhausted account has
+// credits again (reconcile recovery path, marker-gated: only docs carrying
+// exhausted_disable reach this). extra=nil drops the exhausted_disable AND
+// manual_disable markers — a re-enabled account starts with a clean slate.
+// persistAuthDirect (not host.auth.save) keeps every other top-level field
+// intact and lets the file watcher re-sync the scheduler.
 func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) error {
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
@@ -142,7 +173,7 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) 
 	if err != nil {
 		return err
 	}
-	if err := hostAuthPersistMigrate(name, path, legacyPath, raw); err != nil {
+	if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
 		return err
 	}
 	rememberLifecycleState(authID, false, note)
@@ -177,10 +208,19 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 		}
 	}
 	if path == "" {
-		// Last resort: preserve the existing disabled flag (never auto-disable).
+		// Last resort: preserve the existing disabled flag (never auto-disable)
+		// plus any intent markers, so a manual toggle or an armed
+		// exhausted-disable survives the fallback rewrite.
 		existingDisabled := parseDisabledFromAuthJSON(phys.JSON)
 		note := displayNote(sa, nil, existingDisabled) + " · 应删除但无 path"
-		raw, berr := buildAuthFileJSON(sa, existingDisabled, note, nil)
+		extra := map[string]any{}
+		if manualDisableFromAuthJSON(phys.JSON) {
+			extra["manual_disable"] = true
+		}
+		if exhaustedDisableFromAuthJSON(phys.JSON) {
+			extra["exhausted_disable"] = true
+		}
+		raw, berr := buildAuthFileJSON(sa, existingDisabled, note, extra)
 		if berr != nil {
 			return fmt.Errorf("no path and build failed: %w", berr)
 		}
@@ -250,7 +290,9 @@ func peerAuthDir() string {
 	return ""
 }
 
-// applyExhaustedPolicy applies disable (CN) or delete (CN).
+// applyExhaustedPolicy applies the exhausted-disable decision (policy update
+// 2026-09-08: write disabled:true + exhausted_disable:true; the 4h check-in
+// reconcile auto-re-enables once credits recover; manual intents stick).
 func applyExhaustedPolicy(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string) error {
 	if !lifecycleEnabled() {
 		return nil
@@ -264,7 +306,11 @@ func applyExhaustedPolicy(authIndex, authID string, sa *storedAuth, cr *creditsS
 	}
 }
 
-// syncAuthNote writes note without changing disabled state.
+// syncAuthNote writes note without changing disabled state. Intent markers on
+// disk (manual_disable / exhausted_disable) are carried forward — a note
+// refresh must never clear the manual intent nor disarm auto-recovery.
+// persistAuthDirect keeps every other top-level field intact (host.auth.save
+// rebuilds and drops unknown fields).
 func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, disabled bool) error {
 	if sa == nil {
 		return nil
@@ -280,20 +326,28 @@ func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 	name := authFileNameFor(sa)
 	path := ""
 	legacyPath := ""
+	extra := map[string]any{}
 	if err == nil {
 		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
 		// re-read disabled from disk as source of truth
 		disabled = parseDisabledFromAuthJSON(phys.JSON)
 		note = displayNote(sa, cr, disabled)
+		// carry intent markers forward (note refresh must not clear them)
+		if manualDisableFromAuthJSON(phys.JSON) {
+			extra["manual_disable"] = true
+		}
+		if exhaustedDisableFromAuthJSON(phys.JSON) {
+			extra["exhausted_disable"] = true
+		}
 	}
 	if lifecycleStateUnchanged(authID, disabled, note) {
 		return nil
 	}
-	raw, err := buildAuthFileJSON(sa, disabled, note, nil)
+	raw, err := buildAuthFileJSON(sa, disabled, note, extra)
 	if err != nil {
 		return err
 	}
-	if err := hostAuthPersistMigrate(name, path, legacyPath, raw); err != nil {
+	if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
 		return err
 	}
 	rememberLifecycleState(authID, disabled, note)
@@ -356,6 +410,21 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 				(strings.Contains(pjson.Note, "SESSION-DEAD") || strings.Contains(pjson.Note, "TOKEN_EXPIRE")) {
 				return lifecycleNone, nil
 			}
+		}
+		// Manual disable (manual_disable marker) must stick: never
+		// auto-re-enable an account the user explicitly disabled, even when
+		// credits recover.
+		if phys != nil && manualDisableFromAuthJSON(phys.JSON) {
+			_ = syncAuthNote(authIndex, authID, sa, cr, true)
+			return lifecycleNone, nil
+		}
+		// Marker-gated recovery (policy update 2026-09-08): only docs this
+		// lifecycle auto-disabled (exhausted_disable:true) re-enable
+		// automatically once credits recover. A marker-less disabled doc is
+		// host-UI manual intent or an unknown writer — sticky by design.
+		if phys == nil || !exhaustedDisableFromAuthJSON(phys.JSON) {
+			_ = syncAuthNote(authIndex, authID, sa, cr, true)
+			return lifecycleNone, nil
 		}
 		if shouldReenableCN(true, cr) {
 			if err := reenableAuth(authIndex, authID, sa, cr); err != nil {

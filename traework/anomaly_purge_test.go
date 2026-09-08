@@ -123,4 +123,19 @@ func TestStripLegacyDisabledFlag(t *testing.T) {
 	if string(out6) != string(bad) {
 		t.Fatal("unparsable input must be returned as-is")
 	}
+
+	// 7. Exhausted-disable shape (0.1.58 lifecycle, marker-carrying): NEVER
+	//    touched — this disabled flag is owned by the current mechanism and
+	//    recovers via the 4h check-in reconcile, not the legacy purge.
+	exhausted := []byte(`{"disabled":true,"exhausted_disable":true,"note":"耗尽停用 · 余0 已用2300（签到恢复积分后自动启用）"}`)
+	if _, changed := stripLegacyDisabledFlag(exhausted); changed {
+		t.Fatal("exhausted_disable doc must report unchanged (current lifecycle owns it)")
+	}
+
+	// 8. Manual toggle with manual_disable marker: NEVER touched even when
+	//    someone hand-writes a Session-expired note next to it.
+	manualMarked := []byte(`{"disabled":true,"manual_disable":true,"note":"Session expired (refresh token dead): re-login required"}`)
+	if _, changed := stripLegacyDisabledFlag(manualMarked); changed {
+		t.Fatal("manual_disable doc must report unchanged (user intent owns it)")
+	}
 }
