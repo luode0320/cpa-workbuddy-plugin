@@ -712,7 +712,7 @@ function renderSummary(){
   const total=size>0?size:(remainAvail+used);
   const pct=total>0?Math.round(used/total*100):0;
   let barColor="var(--ok)"; if(pct>60)barColor="var(--warn)"; if(pct>85)barColor="var(--err)";
-  currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="preserve"?"保号账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="failed"?"失败账号":"停用账号"))));
+  const scopeLabel=(currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="preserve"?"保号账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="failed"?"失败账号":(currentFilter==="disabled"?"停用账号":"全部账号"))))));
   box.style.display="block";
   box.innerHTML=
     '<div class="summary-hd"><span class="summary-title">用量汇总 · '+esc(scopeLabel)+"</span>"+

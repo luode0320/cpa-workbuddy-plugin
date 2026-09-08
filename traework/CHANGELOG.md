@@ -1,5 +1,13 @@
 # TraeWork Plugin Changelog
 
+## 0.1.56
+
+### Fix — 面板 scopeLabel 未定义导致账号加载失败（0.1.55 回归）
+
+- 根因：0.1.55 清理 panel.html 异常筛选时，`renderSummary` 内 `const scopeLabel=` 三元链被误删前缀，残留一条语法合法但语义残缺的孤立表达式——`node --check` 无法拦截，运行时抛 `ReferenceError: scopeLabel is not defined`，面板整体报"加载账号失败，已保留上次数据"。
+- 修复：重建完整定义，覆盖全部 6 个筛选分支（all/available/preserve/exhausted/failed/disabled）+ fallback；括号由程序生成并断言平衡。
+- 验证升级：新增 vm + DOM stub 真实执行面板 JS 顶层（node --check 只查语法，抓不到未定义标识符）；traework/workbuddy/qoderwork 三面板顶层执行全过，scopeLabel 运行时 7 分支断言全过。
+
 ## 0.1.55
 
 ### Feat — 移除异常池机制：失败一律走固定 15s 冷却，停用入口固化 MANUAL-TOGGLE-ONLY POLICY
