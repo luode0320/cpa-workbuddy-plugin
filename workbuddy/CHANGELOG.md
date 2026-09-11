@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.30
+
+### Fix — host.http.do 非流式桥接响应状态码恒为 0（动态发现/积分失效的真正根因）
+
+- **根因**：宿主 `callHostHTTPDo` 返回的 `pluginapi.HTTPResponse` **无 JSON tag**（v7.2.x），线上序列化为 PascalCase `{"StatusCode":200,...}`；插件解析结构用 `json:"status_code"` tag，tag 精确名与 case-insensitive 名（`statuscode`）都无法匹配含下划线的 key → **StatusCode 恒解析为 0**，而 `Headers`/`Body` 因 case-insensitive 匹配侥幸成功（body 其实拿到了，状态码被判 0）。
+- **为何长期潜伏**：① 流式路径 `rpcHostHTTPStreamResponse` 有正确 tag → chat 一直正常；② Windows 端 `hostHTTPDo` 因栈漂移缓解直接直连不走桥接 → 本地开发从未暴露；③ 旧版失败静默回落静态列表。0.14.29 观测日志（`-> 0`）使其现形。
+- **修复**：解析结构对齐宿主真实线格式（无 tag PascalCase 字段），并防御性兼容未来宿主加 `status_code` tag 的变体；解析段抽为纯函数 `parseHostHTTPDoResult`，以宿主真实序列化形状（无 tag struct 经 `json.Marshal`）为夹具回归测试，另含 snake_case 变体与畸形 payload 用例。
+- **预期效果**：生产 Linux 上动态模型发现与积分查询首次真正走通；模型列表应出现 `deepseek-v4.1-flash` 等 15 个上游模型，账号 note 脱离「积分未知」。
+
 ## 0.14.29
 
 ### Fix — 动态发现/积分链路可观测性（定位"自动拉取未生效"的生产根因）

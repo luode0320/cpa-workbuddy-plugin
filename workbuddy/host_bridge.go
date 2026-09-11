@@ -153,16 +153,36 @@ func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 		log.Printf("[workbuddy] host.http.do bad envelope (fallback direct): %v", err)
 		return hostHTTPDoDirect(req, bodyBytes)
 	}
+	return parseHostHTTPDoResult(result)
+}
+
+// parseHostHTTPDoResult decodes the inner Result payload of a host.http.do
+// RPC into a hostHTTPResponse. Extracted as a pure function so the wire
+// contract is regression-testable without the CGO host channel.
+//
+// Wire-format note: the host serializes pluginapi.HTTPResponse WITHOUT
+// json tags (v7.2.x), producing PascalCase keys: {"StatusCode":200,...}.
+// A tagged `json:"status_code"` here can never match that key (exact tag
+// name and case-insensitive name both differ due to the underscore), which
+// silently zeroed every non-stream bridge response's status code while
+// Headers/Body still matched case-insensitively. Parse the real shape, and
+// defensively accept a snake_case variant should the host add tags later.
+func parseHostHTTPDoResult(result json.RawMessage) (*hostHTTPResponse, error) {
 	var resp struct {
-		StatusCode int                 `json:"status_code"`
-		Headers    map[string][]string `json:"headers,omitempty"`
-		Body       []byte              `json:"body,omitempty"`
+		StatusCode      int                 // PascalCase: host's untagged default
+		StatusCodeSnake int                 `json:"status_code"` // defensive: tagged host variant
+		Headers         map[string][]string `json:"headers,omitempty"`
+		Body            []byte              `json:"body,omitempty"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
 		return nil, fmt.Errorf("decode host.http.do response: %w", err)
 	}
+	sc := resp.StatusCode
+	if sc == 0 {
+		sc = resp.StatusCodeSnake
+	}
 	return &hostHTTPResponse{
-		StatusCode: resp.StatusCode,
+		StatusCode: sc,
 		Headers:    http.Header(resp.Headers),
 		Body:       resp.Body,
 	}, nil
