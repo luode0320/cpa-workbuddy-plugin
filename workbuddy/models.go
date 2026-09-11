@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -229,13 +230,23 @@ func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 		}
 	}
 	if accessToken == "" {
+		// 可观测性（2026-09-12）：StorageJSON 提取不到 token 是动态发现静默
+		// 失效的候选根因之一，必须留痕——否则生产只能看到兜底列表而无线索。
+		log.Printf("[workbuddy] models: dynamic discovery skipped, no access token in StorageJSON (len=%d)", len(storageJSON))
 		return nil
 	}
-	if dyn, err := callModelsAPI(accessToken); err == nil && len(dyn) > 0 {
-		storeDynamicModels(dyn)
-		return dyn
+	dyn, err := callModelsAPI(accessToken)
+	if err != nil {
+		log.Printf("[workbuddy] models: dynamic discovery failed: %v", err)
+		return nil
 	}
-	return nil
+	if len(dyn) == 0 {
+		log.Printf("[workbuddy] models: dynamic discovery returned 0 models")
+		return nil
+	}
+	log.Printf("[workbuddy] models: dynamic discovery ok: %d models", len(dyn))
+	storeDynamicModels(dyn)
+	return dyn
 }
 
 // fetchDynamicModels calls the WorkBuddy API to get the latest model list.
@@ -309,11 +320,14 @@ func callModelsAPI(accessToken string) ([]pluginapi.ModelInfo, error) {
 	req.Header.Set("User-Agent", clientUA)
 	resp, err := hostHTTPDo(req)
 	if err != nil {
+		log.Printf("[workbuddy] models: GET %s transport failed: %v", modelsURL, err)
 		return nil, err
 	}
 	body := resp.Body
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("models API status %d", resp.StatusCode)
+		err := fmt.Errorf("models API status %d", resp.StatusCode)
+		log.Printf("[workbuddy] models: GET %s -> %d (aborting dynamic discovery)", modelsURL, resp.StatusCode)
+		return nil, err
 	}
 	return parseModelsAPIResponse(body)
 }

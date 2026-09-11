@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.14.29
+
+### Fix — 动态发现/积分链路可观测性（定位"自动拉取未生效"的生产根因）
+
+- **背景**：0.14.28 部署后用户反馈移除 `models:` 配置后模型列表回落到 10 个硬编码（含已下线幽灵模型），且全部账号 note 停留「积分未知」。实测证据：① 上游对生产全部账号 token 均返回 200 + 15 个模型（两个 CN realm 域都正常）；② chat 流式（`host.http.do_stream` 桥接）正常出量；③ 积分（billing）与模型发现（`host.http.do` 非流式桥接）全部静默失败。失败点在运行时环境（桥接层），但旧版零日志无法定位。
+- **观测点**（全部经 `log.Printf` 进宿主 stderr → docker logs）：
+  - `hostHTTPDo`：桥接 transport 错误、坏 envelope、direct 降级决策、direct HTTP 失败——非流式桥接健康度的直接信号；
+  - `fetchDynamicModelsFromStorage`：StorageJSON 无 token（跳过）、上游失败原因、成功模型数——三态区分"没调用 / 调用失败 / 调用成功"；
+  - `callModelsAPI`：transport 失败与非 200 状态码（含 URL）；
+  - `billingCall`：重试耗尽后的最终失败（账号 UID + 路径）。
+- **行为无变化**：纯日志新增，逻辑与 0.14.28 完全一致。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.14.28
 
 ### Fix — 模型优先级反转为「动态 > 配置 > 静态」并打通静态路径（自动拉取不到新模型）

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"runtime"
 	"time"
@@ -144,10 +145,12 @@ func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 	if err != nil {
 		// Bridge exists but the call failed — fall back to direct so a transient
 		// host RPC error doesn't take down the executor.
+		log.Printf("[workbuddy] host.http.do transport error (fallback direct): %v", err)
 		return hostHTTPDoDirect(req, bodyBytes)
 	}
 	result, err := hostBridgeUnwrap(raw, pluginabi.MethodHostHTTPDo)
 	if err != nil {
+		log.Printf("[workbuddy] host.http.do bad envelope (fallback direct): %v", err)
 		return hostHTTPDoDirect(req, bodyBytes)
 	}
 	var resp struct {
@@ -176,11 +179,13 @@ func hostHTTPDoDirect(req *http.Request, bodyBytes []byte) (*hostHTTPResponse, e
 	newReq.Header = req.Header.Clone()
 	resp, err := sharedHTTPClient().Do(newReq)
 	if err != nil {
+		log.Printf("[workbuddy] direct http %s %s failed: %v", req.Method, req.URL.Host, err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Printf("[workbuddy] direct http %s %s read body failed: %v", req.Method, req.URL.Host, err)
 		return nil, err
 	}
 	return &hostHTTPResponse{

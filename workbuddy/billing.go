@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -84,6 +85,12 @@ func billingCall(sa *storedAuth, path string, body any) (json.RawMessage, error)
 		}
 		time.Sleep(d)
 		data, err = billingCallOnce(sa, path, body)
+	}
+	if err != nil {
+		// 可观测性（2026-09-12）：积分/签到链路静默失败会让账号 note 停留在
+		// "积分未知"且无任何线索（与模型动态发现同为 host.http.do 非流式桥接
+		// 调用，日志是判断桥接健康度的关键信号）。
+		log.Printf("[workbuddy] billing %s failed for %s: %v", path, sa.Account.UID, err)
 	}
 	return data, err
 }
