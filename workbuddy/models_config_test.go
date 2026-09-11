@@ -28,6 +28,16 @@ func resetConfiguredModels(t *testing.T) {
 	t.Cleanup(clearConfiguredModels)
 }
 
+// resetDynamicModelsCache 清空全局动态模型缓存并在用例结束后恢复。
+// 动态缓存是跨用例共享的全局状态，且优先级反转后它会遮蔽配置与静态列表，
+// 因此凡断言"配置保底 / 静态兜底"的用例都必须先清缓存，否则结果取决于
+// 同包内其它用例的执行顺序。
+func resetDynamicModelsCache(t *testing.T) {
+	t.Helper()
+	storeDynamicModels(nil)
+	t.Cleanup(func() { storeDynamicModels(nil) })
+}
+
 // assertModelIDs 按顺序断言模型列表的 ID 集合。
 func assertModelIDs(t *testing.T, got []pluginapi.ModelInfo, want ...string) {
 	t.Helper()
@@ -133,29 +143,39 @@ models: ["glm-5.2", {"id": "x-model", "context": 65536}]
 	}
 }
 
-// 配置存在时 model.static 返回"配置 + 静态默认补充"（合并去重、配置优先）。
+// 动态缓存为空时 model.static 用配置覆盖静态默认（配置保底，静态被遮蔽）。
 func TestConfiguredModels_OverrideStaticHandler(t *testing.T) {
 	resetConfiguredModels(t)
+	resetDynamicModelsCache(t)
 	parseModelsConfig([]any{"glm-5.2", "custom-a"})
 	raw, err := handleModelStatic([]byte("{}"))
 	if err != nil {
 		t.Fatalf("handleModelStatic: %v", err)
 	}
 	resp := decodeModelResponse(t, raw)
-	// 配置条目在前，wbModels() 中未配置的补充在后，同 ID 以配置为准（glm-5.2 去重）。
-	var want []string
-	for _, m := range wbModels() {
-		if m.ID != "glm-5.2" {
-			want = append(want, m.ID)
-		}
-	}
-	want = append([]string{"glm-5.2", "custom-a"}, want...)
-	assertModelIDs(t, resp.Models, want...)
+	// 动态不可用 → 配置整体胜出，静态列表不参与。
+	assertModelIDs(t, resp.Models, "glm-5.2", "custom-a")
 }
 
-// 配置存在时 model.for_auth 返回"配置 + 动态列表补充"（合并去重、配置优先）。
+// 动态缓存有效时 model.static 完全忽略配置（动态优先，2026-09-12 反转）。
+func TestConfiguredModels_StaticPrefersDynamicCache(t *testing.T) {
+	resetConfiguredModels(t)
+	resetDynamicModelsCache(t)
+	parseModelsConfig([]any{"custom-a"})
+	storeDynamicModels([]pluginapi.ModelInfo{{ID: "upstream-new"}, {ID: "glm-5.2"}})
+	t.Cleanup(func() { storeDynamicModels(nil) })
+	raw, err := handleModelStatic([]byte("{}"))
+	if err != nil {
+		t.Fatalf("handleModelStatic: %v", err)
+	}
+	resp := decodeModelResponse(t, raw)
+	assertModelIDs(t, resp.Models, "upstream-new", "glm-5.2")
+}
+
+// 动态不可用时 model.for_auth 回退配置（配置保底）。
 func TestConfiguredModels_OverrideForAuthHandler(t *testing.T) {
 	resetConfiguredModels(t)
+	resetDynamicModelsCache(t)
 	parseModelsConfig([]any{"custom-a"})
 	req, err := json.Marshal(pluginapi.AuthModelRequest{})
 	if err != nil {
@@ -166,18 +186,14 @@ func TestConfiguredModels_OverrideForAuthHandler(t *testing.T) {
 		t.Fatalf("handleModelForAuth: %v", err)
 	}
 	resp := decodeModelResponse(t, raw)
-	// 无 storageJSON → 动态回退 wbModels()；配置 custom-a 在前，默认列表补充在后。
-	var want []string
-	for _, m := range wbModels() {
-		want = append(want, m.ID)
-	}
-	want = append([]string{"custom-a"}, want...)
-	assertModelIDs(t, resp.Models, want...)
+	// 无 storageJSON → 动态不可用 → 配置整体胜出。
+	assertModelIDs(t, resp.Models, "custom-a")
 }
 
-// 未配置时 model.static 回退到静态默认列表（回归保护）。
+// 未配置且动态不可用时 model.static 回退到静态默认列表（回归保护）。
 func TestNoConfiguredModels_FallsBackToStatic(t *testing.T) {
 	resetConfiguredModels(t)
+	resetDynamicModelsCache(t)
 	raw, err := handleModelStatic([]byte("{}"))
 	if err != nil {
 		t.Fatalf("handleModelStatic: %v", err)
@@ -374,37 +390,38 @@ func TestParseModelsYAMLBlock_StringItemsOnly(t *testing.T) {
 	}
 }
 
-// 合并去重：同 ID 配置优先（字段以配置为准），配置没有的自动获取模型追加在后。
-func TestMergeConfiguredAndDynamic_ConfigWins(t *testing.T) {
-	configured := []pluginapi.ModelInfo{
-		{ID: "a", Name: "ConfigA", ContextLength: 100},
-		{ID: "c", Name: "ConfigC"},
-	}
-	dynamic := []pluginapi.ModelInfo{
-		{ID: "a", Name: "DynA", ContextLength: 999},
-		{ID: "b", Name: "DynB"},
-	}
-	got := mergeConfiguredAndDynamic(configured, dynamic)
-	assertModelIDs(t, got, "a", "c", "b")
-	if got[0].Name != "ConfigA" || got[0].ContextLength != 100 {
-		t.Fatalf("configured entry should win: %+v", got[0])
+// 动态发现成功时完全忽略配置与静态列表（动态优先，2026-09-12 反转）。
+func TestResolveModels_DynamicWins(t *testing.T) {
+	dynamic := []pluginapi.ModelInfo{{ID: "a", Name: "DynA"}, {ID: "b", Name: "DynB"}}
+	configured := []pluginapi.ModelInfo{{ID: "a", Name: "ConfigA", ContextLength: 100}, {ID: "c", Name: "ConfigC"}}
+	fallback := []pluginapi.ModelInfo{{ID: "z", Name: "StaticZ"}}
+	got := resolveModels(dynamic, configured, fallback)
+	assertModelIDs(t, got, "a", "b")
+	if got[0].Name != "DynA" {
+		t.Fatalf("dynamic entry should win: %+v", got[0])
 	}
 }
 
-// 自动获取独有模型追加；空配置原样返回动态列表；空动态原样返回配置。
-func TestMergeConfiguredAndDynamic_AppendsUnique(t *testing.T) {
+// 动态不可用时回退配置；动态与配置都为空时回退静态列表。
+func TestResolveModels_FallsBackToConfiguredThenStatic(t *testing.T) {
+	configured := []pluginapi.ModelInfo{{ID: "a"}, {ID: "c"}}
+	fallback := []pluginapi.ModelInfo{{ID: "z"}}
+	assertModelIDs(t, resolveModels(nil, configured, fallback), "a", "c")
+	assertModelIDs(t, resolveModels(nil, nil, fallback), "z")
+}
+
+// 动态列表中的空 ID 条目被过滤；动态返回空切片视为"不可用"并回退配置。
+func TestResolveModels_FiltersEmptyIDAndTreatsEmptyDynamicAsUnavailable(t *testing.T) {
 	configured := []pluginapi.ModelInfo{{ID: "a"}}
-	dynamic := []pluginapi.ModelInfo{{ID: "a"}, {ID: "b"}, {ID: "c"}}
-	assertModelIDs(t, mergeConfiguredAndDynamic(configured, dynamic), "a", "b", "c")
-	assertModelIDs(t, mergeConfiguredAndDynamic(nil, dynamic), "a", "b", "c")
-	assertModelIDs(t, mergeConfiguredAndDynamic(configured, nil), "a")
+	assertModelIDs(t, resolveModels([]pluginapi.ModelInfo{{ID: ""}, {ID: "b"}}, configured, nil), "b")
+	assertModelIDs(t, resolveModels([]pluginapi.ModelInfo{{ID: ""}}, configured, nil), "a")
 }
 
-// 合并不修改入参（保护 dynamicModelsCache / wbModels 的共享底层数组）。
-func TestMergeConfiguredAndDynamic_NoMutation(t *testing.T) {
+// 解析不修改入参（保护 dynamicModelsCache / wbModels 的共享底层数组）。
+func TestResolveModels_NoMutation(t *testing.T) {
 	configured := []pluginapi.ModelInfo{{ID: "a"}}
 	dynamic := []pluginapi.ModelInfo{{ID: "a"}, {ID: "b"}}
-	_ = mergeConfiguredAndDynamic(configured, dynamic)
+	_ = resolveModels(dynamic, configured, nil)
 	if len(dynamic) != 2 || dynamic[0].ID != "a" || dynamic[1].ID != "b" {
 		t.Fatalf("dynamic input mutated: %+v", dynamic)
 	}
@@ -413,15 +430,15 @@ func TestMergeConfiguredAndDynamic_NoMutation(t *testing.T) {
 	}
 }
 
-// 全链路：预置动态缓存（模拟上游已拉取），配置存在时 for_auth 返回
-// "配置优先 + 动态独有模型补充"。
-func TestConfiguredModels_ForAuthMergesDynamicCache(t *testing.T) {
+// 全链路：预置动态缓存（模拟上游已拉取），for_auth 动态优先——上游是权威
+// 全集，配置条目被完全忽略（含同 ID 的字段覆盖）。
+func TestConfiguredModels_ForAuthPrefersDynamicCache(t *testing.T) {
 	resetConfiguredModels(t)
+	resetDynamicModelsCache(t)
 	storeDynamicModels([]pluginapi.ModelInfo{
 		{ID: "glm-5.2", Name: "Dyn GLM"},
 		{ID: "hy4-preview", Name: "Hy4 preview"},
 	})
-	t.Cleanup(func() { storeDynamicModels(nil) })
 	parseModelsConfig([]any{
 		map[string]any{"id": "glm-5.2", "name": "Cfg GLM", "context": 2000000, "max_tokens": 20000},
 	})
@@ -435,7 +452,83 @@ func TestConfiguredModels_ForAuthMergesDynamicCache(t *testing.T) {
 	}
 	resp := decodeModelResponse(t, raw)
 	assertModelIDs(t, resp.Models, "glm-5.2", "hy4-preview")
-	if resp.Models[0].Name != "Cfg GLM" || resp.Models[0].ContextLength != 2000000 {
-		t.Fatalf("configured glm-5.2 should win: %+v", resp.Models[0])
+	if resp.Models[0].Name != "Dyn GLM" || resp.Models[0].ContextLength != 0 {
+		t.Fatalf("dynamic glm-5.2 should win outright: %+v", resp.Models[0])
+	}
+}
+
+// upstreamModelsFixture 是 2026-09-12 从 copilot.tencent.com 实测抓取的真实
+// 响应片段（保留 cli 白名单全部 15 个模型与关键字段原名）。它锁定的是一条
+// 真实缺陷：上游字段是 maxInputTokens / maxOutputTokens，早期实现读的
+// contextWindow / maxTokens 上游从不返回 → 所有动态模型的长度恒为 0。
+const upstreamModelsFixture = `
+{"code":0,"msg":"OK","data":{"models":[
+  {"id":"auto","name":"Auto","maxInputTokens":1000000,"maxOutputTokens":128000},
+  {"id":"hy4-preview","name":"Hy4 preview","maxInputTokens":262144,"maxOutputTokens":32768},
+  {"id":"hy3","name":"Hy3","maxInputTokens":262144,"maxOutputTokens":32768},
+  {"id":"hy3-x","name":"Hy3","maxInputTokens":262144,"maxOutputTokens":32768},
+  {"id":"deepseek-v4.1-flash","name":"Deepseek-V4.1-Flash","maxAllowedSize":1000000,"maxInputTokens":1000000,"maxOutputTokens":128000,"onlyReasoning":true},
+  {"id":"glm-5.3","name":"GLM-5.3","maxInputTokens":200000,"maxOutputTokens":32768},
+  {"id":"glm-5.3-flash","name":"GLM-5.3-Flash","maxInputTokens":200000,"maxOutputTokens":32768},
+  {"id":"glm-5.2","name":"GLM-5.2","maxInputTokens":1000000,"maxOutputTokens":8192},
+  {"id":"glm-5.1","name":"GLM-5.1","maxInputTokens":131072,"maxOutputTokens":8192},
+  {"id":"glm-5v-turbo","name":"GLM-5v-Turbo","maxInputTokens":131072,"maxOutputTokens":8192},
+  {"id":"kimi-k3-1","name":"Kimi-K3-1","maxInputTokens":262144,"maxOutputTokens":32768},
+  {"id":"kimi-k2.7","name":"Kimi-K2.7","maxInputTokens":262144,"maxOutputTokens":8192},
+  {"id":"kimi-k2.6","name":"Kimi-K2.6","maxInputTokens":262144,"maxOutputTokens":8192},
+  {"id":"minimax-m3","name":"MiniMax-M3","maxInputTokens":204800,"maxOutputTokens":8192},
+  {"id":"deepseek-v4-pro","name":"Deepseek-V4-Pro","maxInputTokens":1000000,"maxOutputTokens":8192},
+  {"id":"disabled-model","name":"Disabled","disabled":true,"maxInputTokens":999,"maxOutputTokens":999}
+],"agents":[
+  {"name":"cli","models":["auto","hy4-preview","hy3","hy3-x","deepseek-v4.1-flash","glm-5.3","glm-5.3-flash","glm-5.2","glm-5.1","glm-5v-turbo","kimi-k3-1","kimi-k2.7","kimi-k2.6","minimax-m3","deepseek-v4-pro"]},
+  {"name":"Explore","models":["glm-5.2"]}
+]}}`
+
+// 真实上游响应必须解析出 cli 白名单全部 15 个模型，且 deepseek-v4.1-flash 在内。
+func TestParseModelsAPIResponse_RealUpstreamPayload(t *testing.T) {
+	got, err := parseModelsAPIResponse([]byte(upstreamModelsFixture))
+	if err != nil {
+		t.Fatalf("parseModelsAPIResponse: %v", err)
+	}
+	if len(got) != 15 {
+		t.Fatalf("model count = %d, want 15: %+v", len(got), got)
+	}
+	byID := make(map[string]pluginapi.ModelInfo, len(got))
+	for _, m := range got {
+		byID[m.ID] = m
+	}
+	// 1. 用户报告的核心诉求：上游新增模型必须可见。
+	v41, ok := byID["deepseek-v4.1-flash"]
+	if !ok {
+		t.Fatalf("deepseek-v4.1-flash missing from parsed models: %+v", got)
+	}
+	// 2. 字段名对齐：maxInputTokens / maxOutputTokens 必须被读到（曾恒为 0）。
+	if v41.ContextLength != 1000000 || v41.MaxCompletionTokens != 128000 {
+		t.Fatalf("deepseek-v4.1-flash lengths = ctx %d / max %d, want 1000000 / 128000",
+			v41.ContextLength, v41.MaxCompletionTokens)
+	}
+	if v41.Name != "Deepseek-V4.1-Flash" {
+		t.Fatalf("display name = %q", v41.Name)
+	}
+	// 3. disabled 条目（不在白名单内）与其它 agent 独有模型都不得出现。
+	if _, exists := byID["disabled-model"]; exists {
+		t.Fatalf("disabled model leaked into output")
+	}
+}
+
+// 白名单为空 / 业务 code 非 0 / JSON 非法都必须报错，交由上层回退。
+func TestParseModelsAPIResponse_ErrorCases(t *testing.T) {
+	cases := map[string]string{
+		"bad json":       `{`,
+		"code nonzero":   `{"code":500,"data":{"agents":[{"name":"cli","models":["a"]}]}}`,
+		"no cli agent":   `{"code":0,"data":{"agents":[{"name":"other","models":["a"]}]}}`,
+		"empty cli list": `{"code":0,"data":{"agents":[{"name":"cli","models":[]}]}}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseModelsAPIResponse([]byte(body)); err == nil {
+				t.Fatalf("expected error for %s", name)
+			}
+		})
 	}
 }

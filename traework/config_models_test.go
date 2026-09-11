@@ -16,6 +16,19 @@ func resetTraeConfiguredModels(t *testing.T) {
 	t.Cleanup(func() { configuredModels = nil })
 }
 
+// resetTraeDynamicCache 清空动态模型缓存并在用例结束后恢复。
+// 动态缓存是跨用例共享的全局状态，且优先级反转后它会遮蔽配置与静态列表，
+// 因此凡断言"配置保底 / 静态兜底"的用例都必须先清缓存。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-09-12；改动原因：隔离动态缓存，避免用例间相互污染。
+func resetTraeDynamicCache(t *testing.T) {
+	t.Helper()
+	storeTraeDynamicModels(nil)
+	t.Cleanup(func() { storeTraeDynamicModels(nil) })
+}
+
 // traeLines 把 yaml 文本转成 applyConfigLines 的预处理行（去空行/注释行）。
 func traeLines(t *testing.T, yaml string) []string {
 	t.Helper()
@@ -103,7 +116,7 @@ models: [
   }
 ]
 `))
-	got := loadedModels()
+	got := resolveTraeModels(nil, configuredModels, defaultTraeModels)
 	if len(got) != 2 || got[0].ID != "hy4-preview" || got[1].ID != "hy3" {
 		t.Fatalf("loaded models = %+v, want [hy4-preview hy3]", got)
 	}
@@ -115,7 +128,7 @@ func TestTraeApplyConfigLines_ModelsSingleLine(t *testing.T) {
 	applyConfigLines(&traeConfig{}, traeLines(t, `
 models: [{"id": "glm-5.2"}, {"id": "hy3", "name": "Hy3"}]
 `))
-	got := loadedModels()
+	got := resolveTraeModels(nil, configuredModels, defaultTraeModels)
 	if len(got) != 2 || got[0].ID != "glm-5.2" || got[1].ID != "hy3" {
 		t.Fatalf("loaded models = %+v, want [glm-5.2 hy3]", got)
 	}
@@ -133,7 +146,7 @@ models:
 - hy4-preview
 - hy3
 `))
-	got := loadedModels()
+	got := resolveTraeModels(nil, configuredModels, defaultTraeModels)
 	if len(got) != 1 || got[0].ID != "glm-5.2" {
 		t.Fatalf("loaded models = %+v, want kept [glm-5.2]", got)
 	}
@@ -161,7 +174,7 @@ checkin_auto: true
 		t.Fatalf("marshal config: %v", err)
 	}
 	configure(raw)
-	got := loadedModels()
+	got := resolveTraeModels(nil, configuredModels, defaultTraeModels)
 	if len(got) != 2 || got[0].ID != "hy4-preview" || got[1].ID != "hy3" {
 		t.Fatalf("loaded models = %+v, want [hy4-preview hy3]", got)
 	}

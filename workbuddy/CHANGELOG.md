@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.14.28
+
+### Fix — 模型优先级反转为「动态 > 配置 > 静态」并打通静态路径（自动拉取不到新模型）
+
+- **根因实测坐实**（2026-09-12，真实 token 打 `copilot.tencent.com` 上游取证）：上游响应 `code:0` 正常，`agents[cli].models` **确实包含 `deepseek-v4.1-flash`**，15 个白名单模型在 `Data.Models` 中全部可匹配、无缺失。即**上游没问题，是插件侧从未真正取到动态列表**。上游 15 个模型 vs 硬编码 10 个的差异：硬编码缺失 `auto / hy4-preview / hy3-x / deepseek-v4.1-flash / glm-5.3 / glm-5.3-flash / kimi-k3-1 / kimi-k2.6`，且含 3 个上游已下线的（`hy3-preview` / `hy3-preview-agent` / `deepseek-v4-flash`）。
+- **背景**：用户反馈自动拉取拿不到上游新增模型，必须手工配 `models:` 才能用。根因有二：① 原语义是「配置优先合并」，用户一旦手工配过模型，旧配置条目会**永久遮蔽**上游新增模型；② `handleModelStatic` 只返回 `wbModels()`（10 个硬编码模型）**从不打上游**，与 `handleModelForAuth` 行为不对称。
+- **优先级反转**：新增 `resolveModels(dynamic, configured, fallback)` 三态优先级链，**动态发现有结果时完全忽略配置与静态默认**（上游是权威全集，不做合并）；动态不可用时才用配置；配置也为空才回退静态。原 `mergeConfiguredAndDynamic` 及其「配置优先合并」语义整体下线。
+- **打通静态路径**：`handleModelStatic` 接入 `dynamicModelsFromCache()`，与 `handleModelForAuth` 统一走同一优先级链，消除两路径行为不对称。`StaticModelRequest` 不带凭据，故只复用已有缓存（5 分钟 TTL），未命中即正常回退。
+- **取消静默兜底**：`fetchDynamicModelsFromStorage` 失败时由返回 `wbModels()` 改为返回 `nil`，把"上游调用失败"与"上游确实只有这些模型"区分开，由 `resolveModels` 统一兜底；只含空 ID 的动态列表视同"没有结果"，不遮蔽配置。
+- **字段名对齐真实上游**（同批实测发现的独立缺陷）：上游返回的长度字段是 `maxInputTokens` / `maxAllowedSize` / `maxOutputTokens`，而原实现读 `contextWindow` / `maxTokens` —— **这两个字段上游从不返回**，导致所有动态模型的 `ContextLength` 与 `MaxCompletionTokens` **恒为 0**。新增 `upstreamModelEntry` 结构 + `firstPositive` 取值链（新字段优先、旧字段名兼容），修正为真实字段。
+- **可测性**：上游响应解析抽取为纯函数 `parseModelsAPIResponse(body)`，新增真实上游响应夹具回归测试（15 个模型全量 + `deepseek-v4.1-flash` 存在性 + 长度字段非 0 + disabled 不泄漏）与 4 态错误用例。
+- 测试：`models_config_test.go` 重写合并用例为优先级链用例（动态胜出 / 配置保底 / 静态兜底 / 空 ID 过滤 / 入参不被修改 / 静态路径动态优先 / for_auth 动态优先忽略配置），新增 `resetDynamicModelsCache` 隔离全局缓存。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.14.27
 
 ### Feat — 耗尽自动停用 + 每 4 小时签到自动恢复（策略更新：耗尽停用保留，但必须能自愈）

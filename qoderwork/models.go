@@ -127,6 +127,62 @@ func parseModelsConfig(v any) {
 	}
 }
 
+// resolveModels 按优先级链求最终模型列表：动态发现 > 配置 > 静态默认。
+//
+// 语义（2026-09-12 优先级反转）：
+//   - 动态发现有结果时**完全忽略** config_yaml 覆盖与静态默认：上游是权威
+//     全集，动态列表即最终列表，配置不再参与合并；
+//   - 动态发现无结果（无凭据 / 上游失败 / 空列表）时，才使用配置覆盖；
+//   - 配置也为空时，最后回退静态默认列表。
+//
+// 之所以要"动态优先"：上游新增模型只能从动态发现拿到；若配置优先，用户手工
+// 配过的旧列表会永久遮蔽上游新模型。配置与静态列表降级为**保底**。
+//
+// [参数] dynamic：动态发现列表（可为空，空表示"动态不可用"）
+//
+//	configured：config_yaml `models:` 覆盖列表（可为空）
+//	fallback：静态默认列表（wbModels()）
+//
+// [返回] 按优先级链选出的最终列表
+// 最近修改时间 2026-09-12（由"配置优先"反转为"动态优先、配置保底"）
+func resolveModels(dynamic, configured, fallback []pluginapi.ModelInfo) []pluginapi.ModelInfo {
+	// 先过滤空 ID 再看长度：只含空 ID 的动态列表语义上等于"没有结果"，
+	// 不能因为它 len>0 就遮蔽配置或静态兜底。
+	if dm := nonEmptyModels(dynamic); len(dm) > 0 {
+		return dm
+	}
+	if cm := nonEmptyModels(configured); len(cm) > 0 {
+		return cm
+	}
+	return nonEmptyModels(fallback)
+}
+
+// nonEmptyModels 过滤空 ID 条目并返回新切片，避免调用方拿到含空 ID 的列表或
+// 共享底层数组（dynamicModelsCache / wbModels 的切片不可原地改写）。
+// [参数] models：待过滤列表
+// [返回] 去掉空 ID 后的新切片
+// 最近修改时间 2026-09-12（随优先级反转新增）
+func nonEmptyModels(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
+	out := make([]pluginapi.ModelInfo, 0, len(models))
+	for _, m := range models {
+		if m.ID == "" {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// resolveModelsFromStorage 是 handleModelForAuth 的判定入口：先尝试账号级
+// 动态发现，成功即返回动态列表，否则交给优先级链回退配置 / 静态默认。
+// [参数] storageJSON：宿主传入的账号凭据 JSON
+// [返回] 按优先级链选出的最终列表
+// 最近修改时间 2026-09-12（动态成功不再让配置遮蔽上游模型）
+func resolveModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
+	dynamic := fetchDynamicModelsFromStorage(storageJSON)
+	return resolveModels(dynamic, getConfiguredModels(), wbModels())
+}
+
 // modelInfoFromConfig builds a ModelInfo for a config-declared model,
 // normalizing fields to match the plugin's other model sources. alias /
 // reasoning are accepted for schema compatibility but have no ModelInfo
@@ -164,14 +220,21 @@ func storeDynamicModels(models []pluginapi.ModelInfo) {
 	dynamicModelsCache.Unlock()
 }
 
+// fetchDynamicModels 按宿主已注册的 qoderwork 凭据逐个尝试动态发现。
+//
+// **不**在此处兜底静态列表：返回空切片语义为"动态发现不可用"，由调用方按
+// resolveModels 的优先级链回退配置或静态默认。若这里返回 wbModels()，
+// 调用方无法区分"上游真的只有这些模型"与"上游调用失败"。
+// [参数] 无
+// [返回] 动态模型列表；动态不可用时返回 nil
+// 最近修改时间 2026-09-12（取消静默回退 wbModels，改由 resolveModels 统一兜底）
 func fetchDynamicModels() []pluginapi.ModelInfo {
 	if models, ok := cachedDynamicModels(); ok {
 		return models
 	}
-	models := wbModels()
 	files, err := hostAuthListFiles()
 	if err != nil || len(files) == 0 {
-		return models
+		return nil
 	}
 	// Strict filename-prefix match — same filter as host_auth.go hostAuthList.
 	// (Earlier code also matched files containing "codebuddy" anywhere, which
@@ -196,25 +259,24 @@ func fetchDynamicModels() []pluginapi.ModelInfo {
 			return dyn
 		}
 	}
-	return models
+	return nil
 }
 
+// fetchDynamicModelsFromStorage 用请求自带的账号凭据优先尝试动态发现，
+// 失败时再回退到已注册凭据扫描。**不**兜底配置与静态列表。
+// [参数] storageJSON：宿主传入的账号凭据 JSON
+// [返回] 动态模型列表；动态不可用时返回 nil
+// 最近修改时间 2026-09-12（取消配置短路与静态兜底，交给 resolveModels 判定）
 func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
-	// 显式 config_yaml `models:` 覆盖优先于动态获取与静态兜底
-	// （同步自 workbuddy-provider 0.14.13）。
-	if cm := getConfiguredModels(); len(cm) > 0 {
-		return cm
-	}
 	if models, ok := cachedDynamicModels(); ok {
 		return models
 	}
 	sa, err := parseStored(storageJSON)
-	if err != nil || sa == nil {
-		return fetchDynamicModels()
-	}
-	if dyn, err := callModelsAPI(sa); err == nil && len(dyn) > 0 {
-		storeDynamicModels(dyn)
-		return dyn
+	if err == nil && sa != nil {
+		if dyn, dynErr := callModelsAPI(sa); dynErr == nil && len(dyn) > 0 {
+			storeDynamicModels(dyn)
+			return dyn
+		}
 	}
 	return fetchDynamicModels()
 }
@@ -434,22 +496,27 @@ func filterExcludedModels(models []pluginapi.ModelInfo, host pluginapi.HostConfi
 // publishUsage reports one upstream attempt into CPAMP request monitoring.
 // requestedModel is client-facing (may be alias); upstreamModel is resolved.
 
+// handleModelStatic 返回宿主要求的全局模型列表，优先级为动态 > 配置 > 静态默认。
+// 动态发现仅能命中已有缓存（StaticModelRequest 不带账号凭据），缓存未命中时
+// fetchDynamicModels 会扫描已注册凭据；都失败则回退配置 / 静态默认。
+// [参数] raw：宿主传入的 StaticModelRequest
+// [返回] 成功 envelope；请求解析失败时返回错误
+// 最近修改时间 2026-09-12（由"配置非空即不查动态"反转为动态优先）
 func handleModelStatic(raw []byte) ([]byte, error) {
 	var req pluginapi.StaticModelRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
 	cacheModelAliases(req.Host)
-	// config_yaml `models:` 覆盖优先；无覆盖时走 qoderwork 原有的
-	// 动态获取 + 静态兜底（同步自 workbuddy-provider 0.14.13）。
-	models := getConfiguredModels()
-	if len(models) == 0 {
-		models = fetchDynamicModels()
-	}
+	models := resolveModels(fetchDynamicModels(), getConfiguredModels(), wbModels())
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }
 
+// handleModelForAuth 返回指定账号的模型列表，优先级为动态 > 配置 > 静态默认。
+// [参数] raw：宿主传入的 AuthModelRequest（含 StorageJSON 凭据）
+// [返回] 成功 envelope；请求解析失败时返回错误
+// 最近修改时间 2026-09-12（动态成功时完全忽略配置，避免遮蔽上游新增模型）
 func handleModelForAuth(raw []byte) ([]byte, error) {
 	var req pluginapi.AuthModelRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -460,7 +527,7 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 	// req.AuthProvider back would silently drop the model list whenever the
 	// auth file carries a non-canonical provider string.
 	cacheModelAliases(req.Host)
-	models := fetchDynamicModelsFromStorage(req.StorageJSON)
+	models := resolveModelsFromStorage(req.StorageJSON)
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }

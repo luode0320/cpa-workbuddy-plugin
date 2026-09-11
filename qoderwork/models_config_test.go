@@ -28,6 +28,32 @@ func resetConfiguredModels(t *testing.T) {
 	t.Cleanup(clearConfiguredModels)
 }
 
+// resetDynamicModelsCache 清空全局动态模型缓存并在用例结束后恢复。
+// 动态缓存是跨用例共享的全局状态，且优先级反转后它会遮蔽配置与静态列表，
+// 因此凡断言"配置保底 / 静态兜底"的用例都必须先清缓存。
+func resetDynamicModelsCache(t *testing.T) {
+	t.Helper()
+	storeDynamicModels(nil)
+	t.Cleanup(func() { storeDynamicModels(nil) })
+}
+
+// TestResolveModels_PriorityChain 验证优先级链：动态 > 配置 > 静态默认。
+func TestResolveModels_PriorityChain(t *testing.T) {
+	dynamic := []pluginapi.ModelInfo{{ID: "dyn-a"}, {ID: "dyn-b"}}
+	configured := []pluginapi.ModelInfo{{ID: "cfg-a"}}
+	fallback := []pluginapi.ModelInfo{{ID: "static-a"}}
+
+	// 1. 动态有结果 → 完全忽略配置与静态，不做合并。
+	got := resolveModels(dynamic, configured, fallback)
+	assertModelIDs(t, got, "dyn-a", "dyn-b")
+	// 2. 动态不可用 → 配置保底。
+	assertModelIDs(t, resolveModels(nil, configured, fallback), "cfg-a")
+	// 3. 动态与配置都不可用 → 静态兜底。
+	assertModelIDs(t, resolveModels(nil, nil, fallback), "static-a")
+	// 4. 只含空 ID 的动态列表等于"没有结果"，不得遮蔽配置。
+	assertModelIDs(t, resolveModels([]pluginapi.ModelInfo{{ID: ""}}, configured, fallback), "cfg-a")
+}
+
 // assertModelIDs 按顺序断言模型列表的 ID 集合。
 func assertModelIDs(t *testing.T, got []pluginapi.ModelInfo, want ...string) {
 	t.Helper()
@@ -133,9 +159,10 @@ models: ["glm-5.2", {"id": "x-model", "context": 65536}]
 	}
 }
 
-// 配置存在时 model.static 优先返回配置列表而非静态默认。
+// 动态不可用时 model.static 用配置覆盖静态默认（配置保底）。
 func TestConfiguredModels_OverrideStaticHandler(t *testing.T) {
 	resetConfiguredModels(t)
+	resetDynamicModelsCache(t)
 	parseModelsConfig([]any{"glm-5.2", "custom-a"})
 	raw, err := handleModelStatic([]byte("{}"))
 	if err != nil {
@@ -145,9 +172,24 @@ func TestConfiguredModels_OverrideStaticHandler(t *testing.T) {
 	assertModelIDs(t, resp.Models, "glm-5.2", "custom-a")
 }
 
-// 配置存在时 model.for_auth 在无 token 情况下也返回配置列表（配置优先）。
+// 动态缓存有效时 model.static 完全忽略配置（动态优先，2026-09-12 反转）。
+func TestConfiguredModels_StaticPrefersDynamicCache(t *testing.T) {
+	resetConfiguredModels(t)
+	resetDynamicModelsCache(t)
+	parseModelsConfig([]any{"custom-a"})
+	storeDynamicModels([]pluginapi.ModelInfo{{ID: "upstream-new"}, {ID: "glm-5.2"}})
+	raw, err := handleModelStatic([]byte("{}"))
+	if err != nil {
+		t.Fatalf("handleModelStatic: %v", err)
+	}
+	resp := decodeModelResponse(t, raw)
+	assertModelIDs(t, resp.Models, "upstream-new", "glm-5.2")
+}
+
+// 动态不可用时 model.for_auth 返回配置列表（配置保底）。
 func TestConfiguredModels_OverrideForAuthHandler(t *testing.T) {
 	resetConfiguredModels(t)
+	resetDynamicModelsCache(t)
 	parseModelsConfig([]any{"custom-a"})
 	req, err := json.Marshal(pluginapi.AuthModelRequest{})
 	if err != nil {
@@ -161,9 +203,10 @@ func TestConfiguredModels_OverrideForAuthHandler(t *testing.T) {
 	assertModelIDs(t, resp.Models, "custom-a")
 }
 
-// 未配置时 model.static 回退到静态默认列表（回归保护）。
+// 未配置且动态不可用时 model.static 回退到静态默认列表（回归保护）。
 func TestNoConfiguredModels_FallsBackToStatic(t *testing.T) {
 	resetConfiguredModels(t)
+	resetDynamicModelsCache(t)
 	raw, err := handleModelStatic([]byte("{}"))
 	if err != nil {
 		t.Fatalf("handleModelStatic: %v", err)

@@ -144,41 +144,50 @@ func modelInfoFromConfig(id, name string, ctxLen, maxTok int64) pluginapi.ModelI
 	}
 }
 
-// mergeConfiguredAndDynamic 按 ID 合并 config_yaml `models:` 覆盖列表与自动
-// 获取列表（动态发现或静态默认），配置优先：
-//   - 同 ID：保留配置条目，丢弃自动获取版本（字段以配置为准）；
-//   - 配置没有、自动获取有的：追加在配置条目之后；
-//   - 顺序：配置条目在前，自动获取补充在后。
+// resolveModels 按优先级链求最终模型列表：动态发现 > 配置 > 静态默认。
 //
-// 返回新切片，不修改入参（自动获取列表可能来自 dynamicModelsCache 或
-// wbModels() 的共享底层数组，原地修改会污染缓存）。
-// [参数] configured：config_yaml `models:` 覆盖列表（可为空）
+// 语义（2026-09-12 优先级反转）：
+//   - 动态发现**有结果**时**完全忽略** config_yaml 覆盖与静态默认：上游是
+//     权威全集，动态列表即最终列表，配置不再参与合并；
+//   - 动态发现无结果（无凭据 / 上游失败 / 空列表）时，才使用配置覆盖；
+//   - 配置也为空时，最后回退静态默认列表。
 //
-//	dynamic：自动获取列表（可为空）
+// 之所以要"动态优先"：上游新增模型（如 deepseek-v4.1-flash）只能从动态发现
+// 拿到；若配置优先，用户手工配过的旧列表会永久遮蔽上游新模型。配置与静态
+// 列表降级为**保底**，仅在动态发现不可用时起作用。
 //
-// [返回] 合并后的新列表
-// 最近修改时间 2026-08-28（由"配置完全替换"改为"合并去重、配置优先"）
-func mergeConfiguredAndDynamic(configured, dynamic []pluginapi.ModelInfo) []pluginapi.ModelInfo {
-	seen := make(map[string]struct{}, len(configured))
-	out := make([]pluginapi.ModelInfo, 0, len(configured)+len(dynamic))
-	for _, m := range configured {
-		if m.ID == "" {
-			continue
-		}
-		if _, dup := seen[m.ID]; dup {
-			continue
-		}
-		seen[m.ID] = struct{}{}
-		out = append(out, m)
+// 返回新切片，不修改入参（动态列表可能来自 dynamicModelsCache 的共享底层
+// 数组，原地修改会污染缓存）。
+// [参数] dynamic：动态发现列表（可为空，空表示"动态不可用"）
+//
+//	configured：config_yaml `models:` 覆盖列表（可为空）
+//	fallback：静态默认列表（wbModels()）
+//
+// [返回] 按优先级链选出的最终列表
+// 最近修改时间 2026-09-12（由"合并去重、配置优先"反转为"动态优先、配置保底"）
+func resolveModels(dynamic, configured, fallback []pluginapi.ModelInfo) []pluginapi.ModelInfo {
+	// 先过滤空 ID 再看长度：只含空 ID 的动态列表语义上等于"没有结果"，
+	// 不能因为它 len>0 就遮蔽配置或静态兜底。
+	if dm := nonEmptyModels(dynamic); len(dm) > 0 {
+		return dm
 	}
-	for _, m := range dynamic {
+	if cm := nonEmptyModels(configured); len(cm) > 0 {
+		return cm
+	}
+	return nonEmptyModels(fallback)
+}
+
+// nonEmptyModels 过滤空 ID 条目并返回新切片，避免调用方拿到含空 ID 的列表或
+// 共享底层数组（dynModelsCache / wbModels 的切片不可原地改写）。
+// [参数] models：待过滤列表
+// [返回] 去掉空 ID 后的新切片
+// 最近修改时间 2026-09-12（随优先级反转新增，替代原合并逻辑的去重职责）
+func nonEmptyModels(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
+	out := make([]pluginapi.ModelInfo, 0, len(models))
+	for _, m := range models {
 		if m.ID == "" {
 			continue
 		}
-		if _, dup := seen[m.ID]; dup {
-			continue
-		}
-		seen[m.ID] = struct{}{}
 		out = append(out, m)
 	}
 	return out
@@ -200,9 +209,16 @@ func storeDynamicModels(models []pluginapi.ModelInfo) {
 	dynamicModelsCache.Unlock()
 }
 
+// fetchDynamicModelsFromStorage 拉取动态模型列表，**不**在此处兜底静态列表。
+//
+// 返回空切片语义为"动态发现不可用"（无凭据 / 上游失败 / 空结果），由调用方
+// 按 resolveModels 的优先级链回退到配置或静态默认。若这里直接返回
+// wbModels()，调用方将无法区分"上游真的只有这些模型"与"上游调用失败"，
+// 导致新增模型被静默遮蔽且无任何可观测信号。
+// [参数] storageJSON：宿主传入的账号凭据 JSON
+// [返回] 动态模型列表；动态不可用时返回 nil
+// 最近修改时间 2026-09-12（取消静默回退 wbModels，改由 resolveModels 统一兜底）
 func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
-	// 纯动态获取：配置合并由调用方（handleModelForAuth / handleModelStatic）
-	// 在拿到动态列表后执行，这里不再短路返回配置，否则合并拿不到动态基数。
 	if models, ok := cachedDynamicModels(); ok {
 		return models
 	}
@@ -213,13 +229,13 @@ func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 		}
 	}
 	if accessToken == "" {
-		return wbModels()
+		return nil
 	}
 	if dyn, err := callModelsAPI(accessToken); err == nil && len(dyn) > 0 {
 		storeDynamicModels(dyn)
 		return dyn
 	}
-	return wbModels()
+	return nil
 }
 
 // fetchDynamicModels calls the WorkBuddy API to get the latest model list.
@@ -299,27 +315,24 @@ func callModelsAPI(accessToken string) ([]pluginapi.ModelInfo, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("models API status %d", resp.StatusCode)
 	}
+	return parseModelsAPIResponse(body)
+}
+
+// parseModelsAPIResponse 把上游 /console/enterprises/personal/models 的响应体
+// 解析为模型列表。
+//
+// 抽取为纯函数便于用真实上游响应做回归测试：字段名与实际响应不匹配这类问题
+// 在集成路径上表现为"静默取到 0"，没有单元测试很难发现（实测上游给的是
+// maxInputTokens / maxOutputTokens，而非早期假设的 contextWindow / maxTokens）。
+//
+// [参数] body：上游响应体原始字节
+// [返回] 模型列表；HTTP 之外的结构性错误（code!=0 / 无 cli 白名单）返回 error
+// 最近修改时间 2026-09-12（字段名对齐真实上游并抽取为可测纯函数）
+func parseModelsAPIResponse(body []byte) ([]pluginapi.ModelInfo, error) {
 	var apiResp struct {
 		Code int `json:"code"`
 		Data struct {
-			Models []struct {
-				ID                 string          `json:"id"`
-				Name               string          `json:"name"`
-				Description        string          `json:"description"`
-				Credits            string          `json:"credits"`
-				Configurable       bool            `json:"configurable"`
-				Configured         bool            `json:"configured"`
-				IsDefault          bool            `json:"isDefault"`
-				SupportsImages     bool            `json:"supportsImages"`
-				SupportsReasoning  bool            `json:"supportsReasoning"`
-				OnlyReasoning      bool            `json:"onlyReasoning"`
-				Reasoning          json.RawMessage `json:"reasoning"`
-				DisabledMultimodal bool            `json:"disabledMultimodal"`
-				Disabled           bool            `json:"disabled"`
-				DisabledReason     string          `json:"disabledReason"`
-				ContextWindow      json.RawMessage `json:"contextWindow"`
-				MaxTokens          json.RawMessage `json:"maxTokens"`
-			} `json:"models"`
+			Models []upstreamModelEntry `json:"models"`
 			Agents []struct {
 				Name   string   `json:"name"`
 				Models []string `json:"models"`
@@ -342,28 +355,11 @@ func callModelsAPI(accessToken string) ([]pluginapi.ModelInfo, error) {
 	if len(cliModelIDs) == 0 {
 		return nil, fmt.Errorf("no cli agent models found")
 	}
-	dynMap := make(map[string]struct {
-		ID                 string          `json:"id"`
-		Name               string          `json:"name"`
-		Description        string          `json:"description"`
-		Credits            string          `json:"credits"`
-		Configurable       bool            `json:"configurable"`
-		Configured         bool            `json:"configured"`
-		IsDefault          bool            `json:"isDefault"`
-		SupportsImages     bool            `json:"supportsImages"`
-		SupportsReasoning  bool            `json:"supportsReasoning"`
-		OnlyReasoning      bool            `json:"onlyReasoning"`
-		Reasoning          json.RawMessage `json:"reasoning"`
-		DisabledMultimodal bool            `json:"disabledMultimodal"`
-		Disabled           bool            `json:"disabled"`
-		DisabledReason     string          `json:"disabledReason"`
-		ContextWindow      json.RawMessage `json:"contextWindow"`
-		MaxTokens          json.RawMessage `json:"maxTokens"`
-	}, len(apiResp.Data.Models))
+	dynMap := make(map[string]upstreamModelEntry, len(apiResp.Data.Models))
 	for _, m := range apiResp.Data.Models {
 		dynMap[m.ID] = m
 	}
-	var out []pluginapi.ModelInfo
+	out := make([]pluginapi.ModelInfo, 0, len(cliModelIDs))
 	for _, id := range cliModelIDs {
 		m, ok := dynMap[id]
 		if !ok {
@@ -372,30 +368,64 @@ func callModelsAPI(accessToken string) ([]pluginapi.ModelInfo, error) {
 		if m.Disabled {
 			continue
 		}
-		ctxLen := int64(0)
-		if len(m.ContextWindow) > 0 {
-			var v float64
-			if err := json.Unmarshal(m.ContextWindow, &v); err == nil {
-				ctxLen = int64(v)
-			}
-		}
-		maxTok := int64(0)
-		if len(m.MaxTokens) > 0 {
-			var v float64
-			if err := json.Unmarshal(m.MaxTokens, &v); err == nil {
-				maxTok = int64(v)
-			}
-		}
 		out = append(out, pluginapi.ModelInfo{
 			ID:                         m.ID,
 			Name:                       m.Name,
-			ContextLength:              ctxLen,
-			MaxCompletionTokens:        maxTok,
+			ContextLength:              m.contextLength(),
+			MaxCompletionTokens:        m.maxOutputTokens(),
 			OwnedBy:                    providerName,
 			SupportedGenerationMethods: []string{"chat"},
 		})
 	}
 	return out, nil
+}
+
+// upstreamModelEntry 是上游 models 数组的单个条目。
+//
+// 字段名以真实上游响应为准（2026-09-12 实测 copilot.tencent.com）：
+// 上下文上限是 maxInputTokens / maxAllowedSize，输出上限是 maxOutputTokens。
+// 旧实现读 contextWindow / maxTokens —— 这两个字段上游从不返回，导致
+// 所有动态模型的 ContextLength / MaxCompletionTokens 恒为 0。
+type upstreamModelEntry struct {
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Disabled           bool   `json:"disabled"`
+	MaxInputTokens     *int64 `json:"maxInputTokens"`
+	MaxOutputTokens    *int64 `json:"maxOutputTokens"`
+	MaxAllowedSize     *int64 `json:"maxAllowedSize"`
+	MaxContextLength   *int64 `json:"maxContextLength"`
+	ContextWindow      *int64 `json:"contextWindow"`
+	MaxTokens          *int64 `json:"maxTokens"`
+	MaxCompletionToken *int64 `json:"maxCompletionTokens"`
+}
+
+// firstPositive 返回第一个非 nil 且为正数的值，全无时返回 0。
+// [参数] vals：候选值指针列表（按优先级排列）
+// [返回] 首个有效值；都不满足时 0
+// 最近修改时间 2026-09-12（随字段名对齐新增，兼容新旧字段形态）
+func firstPositive(vals ...*int64) int64 {
+	for _, v := range vals {
+		if v != nil && *v > 0 {
+			return *v
+		}
+	}
+	return 0
+}
+
+// contextLength 取上下文上限，优先真实字段，兼容旧字段别名。
+// [参数] 无（接收者为上游条目）
+// [返回] 上下文长度；缺失时 0
+// 最近修改时间 2026-09-12（对齐上游 maxInputTokens）
+func (m upstreamModelEntry) contextLength() int64 {
+	return firstPositive(m.MaxInputTokens, m.MaxAllowedSize, m.MaxContextLength, m.ContextWindow)
+}
+
+// maxOutputTokens 取最大输出 token 数，优先真实字段，兼容旧字段别名。
+// [参数] 无（接收者为上游条目）
+// [返回] 最大输出 token 数；缺失时 0
+// 最近修改时间 2026-09-12（对齐上游 maxOutputTokens）
+func (m upstreamModelEntry) maxOutputTokens() int64 {
+	return firstPositive(m.MaxOutputTokens, m.MaxCompletionToken, m.MaxTokens)
 }
 
 func cacheModelAliases(host pluginapi.HostConfigSummary) {
@@ -538,20 +568,43 @@ func filterExcludedModels(models []pluginapi.ModelInfo, host pluginapi.HostConfi
 // publishUsage reports one upstream attempt into CPAMP request monitoring.
 // requestedModel is client-facing (may be alias); upstreamModel is resolved.
 
+// handleModelStatic 返回宿主要求的全局模型列表。
+//
+// 优先级链与 handleModelForAuth 一致（动态 > 配置 > 静态默认）：静态路径过去
+// 只返回 wbModels() 而从不打上游，导致 CPA 配置刷新走静态路径时用户永远看不到
+// 上游新增模型；两条路径行为不对称是"自动拉取没生效"的根因之一。
+// StaticModelRequest 不带账号凭据，因此动态发现只能命中已有缓存（5 分钟 TTL），
+// 缓存未命中即正常回退到配置 / 静态默认。
+// [参数] raw：宿主传入的 StaticModelRequest
+// [返回] 成功 envelope；请求解析失败时返回错误
+// 最近修改时间 2026-09-12（接入动态发现缓存，与 for_auth 统一优先级链）
 func handleModelStatic(raw []byte) ([]byte, error) {
 	var req pluginapi.StaticModelRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
 	cacheModelAliases(req.Host)
-	models := wbModels()
-	if cm := getConfiguredModels(); len(cm) > 0 {
-		models = mergeConfiguredAndDynamic(cm, models)
-	}
+	models := resolveModels(dynamicModelsFromCache(), getConfiguredModels(), wbModels())
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }
 
+// dynamicModelsFromCache 只读返回未过期的动态模型缓存，不触发上游请求。
+// 供 model.static 这类没有账号凭据的路径使用。
+// [参数] 无
+// [返回] 缓存中的模型列表；无有效缓存时返回 nil
+// 最近修改时间 2026-09-12（随 handleModelStatic 接入动态发现新增）
+func dynamicModelsFromCache() []pluginapi.ModelInfo {
+	if models, ok := cachedDynamicModels(); ok {
+		return models
+	}
+	return nil
+}
+
+// handleModelForAuth 返回指定账号的模型列表，优先级为动态 > 配置 > 静态默认。
+// [参数] raw：宿主传入的 AuthModelRequest（含 StorageJSON 凭据）
+// [返回] 成功 envelope；请求解析失败时返回错误
+// 最近修改时间 2026-09-12（优先级由"配置优先合并"反转为"动态优先、配置保底"）
 func handleModelForAuth(raw []byte) ([]byte, error) {
 	var req pluginapi.AuthModelRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -562,10 +615,7 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 	// req.AuthProvider back would silently drop the model list whenever the
 	// auth file carries a non-canonical provider string.
 	cacheModelAliases(req.Host)
-	models := fetchDynamicModelsFromStorage(req.StorageJSON)
-	if cm := getConfiguredModels(); len(cm) > 0 {
-		models = mergeConfiguredAndDynamic(cm, models)
-	}
+	models := resolveModels(fetchDynamicModelsFromStorage(req.StorageJSON), getConfiguredModels(), wbModels())
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }

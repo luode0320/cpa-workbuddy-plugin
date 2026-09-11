@@ -80,6 +80,7 @@ func modelRequestWithToken(t *testing.T) []byte {
 func TestHandleModelForAuthDynamicSuccess(t *testing.T) {
 	// 1. 配置本地动态模型上游并核对请求契约。
 	resetTraeConfiguredModels(t)
+	resetTraeDynamicCache(t)
 	withTraeModelServer(t, func(w http.ResponseWriter, r *http.Request) {
 		// 1. 验证动态发现使用正确路径、认证头和完整模型池请求参数。
 		if r.Method != http.MethodPost || r.URL.Path != traeModelDetailPath {
@@ -114,6 +115,79 @@ func TestHandleModelForAuthDynamicSuccess(t *testing.T) {
 	}
 	if resp.Models[1].ID != "qwen3.8-max" || resp.Models[1].Name != "qwen3.8-max" {
 		t.Fatalf("models[1] = %+v", resp.Models[1])
+	}
+}
+
+// TestResolveTraeModels_PriorityChain 验证优先级链：动态 > 配置 > 静态默认。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-09-12；改动原因：锁定优先级反转后的三态语义。
+func TestResolveTraeModels_PriorityChain(t *testing.T) {
+	dynamic := []pluginapi.ModelInfo{{ID: "dyn-a"}, {ID: "dyn-b"}}
+	configured := []pluginapi.ModelInfo{{ID: "cfg-a"}}
+	fallback := []pluginapi.ModelInfo{{ID: "static-a"}}
+
+	// 1. 动态有结果 → 完全忽略配置与静态，不做合并。
+	got := resolveTraeModels(dynamic, configured, fallback)
+	if len(got) != 2 || got[0].ID != "dyn-a" || got[1].ID != "dyn-b" {
+		t.Fatalf("dynamic should win outright: %+v", got)
+	}
+	// 2. 动态不可用 → 配置保底。
+	got = resolveTraeModels(nil, configured, fallback)
+	if len(got) != 1 || got[0].ID != "cfg-a" {
+		t.Fatalf("configured fallback = %+v", got)
+	}
+	// 3. 动态与配置都不可用 → 静态兜底。
+	got = resolveTraeModels(nil, nil, fallback)
+	if len(got) != 1 || got[0].ID != "static-a" {
+		t.Fatalf("static fallback = %+v", got)
+	}
+	// 4. 只含空 ID 的动态列表语义上等于"没有结果"，不得遮蔽配置。
+	got = resolveTraeModels([]pluginapi.ModelInfo{{ID: ""}}, configured, fallback)
+	if len(got) != 1 || got[0].ID != "cfg-a" {
+		t.Fatalf("empty-id dynamic should not shadow configured: %+v", got)
+	}
+}
+
+// TestHandleModelStaticPrefersDynamicCache 验证 model.static 复用动态缓存并优先于配置。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-09-12；改动原因：静态路径过去从不使用动态发现，锁定新行为。
+func TestHandleModelStaticPrefersDynamicCache(t *testing.T) {
+	resetTraeConfiguredModels(t)
+	resetTraeDynamicCache(t)
+	parseModelsConfig([]any{"configured-fallback"})
+	storeTraeDynamicModels([]pluginapi.ModelInfo{{ID: "upstream-new"}})
+
+	raw, err := handleModelStatic([]byte("{}"))
+	if err != nil {
+		t.Fatalf("handleModelStatic: %v", err)
+	}
+	resp := decodeTraeModelResponse(t, raw)
+	if len(resp.Models) != 1 || resp.Models[0].ID != "upstream-new" {
+		t.Fatalf("static should prefer dynamic cache: %+v", resp.Models)
+	}
+}
+
+// TestHandleModelStaticFallsBackWithoutCache 验证无动态缓存时静态路径回退配置。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-09-12；改动原因：确认静态路径的兜底语义未被动态优先级破坏。
+func TestHandleModelStaticFallsBackWithoutCache(t *testing.T) {
+	resetTraeConfiguredModels(t)
+	resetTraeDynamicCache(t)
+	parseModelsConfig([]any{"configured-fallback"})
+
+	raw, err := handleModelStatic([]byte("{}"))
+	if err != nil {
+		t.Fatalf("handleModelStatic: %v", err)
+	}
+	resp := decodeTraeModelResponse(t, raw)
+	if len(resp.Models) != 1 || resp.Models[0].ID != "configured-fallback" {
+		t.Fatalf("static fallback = %+v", resp.Models)
 	}
 }
 

@@ -1,5 +1,16 @@
 # TraeWork Plugin Changelog
 
+## 0.1.59
+
+### Fix — 模型优先级统一为「动态 > 配置 > 静态」并打通静态路径（对齐 workbuddy 0.14.28）
+
+- **背景**：`handleModelForAuth` 原为"动态成功即完全替换"，`handleModelStatic` 则**从不使用动态发现**（只返回配置 / `defaultTraeModels`），两路径语义不一致；且配置一旦存在就会遮蔽上游新增模型。
+- **优先级链**：新增 `resolveTraeModels(dynamic, configured, fallback)`：**动态发现有结果时完全忽略配置与静态默认**（上游 `config_name` 是唯一可精确调用的模型事实源）；动态不可用时用配置；配置为空才回退 `defaultTraeModels`。原 `loadedModels()` 下线。
+- **新增动态缓存**：`dynamicModelsCache` + `cachedTraeDynamicModels` / `storeTraeDynamicModels`，供没有账号凭据的 `model.static` 复用最近一次成功发现结果；`model.for_auth` 只用**本次拉取**结果，不读历史缓存——否则动态失败将永远命中上一次成功的值，配置兜底语义失效。
+- **`handleModelStatic` 接入动态发现**：消除静态路径与账号路径的行为不对称。
+- 测试：`models_dynamic_test.go` 新增优先级链 4 态用例 + 静态路径动态优先 / 无缓存回退配置 2 例；`config_models_test.go` 访问器改用优先级链并新增 `resetTraeDynamicCache` 隔离全局缓存。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.1.58
 
 ### Feat — 耗尽自动停用 + 每 4 小时签到自动恢复（策略更新：耗尽停用保留，但必须能自愈）

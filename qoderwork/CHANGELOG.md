@@ -1,5 +1,16 @@
 # QoderWork Plugin Changelog
 
+## 0.9.16
+
+### Fix — 模型优先级反转为「动态 > 配置 > 静态」（对齐 workbuddy 0.14.28 / traework 0.1.59）
+
+- **背景**：原语义有两条遮蔽路径——`handleModelForAuth` 的 `fetchDynamicModelsFromStorage` 开头即 `if 配置非空 return 配置`，`handleModelStatic` 更是"配置非空就完全不查动态"；用户手工配过模型后，上游新增模型永久不可见。
+- **优先级反转**：新增 `resolveModels(dynamic, configured, fallback)` 三态优先级链，**动态发现有结果时完全忽略配置与静态默认**（不做合并）；动态不可用时才用配置；配置也为空才回退静态。
+- **`handleModelStatic` 改为动态优先**：先走 `fetchDynamicModels()`（命中缓存或扫描已注册凭据），失败才回退配置 / 静态，与 `handleModelForAuth` 口径一致。
+- **取消静默兜底**：`fetchDynamicModels` / `fetchDynamicModelsFromStorage` 失败时由返回 `wbModels()` 改为返回 `nil`，区分"上游调用失败"与"上游确实只有这些模型"，由 `resolveModels` 统一兜底；只含空 ID 的动态列表视同"没有结果"。
+- 测试：`models_config_test.go` 新增优先级链 4 态用例 + 静态路径动态优先用例，原"配置优先"注释改为"配置保底"，并新增 `resetDynamicModelsCache` 隔离全局缓存。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.9.15
 
 ### Feat — 耗尽自动停用 + 每 4 小时签到自动恢复（策略更新：耗尽停用保留，但必须能自愈；对齐 workbuddy 0.14.27 / traework 0.1.58）
