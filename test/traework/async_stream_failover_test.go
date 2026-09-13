@@ -93,10 +93,12 @@ func TestRunTraeAsyncStreamRetriesPseudoCompletionWithoutLeakingFirstAttempt(t *
 	}
 }
 
-// TestRunTraeAsyncStreamPseudoPoolExhaustionClosesWithError 验证伪完成池耗尽时只发错误并关闭一次。
+// TestRunTraeAsyncStreamPseudoPoolExhaustionClosesWithError 验证伪完成池耗尽时只经
+// 错误通道（chunk.Err）发一次错误并关闭一次，错误绝不混入 payload 数据帧。
 // [参数] t: 当前测试。
 // [返回] 无；断言失败时由 testing 终止用例。
-// 最近修改时间：2026-09-01 23:50:00；改动原因：禁止把最后一个伪完成释放为成功。
+// 最近修改时间：2026-09-14 00:10:00；改动原因：错误发射迁移到宿主 stream.emit 信封
+// "error" 字段（chunk.Err），宿主 conductor 才能感知失败并跨平台轮换凭据。
 func TestRunTraeAsyncStreamPseudoPoolExhaustionClosesWithError(t *testing.T) {
 	disableUsageOutputs(t)
 	resetFailover(t)
@@ -105,6 +107,7 @@ func TestRunTraeAsyncStreamPseudoPoolExhaustionClosesWithError(t *testing.T) {
 	upstreamCloses := 0
 	clientCloses := 0
 	var emitted [][]byte
+	var errMessages []string
 	deps := traeAsyncStreamDeps{
 		Open: func(_ *traeAuth, _ map[string]any, authID, _ string) (traeAsyncUpstream, int, error) {
 			return traeAsyncUpstream{
@@ -115,6 +118,10 @@ func TestRunTraeAsyncStreamPseudoPoolExhaustionClosesWithError(t *testing.T) {
 		PickNextAuth: func(string) (string, *traeAuth, bool) { return "auth-b", authB, true },
 		Emit: func(_ string, payload []byte) error {
 			emitted = append(emitted, bytes.Clone(payload))
+			return nil
+		},
+		EmitError: func(_ string, message string) error {
+			errMessages = append(errMessages, message)
 			return nil
 		},
 		Close: func(string) { clientCloses++ },
@@ -130,8 +137,11 @@ func TestRunTraeAsyncStreamPseudoPoolExhaustionClosesWithError(t *testing.T) {
 	if countFinishReason(emitted, "stop") != 0 {
 		t.Fatal("pool exhaustion must not emit stop")
 	}
-	if !bytes.Contains(bytes.Join(emitted, nil), []byte("account pool exhausted after 2 attempt(s)")) {
-		t.Fatalf("missing pool exhaustion error: %q", emitted)
+	if len(errMessages) != 1 || !strings.Contains(errMessages[0], "account pool exhausted after 2 attempt(s)") {
+		t.Fatalf("missing pool exhaustion error on chunk.Err channel: %q", errMessages)
+	}
+	if bytes.Contains(bytes.Join(emitted, nil), []byte("account pool exhausted")) {
+		t.Fatalf("exhaustion error leaked into payload data frames: %q", emitted)
 	}
 }
 
@@ -172,6 +182,7 @@ func TestRunTraeAsyncStreamDoesNotRetryAnAccountTwice(t *testing.T) {
 	opened := make([]string, 0, 2)
 	clientCloses := 0
 	var emitted [][]byte
+	var errMessages []string
 	deps := traeAsyncStreamDeps{
 		Open: func(_ *traeAuth, _ map[string]any, authID, _ string) (traeAsyncUpstream, int, error) {
 			opened = append(opened, authID)
@@ -190,6 +201,10 @@ func TestRunTraeAsyncStreamDoesNotRetryAnAccountTwice(t *testing.T) {
 			emitted = append(emitted, bytes.Clone(payload))
 			return nil
 		},
+		EmitError: func(_ string, message string) error {
+			errMessages = append(errMessages, message)
+			return nil
+		},
 		Close: func(string) { clientCloses++ },
 	}
 	runTraeAsyncStream(authA, "auth-a", traeAsyncStreamContext{
@@ -202,8 +217,8 @@ func TestRunTraeAsyncStreamDoesNotRetryAnAccountTwice(t *testing.T) {
 	if clientCloses != 1 {
 		t.Fatalf("client closes = %d, want 1", clientCloses)
 	}
-	if !bytes.Contains(bytes.Join(emitted, nil), []byte("account pool exhausted after 2 attempt(s)")) {
-		t.Fatalf("missing two-attempt pool exhaustion error: %q", emitted)
+	if len(errMessages) != 1 || !strings.Contains(errMessages[0], "account pool exhausted after 2 attempt(s)") {
+		t.Fatalf("missing two-attempt pool exhaustion error on chunk.Err channel: %q", errMessages)
 	}
 }
 
@@ -220,12 +235,17 @@ func TestRunTraeAsyncStreamClosesUpstreamOnPanic(t *testing.T) {
 	upstreamCloses := 0
 	clientCloses := 0
 	var emitted [][]byte
+	var errMessages []string
 	deps := traeAsyncStreamDeps{
 		Open: func(_ *traeAuth, _ map[string]any, _, _ string) (traeAsyncUpstream, int, error) {
 			return traeAsyncUpstream{Reader: panicReader{}, Close: func() { upstreamCloses++ }}, 200, nil
 		},
 		Emit: func(_ string, payload []byte) error {
 			emitted = append(emitted, bytes.Clone(payload))
+			return nil
+		},
+		EmitError: func(_ string, message string) error {
+			errMessages = append(errMessages, message)
 			return nil
 		},
 		Close: func(string) { clientCloses++ },
@@ -237,8 +257,8 @@ func TestRunTraeAsyncStreamClosesUpstreamOnPanic(t *testing.T) {
 	if upstreamCloses != 1 || clientCloses != 1 {
 		t.Fatalf("closes = upstream:%d client:%d, want 1/1", upstreamCloses, clientCloses)
 	}
-	if len(emitted) != 1 || !bytes.Contains(emitted[0], []byte("coordinator panic")) {
-		t.Fatalf("panic error payloads = %q", emitted)
+	if len(errMessages) != 1 || !bytes.Contains([]byte(errMessages[0]), []byte("coordinator panic")) {
+		t.Fatalf("panic error on chunk.Err channel = %q", errMessages)
 	}
 }
 
@@ -353,6 +373,7 @@ func TestRunTraeAsyncStreamSSEErrorAfterEmitDoesNotRotate(t *testing.T) {
 	openCount := 0
 	clientCloses := 0
 	var emitted [][]byte
+	var errMessages []string
 	deps := traeAsyncStreamDeps{
 		Open: func(_ *traeAuth, _ map[string]any, _ string, _ string) (traeAsyncUpstream, int, error) {
 			openCount++
@@ -368,6 +389,10 @@ func TestRunTraeAsyncStreamSSEErrorAfterEmitDoesNotRotate(t *testing.T) {
 			emitted = append(emitted, bytes.Clone(payload))
 			return nil
 		},
+		EmitError: func(_ string, message string) error {
+			errMessages = append(errMessages, message)
+			return nil
+		},
 		Close: func(string) { clientCloses++ },
 	}
 	runTraeAsyncStream(authA, "auth-a", traeAsyncStreamContext{
@@ -380,7 +405,7 @@ func TestRunTraeAsyncStreamSSEErrorAfterEmitDoesNotRotate(t *testing.T) {
 	if clientCloses != 1 {
 		t.Fatalf("client closes = %d, want 1", clientCloses)
 	}
-	if !bytes.Contains(bytes.Join(emitted, nil), []byte("rate limit exceeded")) {
-		t.Fatalf("post-emit error not surfaced: %q", emitted)
+	if len(errMessages) == 0 || !bytes.Contains([]byte(strings.Join(errMessages, "|")), []byte("rate limit exceeded")) {
+		t.Fatalf("post-emit error not surfaced on chunk.Err channel: %q", errMessages)
 	}
 }

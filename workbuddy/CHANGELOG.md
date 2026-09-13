@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.14.31
+
+### Fix — 全部账号失败后调度器不再阻塞宿主跨平台失败切换（对齐 traework 0.1.60）
+
+- **背景**：与 traework 插件同装且两插件注册了重叠模型（如 `deepseek-v4-flash` / `glm-5.2`）时，会话首次选中 workbuddy 账号；当**全部 workbuddy 账号**失败（15s 失败冷却 / 积分耗尽）后，本插件调度器仍以 `Handled: true` 返回 pin/第一个候选（一个必死账号），宿主内置调度器的跨平台兜底被短路——请求把重试预算全部烧在 workbuddy 死账号上后直接失败，traework 的健康账号全程没机会接管。
+- **修复**（三处，与 traework 对称）：
+  - `scheduler.go`：cooldown 过滤全滤光时不再"保留全列表回退 pin"，直接 `Handled: false` 延迟给宿主；preserve 过滤语义不变（preserved 账号是活账号，兜底路由保留）。
+  - `session_auth.go` `pickSessionAuth`：`len(usable)==0`（全部 exhausted/cooling）时返回 `""` 而非 pin/first；会话绑定保留，账号恢复后 sticky 命中自动回到原绑定。
+  - `active_auth.go` `pickActiveAuth`：无健康候选时返回 `""` 且**不改面板选中账号**（恢复后钉选自动生效）。
+- **效果**：workbuddy 全灭 → 宿主内置调度器在全部平台可用候选（含 traework）里轮询重试；若另一平台也无账号，则由宿主返回标准 cooldown/unavailable 错误（含恢复时间），语义干净。单插件部署行为等价（宿主本来也只能选这些账号）。
+- 测试：`TestPickSessionAuth_AllExhaustedDefers`（含恢复再绑定断言）、`TestSchedulerPick_AllCoolingDown_Defers` 与 `TestSchedulerPick_AllExhausted_Defers`（候选混入 traework 账号的跨平台回归用例）。
+- 验证：cgo-shim build+vet+test 全绿。
+
+### Fix — 终态错误改走宿主流错误通道（chunk.Err），请求内池耗尽可跨平台自动接管（对齐 traework 0.1.60）
+
+- **背景**（生产实证 2026-09-13 traework 全灭现场）：异步流终态错误原以 payload 数据帧（`{"error": ...}` SSE 事件）发到宿主流，宿主 conductor 把它当**正常流内容**——请求以 HTTP 200 "成功"告终，conductor 全程不知情：不轮换下一个凭据、不冷却记账、**不切换 traework 账号**，客户端直接收到内嵌错误的流。
+- **修复**：`streamEmitError` 改为经 `host.stream.emit` 信封的 `error` 字段发送（宿主映射为执行器流 `chunk.Err`，message 保留 `redactSecrets` 脱敏）。conductor 收到真正的错误 chunk 后：首包前失败 → 同请求内换下一个账号（可跨 provider）；流中失败 → 记账 + 下发错误。
+- 测试：`stream_error_envelope_test.go`（信封字段断言 + payload 泄漏哨兵）。
+- 验证：cgo-shim build+vet+test 全绿（与调度器修复同树合并验证）。
+
 ## 0.14.30
 
 ### Fix — host.http.do 非流式桥接响应状态码恒为 0（动态发现/积分失效的真正根因）

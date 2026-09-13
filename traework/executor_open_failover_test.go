@@ -19,7 +19,8 @@ const (
 )
 
 // asyncOpenTimeoutDeps 构造注入依赖：auth-a 恒定 transport 超时（或 400），
-// auth-b 恒定健康流；openOrder/callOrder 记录尝试顺序供断言。
+// auth-b 恒定健康流；openOrder/callOrder 记录尝试顺序、errMessages 记录错误
+// 通道（chunk.Err）消息供断言。
 func asyncOpenTimeoutDeps(openErrForA error, openOrder *[]string, emitted *[]string) traeAsyncStreamDeps {
 	return traeAsyncStreamDeps{
 		Open: func(a *traeAuth, payload map[string]any, authID, hostCallbackID string) (traeAsyncUpstream, int, error) {
@@ -37,6 +38,10 @@ func asyncOpenTimeoutDeps(openErrForA error, openOrder *[]string, emitted *[]str
 		},
 		Emit: func(streamID string, payload []byte) error {
 			*emitted = append(*emitted, string(payload))
+			return nil
+		},
+		EmitError: func(_ string, message string) error {
+			*emitted = append(*emitted, "chunk.Err:"+message)
 			return nil
 		},
 		Close: func(streamID string) {},
@@ -151,7 +156,7 @@ func TestAsyncOpenBusiness400DoesNotRotate(t *testing.T) {
 		t.Fatalf("open order = %v, want exactly one attempt for business 400 (no rotation)", openOrder)
 	}
 	joined := strings.Join(emitted, "\n")
-	if !strings.Contains(joined, "error") {
-		t.Fatalf("business 400 must surface the error to client; got %q", joined)
+	if !strings.Contains(joined, "chunk.Err:upstream 400") {
+		t.Fatalf("business 400 must surface the error via chunk.Err channel; got %q", joined)
 	}
 }

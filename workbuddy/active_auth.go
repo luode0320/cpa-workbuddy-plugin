@@ -55,7 +55,9 @@ type activeAuthCandidate struct {
 // is marked exhausted in cache, or is in failover cooldown. When switching,
 // it picks the first
 // non-exhausted candidate and updates activeAuthID so the panel reflects
-// the change on next dashboard load.
+// the change on next dashboard load. When NO healthy candidate exists, it
+// returns "" so the scheduler defers to the host's built-in scheduler
+// (cross-provider failover).
 func pickActiveAuth(candidates []activeAuthCandidate) string {
 	if len(candidates) == 0 {
 		return ""
@@ -83,13 +85,13 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 		}
 	}
 	if next == "" {
-		// All exhausted/disabled/cooling-down — keep current if still alive, else first candidate.
-		if cur != "" {
-			if _, ok := byID[cur]; ok {
-				return cur
-			}
-		}
-		next = candidates[0].ID
+		// All candidates exhausted/disabled/cooling-down: no healthy account
+		// exists. Return "" WITHOUT changing the panel selection so
+		// handleSchedulerPick defers (Handled: false) to the host's built-in
+		// scheduler, which can fail over to other providers' accounts (e.g.
+		// traework). The selection is restored automatically once an account
+		// recovers.
+		return ""
 	}
 	if next != "" && next != cur {
 		setActiveAuthID(next)

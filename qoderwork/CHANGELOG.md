@@ -1,5 +1,14 @@
 # QoderWork Plugin Changelog
 
+## 0.9.17
+
+### Fix — 终态错误改走宿主流错误通道（chunk.Err），请求内池耗尽可跨平台自动接管（对齐 workbuddy 0.14.31 / traework 0.1.60）
+
+- **背景**：异步流终态错误（上游失败、池耗尽等）原以 payload 数据帧（`{"error":{"message":...}}` SSE 事件）发到宿主流，宿主 conductor 把它当**正常流内容**——请求以 HTTP 200 "成功"告终，conductor 不轮换凭据、不冷却记账、不切换其他平台账号，客户端直接收到内嵌错误的流。
+- **修复**：`streamEmitError` 改为经 `host.stream.emit` 信封的 `error` 字段发送（宿主映射为执行器流 `chunk.Err`，message 保留 `redactSecrets` 脱敏）。conductor 收到真正的错误 chunk 后：首包前失败 → 同请求内换下一个账号；流中失败 → 记账 + 下发错误。
+- 测试：`stream_error_envelope_test.go`（信封字段断言 + payload 泄漏哨兵）。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.9.16
 
 ### Fix — 模型优先级反转为「动态 > 配置 > 静态」（对齐 workbuddy 0.14.28 / traework 0.1.59）

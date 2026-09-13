@@ -175,8 +175,9 @@ func headerSessionPrefix(header string) string {
 //     disabled/exhausted/cooling-down/anomalous is re-assigned;
 //   - new assignments prefer accounts with no live bindings, then round-robin
 //     across all usable accounts;
-//   - when every account is disabled/exhausted, the current pin is kept if the
-//     account still exists, else the first candidate.
+//   - when every account is disabled/exhausted/cooling-down, "" is returned
+//     so the scheduler defers to the host's built-in scheduler (cross-provider
+//     failover); the binding is kept for sticky recovery.
 //
 // sessionKey == "" → fall back to the panel-selected account (same behavior as
 // scheduler_mode=credits).
@@ -213,16 +214,13 @@ func pickSessionAuth(sessionKey string, candidates []activeAuthCandidate) string
 	}
 
 	if len(usable) == 0 {
-		// Everything disabled/exhausted/cooling-down — keep current pin if the
-		// account still exists, else the first candidate (mirrors pickActiveAuth
-		// fallback). Cooling-down accounts are still eligible here so a session
-		// keeps its pin rather than erroring out when every account is down.
-		if b, ok := sessionAuthBindings[sessionKey]; ok {
-			if _, isLive := live[b.AuthID]; isLive {
-				return b.AuthID
-			}
-		}
-		return candidates[0].ID
+		// Everything disabled/exhausted/cooling-down: no healthy traework
+		// account exists. Return "" so handleSchedulerPick defers (Handled:
+		// false) to the host's built-in scheduler, which can fail over to
+		// other providers' accounts (e.g. workbuddy) instead of pinning this
+		// conversation to a dead account. The existing binding is kept: once
+		// an account recovers, the sticky re-hit restores the assignment.
+		return ""
 	}
 
 	// Fresh assignment: prefer the panel-selected active account first (so the

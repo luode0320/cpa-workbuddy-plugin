@@ -30,12 +30,32 @@ func streamEmit(streamID string, payload []byte) error {
 	return err
 }
 
-// streamEmitError emits a final error chunk and closes the stream.
-func streamEmitError(streamID, message string) {
-	payload, _ := json.Marshal(map[string]any{
-		"error": message,
+// marshalStreamErrorEnvelope 构造带 "error" 字段的 stream.emit 信封（纯函数，便于回归测试）。
+func marshalStreamErrorEnvelope(streamID, message string) ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"stream_id": streamID,
+		"error":     message,
 	})
-	_ = streamEmit(streamID, payload)
+}
+
+// emitStreamErrorEnvelope 通过 host.stream.emit 信封的 "error" 字段发送终态错误。
+// 宿主把该字段映射为执行器流 chunk 的 Err（见 internal/pluginhost/stream_bridge.go
+// rpcStreamEmitRequest.Error）：核心 conductor 只有在收到真正的错误 chunk 时才会
+// 判定本次执行失败，进而轮换下一个凭据——包括另一平台（如 workbuddy）的账号。
+// 若把错误当 payload 数据帧发出，宿主会视为正常流内容：请求以"成功"告终，
+// 跨平台失败切换永远不会触发，客户端只收到一条内嵌错误的 SSE 事件。
+func emitStreamErrorEnvelope(streamID, message string) error {
+	body, err := marshalStreamErrorEnvelope(streamID, message)
+	if err != nil {
+		return err
+	}
+	_, err = hostCall(pluginabi.MethodHostStreamEmit, body)
+	return err
+}
+
+// streamEmitError 以错误 chunk 形式发出终态错误并关闭宿主流。
+func streamEmitError(streamID, message string) {
+	_ = emitStreamErrorEnvelope(streamID, message)
 	streamClose(streamID)
 }
 

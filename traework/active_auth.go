@@ -48,6 +48,10 @@ type activeAuthCandidate struct {
 }
 
 // pickActiveAuth chooses which traework auth to use from host candidates.
+// The panel selection is sticky; it switches to the next healthy candidate
+// when the current one is exhausted / disabled / cooling down / anomalous /
+// missing. When NO healthy candidate exists, it returns "" so the scheduler
+// defers to the host's built-in scheduler (cross-provider failover).
 func pickActiveAuth(candidates []activeAuthCandidate) string {
 	if len(candidates) == 0 {
 		return ""
@@ -72,12 +76,13 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 		}
 	}
 	if next == "" {
-		if cur != "" {
-			if _, ok := byID[cur]; ok {
-				return cur
-			}
-		}
-		next = candidates[0].ID
+		// All candidates exhausted/disabled/cooling-down: no healthy account
+		// exists. Return "" WITHOUT changing the panel selection so
+		// handleSchedulerPick defers (Handled: false) to the host's built-in
+		// scheduler, which can fail over to other providers' accounts (e.g.
+		// workbuddy). The selection is restored automatically once an account
+		// recovers.
+		return ""
 	}
 	if next != "" && next != cur {
 		setActiveAuthID(next)

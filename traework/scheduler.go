@@ -3,8 +3,11 @@
 // Routing uses the panel-selected active account; when the selection is
 // exhausted/disabled/missing/cooling-down, it switches to another
 // healthy candidate. Non-traework candidates are always deferred so the
-// built-in scheduler handles them. Only active when scheduler_mode: credits
-// is configured (default off).
+// built-in scheduler handles them, and when EVERY traework candidate is
+// exhausted/cooling-down the pick is deferred as well (Handled: false) so
+// the host can fail over to other providers' accounts (e.g. workbuddy).
+// Only active when scheduler_mode: credits or session is configured
+// (default off).
 package main
 
 import (
@@ -41,7 +44,10 @@ func loadedSchedulerMode() string {
 
 // handleSchedulerPick selects a traework auth candidate based on the
 // panel-selected active account. Non-traework candidates are always deferred
-// (Handled: false) so the built-in scheduler handles them.
+// (Handled: false) so the built-in scheduler handles them. When every
+// traework candidate is exhausted or cooling down, the pick is deferred too
+// (Handled: false) so the built-in scheduler can fail over to other
+// providers' accounts — the plugin never answers with a dead candidate.
 func handleSchedulerPick(raw []byte) ([]byte, error) {
 	var req pluginapi.SchedulerPickRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -89,9 +95,18 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 			filtered = append(filtered, c)
 		}
 	}
-	if len(filtered) > 0 {
-		wbCandidates = filtered
+	if len(filtered) == 0 {
+		// Every traework account is in failover cooldown: no healthy account
+		// exists on this provider. Defer to the host's built-in scheduler so
+		// it can fail over to OTHER providers' accounts (e.g. workbuddy)
+		// instead of pinning the request to a dead account. Returning the
+		// cooling accounts here (the old keep-full-list fallback) made the
+		// plugin answer with Handled:true and a doomed candidate, which
+		// blocked cross-provider failover until the request-level retry
+		// budget was exhausted.
+		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
+	wbCandidates = filtered
 
 	cands := make([]activeAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {

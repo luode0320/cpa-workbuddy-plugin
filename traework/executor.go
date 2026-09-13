@@ -64,7 +64,10 @@ type traeAsyncStreamDeps struct {
 	Open         func(a *traeAuth, payload map[string]any, authID, hostCallbackID string) (traeAsyncUpstream, int, error)
 	PickNextAuth func(currentAuthID string) (nextAuthID string, nextSA *traeAuth, ok bool)
 	Emit         func(streamID string, payload []byte) error
-	Close        func(streamID string)
+	// EmitError 以宿主 stream.emit 信封的 "error" 字段发送终态错误（映射为
+	// 执行器流 chunk.Err），让宿主 conductor 能感知失败并跨平台轮换凭据。
+	EmitError func(streamID, message string) error
+	Close     func(streamID string)
 }
 
 var defaultTraeAsyncStreamDeps = traeAsyncStreamDeps{
@@ -77,6 +80,7 @@ var defaultTraeAsyncStreamDeps = traeAsyncStreamDeps{
 	},
 	PickNextAuth: pickNextAuth,
 	Emit:         streamEmit,
+	EmitError:    emitStreamErrorEnvelope,
 	Close:        streamClose,
 }
 
@@ -184,19 +188,19 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			continue
 		}
 
-	statusCode := parseUpstreamStatusFromErr(callErr)
-	// 换号判定用 isAccountFailure：open 阶段 transport 级错误（TTFB 超时等
-	// status=0，生产实证 stream 4553：上游对单账号挂起 60s 不回响应头）与
-	// 5xx / 429 / 账号级 4xx 同责换号（与流式路径对齐），400 业务错仍直通。
-	// 核算由 callLLM（upstream.go）统一记账，换号路径不重复计数；终局保留
-	// 既有核算入口。换号前驱逐绑定防会话亲和钉死死号。
-	if !isAccountFailure(statusCode, callErr.Error()) || attempt >= budget || curSA == nil {
-		reconcileAfterExecutorError(usedAuthID, statusCode, callErr.Error())
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error(), "", 0, authUID, sessionKey)
-		return nil, callErr
-	}
-	evictSessionBindingsForAuth(usedAuthID)
-	nextAuthID, nextSA, hasNext := pickNextAuth(usedAuthID)
+		statusCode := parseUpstreamStatusFromErr(callErr)
+		// 换号判定用 isAccountFailure：open 阶段 transport 级错误（TTFB 超时等
+		// status=0，生产实证 stream 4553：上游对单账号挂起 60s 不回响应头）与
+		// 5xx / 429 / 账号级 4xx 同责换号（与流式路径对齐），400 业务错仍直通。
+		// 核算由 callLLM（upstream.go）统一记账，换号路径不重复计数；终局保留
+		// 既有核算入口。换号前驱逐绑定防会话亲和钉死死号。
+		if !isAccountFailure(statusCode, callErr.Error()) || attempt >= budget || curSA == nil {
+			reconcileAfterExecutorError(usedAuthID, statusCode, callErr.Error())
+			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error(), "", 0, authUID, sessionKey)
+			return nil, callErr
+		}
+		evictSessionBindingsForAuth(usedAuthID)
+		nextAuthID, nextSA, hasNext := pickNextAuth(usedAuthID)
 		if !hasNext || nextSA == nil {
 			break
 		}
@@ -498,11 +502,14 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 	emitTraeAsyncError(ctx.StreamID, errFinal.Error(), deps)
 }
 
-// emitTraeAsyncError 发送单个错误分片并关闭宿主流；调用方发送后必须立即结束逻辑请求。
+// emitTraeAsyncError 以错误 chunk（信封 "error" 字段）发送终态错误并关闭宿主流；
+// 调用方发送后必须立即结束逻辑请求。错误必须走 chunk.Err 通道而非 payload 数据帧，
+// 否则宿主 conductor 视请求为成功，跨平台失败切换（trae↔workbuddy）不会触发。
 func emitTraeAsyncError(streamID, message string, deps traeAsyncStreamDeps) {
-	payload, err := json.Marshal(map[string]any{"error": message})
-	if err == nil {
-		_ = deps.Emit(streamID, payload)
+	if deps.EmitError != nil {
+		_ = deps.EmitError(streamID, message)
+	} else {
+		_ = emitStreamErrorEnvelope(streamID, message)
 	}
 	deps.Close(streamID)
 }

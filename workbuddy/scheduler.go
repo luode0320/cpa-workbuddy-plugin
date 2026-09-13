@@ -3,7 +3,9 @@
 // Routing uses the panel-selected active account (region from that card's
 // domain). When the selection is exhausted/disabled/missing, randomly switch
 // to another non-exhausted workbuddy candidate. Non-workbuddy candidates are
-// always deferred so the built-in scheduler handles them.
+// always deferred so the built-in scheduler handles them, and when EVERY
+// workbuddy candidate is exhausted/cooling-down the pick is deferred as well
+// (Handled: false) so the host can fail over to other providers' accounts.
 //
 // scheduler_mode=session additionally enables per-conversation routing: each
 // conversation is pinned to one account for up to 1h and conversations are
@@ -79,10 +81,10 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	}
 
 	// Collect workbuddy candidates only. Accounts in failover cooldown are
-	// skipped so new requests route to a healthy account instead — but only
-	// when at least one healthy candidate remains. If EVERY workbuddy account
-	// is cooling down, keep the full list so the pickers fall back to the
-	// current pin (mirrors the all-exhausted fallback) instead of deferring.
+	// skipped so new requests route to a healthy account instead. If EVERY
+	// workbuddy account is cooling down, defer (Handled: false) so the host's
+	// built-in scheduler can fail over to OTHER providers' accounts instead
+	// of pinning the request to a dead account.
 	var wbCandidates []pluginapi.SchedulerAuthCandidate
 	for _, c := range req.Candidates {
 		if c.Provider != providerName {
@@ -100,11 +102,9 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	// Preserve filter: accounts the watchdog flagged (credits below
 	// preserve_threshold) are kept out of routing entirely so they keep a
 	// small credit buffer. Place this BEFORE the cooldown filter so the
-	// lastNonEmpty fallback can still see preserved accounts when every
+	// preserve-pool fallback can still see preserved accounts when every
 	// workbuddy account is preserved — we don't want a fleet-wide credit
-	// reset to lock routing. Like the cooldown filter below, when every
-	// account is preserved we keep the full list so the pickers fall back to
-	// the current pin.
+	// reset to lock routing.
 	preserveFiltered := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
 		if !isAccountPreserved(c.ID) {
@@ -115,19 +115,20 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		wbCandidates = preserveFiltered
 	}
 	// Cooldown filter: accounts in failover cooldown are skipped so new
-	// requests route to a healthy account instead — but only when at least
-	// one healthy candidate remains. If EVERY workbuddy account is cooling
-	// down, keep the full list so the pickers fall back to the current pin
-	// (mirrors the all-exhausted fallback) instead of deferring.
+	// requests route to a healthy account instead. If EVERY workbuddy account
+	// is cooling down, defer (Handled: false) so the host's built-in
+	// scheduler can fail over to OTHER providers' accounts (cross-provider
+	// failover) instead of pinning the request to a dead account.
 	filtered := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
 		if !isAccountCoolingDown(c.ID) {
 			filtered = append(filtered, c)
 		}
 	}
-	if len(filtered) > 0 {
-		wbCandidates = filtered
+	if len(filtered) == 0 {
+		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
+	wbCandidates = filtered
 
 	// Build thin view for active-auth picker. All surviving candidates are
 	// "normal" accounts — the v0.10.x priority/default/fallback pools were

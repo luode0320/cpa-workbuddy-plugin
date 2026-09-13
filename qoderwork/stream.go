@@ -33,13 +33,31 @@ func streamEmit(streamID string, payload []byte) error {
 	return err
 }
 
+// marshalStreamErrorEnvelope 构造带 "error" 字段的 stream.emit 信封（纯函数，便于回归测试）。
+func marshalStreamErrorEnvelope(streamID, message string) ([]byte, error) {
+	return json.Marshal(map[string]any{"stream_id": streamID, "error": message})
+}
+
+// emitStreamErrorEnvelope 通过 host.stream.emit 信封的 "error" 字段发送终态错误。
+// 宿主把该字段映射为执行器流 chunk 的 Err：核心 conductor 只有收到真正的错误
+// chunk 才会判定执行失败，进而轮换下一个凭据——包括其他平台的账号。若把错误当
+// payload 数据帧发出，宿主会视为正常流内容，请求以"成功"告终，跨平台失败切换
+// 永远不会触发。
+func emitStreamErrorEnvelope(streamID, message string) error {
+	body, err := marshalStreamErrorEnvelope(streamID, message)
+	if err != nil {
+		return err
+	}
+	_, err = hostCall(pluginabi.MethodHostStreamEmit, body)
+	return err
+}
+
 func streamEmitError(streamID, message string) {
 	if streamID == "" {
 		return
 	}
 	// A-37: never emit raw upstream bodies that may contain Bearer/JWT.
-	errJSON, _ := json.Marshal(map[string]any{"error": map[string]any{"message": redactSecrets(message)}})
-	_ = streamEmit(streamID, errJSON)
+	_ = emitStreamErrorEnvelope(streamID, redactSecrets(message))
 }
 
 var streamCloseOnce sync.Map // streamID -> sync.Once

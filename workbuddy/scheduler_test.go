@@ -164,10 +164,12 @@ func TestSchedulerPick_StaysOnExhaustedSelection(t *testing.T) {
 	}
 }
 
-func TestSchedulerPick_AllExhausted_KeepsCurrent(t *testing.T) {
+func TestSchedulerPick_AllExhausted_Defers(t *testing.T) {
 	resetActiveAuth(t)
-	// When ALL candidates are exhausted, keep current selection rather than
-	// flip-flopping between exhausted accounts.
+	// When ALL candidates are exhausted, defer (Handled: false) so the host's
+	// built-in scheduler can fail over to other providers' accounts instead
+	// of answering with a doomed workbuddy candidate. A healthy other-provider
+	// candidate is included to encode the cross-provider failover contract.
 	accountCache.Store("wb-a", &accountCacheEntry{
 		credits: &creditsSummary{TotalRemain: 0, TotalUsed: 100, TotalSize: 100},
 	})
@@ -184,14 +186,15 @@ func TestSchedulerPick_AllExhausted_KeepsCurrent(t *testing.T) {
 		Candidates: []pluginapi.SchedulerAuthCandidate{
 			{ID: "wb-a", Provider: providerName},
 			{ID: "wb-b", Provider: providerName},
+			{ID: "tr-a", Provider: "traework-provider"},
 		},
 	}))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	resp := parsePickResponse(t, raw)
-	if !resp.Handled || resp.AuthID != "wb-a" {
-		t.Fatalf("want stay on wb-a (all exhausted), got %+v", resp)
+	if resp.Handled {
+		t.Fatalf("all exhausted should defer to host (cross-provider failover), got %+v", resp)
 	}
 }
 
@@ -346,10 +349,12 @@ func TestSchedulerPick_SkipsCoolingDownAccount(t *testing.T) {
 	}
 }
 
-func TestSchedulerPick_AllCoolingDown_KeepsCurrent(t *testing.T) {
+func TestSchedulerPick_AllCoolingDown_Defers(t *testing.T) {
 	resetActiveAuth(t)
 	resetFailover(t)
-	// Every candidate cooling down → keep current pin rather than erroring.
+	// Every candidate cooling down → defer (Handled: false) so the host's
+	// built-in scheduler can fail over to other providers' accounts instead
+	// of pinning the request to a dead workbuddy account.
 	setActiveAuthID("wb-a")
 	recordAccountFailure("wb-a", 429, "rate limit exceeded")
 	recordAccountFailure("wb-b", 429, "rate limit exceeded")
@@ -358,14 +363,15 @@ func TestSchedulerPick_AllCoolingDown_KeepsCurrent(t *testing.T) {
 		Candidates: []pluginapi.SchedulerAuthCandidate{
 			{ID: "wb-a", Provider: providerName},
 			{ID: "wb-b", Provider: providerName},
+			{ID: "tr-a", Provider: "traework-provider"},
 		},
 	}))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	resp := parsePickResponse(t, raw)
-	if !resp.Handled || resp.AuthID != "wb-a" {
-		t.Fatalf("all cooling down should keep wb-a, got %+v", resp)
+	if resp.Handled {
+		t.Fatalf("all cooling down should defer to host (cross-provider failover), got %+v", resp)
 	}
 }
 

@@ -269,19 +269,26 @@ func TestPickSessionAuth_FreshAssignmentPrefersActiveID(t *testing.T) {
 	}
 }
 
-func TestPickSessionAuth_AllExhaustedKeepsPin(t *testing.T) {
+func TestPickSessionAuth_AllExhaustedDefers(t *testing.T) {
 	resetSessionRouting(t)
 	allExhausted := []activeAuthCandidate{
 		{ID: "tr-a", Exhausted: true},
 		{ID: "tr-b", Exhausted: true},
 	}
-	first := pickSessionAuth("conv-1", allExhausted)
-	if first == "" {
-		t.Fatal("pick with all-exhausted candidates returned empty")
+	// All exhausted: no healthy account exists, so the picker must return ""
+	// (defer) instead of pinning the conversation to a dead account. The
+	// host's built-in scheduler then fails over to other providers.
+	if got := pickSessionAuth("conv-1", allExhausted); got != "" {
+		t.Fatalf("all-exhausted should defer (empty pick), got %q", got)
 	}
-	// All exhausted: the pin must be kept as long as the account still exists.
-	if got := pickSessionAuth("conv-1", allExhausted); got != first {
-		t.Fatalf("all-exhausted should keep pin %q, got %q", first, got)
+	// The binding is kept for sticky recovery: once an account recovers, the
+	// session re-binds normally.
+	recovered := []activeAuthCandidate{
+		{ID: "tr-a", Exhausted: false},
+		{ID: "tr-b", Exhausted: true},
+	}
+	if got := pickSessionAuth("conv-1", recovered); got == "" {
+		t.Fatal("recovered pool should assign an account again")
 	}
 }
 
@@ -343,4 +350,82 @@ func TestEvictSessionBindingsForAuth_RemovesAllBindings(t *testing.T) {
 		}
 	}
 	sessionAuthMu.RUnlock()
+}
+
+// TestSchedulerPick_AllCoolingDown_DefersForCrossProviderFailover is the
+// regression test for the cross-provider failover bug: a session first gets a
+// traework account, every traework account then fails (failover cooldown), and
+// the scheduler must defer (Handled: false) so the host's built-in scheduler
+// can retry on the other provider's healthy accounts (e.g. workbuddy) instead
+// of answering with a doomed traework candidate.
+func TestSchedulerPick_AllCoolingDown_DefersForCrossProviderFailover(t *testing.T) {
+	resetSessionRouting(t)
+	resetFailover(t)
+	restoreMode := setSchedulerMode(schedulerModeSession)
+	t.Cleanup(restoreMode)
+
+	req := schedulerRequestWithMeta(map[string]any{derivedSessionIDMetadataKey: "ctx:v1:root"}, nil)
+	req.Candidates = append(req.Candidates,
+		pluginapi.SchedulerAuthCandidate{ID: "wb-a", Provider: "workbuddy-provider"},
+	)
+
+	first := parsePickResponse(t, mustSchedulerPick(t, req))
+	if !first.Handled || first.AuthID == "" {
+		t.Fatalf("healthy pool should bind a traework account, got %+v", first)
+	}
+
+	// Every traework account fails and enters failover cooldown.
+	for _, id := range []string{"tr-a", "tr-b", "tr-c"} {
+		recordAccountFailure(id, 429, "rate limit exceeded")
+	}
+
+	again := parsePickResponse(t, mustSchedulerPick(t, req))
+	if again.Handled {
+		t.Fatalf("all traework accounts cooling down must defer to host for cross-provider failover, got %+v", again)
+	}
+}
+
+// TestSchedulerPick_AllExhausted_DefersForCrossProviderFailover covers the
+// credits-mode variant: every traework candidate is credit-exhausted, so the
+// pick must defer instead of returning a dead account.
+func TestSchedulerPick_AllExhausted_DefersForCrossProviderFailover(t *testing.T) {
+	resetSessionRouting(t)
+	resetFailover(t)
+	restoreMode := setSchedulerMode(schedulerModeCredits)
+	t.Cleanup(restoreMode)
+	setActiveAuthID("")
+	t.Cleanup(func() { setActiveAuthID("") })
+	for _, id := range []string{"tr-a", "tr-b", "tr-c"} {
+		accountCache.Store(id, &accountCacheEntry{credits: &traeCredits{TotalRemain: 0}, updated: time.Now()})
+	}
+	t.Cleanup(func() {
+		for _, id := range []string{"tr-a", "tr-b", "tr-c"} {
+			accountCache.Delete(id)
+		}
+	})
+
+	req := pluginapi.SchedulerPickRequest{
+		Provider: providerName,
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{ID: "tr-a", Provider: providerName},
+			{ID: "tr-b", Provider: providerName},
+			{ID: "tr-c", Provider: providerName},
+			{ID: "wb-a", Provider: "workbuddy-provider"},
+		},
+	}
+	resp := parsePickResponse(t, mustSchedulerPick(t, req))
+	if resp.Handled {
+		t.Fatalf("all traework accounts exhausted must defer to host for cross-provider failover, got %+v", resp)
+	}
+}
+
+// mustSchedulerPick runs handleSchedulerPick and fails the test on transport
+// errors (envelope errors are asserted by the callers via Handled).
+func mustSchedulerPick(t *testing.T, req pluginapi.SchedulerPickRequest) []byte {
+	t.Helper()
+	raw, err := handleSchedulerPick(mustMarshal(t, req))
+	if err != nil {
+		t.Fatalf("handleSchedulerPick: %v", err)
+	}
+	return raw
 }

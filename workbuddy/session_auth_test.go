@@ -212,19 +212,26 @@ func TestPickSessionAuth_NoSessionFallsBackToPanel(t *testing.T) {
 	}
 }
 
-func TestPickSessionAuth_AllExhaustedKeepsPin(t *testing.T) {
+func TestPickSessionAuth_AllExhaustedDefers(t *testing.T) {
 	resetSessionRouting(t)
 	allExhausted := []activeAuthCandidate{
 		{ID: "wb-a", Exhausted: true},
 		{ID: "wb-b", Exhausted: true},
 	}
-	first := pickSessionAuth("conv-1", allExhausted)
-	if first == "" {
-		t.Fatal("pick with all-exhausted candidates returned empty")
+	// All exhausted: no healthy account exists, so the picker must return ""
+	// (defer) instead of pinning the conversation to a dead account. The
+	// host's built-in scheduler then fails over to other providers.
+	if got := pickSessionAuth("conv-1", allExhausted); got != "" {
+		t.Fatalf("all-exhausted should defer (empty pick), got %q", got)
 	}
-	// All exhausted: the pin must be kept as long as the account still exists.
-	if got := pickSessionAuth("conv-1", allExhausted); got != first {
-		t.Fatalf("all-exhausted should keep pin %q, got %q", first, got)
+	// The binding is kept for sticky recovery: once an account recovers, the
+	// session re-binds normally.
+	recovered := []activeAuthCandidate{
+		{ID: "wb-a", Exhausted: false},
+		{ID: "wb-b", Exhausted: true},
+	}
+	if got := pickSessionAuth("conv-1", recovered); got == "" {
+		t.Fatal("recovered pool should assign an account again")
 	}
 }
 
