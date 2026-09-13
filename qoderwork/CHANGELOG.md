@@ -1,5 +1,17 @@
 # QoderWork Plugin Changelog
 
+## 0.9.18
+
+### Fix — SSE 错误帧 HTTP 200 不再绕过冷却与 CPAMP 状态码标注（同步自 workbuddy 0.14.32）
+
+- **根因**：上游业务错误以 SSE 错误帧包装在 HTTP 200 响应体内，`isAccountFailure(200, body)` 在不含 rate-limit/credit 关键词时返回 false → 冷却永不触发；CPAMP 上报 `failCode` 默认 200 原样传出。
+- **修复**（与 workbuddy 对称）：
+  - `forwardUsageToCPAMP`：`statusCode=200` 映射为 403（`usage.go`）
+  - 同步流收集失败路径：`statusCode=200` 补充 `noteAccountFailure(id, 403, err)`（`main.go`）
+  - 异步泵送 SSE 错误分支：先调 `noteAccountFailure(id, 403, sseErr)`（`stream.go`）
+  - 非流式完成路径：同款补充（`main.go`）
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.9.17
 
 ### Fix — 终态错误改走宿主流错误通道（chunk.Err），请求内池耗尽可跨平台自动接管（对齐 workbuddy 0.14.31 / traework 0.1.60）

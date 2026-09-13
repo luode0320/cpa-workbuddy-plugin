@@ -338,7 +338,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.17"
+var version = "0.9.18"
 
 func wbRegistration() registration {
 	return registration{
@@ -774,8 +774,13 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		// account actually contacted and propagate the error.
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, parseUpstreamStatusFromErr(completionErr), completionErr.Error(), "", 0, accountLabel, sessionKey)
 		reconcileAfterExecutorError(usedAuthID, parseUpstreamStatusFromErr(completionErr), completionErr.Error())
-		if parseUpstreamStatusFromErr(completionErr) == 0 {
+		statusCode := parseUpstreamStatusFromErr(completionErr)
+		if statusCode == 0 {
 			noteAccountFailure(usedAuthID, 0, completionErr.Error())
+		} else if statusCode == 200 {
+			// SSE error frame on HTTP 200: remap to 403 so isAccountFailure
+			// correctly triggers the 15s failover cooldown.
+			noteAccountFailure(usedAuthID, http.StatusForbidden, completionErr.Error())
 		}
 		return nil, completionErr
 	}
@@ -891,11 +896,14 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error(), "", collector.ttftNS(started), accountLabel, sessionKey)
 			// Unlike the workbuddy plugin, collectUpstreamStreamQoder does not
 			// run reconcileByUID internally — handle both cases here.
-			// statusCode==0 → transport failure, failover note only;
+			// statusCode=0 → transport failure, failover note only;
 			// statusCode>=400 → reconcileAfterExecutorError (records failover
 			// internally and applies the hard-credit lifecycle when relevant).
+			// statusCode=200 → SSE error frame, must trigger failover cooldown.
 			if statusCode == 0 {
 				noteAccountFailure(req.AuthID, 0, errCollect.Error())
+			} else if statusCode < 400 {
+				noteAccountFailure(req.AuthID, http.StatusForbidden, errCollect.Error())
 			} else {
 				reconcileAfterExecutorError(req.AuthID, statusCode, errCollect.Error())
 			}

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.14.32
+
+### Fix — SSE 错误帧 HTTP 200 不再绕过冷却与 CPAMP 状态码标注
+
+- **根因**：上游业务错误（配额/限流）以 SSE 错误帧包装在 HTTP 200 响应体内，但 `isAccountFailure(200, body)` 在不含 rate-limit/credit 关键词时返回 false → 账号的 15s 冷却与失败计数器均不触发；同时 `forwardUsageToCPAMP` 的 `failCode` 默认 200，失败路径中原样传出，CPAMP 看到 `status_code: 200` 而非真实失败码。
+- **修复**（三插件同步）：
+  - `forwardUsageToCPAMP` 失败路径 `statusCode=200` 映射为 403（`usage.go`）
+  - 同步流式路径（handleExecStream）：statusCode=200 补充 `noteAccountFailure(id, 403, err)`（`main.go`）
+  - 异步泵送路径（pumpUpstreamStream）：sseErr 分支先调 `noteAccountFailure(id, 403, sseErr)`（`stream.go`）
+  - 非流式完成路径：同款补充（`main.go`）
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.14.31
 
 ### Fix — 全部账号失败后调度器不再阻塞宿主跨平台失败切换（对齐 traework 0.1.60）

@@ -215,6 +215,11 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			return
 		}
 		if sseErr != "" {
+			// SSE error frame on HTTP 200 must enter failover cooldown
+			// regardless of whether we rotate or surface the error. Remap
+			// to 403 so isAccountFailure classifies it as account-level
+			// and the account gets its 15s cooldown.
+			noteAccountFailure(curAuthID, http.StatusForbidden, sseErr)
 			publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), true, statusCode, sseErr, reasoningEffort, collector.ttftNS(started), curAccountLabel, sessionKey)
 			// 200 内业务错误帧与 HTTP 4xx 同责：零泄漏（emitted=false）且账号级
 			// 分类命中且预算允许时换号续试；已泄漏分片时换号会造成输出重复或

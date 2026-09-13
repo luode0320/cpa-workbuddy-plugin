@@ -141,7 +141,15 @@ func forwardUsageToCPAMP(alias, model, authID string, started time.Time, detail 
 	failBody := ""
 	failCode := 200
 	if failed {
-		failCode = statusCode
+		// SSE error frames are delivered on HTTP 200, but a 200 in the failure path
+		// represents a business-level error, not a success. Remap to 403 (Forbidden)
+		// so CPAMP and failover classifiers see an account-level failure code that
+		// correctly triggers cooldown instead of the misleading 200.
+		if statusCode == 200 {
+			failCode = 403
+		} else {
+			failCode = statusCode
+		}
 		if failCode <= 0 {
 			failCode = 502
 		}

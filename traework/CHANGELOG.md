@@ -1,5 +1,14 @@
 # TraeWork Plugin Changelog
 
+## 0.1.61
+
+### Fix — SSE 错误帧 HTTP 200 在 `reconcileAfterExecutorError` 内不再绕过冷却
+
+- **根因**：traework 的 SSE 错误帧（如 `event:error` 承载的 4011/14018）发生在 HTTP 200 响应内，所有错误路径经统一的 `reconcileAfterExecutorError` 入口。该入口把 `status=200` 直接传给 `noteAccountFailure`，`isAccountFailure(200, body)` 在不含 rate-limit/credit 关键词时返回 false → 冷却永不触发。
+- **修复**：`reconcileAfterExecutorError` 内部自动将 `status=200` 映射为 403，`isAccountLevel4xx(403)` 返回 true → 15s 冷却正确触发（`executor.go`）。
+- **`forwardUsageToCPAMP`**：失败路径 `statusCode=200` 映射为 403，CPAMP 不再看到误导性的 `status_code: 200`（`usage.go`）。
+- 验证：cgo-shim build+vet+test 全绿。
+
 ## 0.1.60
 
 ### Fix — 全部账号失败后调度器不再阻塞宿主跨平台失败切换（对齐 workbuddy 0.14.31）
