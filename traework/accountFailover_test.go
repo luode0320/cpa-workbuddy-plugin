@@ -235,3 +235,22 @@ func TestFailoverDisabled(t *testing.T) {
 	}
 	resetAccountFailover("acc-1") // must not panic
 }
+
+func TestIsAccountCoolingDown_NormalizedAlias(t *testing.T) {
+	resetFailover(t)
+	rawKey := "traework-29d35850-2d06-4bd5-9f8f-0c26d9e76421.json"
+	bareUID := "29d35850-2d06-4bd5-9f8f-0c26d9e76421"
+	noJSON := "traework-29d35850-2d06-4bd5-9f8f-0c26d9e76421"
+
+	recordAccountFailure(rawKey, 403, "forbidden")
+
+	if !isAccountCoolingDown(rawKey) {
+		t.Fatalf("isAccountCoolingDown(%q) must be true", rawKey)
+	}
+	if !isAccountCoolingDown(bareUID) {
+		t.Fatalf("isAccountCoolingDown(%q) normalized alias must be true", bareUID)
+	}
+	if !isAccountCoolingDown(noJSON) {
+		t.Fatalf("isAccountCoolingDown(%q) normalized alias must be true", noJSON)
+	}
+}

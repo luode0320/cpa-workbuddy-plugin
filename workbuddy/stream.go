@@ -111,6 +111,22 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	curAuthUID := authUID
 	curAccountLabel := accountLabel
 
+	// 前置冷却拦截：如果宿主分配的初始账号当前正在冷却中（如上一请求刚失败 403），
+	// 绝对不要对它发起自杀式的上游调用！在 attempt=0 之前立即换号到可用的健康候选。
+	if isAccountCoolingDown(curAuthID) || isAccountCoolingDown(curAuthUID) {
+		if nextID, nextSA, hasNext := pickNextAuth(curAuthID); hasNext && nextSA != nil {
+			if nextReq, rebErr := rebuildRequestWithSA(curReq, nextSA); rebErr == nil {
+				curReq = nextReq
+				curAuthID = nextID
+				curAuthUID = nextSA.Account.UID
+				curAccountLabel = strings.TrimSpace(nextSA.Account.Nickname)
+				if curAccountLabel == "" {
+					curAccountLabel = curAuthUID
+				}
+			}
+		}
+	}
+
 	for attempt := 0; attempt <= budget; attempt++ {
 		stream, statusCode, _, err := hostHTTPDoStream(curReq)
 		if err != nil {
@@ -288,6 +304,19 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 	curSA := sa
 	var lastStatus int
 	var lastErr error
+
+	// 前置冷却拦截：如果初始账号处于冷却中，直接换号到健康候选
+	if curSA != nil {
+		currentID := strings.TrimSpace(curSA.Auth.AccessToken)
+		if currentID == "" {
+			currentID = strings.TrimSpace(curSA.Account.UID)
+		}
+		if isAccountCoolingDown(currentID) || (curSA.Account.UID != "" && isAccountCoolingDown(curSA.Account.UID)) {
+			if _, nextSA, hasNext := pickNextAuth(currentID); hasNext && nextSA != nil {
+				curSA = nextSA
+			}
+		}
+	}
 
 	for attempt := 0; attempt <= budget; attempt++ {
 		chunks, statusCode, errOnce := collectUpstreamStreamOnce(body, curSA, sseFramed, collector)

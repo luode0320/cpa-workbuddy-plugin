@@ -20,6 +20,7 @@ package main
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -146,6 +147,17 @@ func isAccountLevel4xx(status int) bool {
 	return false
 }
 
+// normalizeFailoverKey canonicalizes an auth identifier across various representations:
+// trims spaces, strips .json suffix, and removes provider prefixes.
+func normalizeFailoverKey(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.TrimSuffix(s, ".json")
+	for _, p := range []string{"workbuddy-", "qoderwork-", "traework-"} {
+		s = strings.TrimPrefix(s, p)
+	}
+	return s
+}
+
 // coolDownAccount sets only the fixed cooldown window for an account,
 // without touching the consecutive-failure counter.
 // Used by the transient-throttle (soft) failure path: those failures
@@ -154,13 +166,29 @@ func isAccountLevel4xx(status int) bool {
 func coolDownAccount(authID string) bool {
 	failoverMu.Lock()
 	defer failoverMu.Unlock()
-	st := failoverStates[authID]
-	if st == nil {
-		st = &authFailoverState{}
-		failoverStates[authID] = st
-	}
-	st.cooldownUntil = time.Now().Add(failoverCooldown)
+	until := time.Now().Add(failoverCooldown)
+	setCooldownRecordLocked(authID, until, 0, false)
 	return true
+}
+
+func setCooldownRecordLocked(authID string, until time.Time, count int, bumpCount bool) {
+	keys := []string{authID}
+	if norm := normalizeFailoverKey(authID); norm != "" && norm != authID {
+		keys = append(keys, norm)
+	}
+	for _, k := range keys {
+		st := failoverStates[k]
+		if st == nil {
+			st = &authFailoverState{}
+			failoverStates[k] = st
+		}
+		if bumpCount {
+			st.count++
+		} else if count > 0 {
+			st.count = count
+		}
+		st.cooldownUntil = until
+	}
 }
 
 // recordAccountFailure increments the consecutive-failure counter for the
@@ -189,30 +217,57 @@ func recordAccountFailure(authID string, status int, body string) bool {
 	}
 	now := time.Now()
 	failoverMu.Lock()
+	defer failoverMu.Unlock()
 	st := failoverStates[authID]
-	if st == nil {
-		st = &authFailoverState{}
-		failoverStates[authID] = st
+	curCount := 0
+	if st != nil {
+		curCount = st.count
+	} else if norm := normalizeFailoverKey(authID); norm != "" {
+		if stNorm := failoverStates[norm]; stNorm != nil {
+			curCount = stNorm.count
+		}
 	}
-	st.count++
-	st.cooldownUntil = now.Add(failoverCooldownFor(st.count))
-	failoverMu.Unlock()
+	newCount := curCount + 1
+	until := now.Add(failoverCooldownFor(newCount))
+	setCooldownRecordLocked(authID, until, newCount, false)
 	return true
 }
 
 // isAccountCoolingDown reports whether the account is currently inside its
 // cooldown window and should be skipped by routing.
+// It supports both exact key match and normalized-key alias resolution
+// (e.g. matching UID to workbuddy-<UID>.json).
 func isAccountCoolingDown(authID string) bool {
 	if !failoverActive() {
 		return false
 	}
-	failoverMu.Lock()
-	defer failoverMu.Unlock()
-	st := failoverStates[authID]
-	if st == nil {
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
 		return false
 	}
-	return time.Now().Before(st.cooldownUntil)
+	failoverMu.Lock()
+	defer failoverMu.Unlock()
+	now := time.Now()
+	if st := failoverStates[authID]; st != nil && now.Before(st.cooldownUntil) {
+		return true
+	}
+	target := normalizeFailoverKey(authID)
+	if target == "" {
+		return false
+	}
+	if st := failoverStates[target]; st != nil && now.Before(st.cooldownUntil) {
+		return true
+	}
+	for k, st := range failoverStates {
+		if st == nil || !now.Before(st.cooldownUntil) {
+			continue
+		}
+		normK := normalizeFailoverKey(k)
+		if normK == target || strings.Contains(normK, target) || strings.Contains(target, normK) {
+			return true
+		}
+	}
+	return false
 }
 
 // resetAccountFailover clears the failure counter and cooldown after a
@@ -223,12 +278,16 @@ func resetAccountFailover(authID string) {
 	}
 	failoverMu.Lock()
 	defer failoverMu.Unlock()
-	st := failoverStates[authID]
-	if st == nil {
-		return
+	keys := []string{authID}
+	if norm := normalizeFailoverKey(authID); norm != "" && norm != authID {
+		keys = append(keys, norm)
 	}
-	st.count = 0
-	st.cooldownUntil = time.Time{}
+	for _, k := range keys {
+		if st := failoverStates[k]; st != nil {
+			st.count = 0
+			st.cooldownUntil = time.Time{}
+		}
+	}
 }
 
 // pruneFailoverStates removes zero-count states (successfully reset, no

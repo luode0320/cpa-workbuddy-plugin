@@ -34,12 +34,13 @@ func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *traeAuth, ok
 		return "", nil, false
 	}
 
+	normCurrent := normalizeFailoverKey(currentAuthID)
 	for _, f := range files {
 		id := strings.TrimSpace(f.ID)
 		if id == "" {
 			continue
 		}
-		if id == currentAuthID {
+		if id == currentAuthID || (normCurrent != "" && normalizeFailoverKey(id) == normCurrent) {
 			continue
 		}
 		if f.Disabled {

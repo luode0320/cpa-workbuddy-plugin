@@ -1,5 +1,15 @@
 # TraeWork Plugin Changelog
 
+## 0.1.62
+
+### Fix — 执行器前置冷却拦截 + 多形态账号别名规范化匹配（对齐 workbuddy 0.14.33）
+
+- **根因**：执行器收到冷却中账号时未前置拦截直接打上游导致持续报错；`isAccountCoolingDown` 跨别名未匹配。
+- **修复**（与 workbuddy 对称）：
+  - `runTraeAsyncStream` / `runTraeSyncStream` / 非流式执行器在首次网络请求前无条件检查冷却并前置换号
+  - `accountFailover.go` / `failover_retry.go` 引入 `normalizeFailoverKey` 与跨别名规范化匹配
+- 测试：新增 `TestIsAccountCoolingDown_NormalizedAlias` 与 `TestRunTraeAsyncStream_SkipsCoolingInitialAuth`。cgo-shim 全绿。
+
 ## 0.1.61
 
 ### Fix — SSE 错误帧 HTTP 200 在 `reconcileAfterExecutorError` 内不再绕过冷却

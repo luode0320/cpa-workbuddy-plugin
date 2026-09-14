@@ -247,3 +247,32 @@ func TestFailoverDisabled(t *testing.T) {
 	}
 	resetAccountFailover("acc-1") // must not panic
 }
+
+func TestIsAccountCoolingDown_NormalizedAlias(t *testing.T) {
+	resetFailover(t)
+	rawKey := "workbuddy-29d35850-2d06-4bd5-9f8f-0c26d9e76421.json"
+	bareUID := "29d35850-2d06-4bd5-9f8f-0c26d9e76421"
+	noJSON := "workbuddy-29d35850-2d06-4bd5-9f8f-0c26d9e76421"
+
+	recordAccountFailure(rawKey, 403, "forbidden")
+
+	// 无论是用原始完整名、裸 UID、还是无 .json 后缀名查询，都必须判定为冷却中
+	if !isAccountCoolingDown(rawKey) {
+		t.Fatalf("isAccountCoolingDown(%q) must be true", rawKey)
+	}
+	if !isAccountCoolingDown(bareUID) {
+		t.Fatalf("isAccountCoolingDown(%q) normalized alias must be true", bareUID)
+	}
+	if !isAccountCoolingDown(noJSON) {
+		t.Fatalf("isAccountCoolingDown(%q) normalized alias must be true", noJSON)
+	}
+
+	// 反向测试：用裸 UID 记录失败，用完整文件名查询也必须冷却
+	resetFailover(t)
+	rawKey2 := "workbuddy-11111111-2222-3333-4444-555555555555.json"
+	bareUID2 := "11111111-2222-3333-4444-555555555555"
+	recordAccountFailure(bareUID2, 403, "forbidden")
+	if !isAccountCoolingDown(rawKey2) {
+		t.Fatalf("isAccountCoolingDown(%q) must match bareUID2 record", rawKey2)
+	}
+}

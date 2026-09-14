@@ -1,5 +1,15 @@
 # QoderWork Plugin Changelog
 
+## 0.9.19
+
+### Fix — 执行器前置冷却拦截 + 多形态账号别名规范化匹配（同步自 workbuddy 0.14.33）
+
+- **根因**：执行器收到冷却中账号时未前置拦截直接打上游导致持续报错；`isAccountCoolingDown` 跨别名未匹配。
+- **修复**（与 workbuddy 对称）：
+  - `pumpUpstreamStream` / `collectUpstreamStreamQoder` / `handleExecExecute` 前置冷却拦截直接换号
+  - `accountFailover.go` / `failover_retry.go` 引入 `normalizeFailoverKey` 与跨别名规范化匹配
+- 测试：新增 `TestIsAccountCoolingDown_NormalizedAlias`。cgo-shim 全绿。
+
 ## 0.9.18
 
 ### Fix — SSE 错误帧 HTTP 200 不再绕过冷却与 CPAMP 状态码标注（同步自 workbuddy 0.14.32）

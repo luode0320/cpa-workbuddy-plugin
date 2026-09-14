@@ -262,6 +262,50 @@ func TestRunTraeAsyncStreamClosesUpstreamOnPanic(t *testing.T) {
 	}
 }
 
+// TestRunTraeAsyncStream_SkipsCoolingInitialAuth 验证若初始账号已在冷却中，
+// 执行器直接切换到健康候选，绝不发起针对该冷却账号的上游调用。
+func TestRunTraeAsyncStream_SkipsCoolingInitialAuth(t *testing.T) {
+	disableUsageOutputs(t)
+	resetFailover(t)
+	authA := &traeAuth{Token: "token-a", UserID: "uid-a"}
+	authB := &traeAuth{Token: "token-b", UserID: "uid-b"}
+
+	// 预先让 auth-a 进入冷却
+	recordAccountFailure("auth-a", 403, "forbidden")
+	if !isAccountCoolingDown("auth-a") {
+		t.Fatal("auth-a must be cooling down")
+	}
+
+	var opened []string
+	deps := traeAsyncStreamDeps{
+		Open: func(_ *traeAuth, _ map[string]any, authID, _ string) (traeAsyncUpstream, int, error) {
+			opened = append(opened, authID)
+			text := strings.Repeat("HEALTHY_RESULT_FROM_B", 20)
+			return traeAsyncUpstream{
+				Reader: strings.NewReader(streamTestResponse(text).BodyString()),
+				Close:  func() {},
+			}, 200, nil
+		},
+		PickNextAuth: func(currentAuthID string) (string, *traeAuth, bool) {
+			if currentAuthID != "auth-a" {
+				t.Fatalf("unexpected current auth: %s", currentAuthID)
+			}
+			return "auth-b", authB, true
+		},
+		Emit: func(string, []byte) error { return nil },
+		Close: func(string) {},
+	}
+
+	runTraeAsyncStream(authA, "auth-a", traeAsyncStreamContext{
+		StreamID: "client-stream-fast-switch", Model: "qwen-max-latest", UpstreamModel: "qwen3.8-max",
+		Started: time.Now(), InputChars: 10, Budget: 2,
+	}, deps)
+
+	if len(opened) != 1 || opened[0] != "auth-b" {
+		t.Fatalf("opened = %v, want [auth-b] (cooling auth-a must NEVER be called)", opened)
+	}
+}
+
 func countFinishReason(payloads [][]byte, reason string) int {
 	needle := []byte(`"finish_reason":"` + reason + `"`)
 	count := 0

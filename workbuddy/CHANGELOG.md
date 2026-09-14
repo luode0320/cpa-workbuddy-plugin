@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.14.33
+
+### Fix — 执行器前置冷却拦截 + 多形态账号别名规范化匹配，彻底终结冷却中账号被反复打上游报错
+
+- **根因**：
+  1. 宿主（CLIProxyAPI）具备 LCP 会话亲和缓存，当会话此前命中某账号时，宿主将请求持续指定给该账号。
+  2. 插件的执行器（`pumpUpstreamStream` / `collectUpstreamStream` / `handleExecExecute`）收到宿主指定账号时，**从未在发起上游网络请求前检查 `isAccountCoolingDown`**——即使该账号已在 15s 冷却中（连败），插件依然盲目发起网络调用，必定被上游拒绝并记录一条红色的失败（HTTP 403），然后再换号重试。
+  3. `isAccountCoolingDown` 历史实现仅对传入 key 做精确 map 查找，当宿主传入带 `.json` 或前缀的文件名、而内部使用 UID 查询时（反之亦然），冷却判定漏网。
+- **修复**（三插件同步）：
+  - **前置冷却拦截（Fast-switch）**：在所有流式与非流式执行器循环发起网络请求前，无条件检查初始账号是否处于冷却期；若正在冷却中，直接调用 `pickNextAuth` 无感切换至健康可用账号发起第一次请求，**彻底消除针对冷却中账号的无效网络开销与刷屏失败日志**（`stream.go` / `main.go`）。
+  - **跨别名规范化匹配**：新增 `normalizeFailoverKey`，剥离 `.json` 后缀与各 provider 前缀，在 `isAccountCoolingDown`、`recordAccountFailure`、`resetAccountFailover` 中全维度互通（`accountFailover.go` / `failover_retry.go`）。
+- 测试：新增跨别名冷却断言测试 `TestIsAccountCoolingDown_NormalizedAlias`。cgo-shim 全绿。
+
 ## 0.14.32
 
 ### Fix — SSE 错误帧 HTTP 200 不再绕过冷却与 CPAMP 状态码标注

@@ -338,7 +338,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.18"
+var version = "0.9.19"
 
 func wbRegistration() registration {
 	return registration{
@@ -720,6 +720,27 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		completionErr error
 		usedAuthID    = req.AuthID
 	)
+
+	// 前置冷却拦截：若初始账号处于冷却中，直接换号到健康候选
+	initID := strings.TrimSpace(req.AuthID)
+	if initID == "" && curSA != nil {
+		initID = strings.TrimSpace(curSA.Auth.AccessToken)
+		if initID == "" {
+			initID = strings.TrimSpace(curSA.Account.UID)
+		}
+	}
+	if initID != "" && (isAccountCoolingDown(initID) || (curSA != nil && curSA.Account.UID != "" && isAccountCoolingDown(curSA.Account.UID))) {
+		if nextID, nextSA, hasNext := pickNextAuth(initID); hasNext && nextSA != nil {
+			curSA = nextSA
+			usedAuthID = nextID
+			authUID = curSA.Account.UID
+			accountLabel = strings.TrimSpace(curSA.Account.Nickname)
+			if accountLabel == "" {
+				accountLabel = authUID
+			}
+		}
+	}
+
 	for attempt := 0; attempt <= budget; attempt++ {
 		completion, completionErr = doExecuteOnceQoder(encodedBody, curSA, upstreamModel, req.Model)
 		if completionErr == nil {

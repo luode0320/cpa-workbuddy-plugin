@@ -158,6 +158,16 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	budget := loadedRetryOn4xx()
 	curSA := a
 	usedAuthID := authIDFor(curSA, req.AuthID)
+
+	// 前置冷却拦截：若初始账号处于冷却中，直接换号到健康候选
+	if isAccountCoolingDown(usedAuthID) || isAccountCoolingDown(authUID) {
+		if nextID, nextSA, hasNext := pickNextAuth(usedAuthID); hasNext && nextSA != nil {
+			curSA = nextSA
+			usedAuthID = nextID
+			authUID = strings.TrimSpace(curSA.UserID)
+		}
+	}
+
 	for attempt := 0; attempt <= budget; attempt++ {
 		resp, callErr := callLLM(curSA, payload, usedAuthID)
 		if callErr == nil {
@@ -320,6 +330,17 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 	requestID := randomUUID()
 	triedAuthIDs := map[string]struct{}{curAuthID: {}}
 	attemptsMade := 0
+
+	// 前置冷却拦截：若宿主指定的初始账号已处于冷却中，直接切换到健康账号，不发送自杀式网络调用
+	if isAccountCoolingDown(curAuthID) || isAccountCoolingDown(curAuthUID) {
+		if nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID); hasNext && nextSA != nil {
+			curSA = nextSA
+			curAuthID = nextAuthID
+			curAuthUID = strings.TrimSpace(nextSA.UserID)
+			triedAuthIDs[curAuthID] = struct{}{}
+		}
+	}
+
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			panicErr := fmt.Errorf("Trae stream coordinator panic: %v", recovered)
@@ -527,6 +548,17 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 	triedAuthIDs := map[string]struct{}{curAuthID: {}}
 	lastFailurePublished := false
 	attemptsMade := 0
+
+	// 前置冷却拦截：若宿主指定的初始账号已处于冷却中，直接换号到健康候选
+	if isAccountCoolingDown(curAuthID) || isAccountCoolingDown(curAuthUID) {
+		if nextAuthID, nextSA, hasNext := deps.PickNextAuth(curAuthID); hasNext && nextSA != nil {
+			curSA = nextSA
+			curAuthID = nextAuthID
+			curAuthUID = strings.TrimSpace(nextSA.UserID)
+			triedAuthIDs[curAuthID] = struct{}{}
+		}
+	}
+
 	for attempt := 0; attempt <= ctx.Budget; attempt++ {
 		attemptsMade = attempt + 1
 		lastFailurePublished = false

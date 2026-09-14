@@ -47,12 +47,13 @@ func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *storedAuth, 
 	// NOT currentAuthID and passes the cheap filters (disabled,
 	// cooling down, anomalously quarantined). Order is host-provided so
 	// successive retries walk the same predictable path.
+	normCurrent := normalizeFailoverKey(currentAuthID)
 	for _, f := range files {
 		id := strings.TrimSpace(f.ID)
 		if id == "" {
 			continue
 		}
-		if id == currentAuthID {
+		if id == currentAuthID || (normCurrent != "" && normalizeFailoverKey(id) == normCurrent) {
 			continue
 		}
 		if f.Disabled {

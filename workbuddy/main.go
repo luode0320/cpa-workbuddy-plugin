@@ -336,7 +336,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.14.32"
+var version = "0.14.33"
 
 func wbRegistration() registration {
 	return registration{
@@ -726,6 +726,29 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		completionErr error
 		usedAuthID    = req.AuthID
 	)
+
+	// 前置冷却拦截：如果初始账号正处于冷却中，不要发送无效的上游请求，立即换号！
+	initID := strings.TrimSpace(req.AuthID)
+	if initID == "" && curSA != nil {
+		initID = strings.TrimSpace(curSA.Auth.AccessToken)
+		if initID == "" {
+			initID = strings.TrimSpace(curSA.Account.UID)
+		}
+	}
+	if initID != "" && (isAccountCoolingDown(initID) || (curSA != nil && curSA.Account.UID != "" && isAccountCoolingDown(curSA.Account.UID))) {
+		if nextID, nextSA, hasNext := pickNextAuth(initID); hasNext && nextSA != nil {
+			curSA = nextSA
+			curBody = prepareUpstreamBody(req.Payload, req.OriginalRequest, curSA, upstreamModel)
+			reasoningEffort = reasoningEffortFromBody(curBody)
+			usedAuthID = nextID
+			authUID = curSA.Account.UID
+			accountLabel = strings.TrimSpace(curSA.Account.Nickname)
+			if accountLabel == "" {
+				accountLabel = authUID
+			}
+		}
+	}
+
 	for attempt := 0; attempt <= budget; attempt++ {
 		completion, completionErr = doExecuteOnce(curBody, curSA, req.Model)
 		if completionErr == nil {
