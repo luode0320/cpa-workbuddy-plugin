@@ -1,5 +1,15 @@
 # TraeWork Plugin Changelog
 
+## 0.1.63
+
+### Fix — 彻底剔除写死模型完全由自动获取 + 补齐 ModelInfo 归属与静态路径主动拉取
+
+- **变更要点**：
+  1. **彻底剔除写死模型**：清空 `defaultTraeModels` 硬编码模型列表（原包含 6 个写死模型），无配置且动态未命中时返回空切片，模型 100% 依赖上游 `get_detail_param` 实时拉取。
+  2. **补齐模型归属与方法声明**：在 `fetchTraeModels` 与 `parseModelsConfig` 中为生成的 `pluginapi.ModelInfo` 补充 `OwnedBy: providerName`（`"traework-provider"`）与 `SupportedGenerationMethods: []string{"chat"}`，确保模型注册到宿主时归属明确，修复在 `/v1/models` 中 `owned_by` 缺失的问题。
+  3. **静态路径主动探测补位**：`handleModelStatic` 接入 `dynamicTraeModelsFromCacheOrAuth()`，全局缓存未命中时主动遍历宿主可用凭据向外部拉取一次并填补缓存，保证无论是冷启动的 `model.static` 还是 `model.for_auth` 均可完整呈现最新模型目录。
+- **测试**：`models_dynamic_test.go` 新增 `TestHandleModel_NoConfigAndNoDynamicReturnsEmpty` 与 `OwnedBy`/`chat` 属性断言；`cgo-shim-build.py traework` 全部通过。
+
 ## 0.1.62
 
 ### Fix — 执行器前置冷却拦截 + 多形态账号别名规范化匹配（对齐 workbuddy 0.14.33）

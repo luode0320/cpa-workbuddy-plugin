@@ -113,6 +113,12 @@ func TestHandleModelForAuthDynamicSuccess(t *testing.T) {
 	if resp.Models[0].ID != "Doubao-Seed-2.1-Pro" || resp.Models[0].Name != "Seed 2.1 Pro" {
 		t.Fatalf("models[0] = %+v", resp.Models[0])
 	}
+	if resp.Models[0].OwnedBy != providerName {
+		t.Fatalf("models[0].OwnedBy = %q, want %q", resp.Models[0].OwnedBy, providerName)
+	}
+	if len(resp.Models[0].SupportedGenerationMethods) != 1 || resp.Models[0].SupportedGenerationMethods[0] != "chat" {
+		t.Fatalf("models[0].SupportedGenerationMethods = %v, want [chat]", resp.Models[0].SupportedGenerationMethods)
+	}
 	if resp.Models[1].ID != "qwen3.8-max" || resp.Models[1].Name != "qwen3.8-max" {
 		t.Fatalf("models[1] = %+v", resp.Models[1])
 	}
@@ -241,3 +247,31 @@ func TestHandleModelForAuthFallbacks(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleModel_NoConfigAndNoDynamicReturnsEmpty 验证无配置且动态发现不可用时，
+// 因已彻底剔除写死默认模型，静态路径与账号路径均返回空列表（完全靠自动获取）。
+func TestHandleModel_NoConfigAndNoDynamicReturnsEmpty(t *testing.T) {
+	resetTraeConfiguredModels(t)
+	resetTraeDynamicCache(t)
+
+	// 1. 静态路径
+	rawStatic, err := handleModelStatic([]byte("{}"))
+	if err != nil {
+		t.Fatalf("handleModelStatic: %v", err)
+	}
+	respStatic := decodeTraeModelResponse(t, rawStatic)
+	if len(respStatic.Models) != 0 {
+		t.Fatalf("expected empty static models, got %d: %+v", len(respStatic.Models), respStatic.Models)
+	}
+
+	// 2. 账号路径（动态失败且无配置）
+	rawAuth, err := handleModelForAuth([]byte("{}"))
+	if err != nil {
+		t.Fatalf("handleModelForAuth: %v", err)
+	}
+	respAuth := decodeTraeModelResponse(t, rawAuth)
+	if len(respAuth.Models) != 0 {
+		t.Fatalf("expected empty auth models, got %d: %+v", len(respAuth.Models), respAuth.Models)
+	}
+}
+

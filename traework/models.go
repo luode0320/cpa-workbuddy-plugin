@@ -43,16 +43,9 @@ type traeModelDisplayConfig struct {
 	DisplayName string `json:"display_name"` // 面向客户端模型选择器的名称。
 }
 
-// defaultTraeModels 是 Trae Work SOLO 模型池的精选兜底列表。
-// 仅在动态发现与 config_yaml 覆盖都不可用时使用（优先级链最后一级）。
-var defaultTraeModels = []pluginapi.ModelInfo{
-	{ID: "glm-5.2", Name: "glm-5.2", Description: "Trae Work 默认模型 (GLM-5.2)"},
-	{ID: "glm-4.7", Name: "glm-4.7", Description: "GLM-4.7"},
-	{ID: "deepseek-v4", Name: "deepseek-v4", Description: "DeepSeek V4"},
-	{ID: "deepseek-v4-flash", Name: "deepseek-v4-flash", Description: "DeepSeek V4 Flash"},
-	{ID: "qwen-max-latest", Name: "qwen-max-latest", Description: "Qwen Max"},
-	{ID: "doubao-1.5-pro-32k-250428", Name: "doubao-1.5-pro-32k-250428", Description: "Doubao 1.5 Pro"},
-}
+// defaultTraeModels 原为精选兜底列表。现已完全剔除写死模型，
+// 模型列表完全依靠上游动态发现，无配置且动态不可用时返回空切片。
+var defaultTraeModels []pluginapi.ModelInfo
 
 // configuredModels 保存 config_yaml `models:` 覆盖列表（为空表示未覆盖）。
 var configuredModels []pluginapi.ModelInfo
@@ -147,13 +140,25 @@ func parseModelsConfig(v any) {
 	for _, item := range items {
 		var s string
 		if err := json.Unmarshal(item, &s); err == nil && strings.TrimSpace(s) != "" {
-			out = append(out, pluginapi.ModelInfo{ID: strings.TrimSpace(s), Name: strings.TrimSpace(s)})
+			id := strings.TrimSpace(s)
+			out = append(out, pluginapi.ModelInfo{
+				ID:                         id,
+				Name:                       id,
+				OwnedBy:                    providerName,
+				SupportedGenerationMethods: []string{"chat"},
+			})
 			continue
 		}
 		var mi pluginapi.ModelInfo
 		if err := json.Unmarshal(item, &mi); err == nil && strings.TrimSpace(mi.ID) != "" {
 			if mi.Name == "" {
 				mi.Name = mi.ID
+			}
+			if mi.OwnedBy == "" {
+				mi.OwnedBy = providerName
+			}
+			if len(mi.SupportedGenerationMethods) == 0 {
+				mi.SupportedGenerationMethods = []string{"chat"}
 			}
 			out = append(out, mi)
 		}
@@ -165,19 +170,66 @@ func parseModelsConfig(v any) {
 
 // handleModelStatic 返回宿主要求的全局模型列表。
 //
-// 优先级链与 handleModelForAuth 一致（动态 > 配置 > 静态默认）：静态路径过去
-// 只返回配置 / 内置列表而从不使用动态发现，导致上游新增模型在静态路径下不可见。
-// StaticModelRequest 不带账号凭据，因此这里只复用 model.for_auth 留下的动态
-// 缓存（见 dynamicModelsCache），缓存为空时正常回退配置 / 静态默认。
+// 优先级链与 handleModelForAuth 一致（动态 > 配置 > 静态默认）：静态默认已去除
+// 写死模型，完全依靠动态获取。StaticModelRequest 不带账号凭据，优先复用已有的
+// 动态缓存；若缓存为空，主动从宿主已有的可用凭据拉取一次并填补缓存。
 //
 // [参数] raw: 宿主传入的 StaticModelRequest。
-// [返回] 成功 envelope；动态不可用时为配置或内置兜底列表。
-// 最近修改时间：2026-09-12；改动原因：接入动态发现缓存，与 for_auth 统一优先级链。
+// [返回] 成功 envelope；动态不可用时为配置或空列表。
+// 最近修改时间：2026-09-19；改动原因：剔除写死模型，静态路径未命中缓存时主动拉取。
 func handleModelStatic(raw []byte) ([]byte, error) {
 	var req pluginapi.StaticModelRequest
 	_ = json.Unmarshal(raw, &req)
-	models := resolveTraeModels(cachedTraeDynamicModels(), configuredModels, defaultTraeModels)
+	models := resolveTraeModels(dynamicTraeModelsFromCacheOrAuth(), configuredModels, defaultTraeModels)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
+}
+
+// dynamicTraeModelsFromCacheOrAuth 优先使用未过期缓存；若缓存未命中，尝试从宿主已有的有效凭据拉取一次并写入缓存。
+func dynamicTraeModelsFromCacheOrAuth() []pluginapi.ModelInfo {
+	if models := cachedTraeDynamicModels(); len(models) > 0 {
+		return models
+	}
+	return fetchDynamicTraeModelsFromAnyAuth()
+}
+
+// fetchDynamicTraeModelsFromAnyAuth 在没有显式传入凭据的场景下（如 model.static），
+// 尝试通过宿主 auth 列表读取任意可用 traework 账号拉取动态模型并写入缓存。
+func fetchDynamicTraeModelsFromAnyAuth() []pluginapi.ModelInfo {
+	files, err := hostAuthList()
+	if err != nil || len(files) == 0 {
+		return nil
+	}
+	// 优先挑选未禁用的账号
+	for _, f := range files {
+		if f.Disabled {
+			continue
+		}
+		a, err := hostAuthGet(f.AuthIndex)
+		if err != nil || a == nil {
+			continue
+		}
+		dyn, err := fetchTraeModels(a)
+		if err == nil && len(dyn) > 0 {
+			storeTraeDynamicModels(dyn)
+			return dyn
+		}
+	}
+	// 若未禁用的账号拉取失败，回退尝试其它账号
+	for _, f := range files {
+		if !f.Disabled {
+			continue
+		}
+		a, err := hostAuthGet(f.AuthIndex)
+		if err != nil || a == nil {
+			continue
+		}
+		dyn, err := fetchTraeModels(a)
+		if err == nil && len(dyn) > 0 {
+			storeTraeDynamicModels(dyn)
+			return dyn
+		}
+	}
+	return nil
 }
 
 // handleModelForAuth 返回指定 Trae 账号实时可用的模型列表。
@@ -271,7 +323,12 @@ func fetchTraeModels(auth *traeAuth) ([]pluginapi.ModelInfo, error) {
 		if name == "" {
 			name = item.ConfigName
 		}
-		models = append(models, pluginapi.ModelInfo{ID: item.ConfigName, Name: name})
+		models = append(models, pluginapi.ModelInfo{
+			ID:                         item.ConfigName,
+			Name:                       name,
+			OwnedBy:                    providerName,
+			SupportedGenerationMethods: []string{"chat"},
+		})
 	}
 	if len(models) == 0 {
 		return nil, fmt.Errorf("get_detail_param returned no models")
