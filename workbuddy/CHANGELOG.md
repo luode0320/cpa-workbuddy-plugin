@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.14.34
+
+### Fix — 去除写死模型列表完全依靠自动拉取 + 兼容上游 contextWindow 对象结构根治动态拉取失败
+
+- **根因**：
+  1. 上游 `/console/enterprises/personal/models` 近期将 `contextWindow` 字段变更为对象形态 `{"defaultLength": 300000, "supportedLengths": [300000, 1000000]}`，而插件的 `upstreamModelEntry` 历史将其声明为 `ContextWindow *int64`，导致 Go 的 JSON 反序列化报 `json: cannot unmarshal object into Go struct field upstreamModelEntry.data.models.contextWindow of type int64`，动态发现调用全线报错失败。
+  2. 动态拉取失败后系统回退到 `wbModels()`，展示出写死的 10 个老模型列表（包含已下线的幽灵模型，缺少 `deepseek-v4.1-flash`、`kimi-k2.8-preview` 等全部新模型）。
+- **修复**：
+  - **兼容上游 `contextWindow` 双形态**：`ContextWindow` 字段类型调整为 `json.RawMessage`，新增 `contextWindowVal()` 辅助解析，既兼容对象形态（优先取 `supportedLengths` 最大值或 `defaultLength`）又兼容传统数值形态，彻底杜绝类型不匹配导致的 unmarshal 崩溃。
+  - **去除硬编码写死模型**：清空 `wbModels()` 硬编码模型列表，函数返回 `nil`，模型完全依靠自动获取；无配置且动态不可用时返回空列表。
+  - **静态路径主动探测补位**：`handleModelStatic` 接入 `dynamicModelsFromCacheOrAuth()`，当全局动态缓存未命中时，主动读取宿主已有有效凭据向外部拉取一次并填补缓存，保证 `model.static` 与 `model.for_auth` 均可完整呈现上游实时全量模型。
+- **测试**：更新 `upstreamModelsFixture` 并新增 `TestParseModelsAPIResponse_ContextWindowObject`、`TestParseModelsAPIResponse_ContextWindowInt`，修改静态兜底断言用例。`python scripts/cgo-shim-build.py workbuddy` 全部通过。
+
 ## 0.14.33
 
 ### Fix — 执行器前置冷却拦截 + 多形态账号别名规范化匹配，彻底终结冷却中账号被反复打上游报错

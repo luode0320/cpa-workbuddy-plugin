@@ -190,8 +190,8 @@ func TestConfiguredModels_OverrideForAuthHandler(t *testing.T) {
 	assertModelIDs(t, resp.Models, "custom-a")
 }
 
-// 未配置且动态不可用时 model.static 回退到静态默认列表（回归保护）。
-func TestNoConfiguredModels_FallsBackToStatic(t *testing.T) {
+// 未配置且动态不可用时，因已去除硬编码写死模型列表，返回空列表（完全靠动态获取，不再兜底写死模型）。
+func TestNoConfiguredModels_ReturnsEmptyWhenDynamicUnavailable(t *testing.T) {
 	resetConfiguredModels(t)
 	resetDynamicModelsCache(t)
 	raw, err := handleModelStatic([]byte("{}"))
@@ -199,8 +199,8 @@ func TestNoConfiguredModels_FallsBackToStatic(t *testing.T) {
 		t.Fatalf("handleModelStatic: %v", err)
 	}
 	resp := decodeModelResponse(t, raw)
-	if len(resp.Models) != len(wbModels()) {
-		t.Fatalf("fallback model count = %d, want %d", len(resp.Models), len(wbModels()))
+	if len(resp.Models) != 0 {
+		t.Fatalf("expected empty models when dynamic discovery unavailable and no config, got %d", len(resp.Models))
 	}
 }
 
@@ -457,17 +457,16 @@ func TestConfiguredModels_ForAuthPrefersDynamicCache(t *testing.T) {
 	}
 }
 
-// upstreamModelsFixture 是 2026-09-12 从 copilot.tencent.com 实测抓取的真实
-// 响应片段（保留 cli 白名单全部 15 个模型与关键字段原名）。它锁定的是一条
-// 真实缺陷：上游字段是 maxInputTokens / maxOutputTokens，早期实现读的
-// contextWindow / maxTokens 上游从不返回 → 所有动态模型的长度恒为 0。
+// upstreamModelsFixture 是从 copilot.tencent.com 实测抓取的真实
+// 响应片段（保留 cli 白名单全部 15 个模型与关键字段原名）。
+// 包含实际出现的 contextWindow 对象 {"defaultLength": 300000, "supportedLengths": [300000, 1000000]}。
 const upstreamModelsFixture = `
 {"code":0,"msg":"OK","data":{"models":[
   {"id":"auto","name":"Auto","maxInputTokens":1000000,"maxOutputTokens":128000},
-  {"id":"hy4-preview","name":"Hy4 preview","maxInputTokens":262144,"maxOutputTokens":32768},
+  {"id":"hy4-preview","name":"Hy4 preview","maxInputTokens":262144,"maxOutputTokens":32768,"contextWindow":{"defaultLength":300000,"supportedLengths":[300000,1000000]}},
   {"id":"hy3","name":"Hy3","maxInputTokens":262144,"maxOutputTokens":32768},
   {"id":"hy3-x","name":"Hy3","maxInputTokens":262144,"maxOutputTokens":32768},
-  {"id":"deepseek-v4.1-flash","name":"Deepseek-V4.1-Flash","maxAllowedSize":1000000,"maxInputTokens":1000000,"maxOutputTokens":128000,"onlyReasoning":true},
+  {"id":"deepseek-v4.1-flash","name":"Deepseek-V4.1-Flash","maxAllowedSize":1000000,"maxInputTokens":1000000,"maxOutputTokens":128000,"onlyReasoning":true,"contextWindow":{"defaultLength":300000,"supportedLengths":[300000,1000000]}},
   {"id":"glm-5.3","name":"GLM-5.3","maxInputTokens":200000,"maxOutputTokens":32768},
   {"id":"glm-5.3-flash","name":"GLM-5.3-Flash","maxInputTokens":200000,"maxOutputTokens":32768},
   {"id":"glm-5.2","name":"GLM-5.2","maxInputTokens":1000000,"maxOutputTokens":8192},
@@ -513,6 +512,38 @@ func TestParseModelsAPIResponse_RealUpstreamPayload(t *testing.T) {
 	// 3. disabled 条目（不在白名单内）与其它 agent 独有模型都不得出现。
 	if _, exists := byID["disabled-model"]; exists {
 		t.Fatalf("disabled model leaked into output")
+	}
+}
+
+// contextWindow 字段为对象时（如 {"defaultLength": 300000, "supportedLengths": [300000, 1000000]}）
+// 必须正常反序列化，不得抛出 cannot unmarshal object into Go struct field ... of type int64 错误。
+func TestParseModelsAPIResponse_ContextWindowObject(t *testing.T) {
+	payload := `{"code":0,"data":{"agents":[{"name":"cli","models":["test-model"]}],"models":[{"id":"test-model","name":"Test Model","contextWindow":{"defaultLength":300000,"supportedLengths":[300000,1000000]},"maxOutputTokens":8192}]}}`
+	got, err := parseModelsAPIResponse([]byte(payload))
+	if err != nil {
+		t.Fatalf("parseModelsAPIResponse failed with object contextWindow: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(got))
+	}
+	// 优先提取 supportedLengths 最大值 1000000
+	if got[0].ContextLength != 1000000 {
+		t.Fatalf("contextLength = %d, want 1000000", got[0].ContextLength)
+	}
+}
+
+// contextWindow 字段为纯整型数字时也能兼容解析。
+func TestParseModelsAPIResponse_ContextWindowInt(t *testing.T) {
+	payload := `{"code":0,"data":{"agents":[{"name":"cli","models":["test-model"]}],"models":[{"id":"test-model","name":"Test Model","contextWindow":204800,"maxOutputTokens":8192}]}}`
+	got, err := parseModelsAPIResponse([]byte(payload))
+	if err != nil {
+		t.Fatalf("parseModelsAPIResponse failed with int contextWindow: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(got))
+	}
+	if got[0].ContextLength != 204800 {
+		t.Fatalf("contextLength = %d, want 204800", got[0].ContextLength)
 	}
 }
 

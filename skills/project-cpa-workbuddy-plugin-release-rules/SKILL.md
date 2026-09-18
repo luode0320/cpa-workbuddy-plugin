@@ -342,6 +342,8 @@ git -c http.proxy=socks5h://127.0.0.1:1080 push origin main
 49. **CI 轮询 urllib 脚本必须 JSON 解析容错（2026-09-08 实测）**：api.github.com TLS 瞬时窗口（`SSL UNEXPECTED_EOF_WHILE_READING` 连续 5 次重试全败）时 call() 返回空串，裸 `json.loads(raw)` 直接崩溃退出——轮询脚本必须包 jcall（空响应跳过本轮继续轮询，多轮重试），否则一次网络抖动杀掉整个后台轮询还得重启脚本。
 50. **多插件批量改码后发布，Step 1 的 VERSION 文件极易漏 bump（2026-09-08 实测）**：会话内先改码收口、隔轮才授权发布时，main.go 的 `var version` 记得 bump 但三个 `VERSION` 纯文本文件仍是旧版——commit 前 push 前必须自查：`cat */VERSION && grep -h 'var version = ' */main.go` 两两核对一致；push 后才发现会造成 registry 版本与仓库 VERSION 不一致的中间态。
 51. **panel.html 改动仅凭 node --check 全绿就发布 = 生产事故（2026-09-08 实测，0.1.55→0.1.56 hotfix）**：`node --check` 只查语法，抓不到未定义标识符——0.1.55 清理把 `const scopeLabel=` 前缀删成孤立表达式，语法合法全绿发布，生产运行时 `ReferenceError` 使面板整体失败。HTML 内嵌 JS 改动后的发布前最低验证线：① vm + DOM stub 真实执行全部 `<script>` 顶层（抓 ReferenceError）；② 删除"带名字的定义"时 grep 复查定义处与使用处成对存在；③ 关键表达式（如三元链）逐分支运行时断言。三者缺一不可，Go build/test 全绿对内嵌 JS 零覆盖。
+52. **管道吞退出码 → 残缺 assets 被提交（2026-09-12 实测，0.14.29）**：`python scripts/download-release-assets.py ... | tail` 会吞掉脚本的异常退出码——下载 7 个 zip 只成功 1 个（脚本中途 URLError 10060），`&&` 链继续执行，**残缺 assets 直接 commit + push**。铁律：assets 下载后、`git add` 前**必须** `cd release-assets/<dir> && sha256sum -c checksums.txt` 且 7/7 全 OK；校验不过补下载，绝不能靠命令退出码串联代替产物校验。
+53. **assets 下行也走 SOCKS 隧道 + 隧道启动方式（2026-09-12 实测，0.14.29/0.14.30 两次复现）**：踩坑 37 只写了上行，实测 `download-release-assets.py` 直连下行同样稳定超时（urllib WinError 10060）——release assets 下载直接走 `curl -sL --socks5-hostname 127.0.0.1:1080`（先下 checksums.txt，再逐个 zip，最后 sha256sum -c）。隧道启动：Git Bash 里 `(ssh -f -N -D ... &)` 子壳后台化不可靠（静默失败），**用 run_in_background 跑 `ssh -N -D 127.0.0.1:1080`，然后 `netstat -an | grep ":1080.*LISTEN"` 确认监听再开下载**；隧道进程保留可跨版本复用（0.14.29 与 0.14.30 共用）。
 
 ## 权责边界与不负责事项
 
