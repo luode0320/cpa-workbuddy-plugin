@@ -364,6 +364,25 @@ jobs:
           echo "ARCHIVE_NAME=${PLUGIN}_${CLEAN_VERSION}_${GOOS_PART%-*}_${GOOS_PART#*-}.zip" >> "${GITHUB_ENV}"
           echo "LIB_NAME=${PLUGIN}.${{ matrix.ext }}" >> "${GITHUB_ENV}"
 
+      - name: Patch FreeBSD download mirror
+        if: startsWith(matrix.target, 'freebsd-')
+        run: |
+          if [ -f /usr/bin/wget ] && [ ! -f /usr/bin/wget.orig ]; then
+            sudo mv /usr/bin/wget /usr/bin/wget.orig
+            sudo tee /usr/bin/wget > /dev/null << 'EOF'
+#!/usr/bin/env bash
+args=()
+for arg in "$@"; do
+  if [[ "$arg" == *"download.freebsd.org/releases/"*"14.3-RELEASE/base.txz"* ]]; then
+    arg="${arg/download.freebsd.org\/releases/archive.freebsd.org\/old-releases}"
+  fi
+  args+=("$arg")
+done
+exec /usr/bin/wget.orig "${args[@]}"
+EOF
+            sudo chmod +x /usr/bin/wget
+          fi
+
       - name: Build cross shared library
         timeout-minutes: 45
         uses: go-cross/cgo-actions@v1
