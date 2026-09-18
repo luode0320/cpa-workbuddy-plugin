@@ -369,17 +369,17 @@ jobs:
         run: |
           if [ -f /usr/bin/wget ] && [ ! -f /usr/bin/wget.orig ]; then
             sudo mv /usr/bin/wget /usr/bin/wget.orig
-            sudo tee /usr/bin/wget > /dev/null << 'EOF'
-#!/usr/bin/env bash
-args=()
-for arg in "$@"; do
-  if [[ "$arg" == *"download.freebsd.org/releases/"*"14.3-RELEASE/base.txz"* ]]; then
-    arg="${arg/download.freebsd.org\/releases/archive.freebsd.org\/old-releases}"
-  fi
-  args+=("$arg")
-done
-exec /usr/bin/wget.orig "${args[@]}"
-EOF
+            printf '%s\n' \
+              '#!/usr/bin/env bash' \
+              'args=()' \
+              'for arg in "$@"; do' \
+              '  if [[ "$arg" == *"download.freebsd.org/releases/"*"14.3-RELEASE/base.txz"* ]]; then' \
+              '    arg="${arg/download.freebsd.org\/releases/archive.freebsd.org\/old-releases}"' \
+              '  fi' \
+              '  args+=("$arg")' \
+              'done' \
+              'exec /usr/bin/wget.orig "${args[@]}"' \
+              | sudo tee /usr/bin/wget > /dev/null
             sudo chmod +x /usr/bin/wget
           fi
 
