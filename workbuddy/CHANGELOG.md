@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.35
+
+### Feat - 账号刷新自动发起轻量活跃探测(hi) + 面板新增手动测试按钮
+
+- 变更要点:
+  1. 刷新自动活跃探测: 在账号积分刷新(Watchdog 周期巡检、单卡刷新按钮、面板全量刷新)后，若该账号距上次活跃超过 30 分钟，自动挑选该账号可用的动态模型随机发起一次轻量推理探测(user: "hi", max_tokens: 5)，保持账号活跃度。
+  2. 故障与生命周期隔离: 自动活跃探测采用异步安全模式，失败仅记录 warning 日志，绝不阻断正常刷新链路，亦不污染账号的连续失败计数与故障降级状态。
+  3. 面板新增手动「测试」按钮: 在面板每张卡片底部的操作栏(刷新与签到按钮右侧)新增「测试」按钮，点击通过 POST /test-active 立即发起一次真实推理探测(绕过 30 分钟防抖限制)，成功后即时展示探测模型与响应耗时并更新最后活跃时间，失败友好反馈错误原因。
+- 涉及文件: workbuddy/active_ping.go、workbuddy/active_ping_test.go、workbuddy/refresh_runner.go、workbuddy/management.go、workbuddy/panel.html。
+
 ## 0.14.34
 
 ### Fix — 去除写死模型列表完全依靠自动拉取 + 兼容上游 contextWindow 对象结构根治动态拉取失败

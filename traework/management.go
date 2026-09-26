@@ -66,6 +66,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: base + "/checkin/retries", Description: "Snapshot of the check-in retry queue (1-minute cadence, max 60 attempts)."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one (auth_index query) or all accounts."},
 			{Method: http.MethodPost, Path: base + "/select", Description: "Select the active account card used for chat routing (body: {auth_index})."},
+			{Method: http.MethodPost, Path: base + "/test-active", Description: "Send an active ping chat inference request for one account (body: {auth_index})."},
 			{Method: http.MethodPost, Path: base + "/enable", Description: "Enable one (body: {auth_index}) or all (empty body) accounts."},
 			{Method: http.MethodPost, Path: base + "/disable", Description: "Disable one (body: {auth_index}) or all (empty body) accounts."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import one Trae SOLO credential (body: {filename, content}); whole storage.json or raw credential value accepted."},
@@ -146,6 +147,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinRetries()))
 	case req.Method == http.MethodGet && path == base+"/credits":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCreditsQuery(req)))
+	case req.Method == http.MethodPost && path == base+"/test-active":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleTestActive(req)))
 	case req.Method == http.MethodPost && path == base+"/select":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleSelectAuth(req)))
 	case req.Method == http.MethodPost && path == base+"/enable":

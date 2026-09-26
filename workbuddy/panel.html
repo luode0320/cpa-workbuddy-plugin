@@ -433,6 +433,7 @@ function bindCardActions(root){
       else if(act==="claim") claimTrial(idx, ev.currentTarget);
       else if(act==="select") selectAuth(idx, ev.currentTarget);
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
+      else if(act==="test") testActive(idx, ev.currentTarget);
       else if(act==="unfreeze") unfreezeOne(idx, ev.currentTarget);
       else if(act==="delete") openDeleteModal(idx);
     });
@@ -469,7 +470,7 @@ function card(a){
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
   ${progressHTML(cr,a)}
   ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
-  <div class="actions">${refreshBtn}${actionHTML}</div>
+  <div class="actions">${refreshBtn}${actionHTML}<button class="sec" data-action="test" data-auth-index="${esc(a.auth_index)}" title="测试账号活跃并发送一次推理请求">测试</button></div>
   </div>`;
 }
 // 冷却倒计时：每秒刷新积分首行中的冷却剩余秒数。
@@ -1044,6 +1045,25 @@ async function selectAuth(idx, btn){
     toast("选用失败","err",e.message||String(e));
   }finally{
     busy(btn,false);
+  }
+}
+async function testActive(idx, btn){
+  busy(btn, true);
+  try{
+    const d=await api("/test-active", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({auth_index: idx})
+    });
+    if(d.error){
+      toast("测试失败", "err", d.error);
+    } else {
+      toast("活跃测试成功", "ok", d.message || ("模型: " + (d.model || "-")));
+    }
+  }catch(e){
+    toast("测试失败", "err", e.message || String(e));
+  }finally{
+    busy(btn, false);
   }
 }
 async function refreshCredits(idx, btn){

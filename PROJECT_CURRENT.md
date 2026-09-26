@@ -8,11 +8,17 @@
 
 ## 项目概览
 
-- 状态：活跃维护中。生产现役与 registry 对齐：traework-provider **0.1.60** / workbuddy-provider **0.14.31** / qoderwork-provider **0.9.17**（2026-09-14 跨平台 failover 双根因修复已发布部署并 hot reloaded）/ workbuddy-token-usage **0.2.2**。历史发布细节见「已完成」区。
+- 状态：活跃维护中。生产现役与 registry 对齐：traework-provider **0.1.64** / workbuddy-provider **0.14.35** / qoderwork-provider **0.9.17**（2026-09-14 跨平台 failover 双根因修复已发布部署并 hot reloaded）/ workbuddy-token-usage **0.2.2**。历史发布细节见「已完成」区。
 - 活动会话数：2（本会话 + 并行会话共享工作树 F:\cpa-plugin）
 - 更新时间：2026-09-08 (GMT+8)
 
 ## 活动会话任务摘要
+
+- 当前会话（2026-09-26）：**WorkBuddy 与 TraeWork 刷新账号自动活跃与面板手动测试按钮功能已实现**。
+  - 扩展：在 WorkBuddy 与 TraeWork 面板卡片底部新增「测试」按钮；后端新增 POST /test-active 接口，手动点击绕过 30 分钟防抖立即发起一次真实推理，成功后显示所选模型与响应耗时并更新活跃时间戳，失败展示错误原因。
+  - 核心设计：在 `refresh_runner.go` 的 `doFetchOne` 成功刷新积分后触发轻量活跃请求（`user: "hi"`，`max_tokens: 5`），随机挑选账号可用动态模型（workbuddy 兜底 deepseek-v4.1-flash，traework 兜底 claude-3-5-sonnet）。
+  - 故障隔离与节流：内置 30 分钟防频繁活跃节流保护（`defaultActivePingInterval = 30 * time.Minute`）；活跃探测失败仅记 warning 日志，绝不阻断或污染 `doFetchOne` 的核心返回值与账号故障降级状态。
+  - 验证：通过 `cgo-shim-build.py` 完成 build、vet 以及包含哨兵用例在内的测试，`workbuddy` 与 `traework` 两个插件全绿通过。
 
 - 当前会话（2026-09-14 凌晨，**跨平台 failover 双根因修复，traework 0.1.60 / workbuddy 0.14.31 / qoderwork 0.9.17 已发布部署**）：用户报 trae 全部账号失败后不切 workbuddy 直接失败。生产取证（stream 1253/1298/1326）坐实**两个互补根因**：①并行会话发现并已修复的调度层短路——插件 Scheduler 以 `Handled:true` 返回死账号，阻断宿主跨 provider 兜底（全部耗尽时改 `Handled:false` 延迟给宿主，scheduler/session_auth/active_auth 三处）；②本会话独立发现并修复的错误通道伪装——`streamEmitError`/`emitTraeAsyncError` 把终态错误当 payload 数据帧（`{"error":...}` SSE 事件）发出，宿主 conductor 视为正常流内容、请求以 200 "成功"告终，不轮换凭据/不冷却/不跨平台切换；改走 `host.stream.emit` 信封 `error` 字段（→ `chunk.Err`），traework 另加 `EmitError` 注入点。验证：cgo-shim 三插件全绿（含信封字段断言 + payload 泄漏哨兵 + 既有 5 个异步流测试迁移到错误通道断言）；发布链 40834b0(fix 27 文件)→d44767d(assets 24 文件，21/21 sha256 OK)→bb494d4(registry)；CI 三 run 34768147600/34768143943/34768140125 全 success；远端 raw ALL PASS + 旧版零残留；生产 install 三插件落盘 sha256 与本地一致（db9712be/5fdbf1c8/846b16ee）+ hot reloaded active=0.1.60/0.14.31/0.9.17 + 特征串 emitStreamErrorEnvelope 各 1 次 + accounts/panel 双 200；行为回归 deepseek stream 1741 attempt=1 完整 done、glm 经 workbuddy 正常。**观察项**：trae 全灭→workbuddy 接管的完整链路需真实全灭场景验证（下一次两 trae 账号同时失败时看 conductor 是否切 workbuddy）。qoderwork 的调度器层对齐（Scheduler capability 短路同病）未做，生产无 qoderwork 凭据、低优。沉淀知识库《插件终态错误伪装成成功流会让宿主跨平台failover永不触发》。
 

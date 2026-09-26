@@ -559,7 +559,8 @@ function card(a){
     checkinBtn+
     '<button class="sec" onclick="selectAuth(\''+esc(a.auth_index)+"',this)\">设为活跃</button>"+
     '<button class="sec" onclick="toggleDisabled(\''+esc(a.auth_index)+"',"+(!a.disabled)+",this)\">"+(a.disabled?"启用":"停用")+"</button>"+
-    '<button class="sec" onclick="refreshCredits(\''+esc(a.auth_index)+"',this)\">刷新</button>";
+    '<button class="sec" onclick="refreshCredits(\''+esc(a.auth_index)+"',this)\">刷新</button>"+
+    '<button class="sec" onclick="testActive(\''+esc(a.auth_index)+"',this)\">测试</button>";
   return '<div class="card'+(a.active?" selected":"")+'" data-auth="'+esc(a.auth_index)+'" data-f="'+filterClass(a)+'" data-nickname="'+esc(a.nickname||a.label||a.name||"")+'" data-label="'+esc(a.label||"")+'" data-name="'+esc(a.name||"")+'" data-uid="'+esc(a.uid||"")+'">'+
     '<h2 style="display:flex;align-items:center;justify-content:space-between;gap:8px">'+esc(a.nickname||a.label||a.name||a.uid||a.auth_index)+'<span style="display:flex;gap:6px;align-items:center">'+(cool?cool:"")+'<button type="button" class="card-del" onclick="openDeleteModal(\''+esc(a.auth_index)+'\')" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>'+
     "<div class='uid'>"+esc(a.uid||"")+(a.name?" · "+esc(a.name):"")+"</div>"+
@@ -890,6 +891,18 @@ function updateOneCard(a){
   applyCardVisibility();
   renderSummary();
 }
+async function testActive(authIndex,btn){
+  busy(btn,true);
+  try{
+    const r=await api("/test-active",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:authIndex})});
+    if(r.error){
+      toast("测试失败","err",r.error);
+    } else {
+      toast("活跃测试成功","ok",r.message||("模型: "+(r.model||"-")));
+    }
+  }catch(e){toast("测试失败","err",e.message)}finally{busy(btn,false)}
+}
+
 async function refreshCredits(authIndex,btn){
   busy(btn,true);
   try{
