@@ -22,6 +22,7 @@ type wbAccount struct {
 	Region       string          `json:"region"` // "cn" or "global"
 	Plan         string          `json:"plan"`
 	Status       string          `json:"status"`
+	CreatedAt    string          `json:"created_at,omitempty"` // host credential creation time (RFC3339)
 	Disabled     bool            `json:"disabled"`
 	Exhausted    bool            `json:"exhausted"`
 	Selected     bool            `json:"selected"`    // panel active routing card
@@ -87,6 +88,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 				Name:      f.Name,
 				Label:     f.Label,
 				Status:    f.Status,
+				CreatedAt: f.CreatedAt.Format(time.RFC3339),
 				Disabled:  f.Disabled,
 				Success:   f.Success,
 				Failed:    f.Failed,

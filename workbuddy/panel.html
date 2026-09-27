@@ -235,7 +235,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="sec" onclick="claimTrialAll(this)" title="仅 Global · 一次性">全部领取</button>
     <button class="sec" id="unfreezeAllBtn" onclick="unfreezeAll(this)" title="将异常池中所有账号解除冻结（每日 0 点也会自动做）">全部解冻</button>
     <input id="searchInput" class="search" type="search" placeholder="搜索 nickname / UID" oninput="onSearchChange(this.value)" autocomplete="off">
-    <button class="sec sort-btn" id="sortBtn" onclick="toggleSort(this)" title="按可用积分切换升序/降序">积分 ↕</button>
+<button class="sec sort-btn" id="sortBtn" onclick="toggleSort(this)" title="当前：创建时间倒序（新→旧），点击切积分升序">创建 ↓</button>
     <label class="toggle" title="仅 CN 账号 09:00 / 21:00"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到(CN)</label>
     <span class="toggle" id="svtime"></span>
     <span class="toggle ref-progress" id="refreshProgress" style="display:none"></span>
@@ -470,7 +470,7 @@ function card(a){
   const badges=preserveBadge+testFailedBadge+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
   return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-nickname="${esc(a.nickname||a.label||a.name||"")}" data-label="${esc(a.label||"")}" data-name="${esc(a.name||"")}" data-uid="${esc(a.uid||"")}" data-preserve="${a.preserve?"1":"0"}" data-test="${a.test_failed?"1":"0"}" data-failed="${((Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0)?"1":"0"}">
   <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}<button type="button" class="card-del" data-action="delete" data-auth-index="${esc(a.auth_index)}" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>
-  <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
+  <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}${a.created_at?` · 创建 ${esc(String(a.created_at).replace('T',' ').replace('Z',' UTC'))}`:''}</div>
   ${progressHTML(cr,a)}
   ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
   <div class="actions">${refreshBtn}${actionHTML}<button class="sec" data-action="test" data-auth-index="${esc(a.auth_index)}" title="测试账号活跃并发送一次推理请求">测试</button></div>
@@ -497,13 +497,14 @@ let authFailUntil=0;
    credits.total_remain (unknown credits count as -1, i.e. "least").
 */
 let currentSearch="";   // trimmed, lowercase
-let currentSort="none"; // "none" | "asc" | "desc"
-const SORT_LABELS={none:"积分 ↕", asc:"积分 ↑", desc:"积分 ↓"};
-const SORT_NEXT={none:"asc", asc:"desc", desc:"none"};
+let currentSort="created_desc"; // "created_desc" | "asc" | "desc" | "none"
+const SORT_LABELS={created_desc:"创建 ↓", asc:"积分 ↑", desc:"积分 ↓", none:"创建 ↓"};
+const SORT_NEXT={created_desc:"asc", asc:"desc", desc:"none", none:"created_desc"};
 const SORT_TITLE={
-  none:"按可用积分排序（点击切升序：剩余少→多）",
+  created_desc:"当前：创建时间倒序（新→旧），点击切积分升序",
   asc:"当前：积分升序（剩余少→多），点击切降序",
-  desc:"当前：积分降序（剩余多→少），点击关闭排序"
+  desc:"当前：积分降序（剩余多→少），点击切创建时间倒序",
+  none:"按创建时间倒序（新→旧），点击切积分升序"
 };
 function onSearchChange(q){
   currentSearch=(q==null?"":String(q)).trim().toLowerCase();
@@ -515,15 +516,22 @@ function toggleSort(btn){
   if(btn){
     btn.textContent=SORT_LABELS[currentSort];
     btn.title=SORT_TITLE[currentSort];
-    btn.classList.toggle("active", currentSort!=="none");
+  btn.classList.toggle("active", currentSort!=="created_desc");
   }
   renderGrid();
 }
-// Sort by available credits (total_remain). Unknown credits → -1 so they land
-// at the "least" end (top in asc, bottom in desc).
+// Default sort: creation time descending (newest first). Toggling switches to
+// credits-based sorting; unknown credits count as -1 so they land at the
+// "least" end.
 function sortedAccounts(accounts){
   const list=accounts||[];
-  if(currentSort==="none") return list;
+  if(currentSort==="none"||currentSort==="created_desc"){
+    return [...list].sort((x,y)=>{
+      const xt=x&&x.created_at?Date.parse(x.created_at):0;
+      const yt=y&&y.created_at?Date.parse(y.created_at):0;
+      return yt-xt;
+    });
+  }
   const dir=currentSort==="asc"?1:-1;
   return [...list].sort((x,y)=>{
     const xr=x&&x.credits?Number(x.credits.total_remain||0):-1;
