@@ -8,9 +8,9 @@
 
 ## 项目概览
 
-- 状态：活跃维护中。生产现役与 registry 对齐：traework-provider **0.1.64** / workbuddy-provider **0.14.35** / qoderwork-provider **0.9.17**（2026-09-14 跨平台 failover 双根因修复已发布部署并 hot reloaded）/ workbuddy-token-usage **0.2.2**。历史发布细节见「已完成」区。
+- 状态：活跃维护中。生产现役与 registry 对齐：traework-provider **0.1.66** / workbuddy-provider **0.14.40** / qoderwork-provider **0.9.20**（2026-09-14 跨平台 failover 双根因修复已发布部署并 hot reloaded）/ workbuddy-token-usage **0.2.2**。历史发布细节见「已完成」区。
 - 活动会话数：2（本会话 + 并行会话共享工作树 F:\cpa-plugin）
-- 更新时间：2026-09-08 (GMT+8)
+- 更新时间：2026-09-27 (GMT+8)
 
 ## 活动会话任务摘要
 
