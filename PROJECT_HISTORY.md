@@ -4,6 +4,7 @@
 
 ## 事件
 
+- 2026-09-27：workbuddy 0.14.42 面板「创建」时间改用 JWT `auth_time` 真实创建时间（旧值取宿主 `HostAuthFileEntry.CreatedAt`，被 watcher 的 `time.Now()` 每次扫描刷成「最近写入时刻」）。新增 `created_at.go` + 8 用例；cgo-shim 全绿含哨兵；发布链 cb0a2be→f44eb08→6736c90；CI 36327182344 success；远端 raw ALL PASS；生产 hot reloaded 0.14.42 + 落盘 sha256 一致；行为验证 `242e1dde` 由错误 09-27 22:12 纠正为真实 08-20 23:11。（同日收口：按 project-memory-rules 主动裁剪 PROJECT_CURRENT.md「已完成」区最旧的 24 条（2026-08-22~08-30）以满足 51,200 字节硬限，63,445 → 47,493 字节；并同步对齐 PROJECT_HISTORY.md 既有漂移的计数锚点区（HEAD 为 20 事件/19 锚点，现为 20/20））
 - 2026-09-05：traework-provider **0.1.44 发布部署**（GetUserInfo 401 回落回调 userInfo）：0.1.43 实测 exchange 已成功换到 token，但 GetUserInfo 报 401 "The user is not logged in"（cookie 会话鉴权路由，新 bearer token 不被认）。SOLO main.js 取证：客户端优先用回调 URL 的 userInfo JSON（r ?? await getUserInfo(...)），GetUserInfo 只是兜底。修复：parseBounceUserInfo 提取回调 userInfo 的 UserID/ScreenName，GetUserInfo 失败时回落。发布链 f38147d→4c924aa→a162f44；CI run 33902405197 success（16m+，两轮轮询窗口）；远端 ALL PASS；生产 install 首两次 CDN 滞后 version not found → 等 7 分钟第三次成功，落盘 sha256 60cb72ae 一致 + hot reloaded active=0.1.44。
 - 2026-09-05：traework-provider **0.1.43 发布部署**（浏览器授权登录 ExchangeToken 打错域修复）：0.1.42 实测 AuthCode 解析链已通但 exchange 报 invalid character '<'——www.trae.cn 是 SPA 域对 API 路径返回 HTML 首页，非 API 域；api.trae.cn / api.trae.com.cn 双域实测均为真 JSON API。修复：新增 browserLoginAuthHost=api.trae.cn（与生产凭据 host、签到 defaultAPIHost 同域），exchange/GetUserInfo 切域 + GetUserInfo 解析容错（ResponseMetadata.Error + camelCase result 回落）。发布链 faca5e9→737589a→a1c58eb；CI run 33900103965 success（14m30s）；远端 ALL PASS；生产 install 落盘 sha256 3d564208 一致 + 0.1.43 热重载；生产冒烟实锤：假 code submit 返回上游 JSON 错误（10101 无效参数），exchange 已打真 API 域，整链只差用户真实 AuthCode。
 - 2026-09-05：traework-provider **0.1.42 发布部署**（浏览器授权登录适配 TRAE 授权页真实回调形状）：用户真机实测 0.1.40 实锤 TRAE 授权页跳转非标准 OAuth——不回传 code/state，授权码在 `authCodeInfo` JSON 参数里。修复：extractAuthCode（code 优先、authCodeInfo 回落）+ 会话定位链（start 返回 state → 面板带回 body.state → URL state → 最新 pending 兜底）+ callback/submit 双通道同构。发布链 98b81e0(fix)→a60038d(assets)→e0b1850(registry)；CI run 33897217089 success（12m10s）；远端 ALL PASS 零残留；生产 install 落盘 sha256 `c5150057` 一致 + loaded/registered 0.1.42 热重载 + 冒烟两条新语义生效。同窗口并行会话发布 0.1.41/0.14.20/0.9.7（删除按钮 busy 修复，0.1.41 顺带卷入本会话被带走的前端 browserLoginState 改动但无后端解析）。
@@ -23,7 +24,6 @@
 - 2026-08-26：token-usage-tracker「进 dashboard 页面概率性中断请求」根因定位+修复 **已改码未提交**：根因=读路径每请求同步 `syncUsageFeed()`（feedSyncMu 串行）+ `SyncOnRecord: true` 逐条 bbolt 事务+fsync（写放大）→ feed 积压时 6+ 并发请求排队超 10s 前端超时。修复：① `SyncOnRecord` 改 `false` 恢复 store 批量提交（dirty 聚合 + FlushMaxRecords=100 + 5s ticker）；② 新增 `triggerFeedSync()`（容量 1 信号量合并并发触发 + 后台 loop，feed_ingest.go）；③ `serveStatsResource` 读路径改异步触发（management.go，写路径保留同步）。`cgo-shim-build.py token-usage-tracker` build/vet/test 全绿（30s）。数据丢失窗口（硬崩溃 ≤100 条/1 flush interval）对用量统计可接受。未走发布链路。
 - 2026-08-23：账号面板「删除账号」功能 **已发布**（workbuddy 0.14.7）：卡片右上角 `×` 删除图标 + 二次确认模态框（取消不请求 / 确认 POST 后刷新 / 失败 Toast 保留卡片）；后端新增严格删除接口 `POST /delete`（仅收 `auth_index`，重新校验存在性 → `isWorkbuddyAuthFileName` 文件名归属 → `hostAuthGetBundle` 解析 → `phys.AuthIndex` 一致 → 路径非空 → `isSafeWorkbuddyAuthPath` → `deleteAuthFileInDir` 物理删除 → `clearDeletedAccountState` 全维度清理 f.ID/auth_index/UID 三个键）。新增 `clearFailoverStateForAuth` / `clearDeletedAccountState` / `isWorkbuddyAuthFileName` 三个纯函数 + `auth_delete_test.go` 单测；`cgo-shim-build.py workbuddy` build/vet/test 全绿，panel.html 两脚本块 `node --check` 通过。提交链 8003ae6→a6a5527→0cabb46，CI run 32635829837 success，8 assets checksums 全 OK，registry raw 200 含 0.14.7 + 7 assets raw URL 全 200。覆盖边界：`handleDeleteAuth` 完整链路因 `hostCall` 依赖 cgo `hostAPI` 无法在 shim 环境单测，真实页面交互验证待做。
 - 2026-08-23：账号面板移除「启用/禁用」手动开关 **已发布**（workbuddy 0.14.8）：用户提"有了保号功能后该开关冗余可删"，本轮把 disabled 在面板上的所有显式化一并清除——前端 panel.html 删 `toggleBtn` 按钮 + `toggleAuth` 函数 + 事件绑定 + 「已禁用」筛选 tab + disabled 徽标 + `disabledN` 计数 + `scopeLabel.disabled` 分支 + `data-disabled` 属性 + `.badge.disabled` CSS + 「可用」过滤与 `accountsForFilter` 的 disabled 判定；后端删 `handleToggleAuth` 函数（credits_handler.go -80 行）+ `management.go` 三处 `/toggle` 接入（注册/分发/mutating path）。cgo-shim build/vet/test 全绿（6.26s），前端两脚本块 `node --check` 通过；grep 全空确认后端无 `handleToggleAuth`/`/toggle` 残留、前端无 `已禁用`/`cntDisabled`/`data-disabled`/`toggleAuth`/`toggleBtn` 残留。保留：`disableAuth/reenableAuth`（lifecycle.go:70/129、keepalive.go:194 自动禁用共享）+ `disabled` 字段持久化链路（认证文件管理开关依赖）+ `disabled_count` 统计字段（panel.go）+ `lazyLoadCredits` 与"全部 lazy 完成"判断的 disabled 过滤（功能性优化）。提交链 81c854b→3ef57d7→5d357bc，CI run 32637348107 success，8 assets checksums 全 OK，registry raw 200 含 0.14.8 + 7 assets raw URL 全 200。真实面板交互验证待做。
-- 2026-08-23：账号卡统计位置微调 **已发布**（workbuddy 0.14.6 + qoderwork 0.9.3）：成功、失败、连败、冷却从标题徽标区移动到可用积分首行（`progressHTML(c,a)` 增统计段），`.pb-label` 支持换行，加载中保留「可用积分」，冷却 ticker 只刷新冷却秒数。双面板 4 个脚本块 `node --check` 全部通过，双插件 `cgo-shim-build.py` 的 build/vet/test 全部通过。提交链 195b2ea→a5711ee→f714598，CI 双 run success（32634002586/32634003971），16 assets checksums 全 OK，远端 raw URL 全部 200，registry raw 200 含 0.14.6/0.9.3
 
 ## 计数锚点区
 
@@ -32,97 +32,102 @@
 ```yaml
 version: 1
 anchors:
-  - title: "traework 0.1.27 发布部署+生产验收完成"
+  - title: "workbuddy 0.14.42 面板「创建」时间改用 J"
+    usage_count: 1
+    usage_days: 1
+    last_used_at: 2026-09-27
+    absorbed_to: null
+  - title: "traework-provider **0.1.44 发布部"
     usage_count: 0
     usage_days: 0
     last_used_at: null
     absorbed_to: null
-  - title: "workbuddy-token-usage「feed 新增 usage SSE 实时通知 dashboard」"
+  - title: "traework-provider **0.1.43 发布部"
     usage_count: 0
     usage_days: 0
     last_used_at: null
     absorbed_to: null
-  - title: "trae-local-verify 项目级 skill 创建"
+  - title: "traework-provider **0.1.42 发布部"
+    usage_count: 0
+    usage_days: 0
+    last_used_at: null
+    absorbed_to: null
+  - title: "traework-provider **0.1.40 发布部"
+    usage_count: 0
+    usage_days: 0
+    last_used_at: null
+    absorbed_to: null
+  - title: "traework-provider **0.1.39 发布部"
+    usage_count: 0
+    usage_days: 0
+    last_used_at: null
+    absorbed_to: null
+  - title: "traework-provider **0.1.38 发布部"
+    usage_count: 0
+    usage_days: 0
+    last_used_at: null
+    absorbed_to: null
+  - title: "traework-provider **0.1.30 三缺陷"
+    usage_count: 0
+    usage_days: 0
+    last_used_at: null
+    absorbed_to: null
+  - title: "traework-provider **0.1.29 纠偏—"
+    usage_count: 0
+    usage_days: 0
+    last_used_at: null
+    absorbed_to: null
+  - title: "traework-provider **0.1.29 发布部"
+    usage_count: 0
+    usage_days: 0
+    last_used_at: null
+    absorbed_to: null
+  - title: "traework-provider **0.1.28 发布部"
+    usage_count: 0
+    usage_days: 0
+    last_used_at: null
+    absorbed_to: null
+  - title: "traework-provider **0.1.27 发布部"
+    usage_count: 0
+    usage_days: 0
+    last_used_at: null
+    absorbed_to: null
+  - title: "workbuddy-token-usage「feed 新增 "
+    usage_count: 0
+    usage_days: 0
+    last_used_at: null
+    absorbed_to: null
+  - title: "**trae-local-verify 项目级 skill "
     usage_count: 1
     usage_days: 1
     last_used_at: 2026-09-01
     absorbed_to: null
-  - title: "traework-provider **0.1.22 改码未提交**"
+  - title: "traework-provider **0.1.22 改码未"
     usage_count: 1
     usage_days: 1
     last_used_at: 2026-09-01
     absorbed_to: null
-  - title: "traework-provider **0.1.21 发布**"
+  - title: "traework-provider **0.1.21 发布*"
     usage_count: 1
     usage_days: 1
     last_used_at: 2026-09-01
     absorbed_to: null
-  - title: "token-usage-tracker「进 dashboard 页面概率性中断请求」修复"
+  - title: "token-usage-tracker「进 dashboard 页面概率性中断请求」修"
     usage_count: 0
     usage_days: 0
     last_used_at: null
     absorbed_to: null
-  - title: "token-usage-tracker「进 dashboard 页面概率性中断请求」根因定位+修复"
+  - title: "token-usage-tracker「进 dashboard 页面概率性中断请求」根"
     usage_count: 0
     usage_days: 0
     last_used_at: null
     absorbed_to: null
-  - title: "账号面板「删除账号」功能"
+  - title: "账号面板「删除账号」功能 **已发布**（workbuddy"
     usage_count: 0
     usage_days: 0
     last_used_at: null
     absorbed_to: null
-  - title: "账号面板移除「启用/禁用」手动开关"
-    usage_count: 0
-    usage_days: 0
-    last_used_at: null
-    absorbed_to: null
-  - title: "账号卡统计位置微调 **已发布**"
-    usage_count: 0
-    usage_days: 0
-    last_used_at: null
-    absorbed_to: null
-  - title: "账号卡统计位置微调 **已完成未发布**"
-    usage_count: 0
-    usage_days: 0
-    last_used_at: null
-    absorbed_to: null
-  - title: "面板账号卡「成功/失败计数 + 连败/冷却」展示"
-    usage_count: 0
-    usage_days: 0
-    last_used_at: null
-    absorbed_to: null
-  - title: "workbuddy-provider v0.14.3 发布"
-    usage_count: 0
-    usage_days: 0
-    last_used_at: null
-    absorbed_to: null
-  - title: "workbuddy-provider v0.14.2 + qoderwork-provider v0.9.1 发布"
-    usage_count: 0
-    usage_days: 0
-    last_used_at: null
-    absorbed_to: null
-  - title: "deepseek-vision 第四插件迁移完成"
-    usage_count: 0
-    usage_days: 0
-    last_used_at: null
-    absorbed_to: null
-  - title: "workbuddy-provider v0.12.0 发布"
-    usage_count: 0
-    usage_days: 0
-    last_used_at: null
-    absorbed_to: null
-  - title: "40x 账号级换号重试"
-    usage_count: 0
-    usage_days: 0
-    last_used_at: null
-    absorbed_to: null
-  - title: "项目改名 cpa-plugin → cpa-workbuddy-plugin"
-    usage_count: 0
-    usage_days: 0
-    last_used_at: null
-    absorbed_to: null
-  - title: "token-usage-tracker v0.1.5 清零 envelope 修复落库失败"
+  - title: "账号面板移除「启用/禁用」手动开关 **已发布**（work"
     usage_count: 0
     usage_days: 0
     last_used_at: null

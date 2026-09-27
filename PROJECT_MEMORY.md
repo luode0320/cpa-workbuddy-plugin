@@ -20,6 +20,7 @@
 - **插件侧无 ws/SSE 长连接通道（宿主 SDK v7.2.129 实测，2026-09-01）**：插件 ABI 无任何注册 ws/SSE 长连接的方法（`AttachWebsocketRoute` 仅服务内部 wsrelay；`MethodHostStreamEmit/Close` 的 StreamID 只在 executor 流式路径创建）；management/resource 桥接单次写回（`w.WriteHeader + w.Write` 无 Flush/ws 升级）。SSE body 原样透传（`text/event-stream` 不触发 JSON 转义）→ 实时推送落地「SSE 短连接轮询通知 + REST 拉取」：`/usage/events` 返回 `retry: 2000\n\ndata: {"seq":N}`，EventSource 自动重连，seq 前进才触发 load()；15s 轮询 fallback。前端 `fullModePage` 禁用 EventSource（无法带 session header）。详见知识库《插件侧无WebSocket长连接只能SSE短连接轮询》
 - 磁盘写路径：host.auth.save 会丢未知顶层字段 → 直写物理 auth 文件（writeAuthFileDirect + fsnotify）；auth 目录 `~/.antigravity_cockpit/<plugin>_accounts/`
 - config_yaml 经 host RPC 传输时 []byte 走 base64；测试必须 `json.Marshal(map{"config_yaml": []byte(yaml)})`
+- **账号「创建时间」只能取自 JWT `auth_time`，不能取宿主 `HostAuthFileEntry.CreatedAt`（2026-09-27，workbuddy 0.14.42）**：宿主 watcher 每次扫描都执行 `auth.CreatedAt = time.Now()`（`internal/watcher/synthesizer/file.go:114`，`dispatcher.go:320` 传 `Now: time.Now()`），所以宿主侧 CreatedAt 会随积分刷新 / 保号 keepalive / 活跃测试写入漂移到「最近写入时刻」；生产 48 个 workbuddy auth JSON 顶层无 created_at 字段，文件 mtime/ctime 同样不可用。唯一可靠源是 accessToken JWT payload 的 `auth_time`（登录写定、token 刷新不变，生产 48/48 账号全有值，分布 08-20~09-27）；`iat` 会随刷新集中漂移（实测 19 个账号同秒），不可当创建时间。解析 helper：`workbuddy/created_at.go` 的 `parseCreatedAtFromAccessToken`（base64url 解 payload 第 2 段，不验签——本地已持有 token，非安全边界）。
 
 ### 关键设计决策
 
