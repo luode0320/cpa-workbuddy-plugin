@@ -130,10 +130,26 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	}
 	wbCandidates = filtered
 
+	// Prefer "available" accounts (credits cached above the preserve
+	// threshold). Accounts whose credits are unknown, below threshold, or
+	// exhausted are demoted to a fallback tier — they may still work, but
+	// healthy accounts should absorb traffic first. When no healthy tier
+	// exists, fall back to the full filtered list so the request still
+	// routes (never worse than the old behaviour).
+	threshold := preserveThreshold()
+	healthy := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
+	for _, c := range wbCandidates {
+		if score, _ := cachedCreditsScore(c.ID); score > threshold {
+			healthy = append(healthy, c)
+		}
+	}
+	if len(healthy) > 0 {
+		wbCandidates = healthy
+	}
+
 	// Build thin view for active-auth picker. All surviving candidates are
-	// "normal" accounts — the v0.10.x priority/default/fallback pools were
-	// removed in v0.12.0; preserve + cooldown filters above are
-	// the only separations left.
+	// "available" accounts when the healthy tier is non-empty; otherwise they
+	// are the best remaining fallbacks after preserve + cooldown filters.
 	cands := make([]activeAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
 		_, exhausted := cachedCreditsScore(c.ID)

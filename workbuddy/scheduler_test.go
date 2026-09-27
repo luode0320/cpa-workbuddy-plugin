@@ -105,7 +105,7 @@ func TestSchedulerPick_SingleCandidate_PicksIt(t *testing.T) {
 	}
 }
 
-func TestSchedulerPick_PrefersPanelSelection(t *testing.T) {
+func TestSchedulerPick_PrefersHealthyTierOverPanelSelection(t *testing.T) {
 	resetActiveAuth(t)
 	accountCache.Store("wb-a", &accountCacheEntry{credits: &creditsSummary{TotalRemain: 10, TotalSize: 10}})
 	accountCache.Store("wb-b", &accountCacheEntry{credits: &creditsSummary{TotalRemain: 500, TotalSize: 500}})
@@ -125,8 +125,33 @@ func TestSchedulerPick_PrefersPanelSelection(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 	resp := parsePickResponse(t, raw)
+	if !resp.Handled || resp.AuthID != "wb-b" {
+		t.Fatalf("want healthy tier wb-b (panel selection below threshold demoted), got %+v", resp)
+	}
+}
+
+func TestSchedulerPick_KeepsHealthyPanelSelection(t *testing.T) {
+	resetActiveAuth(t)
+	accountCache.Store("wb-a", &accountCacheEntry{credits: &creditsSummary{TotalRemain: 300, TotalSize: 300}})
+	accountCache.Store("wb-b", &accountCacheEntry{credits: &creditsSummary{TotalRemain: 500, TotalSize: 500}})
+	defer func() {
+		accountCache.Delete("wb-a")
+		accountCache.Delete("wb-b")
+	}()
+	setActiveAuthID("wb-a")
+	raw, err := handleSchedulerPick(mustMarshal(t, pluginapi.SchedulerPickRequest{
+		Provider: providerName,
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{ID: "wb-a", Provider: providerName},
+			{ID: "wb-b", Provider: providerName},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	resp := parsePickResponse(t, raw)
 	if !resp.Handled || resp.AuthID != "wb-a" {
-		t.Fatalf("want panel selection wb-a, got %+v", resp)
+		t.Fatalf("want healthy panel selection wb-a kept, got %+v", resp)
 	}
 }
 

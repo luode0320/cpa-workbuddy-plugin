@@ -43,7 +43,7 @@ import (
 
 // Defaults for the preserve watchdog. All overridable via config_yaml.
 const (
-	preserveThresholdDefault        int64         = 50
+	preserveThresholdDefault        int64         = 10
 	preserveWatchdogIntervalDefault time.Duration = 10 * time.Minute
 	preserveWatchdogEnabledDefault                = true
 	preserveWatchdogDisabledPoll                  = 30 * time.Second // how often we re-read config when disabled

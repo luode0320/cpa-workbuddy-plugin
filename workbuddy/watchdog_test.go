@@ -67,7 +67,7 @@ func TestPreserveShouldFlip(t *testing.T) {
 }
 
 // TestPreserveConfigDefaultsAndSet covers the runtime-tunable knobs: defaults
-// match the documented contract (50 credits / 10m / enabled) and
+// match the documented contract (10 credits / 10m / enabled) and
 // setPreserveConfig applies values under their own locks.
 func TestPreserveConfigDefaultsAndSet(t *testing.T) {
 	if got := preserveThreshold(); got != preserveThresholdDefault {
