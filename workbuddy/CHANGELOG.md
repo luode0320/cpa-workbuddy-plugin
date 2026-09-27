@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.37
+
+### Fix - 面板并发操作触发管理层限流
+
+- 变更要点:
+  1. 将管理层令牌桶限流从「所有 POST 均消耗 token」修正为「仅鉴权失败时消耗 token」，与 traework / qoderwork 行为对齐。
+  2. 修复面板加载时并发刷新、签到、测试等操作在容量 5 / 6 秒回填 1 的限流下被误杀（rate limit exceeded）的问题。
+- 涉及文件: workbuddy/management.go。
+
 ## 0.14.36
 
 ### Feat - 定时活跃测试失败自动标记「测试」标签 + 面板支持按测试标签过滤
