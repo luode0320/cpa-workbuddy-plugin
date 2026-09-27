@@ -22,7 +22,7 @@ type wbAccount struct {
 	Region       string          `json:"region"` // "cn" or "global"
 	Plan         string          `json:"plan"`
 	Status       string          `json:"status"`
-	CreatedAt    string          `json:"created_at,omitempty"` // host credential creation time (RFC3339)
+	CreatedAt    string          `json:"created_at,omitempty"` // account creation time (RFC3339), from JWT auth_time
 	Disabled     bool            `json:"disabled"`
 	Exhausted    bool            `json:"exhausted"`
 	Selected     bool            `json:"selected"`    // panel active routing card
@@ -98,6 +98,15 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 				acct.Error = "load auth: " + err.Error()
 				out[i] = acct
 				return
+			}
+			// CreatedAt: prefer the JWT auth_time (the real account creation
+			// moment). The host's HostAuthFileEntry.CreatedAt is unusable for
+			// display — the file watcher re-stamps it with time.Now() on every
+			// rescan, so it drifts to the latest credit refresh / keepalive /
+			// test ping. Keep the host value only as a last-resort fallback for
+			// legacy files whose token carries no auth_time.
+			if t, ok := parseCreatedAtFromAccessToken(sa.Auth.AccessToken); ok {
+				acct.CreatedAt = t.Format(time.RFC3339)
 			}
 			// Physical file is source of truth for disabled (host list may lag).
 			if phys != nil {

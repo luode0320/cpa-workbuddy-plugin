@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.42
+
+### Fix - 面板创建时间改为账号真实创建时间（JWT auth_time）
+
+- 根因：面板「创建」时间此前取宿主 HostAuthFileEntry.CreatedAt，该字段由宿主文件 watcher 每次扫描时用 time.Now() 重新赋值，因此会随积分刷新 / 保号 keepalive / 活跃测试写入漂移到「最近写入时刻」，并非账号创建时间。
+- 修复：新增 created_at.go 解析 accessToken JWT payload 的 auth_time（账号真实授权时间，登录时写定、token 刷新不变），面板优先采用；仅当 token 缺 auth_time 时回退宿主值。
+- 涉及文件：workbuddy/created_at.go、workbuddy/created_at_test.go、workbuddy/panel.go
+
 
 ## 0.14.41
 
