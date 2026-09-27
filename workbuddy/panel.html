@@ -421,7 +421,7 @@ function progressHTML(c, a){
   const total=size>0?size:(remain+used);
   const pct=total>0?Math.round(used/total*100):0;
   let color='var(--ok)'; if(pct>60)color='var(--warn)'; if(pct>85)color='var(--err)';
-  const when=c.fetched_at?` · 快照 ${esc(String(c.fetched_at).replace('T',' ').replace('Z',' UTC'))}`:'';
+  const when=c.fetched_at?` · 快照 ${esc(fmtCST(c.fetched_at))}`:'';
   return `<div class="pb"><div class="pb-label"><span class="pb-primary"><span class="pb-segment">可用 ${remain}</span>${statHTML}</span><span class="pb-used">已用 ${used} · ${pct}%</span></div><div class="pb-track"><div class="pb-bar" style="width:${pct}%;background:${color}"></div></div><div class="pb-meta">剩余 ${remain} · 已用 ${used} · 额度池 ${total}${c.pack_count?` · ${c.pack_count} 个包`:''}${when}</div></div>`;
 }
 function bindCardActions(root){
@@ -440,6 +440,13 @@ function bindCardActions(root){
       else if(act==="delete") openDeleteModal(idx);
     });
   });
+}
+// 统一北京时间展示：RFC3339/ISO 输入 → "YYYY-MM-DD HH:mm:ss"（Asia/Shanghai）。
+function fmtCST(s){
+  if(!s) return "";
+  const d=new Date(s);
+  if(isNaN(d.getTime())) return String(s);
+  return d.toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"}).replaceAll("/","-");
 }
 function card(a){
   const plan=(a.plan||"unknown").toLowerCase();
@@ -470,7 +477,8 @@ function card(a){
   const badges=preserveBadge+testFailedBadge+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
   return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-nickname="${esc(a.nickname||a.label||a.name||"")}" data-label="${esc(a.label||"")}" data-name="${esc(a.name||"")}" data-uid="${esc(a.uid||"")}" data-preserve="${a.preserve?"1":"0"}" data-test="${a.test_failed?"1":"0"}" data-failed="${((Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0)?"1":"0"}">
   <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}<button type="button" class="card-del" data-action="delete" data-auth-index="${esc(a.auth_index)}" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>
-  <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}${a.created_at?` · 创建 ${esc(String(a.created_at).replace('T',' ').replace('Z',' UTC'))}`:''}</div>
+  <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
+  ${a.created_at?`<div class="uid">创建 ${esc(fmtCST(a.created_at))}</div>`:''}
   ${progressHTML(cr,a)}
   ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
   <div class="actions">${refreshBtn}${actionHTML}<button class="sec" data-action="test" data-auth-index="${esc(a.auth_index)}" title="测试账号活跃并发送一次推理请求">测试</button></div>
@@ -557,8 +565,8 @@ function applyCardVisibility(){
     let show=true;
     if(currentFilter==="all") show=true;
     else if(currentFilter==="available"){
-      // 可用 = 不是保号池 / 已耗尽（积分耗尽）
-      const unavailable=c.dataset.preserve==="1"||c.querySelector(".badge.exhausted")!=null;
+      // 可用 = 不是保号池 / 已耗尽（积分耗尽）/ 测试失败
+      const unavailable=c.dataset.preserve==="1"||c.dataset.test==="1"||c.querySelector(".badge.exhausted")!=null;
       show=!unavailable;
     }
     else if(currentFilter==="exhausted") show=c.querySelector(".badge.exhausted")!=null;
@@ -727,8 +735,8 @@ function updateFilterCounts(accounts){
     if(a.test_failed) test++;
     // 失败 = 累计失败 > 0 或连败中（fail_count > 0）
     if((Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0) fail++;
-    // 可用 = 不属于保号池 / 耗尽
-    const isUnavailable=!!a.preserve||!!a.exhausted||(!!a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length)));
+    // 可用 = 不属于保号池 / 耗尽 / 测试失败
+    const isUnavailable=!!a.preserve||!!a.test_failed||!!a.exhausted||(!!a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length)));
     if(!isUnavailable) ava++;
   });
   const elAll=document.getElementById("cntAll");
@@ -752,7 +760,7 @@ function accountsForFilter(accounts){
   const list=accounts||[];
   if(currentFilter==="all") return list;
   if(currentFilter==="available"){
-    return list.filter(a=>!a.preserve&&!a.exhausted&&!(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length))));
+    return list.filter(a=>!a.preserve&&!a.test_failed&&!a.exhausted&&!(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length))));
   }
   if(currentFilter==="exhausted"){
     return list.filter(a=>a.exhausted||(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length))));
@@ -797,7 +805,7 @@ function renderSummary(accounts){
     const c=creditOf(a);
     // 不可用 = 保号池 / 耗尽（积分耗尽的等价判定）
     const isExhausted=!!a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0));
-    const isUnavailable=!!a.preserve||isExhausted;
+    const isUnavailable=!!a.preserve||!!a.test_failed||isExhausted;
     if(c.known){
       if(isUnavailable){ remainUnavail+=c.remain; unavailN++; }
       else { remainAvail+=c.remain; used+=c.used; size+=c.size; knownN++; }

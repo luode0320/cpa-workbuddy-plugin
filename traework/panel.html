@@ -657,12 +657,13 @@ function onSearchChange(v){
 function updateFilterCounts(accounts){
   const cnt={all:accounts.length,available:0,preserve:0,exhausted:0,failed:0,disabled:0,test:0};
   accounts.forEach(a=>{
-    if(a.disabled)cnt.disabled++;
+    // 测试失败账号不算可用（与可用过滤口径一致）。
+    if(a.test_failed){ cnt.test++; }
+    else if(a.disabled)cnt.disabled++;
     else if(a.preserved)cnt.preserve++;
     else if(a.exhausted)cnt.exhausted++;
     else cnt.available++;
     if((a.failed_count||0)>0||(a.fail_count||0)>0)cnt.failed++;
-    if(a.test_failed)cnt.test++;
   });
   ["all","available","preserve","exhausted","failed","disabled","test"].forEach(k=>{
     const el=document.getElementById("cnt"+k.charAt(0).toUpperCase()+k.slice(1));
@@ -707,11 +708,11 @@ function renderSummary(){
   }
   const scoped=accountsForFilter(accounts);
   // 5 卡片口径：剩余(可用) / 剩余(不可用) / 已用(消耗) / 额度池 / 消耗占比。
-  // 不可用 = 停用 / 保号 / 耗尽，其积分独立统计（不能参与路由）。
+  // 不可用 = 停用 / 保号 / 耗尽 / 测试失败，其积分独立统计（不能参与路由）。
   let remainAvail=0,remainUnavail=0,used=0,size=0,knownN=0,unavailN=0,exhaustedN=0;
   scoped.forEach(a=>{
     const c=creditOf(a);
-    const isUnavailable=!!a.disabled||!!a.preserved||!!a.exhausted;
+    const isUnavailable=!!a.disabled||!!a.preserved||!!a.exhausted||!!a.test_failed;
     if(c.known){
       if(isUnavailable){remainUnavail+=c.remain;unavailN++;}
       else{remainAvail+=c.remain;used+=c.used;size+=c.size;knownN++;}
