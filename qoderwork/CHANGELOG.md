@@ -1,5 +1,15 @@
 # QoderWork Plugin Changelog
 
+## 0.9.20
+
+### Fix - 移除管理层令牌桶限流 + 刷新改并发 10
+
+- 变更要点:
+  1. 彻底移除管理层 per-IP 令牌桶限流（v0.6.31 引入）。
+  2. 账号刷新队列从串行（1 账号/秒）改为并发 10（`refreshConcurrency = 10`）。
+  3. 通过 `inFlight` 标志保留幂等性。
+- 涉及文件: qoderwork/management.go、qoderwork/refresh_runner.go、qoderwork/refresh_runner_test.go。
+
 ## 0.9.19
 
 ### Fix — 执行器前置冷却拦截 + 多形态账号别名规范化匹配（同步自 workbuddy 0.14.33）

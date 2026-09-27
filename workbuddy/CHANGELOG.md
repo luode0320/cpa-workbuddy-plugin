@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.38
+
+### Fix - 移除管理层令牌桶限流 + 刷新改并发 10
+
+- 变更要点:
+  1. 彻底移除管理层 per-IP 令牌桶限流（v0.6.31 引入），面板并发刷新/签到/测试不会再被限流误杀。
+  2. 账号刷新队列从串行（1 账号/秒）改为并发 10（`refreshConcurrency = 10`），大幅缩短全量刷新耗时。
+  3. 通过 `inFlight` 标志保留幂等性：已有刷新轮在跑时，新的 EnqueueAll / EnqueueOne 调用被忽略。
+- 涉及文件: workbuddy/management.go、workbuddy/refresh_runner.go、workbuddy/refresh_runner_test.go。
+
 ## 0.14.37
 
 ### Fix - 面板并发操作触发管理层限流

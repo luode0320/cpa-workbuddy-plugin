@@ -1,6 +1,6 @@
-// refresh_runner_test.go exercises the throttled refresh queue's state
+// refresh_runner_test.go exercises the concurrent refresh queue's state
 // machine without touching the host API. Every test uses its own runner with
-// a fake fetchFn and a shortened tick interval so the suite stays fast.
+// a fake fetchFn so the suite stays fast.
 package main
 
 import (
@@ -10,11 +10,10 @@ import (
 	"time"
 )
 
-// newTestRunner builds an isolated runner with a fake fetch and a short tick.
+// newTestRunner builds an isolated runner with a fake fetch.
 func newTestRunner(fetch func(authIndex, authID string) error) *refreshRunner {
 	r := newRefreshRunner()
 	r.fetchFn = fetch
-	r.tickInterval = 2 * time.Millisecond
 	return r
 }
 
@@ -73,37 +72,43 @@ func TestRefreshRunner_EnqueueAllReturnsImmediately(t *testing.T) {
 	close(release)
 }
 
-// The worker must fetch one account at a time with at least tickInterval
-// between starts — no concurrent burst.
-func TestRefreshRunner_ThrottlesOneAccountAtATime(t *testing.T) {
+// The worker must respect the concurrency limit — at most 10 parallel fetches.
+func TestRefreshRunner_RespectsConcurrencyLimit(t *testing.T) {
 	var mu sync.Mutex
-	var starts []time.Time
+	current := 0
+	peak := 0
+	block := make(chan struct{})
 	r := newTestRunner(func(authIndex, authID string) error {
 		mu.Lock()
-		starts = append(starts, time.Now())
+		current++
+		if current > peak {
+			peak = current
+		}
+		mu.Unlock()
+		<-block
+		mu.Lock()
+		current--
 		mu.Unlock()
 		return nil
 	})
-	r.tickInterval = 30 * time.Millisecond
 	startTestRunner(r)
 	defer close(r.stop)
 
-	r.EnqueueAll(targets(4), "watchdog")
+	r.EnqueueAll(targets(20), "watchdog")
+	time.Sleep(50 * time.Millisecond)
+	close(block)
 	snap := waitForIdle(r, 3*time.Second)
 
-	if snap.Total != 4 || snap.Done != 4 {
-		t.Fatalf("expected 4 done, got total=%d done=%d failed=%d", snap.Total, snap.Done, snap.Failed)
+	if snap.Total != 20 || snap.Done != 20 {
+		t.Fatalf("expected 20 done, got total=%d done=%d failed=%d", snap.Total, snap.Done, snap.Failed)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(starts) != 4 {
-		t.Fatalf("expected 4 fetches, got %d", len(starts))
+	if peak > refreshConcurrency {
+		t.Fatalf("peak concurrency %d exceeds limit %d", peak, refreshConcurrency)
 	}
-	for i := 1; i < len(starts); i++ {
-		gap := starts[i].Sub(starts[i-1])
-		if gap < 20*time.Millisecond {
-			t.Fatalf("fetch %d started only %v after %d; want >= 20ms (throttle violated)", i, gap, i-1)
-		}
+	if peak < 2 {
+		t.Fatalf("peak concurrency %d is 1; expected parallel execution", peak)
 	}
 }
 
@@ -166,8 +171,9 @@ func TestRefreshRunner_SnapshotCounts(t *testing.T) {
 // A second EnqueueAll while a round is in flight must be ignored (idempotent):
 // the original round keeps running and no duplicate round is started.
 func TestRefreshRunner_EnqueueAllIdempotent(t *testing.T) {
+	block := make(chan struct{})
 	r := newTestRunner(func(authIndex, authID string) error {
-		time.Sleep(5 * time.Millisecond) // keep the first round in flight
+		<-block
 		return nil
 	})
 	startTestRunner(r)
@@ -176,10 +182,11 @@ func TestRefreshRunner_EnqueueAllIdempotent(t *testing.T) {
 	if n := r.EnqueueAll(targets(3), "panel"); n != 3 {
 		t.Fatalf("expected 3 queued, got %d", n)
 	}
-	time.Sleep(8 * time.Millisecond) // let the first round start (and stay in flight)
+	time.Sleep(5 * time.Millisecond)
 	if n := r.EnqueueAll(targets(2), "watchdog"); n != 0 {
 		t.Fatalf("expected duplicate EnqueueAll to be ignored (0), got %d", n)
 	}
+	close(block)
 
 	snap := waitForIdle(r, 3*time.Second)
 
@@ -193,18 +200,20 @@ func TestRefreshRunner_EnqueueAllIdempotent(t *testing.T) {
 
 // EnqueueOne while a round is in flight must be ignored (idempotent).
 func TestRefreshRunner_EnqueueOneIdempotent(t *testing.T) {
+	block := make(chan struct{})
 	r := newTestRunner(func(authIndex, authID string) error {
-		time.Sleep(5 * time.Millisecond)
+		<-block
 		return nil
 	})
 	startTestRunner(r)
 	defer close(r.stop)
 
 	r.EnqueueAll(targets(3), "panel")
-	time.Sleep(8 * time.Millisecond) // let the round start
+	time.Sleep(5 * time.Millisecond)
 	if r.EnqueueOne("idx-9", "id-9", "credits") {
 		t.Fatal("expected EnqueueOne during a running round to be ignored")
 	}
+	close(block)
 
 	snap := waitForIdle(r, 3*time.Second)
 	if snap.Total != 3 || snap.Done != 3 {

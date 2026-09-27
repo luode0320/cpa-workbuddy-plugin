@@ -1,12 +1,12 @@
-// refresh_runner.go implements the unified, throttled account-refresh queue.
+// refresh_runner.go implements the unified, concurrent account-refresh queue.
 //
 // Motivation: as the account fleet grows, refreshing every account in one
 // concurrent burst (the historical /refresh and panel lazy-load behaviour)
 // stampedes the upstream billing API and, on the refresh button, blocks the
 // management handler for N×round-trip latency. This runner decouples "ask for
 // a refresh" from "perform the refresh": every trigger just enqueues and
-// returns immediately, while a single background goroutine drains the queue at
-// a hard-coded one-account-per-second cadence.
+// returns immediately, while a background worker pool drains the queue with
+// a hard-coded concurrency limit of 10.
 //
 // Trigger sources (three entry points converge on one runner):
 //   1. panel enter (auto, no button)  — POST /refresh → EnqueueAll(source="panel")
@@ -17,10 +17,10 @@
 // (pending → running → done|failed) so the panel can poll GET /refresh/status
 // and update cards incrementally instead of waiting for the whole batch.
 //
-// Concurrency: a single worker goroutine owns fetch execution. The
+// Concurrency: up to refreshConcurrency goroutines fetch in parallel. The
 // upstream singleflight in cachedAccountDetails is reused unchanged — this
-// runner does not add a second lock; it only serialises *which* account is
-// fetched when, so concurrent dashboard/reconcile callers still share the
+// runner does not add a second lock; it only limits *how many* accounts are
+// fetched at once, so concurrent dashboard/reconcile callers still share the
 // same upstream call for the same account.
 package main
 
@@ -32,9 +32,8 @@ import (
 	"time"
 )
 
-// refreshTickInterval is the hard-coded per-account throttle (1s). Kept as a
-// var (not const) so tests can shorten it without touching real time.
-const refreshTickInterval = 1 * time.Second
+// refreshConcurrency is the hard-coded max parallel fetches.
+const refreshConcurrency = 10
 
 // refreshStatus is the per-account lifecycle state surfaced to the panel.
 type refreshStatus string
@@ -84,12 +83,12 @@ type refreshRunner struct {
 	batch        []refreshJobState
 	idx          int // next index to fetch (monotonic within a generation)
 	generation   int // monotonic round id; guards against a stale in-flight worker
+	inFlight     bool // true from Enqueue until drainBatch fully completes
 	sources      []string
 	startedAt    time.Time
 	finishedAt   time.Time
 	wake         chan struct{}
 	stop         chan struct{}
-	tickInterval time.Duration
 	fetchFn      func(authIndex, authID string) error
 }
 
@@ -97,7 +96,6 @@ func newRefreshRunner() *refreshRunner {
 	return &refreshRunner{
 		wake:         make(chan struct{}, 1),
 		stop:         make(chan struct{}),
-		tickInterval: refreshTickInterval,
 		fetchFn:      doFetchOne,
 	}
 }
@@ -118,7 +116,7 @@ func init() {
 // collapse into a single round.
 func (r *refreshRunner) EnqueueAll(targets []refreshTarget, source string) int {
 	r.mu.Lock()
-	if r.idx < len(r.batch) {
+	if r.inFlight {
 		r.mu.Unlock()
 		return 0
 	}
@@ -139,6 +137,7 @@ func (r *refreshRunner) EnqueueAll(targets []refreshTarget, source string) int {
 	r.sources = []string{source}
 	r.startedAt = time.Now()
 	r.finishedAt = time.Time{}
+	r.inFlight = true
 	n := len(r.batch)
 	r.mu.Unlock()
 
@@ -155,7 +154,7 @@ func (r *refreshRunner) EnqueueOne(authIndex, authID, source string) bool {
 		return false
 	}
 	r.mu.Lock()
-	if r.idx < len(r.batch) {
+	if r.inFlight {
 		r.mu.Unlock()
 		return false
 	}
@@ -168,6 +167,7 @@ func (r *refreshRunner) EnqueueOne(authIndex, authID, source string) bool {
 	r.sources = []string{source}
 	r.startedAt = time.Now()
 	r.finishedAt = time.Time{}
+	r.inFlight = true
 	r.mu.Unlock()
 
 	r.signal()
@@ -182,8 +182,8 @@ func (r *refreshRunner) signal() {
 	}
 }
 
-// run is the single worker goroutine. It waits for a signal, then drains the
-// batch one account at a time with a fixed inter-fetch throttle.
+// run is the worker goroutine. It waits for a signal, then drains the batch
+// with up to refreshConcurrency parallel fetches.
 func (r *refreshRunner) run() {
 	for {
 		select {
@@ -196,35 +196,48 @@ func (r *refreshRunner) run() {
 		gen := r.generation
 		r.mu.Unlock()
 
-		for {
-			r.mu.Lock()
-			if r.generation != gen {
-				// Batch replaced mid-flight: abandon and wait for the next
-				// signal (already queued by the replacing Enqueue call).
-				r.mu.Unlock()
-				break
-			}
-			if r.idx >= len(r.batch) {
-				r.finishedAt = time.Now()
-				r.mu.Unlock()
-				break
-			}
-			job := r.batch[r.idx]
-			job.Status = rsRunning
-			r.batch[r.idx] = job
-			authIndex := job.AuthIndex
-			authID := job.AuthID
+		r.drainBatch(gen)
+	}
+}
+
+// drainBatch dispatches pending jobs to up to refreshConcurrency parallel
+// workers and waits for all of them to finish before returning. The stop
+// channel is closed when the runner exits; goroutines naturally drain.
+func (r *refreshRunner) drainBatch(gen int) {
+	sem := make(chan struct{}, refreshConcurrency)
+	var wg sync.WaitGroup
+
+	for {
+		r.mu.Lock()
+		if r.generation != gen {
 			r.mu.Unlock()
+			break
+		}
+		if r.idx >= len(r.batch) {
+			r.mu.Unlock()
+			break
+		}
+		// Claim slot.
+		job := r.batch[r.idx]
+		job.Status = rsRunning
+		r.batch[r.idx] = job
+		authIndex := job.AuthIndex
+		authID := job.AuthID
+		slot := r.idx
+		r.idx++
+		r.mu.Unlock()
+
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(slot int, authIndex, authID string) {
+			defer wg.Done()
+			defer func() { <-sem }()
 
 			err := r.fetchFn(authIndex, authID)
 
-			// idx only advances after the fetch completes, so Running
-			// (idx < len) stays true until the final account is actually
-			// done — the panel never observes a "finished" batch with a
-			// still-running tail.
 			r.mu.Lock()
-			if r.generation == gen && r.idx < len(r.batch) {
-				j := r.batch[r.idx]
+			if r.generation == gen && slot < len(r.batch) {
+				j := r.batch[slot]
 				j.FetchedAt = time.Now()
 				if err != nil {
 					j.Status = rsFailed
@@ -232,20 +245,21 @@ func (r *refreshRunner) run() {
 				} else {
 					j.Status = rsDone
 				}
-				r.batch[r.idx] = j
-				r.idx++
+				r.batch[slot] = j
 			}
 			r.mu.Unlock()
-
-			// Throttle: even a fast fetch must wait the full interval so the
-			// upstream sees at most one account per second.
-			select {
-			case <-time.After(r.tickInterval):
-			case <-r.stop:
-				return
-			}
-		}
+		}(slot, authIndex, authID)
 	}
+
+	wg.Wait()
+
+	// Mark batch finished if this generation is still current.
+	r.mu.Lock()
+	if r.generation == gen {
+		r.finishedAt = time.Now()
+		r.inFlight = false
+	}
+	r.mu.Unlock()
 }
 
 // Snapshot returns a consistent read-only view of the current batch.
@@ -261,9 +275,10 @@ func (r *refreshRunner) Snapshot() refreshSnapshot {
 		FinishedAt:   r.finishedAt,
 		PerAccount:   append([]refreshJobState(nil), r.batch...),
 	}
-	snap.Running = r.idx < len(r.batch)
+	snap.Running = r.inFlight
 	for i := range r.batch {
 		switch r.batch[i].Status {
+		case rsRunning:
 		case rsDone:
 			snap.Done++
 		case rsFailed:

@@ -124,13 +124,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 	// Plugin-layer auth for mutating endpoints (defence-in-depth on top of
 	// the host middleware; skipped when no management_key is configured).
 	if req.Method == http.MethodPost || mutatingManagementPath(path) {
-		ip := managementClientIP(req)
 		if status, msg := checkManagementAuth(req); status != 0 {
-			if !allowManagementRequest(ip) {
-				return okEnvelope(mgmtJSONResponse(http.StatusTooManyRequests, map[string]any{
-					"error": "rate limit exceeded, try again later",
-				}))
-			}
 			return okEnvelope(mgmtJSONResponse(status, map[string]any{"error": msg}))
 		}
 	}
@@ -602,24 +596,10 @@ func persistDisabledToggle(authIndex, authID string, disabled bool) error {
 }
 
 // -----------------------------------------------------------------------------
-// Management auth + rate limit (defence-in-depth)
+// Management auth (defence-in-depth)
 // -----------------------------------------------------------------------------
 
-const (
-	mgmtRateLimitCapacity = 5
-	mgmtRateLimitRefill   = time.Minute / 10
-	mgmtRateLimitTTL      = 10 * time.Minute
-)
-
-type mgmtRateEntry struct {
-	tokens   float64
-	lastSeen time.Time
-}
-
 var (
-	mgmtRateLimit   = map[string]*mgmtRateEntry{}
-	mgmtRateLimitMu sync.Mutex
-
 	managementAPIKeyMu sync.RWMutex
 	managementAPIKey   string
 )
@@ -654,51 +634,6 @@ func checkManagementAuth(req pluginapi.ManagementRequest) (int, string) {
 		return http.StatusForbidden, "invalid management key"
 	}
 	return 0, ""
-}
-
-func allowManagementRequest(ip string) bool {
-	if ip == "" {
-		ip = "_global"
-	}
-	mgmtRateLimitMu.Lock()
-	defer mgmtRateLimitMu.Unlock()
-	now := time.Now()
-	e, ok := mgmtRateLimit[ip]
-	if !ok {
-		e = &mgmtRateEntry{tokens: mgmtRateLimitCapacity, lastSeen: now}
-		mgmtRateLimit[ip] = e
-	}
-	elapsed := now.Sub(e.lastSeen)
-	e.tokens += float64(elapsed) / float64(mgmtRateLimitRefill)
-	if e.tokens > mgmtRateLimitCapacity {
-		e.tokens = mgmtRateLimitCapacity
-	}
-	e.lastSeen = now
-	if e.tokens < 1 {
-		return false
-	}
-	e.tokens--
-	if len(mgmtRateLimit) > 1024 {
-		for k, v := range mgmtRateLimit {
-			if now.Sub(v.lastSeen) > mgmtRateLimitTTL {
-				delete(mgmtRateLimit, k)
-			}
-		}
-	}
-	return true
-}
-
-func managementClientIP(req pluginapi.ManagementRequest) string {
-	if xff := strings.TrimSpace(req.Headers.Get("X-Forwarded-For")); xff != "" {
-		if i := strings.Index(xff, ","); i > 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return xff
-	}
-	if xr := strings.TrimSpace(req.Headers.Get("X-Real-Ip")); xr != "" {
-		return xr
-	}
-	return ""
 }
 
 // handleExportAuth returns every traework credential as a parsed JSON backup
