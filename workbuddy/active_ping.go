@@ -149,10 +149,27 @@ func doActivePing(authIndex, authID string, sa *storedAuth) error {
 
 	chosenModel := pickRandomWorkbuddyModel(sa)
 	if err := sendActivePingWorkbuddyFn(sa, chosenModel); err != nil {
+		// 定时活跃测试失败：仍有积分的账号打 test_failed 标签（面板可过滤
+		// 并人工清理），积分未知或已耗尽的账号不打。落盘失败只留告警，
+		// 不影响刷新主链路。
+		if authIndex, idxErr := hostAuthIndexForPhys(key); idxErr == nil {
+			if cr := cachedCredits(authID); cr != nil && cr.TotalRemain > 0 {
+				if tagErr := persistTestFailedToggle(authIndex, true); tagErr != nil {
+					log.Printf("[workbuddy] test_failed tag %s failed: %v", authID, tagErr)
+				}
+			}
+		}
 		return err
 	}
 
 	recordActivePing(key)
+	// 定时活跃测试成功：清除既有 test_failed 标签（幂等，字段不存在时
+	// 不落盘）。落盘失败只留告警，不影响刷新主链路。
+	if authIndex, idxErr := hostAuthIndexForPhys(key); idxErr == nil {
+		if err := persistTestFailedToggle(authIndex, false); err != nil {
+			log.Printf("[workbuddy] test_failed clear %s failed: %v", authID, err)
+		}
+	}
 	log.Printf("[workbuddy] active ping success for %s with model %s", key, chosenModel)
 	return nil
 }

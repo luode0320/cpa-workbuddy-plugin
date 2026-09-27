@@ -24,8 +24,9 @@ type wbAccount struct {
 	Status       string          `json:"status"`
 	Disabled     bool            `json:"disabled"`
 	Exhausted    bool            `json:"exhausted"`
-	Selected     bool            `json:"selected"` // panel active routing card
-	Preserve     bool            `json:"preserve"` // watchdog parked this account; never routed
+	Selected     bool            `json:"selected"`    // panel active routing card
+	Preserve     bool            `json:"preserve"`    // watchdog parked this account; never routed
+	TestFailed   bool            `json:"test_failed"` // scheduled active-ping failed while credits remained
 	Credits      *creditsSummary `json:"credits,omitempty"`
 	Checkin      *checkinSummary `json:"checkin,omitempty"`
 	TrialClaimed bool            `json:"trial_claimed,omitempty"` // Global: expert trial already claimed
@@ -99,22 +100,23 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 			// Physical file is source of truth for disabled (host list may lag).
 			if phys != nil {
 				acct.Disabled = phys.Disabled
+				acct.TestFailed = parseTestFailedFromAuthJSON(phys.JSON)
 				if phys.Name != "" {
 					acct.Name = phys.Name
 				}
 			}
-		acct.Nickname = sa.Account.Nickname
-		acct.UID = sa.Account.UID
-		// Success/Failed prefer the plugin-owned cumulative counters (survive
-		// restart). The host-list values set above are the recent-window
-		// (last ~200min) numbers — kept as the fallback for UID-less legacy
-		// accounts. UID-bearing accounts read the in-memory cumulative value
-		// (seeded from the persisted json at startup, then memory-first; see
-		// counter.go) without re-reading json on every render.
-		if strings.TrimSpace(acct.UID) != "" {
-			ensureCounterLoaded(acct.UID, phys.JSON)
-			acct.Success, acct.Failed = counterSnapshot(acct.UID)
-		}
+			acct.Nickname = sa.Account.Nickname
+			acct.UID = sa.Account.UID
+			// Success/Failed prefer the plugin-owned cumulative counters (survive
+			// restart). The host-list values set above are the recent-window
+			// (last ~200min) numbers — kept as the fallback for UID-less legacy
+			// accounts. UID-bearing accounts read the in-memory cumulative value
+			// (seeded from the persisted json at startup, then memory-first; see
+			// counter.go) without re-reading json on every render.
+			if strings.TrimSpace(acct.UID) != "" {
+				ensureCounterLoaded(acct.UID, phys.JSON)
+				acct.Success, acct.Failed = counterSnapshot(acct.UID)
+			}
 			acct.Region = accountRegion(sa)
 			if fetchCredits {
 				plan, ci, cr, errs := cachedAccountDetails(f.ID, sa, force)

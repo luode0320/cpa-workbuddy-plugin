@@ -68,6 +68,7 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .badge.cn{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
 .badge.global{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .badge.preserve{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-style:italic}
+.badge.test-failed{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-style:italic}
 .badge.stat{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-weight:500}
 .badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 /* 后台刷新卡片三态（data-refresh-state：pending/running/done/failed）
@@ -247,6 +248,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button type="button" class="ftag" data-region="exhausted" onclick="filterRegion('exhausted',this)">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
     <button type="button" class="ftag" data-region="preserve" onclick="filterRegion('preserve',this)">保号 <span class="cnt" id="cntPreserve">0</span></button>
     <button type="button" class="ftag" data-region="failed" onclick="filterRegion('failed',this)" title="累计失败 > 0 或连败中（fail_count > 0）的账号；卡片上的「失败/连败/冷却」段即数据来源">失败 <span class="cnt" id="cntFailed">0</span></button>
+    <button type="button" class="ftag" data-region="test" onclick="filterRegion('test',this)" title="定时活跃测试失败且仍有积分的账号；建议人工复核后清理">测试 <span class="cnt" id="cntTest">0</span></button>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
@@ -464,8 +466,9 @@ function card(a){
   }
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
   const preserveBadge=a.preserve?`<span class="badge preserve" title="watchdog 检测到积分不足，账号暂停路由以保留积分别耗尽">保号</span>`:"";
-  const badges=preserveBadge+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
-  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-nickname="${esc(a.nickname||a.label||a.name||"")}" data-label="${esc(a.label||"")}" data-name="${esc(a.name||"")}" data-uid="${esc(a.uid||"")}" data-preserve="${a.preserve?"1":"0"}" data-failed="${((Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0)?"1":"0"}">
+  const testFailedBadge=a.test_failed?`<span class="badge test-failed" title="定时活跃测试失败且仍有积分；建议人工复核后清理">测试</span>`:"";
+  const badges=preserveBadge+testFailedBadge+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
+  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-nickname="${esc(a.nickname||a.label||a.name||"")}" data-label="${esc(a.label||"")}" data-name="${esc(a.name||"")}" data-uid="${esc(a.uid||"")}" data-preserve="${a.preserve?"1":"0"}" data-test="${a.test_failed?"1":"0"}" data-failed="${((Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0)?"1":"0"}">
   <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}<button type="button" class="card-del" data-action="delete" data-auth-index="${esc(a.auth_index)}" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
   ${progressHTML(cr,a)}
@@ -552,6 +555,7 @@ function applyCardVisibility(){
     }
     else if(currentFilter==="exhausted") show=c.querySelector(".badge.exhausted")!=null;
     else if(currentFilter==="preserve") show=c.dataset.preserve==="1";
+    else if(currentFilter==="test") show=c.dataset.test==="1";
     else if(currentFilter==="failed") show=c.dataset.failed==="1";
     else show=r===currentFilter;
     if(show&&q){
@@ -707,11 +711,12 @@ function filterRegion(region, btn){
   renderSummary(lastAccounts);
 }
 function updateFilterCounts(accounts){
-  let cn=0, gl=0, ex=0, prs=0, ava=0, fail=0;
+  let cn=0, gl=0, ex=0, prs=0, ava=0, fail=0, test=0;
   (accounts||[]).forEach(a=>{
     if((a.region||"cn")==="global") gl++; else cn++;
     if(a.exhausted||(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length)))) ex++;
     if(a.preserve) prs++;
+    if(a.test_failed) test++;
     // 失败 = 累计失败 > 0 或连败中（fail_count > 0）
     if((Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0) fail++;
     // 可用 = 不属于保号池 / 耗尽
@@ -725,6 +730,7 @@ function updateFilterCounts(accounts){
   const elEx=document.getElementById("cntExhausted");
   const elPrs=document.getElementById("cntPreserve");
   const elFail=document.getElementById("cntFailed");
+  const elTest=document.getElementById("cntTest");
   if(elAll) elAll.textContent=String((accounts||[]).length);
   if(elAv) elAv.textContent=String(ava);
   if(elCn) elCn.textContent=String(cn);
@@ -732,6 +738,7 @@ function updateFilterCounts(accounts){
   if(elEx) elEx.textContent=String(ex);
   if(elPrs) elPrs.textContent=String(prs);
   if(elFail) elFail.textContent=String(fail);
+  if(elTest) elTest.textContent=String(test);
 }
 function accountsForFilter(accounts){
   const list=accounts||[];
@@ -744,6 +751,9 @@ function accountsForFilter(accounts){
   }
   if(currentFilter==="preserve"){
     return list.filter(a=>!!a.preserve);
+  }
+  if(currentFilter==="test"){
+    return list.filter(a=>!!a.test_failed);
   }
   if(currentFilter==="failed"){
     return list.filter(a=>(Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0);
@@ -799,7 +809,7 @@ function renderSummary(accounts){
   const pct=total>0?Math.round(used/total*100):0;
   let barColor="var(--ok)"; if(pct>60)barColor="var(--warn)"; if(pct>85)barColor="var(--err)";
   // 标题文案：「可用」过滤时直接用"可用账号"；其他用通用「全部账号」
-  const scopeLabel=currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="global"?"Global 账号":(currentFilter==="cn"?"CN 账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="preserve"?"保号账号":(currentFilter==="failed"?"失败账号":"全部账号"))))));
+  const scopeLabel=currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="global"?"Global 账号":(currentFilter==="cn"?"CN 账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="preserve"?"保号账号":(currentFilter==="failed"?"失败账号":(currentFilter==="test"?"测试账号":"全部账号")))))));
   const allTotal=allSize>0?allSize:(allRemain+allUsed);
   box.style.display="block";
   box.innerHTML=`

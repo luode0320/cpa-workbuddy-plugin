@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.36
+
+### Feat - 定时活跃测试失败自动标记「测试」标签 + 面板支持按测试标签过滤
+
+- 变更要点:
+  1. 定时活跃测试失败且账号仍有积分时，自动向物理 auth JSON 直写顶层 `test_failed: true` 标签，便于人工识别和清理后续无法使用的账号；积分未知或已耗尽的账号不打标签。
+  2. 定时活跃测试成功后自动清除既有 `test_failed` 标签；字段不存在时不产生额外写盘。
+  3. 面板手动「测试」按钮失败不会打标签，保持手动测试与定时自动标记职责分离。
+  4. 账号列表新增 `test_failed` 字段，面板过滤条新增「测试」标签按钮、计数、卡片 badge、显隐过滤与用量汇总标题联动。
+- 涉及文件: workbuddy/test_failed_tag.go、workbuddy/test_failed_tag_test.go、workbuddy/active_ping.go、workbuddy/panel.go、workbuddy/panel.html。
+
 ## 0.14.35
 
 ### Feat - 账号刷新自动发起轻量活跃探测(hi) + 面板新增手动测试按钮

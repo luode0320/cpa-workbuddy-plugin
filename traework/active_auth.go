@@ -103,6 +103,7 @@ type traeAccountView struct {
 	Exhausted     bool         `json:"exhausted"`
 	Disabled      bool         `json:"disabled"`
 	Preserved     bool         `json:"preserved"`
+	TestFailed    bool         `json:"test_failed"` // scheduled active-ping failed while credits remained
 	CheckinToday  bool         `json:"checkin_today"`
 	SuccessCount  int64        `json:"success_count,omitempty"`
 	FailedCount   int64        `json:"failed_count,omitempty"`

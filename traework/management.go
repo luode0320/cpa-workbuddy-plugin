@@ -201,14 +201,15 @@ func handleAccounts() map[string]any {
 			continue
 		}
 		view := traeAccountView{
-			AuthID:    f.ID,
-			AuthIndex: f.AuthIndex,
-			Nickname:  a.Nickname,
-			Label:     f.Label,
-			Name:      f.Name,
-			UID:       a.UserID,
-			Disabled:  phys.Disabled || f.Disabled,
-			Preserved: isPreserve(f.ID),
+			AuthID:     f.ID,
+			AuthIndex:  f.AuthIndex,
+			Nickname:   a.Nickname,
+			Label:      f.Label,
+			Name:       f.Name,
+			UID:        a.UserID,
+			Disabled:   phys.Disabled || f.Disabled,
+			Preserved:  isPreserve(f.ID),
+			TestFailed: parseTestFailedFromAuthJSON(phys.JSON),
 		}
 		// Cumulative success/failed counters (plugin-owned, survive restart).
 		if strings.TrimSpace(a.UserID) != "" {

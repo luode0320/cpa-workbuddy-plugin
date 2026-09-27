@@ -65,6 +65,7 @@ button.danger:hover{background:var(--err);color:#fff}
 .badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border);white-space:nowrap}
 .badge.exhausted{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
 .badge.preserve{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-style:italic}
+.badge.test-failed{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-style:italic}
 .badge.disabled{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
 .badge.stat{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-weight:500}
 .badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
@@ -243,6 +244,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button type="button" class="ftag" data-f="exhausted" onclick="filterRegion('exhausted',this)" title="积分耗尽（remain &lt;= 0），lifecycle 自动停用">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
     <button type="button" class="ftag" data-f="failed" onclick="filterRegion('failed',this)" title="累计失败 &gt; 0 或连败中（fail_count &gt; 0）的账号">失败 <span class="cnt" id="cntFailed">0</span></button>
     <button type="button" class="ftag" data-f="disabled" onclick="filterRegion('disabled',this)" title="手动停用、耗尽自动停用（积分恢复后签到自动启用）或 refresh token 失效被标记的账号">停用 <span class="cnt" id="cntDisabled">0</span></button>
+    <button type="button" class="ftag" data-f="test" onclick="filterRegion('test',this)" title="定时活跃测试失败且仍有积分的账号；建议人工复核后清理">测试 <span class="cnt" id="cntTest">0</span></button>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
@@ -549,6 +551,7 @@ function card(a){
   if(a.disabled)badges.push(tag("disabled","停用"));
   if(a.exhausted)badges.push(tag("exhausted","耗尽"));
   if(a.preserved)badges.push(tag("preserve","保号"));
+  if(a.test_failed)badges.push(tag("test-failed","测试"));
   if(!badges.length)badges.push(tag("stat","正常"));
   const cool=(!a.cooling_down&&(Number(a.fail_count)||0)>0)?tag("stat","失败"+a.fail_count+"次"):"";
   const checked=!!a.checkin_today;
@@ -573,6 +576,7 @@ function card(a){
 function filterClass(a){
   if(a.disabled)return "disabled";
   if(a.preserved)return "preserve";
+  if(a.test_failed)return "test";
   if(a.exhausted)return "exhausted";
   return "available";
 }
@@ -651,15 +655,16 @@ function onSearchChange(v){
   renderSummary();
 }
 function updateFilterCounts(accounts){
-  const cnt={all:accounts.length,available:0,preserve:0,exhausted:0,failed:0,disabled:0};
+  const cnt={all:accounts.length,available:0,preserve:0,exhausted:0,failed:0,disabled:0,test:0};
   accounts.forEach(a=>{
     if(a.disabled)cnt.disabled++;
     else if(a.preserved)cnt.preserve++;
     else if(a.exhausted)cnt.exhausted++;
     else cnt.available++;
     if((a.failed_count||0)>0||(a.fail_count||0)>0)cnt.failed++;
+    if(a.test_failed)cnt.test++;
   });
-  ["all","available","preserve","exhausted","failed","disabled"].forEach(k=>{
+  ["all","available","preserve","exhausted","failed","disabled","test"].forEach(k=>{
     const el=document.getElementById("cnt"+k.charAt(0).toUpperCase()+k.slice(1));
     if(el)el.textContent=cnt[k];
   });
@@ -673,8 +678,11 @@ function accountsForFilter(list){
   if(currentFilter==="failed"){
     return accounts.filter(a=>(Number(a.failed_count)||0)>0||(Number(a.fail_count)||0)>0);
   }
+  if(currentFilter==="test"){
+    return accounts.filter(a=>!!a.test_failed);
+  }
   return accounts.filter(a=>{
-    const f=a.disabled?"disabled":(a.preserved?"preserve":(a.exhausted?"exhausted":"available"));
+    const f=a.disabled?"disabled":(a.preserved?"preserve":(a.test_failed?"test":(a.exhausted?"exhausted":"available")));
     return f===currentFilter;
   });
 }
@@ -713,7 +721,7 @@ function renderSummary(){
   const total=size>0?size:(remainAvail+used);
   const pct=total>0?Math.round(used/total*100):0;
   let barColor="var(--ok)"; if(pct>60)barColor="var(--warn)"; if(pct>85)barColor="var(--err)";
-  const scopeLabel=(currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="preserve"?"保号账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="failed"?"失败账号":(currentFilter==="disabled"?"停用账号":"全部账号"))))));
+  const scopeLabel=(currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="preserve"?"保号账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="failed"?"失败账号":(currentFilter==="disabled"?"停用账号":(currentFilter==="test"?"测试账号":"全部账号")))))));
   box.style.display="block";
   box.innerHTML=
     '<div class="summary-hd"><span class="summary-title">用量汇总 · '+esc(scopeLabel)+"</span>"+
