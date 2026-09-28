@@ -205,12 +205,15 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	checkinAutoMu.RLock()
 	auto := checkinAuto
 	checkinAutoMu.RUnlock()
-	// Ensure default selection for panel + scheduler (first usable card).
-	activeID := ensureDefaultActiveAuth(out)
-	// Sync preserve markers from the disk-backed map — single source of
-	// truth. refreshPreserveSetFromDisk also prunes entries for accounts that
-	// no longer exist so the scheduler can't pin a session to a deleted auth.
+	// Sync the two disk-backed routing mirrors BEFORE computing the panel
+	// selection, so ensureDefaultActiveAuth applies the same availability
+	// contract as scheduler.pick (保号 / 测试 both live here). Both refreshes
+	// also prune entries for accounts that no longer exist so the scheduler
+	// can't pin a session to a deleted auth.
 	preserveSize := refreshPreserveSetFromDisk()
+	refreshTestFailedSetFromDisk()
+	// Ensure default selection for panel + scheduler (lowest-credit available card).
+	activeID := ensureDefaultActiveAuth(out)
 	// On force refresh, reconcile preserve flags against the already-fetched
 	// credits so the badges in THIS response are correct without waiting for
 	// the next watchdog interval. Zero extra upstream QPS — `out` carries the
@@ -221,13 +224,16 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 		// Re-mirror so the badge loop below sees the freshly-written disk
 		// flags instead of the pre-write in-memory snapshot.
 		preserveSize = refreshPreserveSetFromDisk()
+		refreshTestFailedSetFromDisk()
 	}
 	// Aggregate credits for panel/API consumers (all accounts currently in out).
 	sum := summarizeCredits(out)
-	// Mark selected account in list for UI; preserve comes from the disk mirror.
+	// Mark selected account in list for UI; preserve / test_failed come from
+	// the disk mirrors so the badges always match the routing contract.
 	for i := range out {
 		out[i].Selected = out[i].AuthID == activeID
 		out[i].Preserve = isPreserve(out[i].AuthID)
+		out[i].TestFailed = isTestFailed(out[i].AuthID)
 		// Failover state is in-memory only; surface it so the panel can show
 		// consecutive failures + cooldown instead of a binary badge.
 		if count, until, ok := failoverStateSnapshot(out[i].AuthID); ok && count > 0 {

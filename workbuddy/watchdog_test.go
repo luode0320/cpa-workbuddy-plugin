@@ -179,11 +179,12 @@ func TestSchedulerPick_PreserveFiltered(t *testing.T) {
 	}
 }
 
-// TestSchedulerPick_AllPreserved_KeepsFullList: when EVERY workbuddy account
-// is preserved the preserve filter keeps the full list so routing falls back
-// to the current pin (mirrors the all-cooldown fallback) instead of deferring
-// to the built-in scheduler.
-func TestSchedulerPick_AllPreserved_KeepsFullList(t *testing.T) {
+// TestSchedulerPick_AllPreserved_Defers: 保号 is a hard exclusion (an account
+// below the threshold must keep its buffer), so when EVERY workbuddy account is
+// preserved the pick defers to the built-in scheduler for cross-provider
+// failover instead of re-admitting an account we just declared unusable.
+// (Replaces the pre-2026-09-29 keep-full-list fallback.)
+func TestSchedulerPick_AllPreserved_Defers(t *testing.T) {
 	resetActiveAuth(t)
 	resetPreserve(t)
 	resetFailover(t)
@@ -203,11 +204,8 @@ func TestSchedulerPick_AllPreserved_KeepsFullList(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 	resp := parsePickResponse(t, raw)
-	if !resp.Handled {
-		t.Fatalf("all-preserved fleet should still fall back to the pin, got %+v", resp)
-	}
-	if resp.AuthID != "wb-b" {
-		t.Fatalf("want fallback to panel pin wb-b, got %+v", resp)
+	if resp.Handled {
+		t.Fatalf("all-preserved fleet must defer (cross-provider failover), got %+v", resp)
 	}
 }
 

@@ -105,7 +105,11 @@ func TestSchedulerPick_SingleCandidate_PicksIt(t *testing.T) {
 	}
 }
 
-func TestSchedulerPick_PrefersHealthyTierOverPanelSelection(t *testing.T) {
+// TestSchedulerPick_PrefersLowCreditOverHighCredit is the low-credit-first
+// contract: the soonest-to-exhaust account absorbs traffic before a fat one,
+// so the fleet burns down to fewer accounts instead of spreading usage thin.
+// (Replaces the 0.14.40 healthy-tier rule, which preferred HIGH credits.)
+func TestSchedulerPick_PrefersLowCreditOverHighCredit(t *testing.T) {
 	resetActiveAuth(t)
 	accountCache.Store("wb-a", &accountCacheEntry{credits: &creditsSummary{TotalRemain: 10, TotalSize: 10}})
 	accountCache.Store("wb-b", &accountCacheEntry{credits: &creditsSummary{TotalRemain: 500, TotalSize: 500}})
@@ -125,8 +129,8 @@ func TestSchedulerPick_PrefersHealthyTierOverPanelSelection(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 	resp := parsePickResponse(t, raw)
-	if !resp.Handled || resp.AuthID != "wb-b" {
-		t.Fatalf("want healthy tier wb-b (panel selection below threshold demoted), got %+v", resp)
+	if !resp.Handled || resp.AuthID != "wb-a" {
+		t.Fatalf("want low-credit account wb-a routed first, got %+v", resp)
 	}
 }
 

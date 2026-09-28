@@ -209,6 +209,10 @@ func runPreserveWatchdogTick() {
 	if err != nil {
 		return
 	}
+	// Rebuild the 「测试」label mirror from disk on the same cadence, so a tag
+	// written by the active-ping path (or another session) is reflected in
+	// routing even when the panel is never opened.
+	refreshTestFailedSetFromDisk()
 	threshold := preserveThreshold()
 	targets := make([]refreshTarget, 0, len(files))
 	for _, f := range files {

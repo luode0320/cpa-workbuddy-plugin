@@ -7,6 +7,12 @@
 // workbuddy candidate is exhausted/cooling-down the pick is deferred as well
 // (Handled: false) so the host can fail over to other providers' accounts.
 //
+// Only "available" accounts participate: 「测试」标签 (test_failed), 保号
+// (preserve) and 冷却 (failover cooldown) are hard-excluded — they are
+// unusable by product definition, so there is no fallback that re-admits them.
+// Survivors are ordered LOW-CREDIT-FIRST so the soonest-to-exhaust accounts
+// burn down before the watchdog parks them.
+//
 // scheduler_mode=session additionally enables per-conversation routing: each
 // conversation is pinned to one account for up to 1h and conversations are
 // spread across accounts (see session_auth.go).
@@ -14,6 +20,7 @@ package main
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"sync"
 
@@ -99,57 +106,43 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
 
-	// Preserve filter: accounts the watchdog flagged (credits below
-	// preserve_threshold) are kept out of routing entirely so they keep a
-	// small credit buffer. Place this BEFORE the cooldown filter so the
-	// preserve-pool fallback can still see preserved accounts when every
-	// workbuddy account is preserved — we don't want a fleet-wide credit
-	// reset to lock routing.
-	preserveFiltered := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
+	// Hard exclusion: 「测试」标签 (scheduled active ping failed while credits
+	// remained) / 保号 (watchdog parked below preserve_threshold) / 冷却
+	// (failover cooldown) accounts never carry traffic. Test/keepalive/cooldown
+	// are all "not available" by product definition, so they are filtered
+	// unconditionally — there is NO "keep the full list" fallback: when every
+	// candidate is excluded we defer (Handled: false) so the host's built-in
+	// scheduler can fail over to OTHER providers instead of pinning the request
+	// to an account we just declared unusable.
+	available := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
-		if !isAccountPreserved(c.ID) {
-			preserveFiltered = append(preserveFiltered, c)
+		if isAccountPreserved(c.ID) || isTestFailed(c.ID) || isAccountCoolingDown(c.ID) {
+			continue
 		}
+		available = append(available, c)
 	}
-	if len(preserveFiltered) > 0 {
-		wbCandidates = preserveFiltered
-	}
-	// Cooldown filter: accounts in failover cooldown are skipped so new
-	// requests route to a healthy account instead. If EVERY workbuddy account
-	// is cooling down, defer (Handled: false) so the host's built-in
-	// scheduler can fail over to OTHER providers' accounts (cross-provider
-	// failover) instead of pinning the request to a dead account.
-	filtered := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
-	for _, c := range wbCandidates {
-		if !isAccountCoolingDown(c.ID) {
-			filtered = append(filtered, c)
-		}
-	}
-	if len(filtered) == 0 {
+	if len(available) == 0 {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
-	wbCandidates = filtered
+	wbCandidates = available
 
-	// Prefer "available" accounts (credits cached above the preserve
-	// threshold). Accounts whose credits are unknown, below threshold, or
-	// exhausted are demoted to a fallback tier — they may still work, but
-	// healthy accounts should absorb traffic first. When no healthy tier
-	// exists, fall back to the full filtered list so the request still
-	// routes (never worse than the old behaviour).
-	threshold := preserveThreshold()
-	healthy := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
-	for _, c := range wbCandidates {
-		if score, _ := cachedCreditsScore(c.ID); score > threshold {
-			healthy = append(healthy, c)
+	// Low-credit first: burn the soonest-to-exhaust accounts before they are
+	// parked by the preserve watchdog, so the fleet's remaining balance is
+	// concentrated on fewer accounts instead of spread thin everywhere.
+	// Unknown credits (-1, no cached snapshot yet) go LAST — never let an
+	// unmeasured account jump ahead of a measured one.
+	sort.SliceStable(wbCandidates, func(i, j int) bool {
+		left, _ := cachedCreditsScore(wbCandidates[i].ID)
+		right, _ := cachedCreditsScore(wbCandidates[j].ID)
+		if (left < 0) != (right < 0) {
+			return right < 0
 		}
-	}
-	if len(healthy) > 0 {
-		wbCandidates = healthy
-	}
+		return left < right
+	})
 
-	// Build thin view for active-auth picker. All surviving candidates are
-	// "available" accounts when the healthy tier is non-empty; otherwise they
-	// are the best remaining fallbacks after preserve + cooldown filters.
+	// Build thin view for active-auth picker. Exhausted accounts are passed
+	// through with Exhausted=true (rather than pre-filtered) so the picker can
+	// skip them and still report "no healthy account" when they are all spent.
 	cands := make([]activeAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
 		_, exhausted := cachedCreditsScore(c.ID)
