@@ -61,9 +61,12 @@ func isCreditsExhausted(cr *traeCredits) bool {
 }
 
 // cachedCreditsScore returns (remain, exhausted). remain is -1 when unknown.
+// A cache entry whose credits were never fetched is unknown (-1), not a
+// zero-balance account — routing must not treat it as exhausted, and the
+// credit-ordering path must not dereference the nil snapshot.
 func cachedCreditsScore(authID string) (int64, bool) {
 	cr, ok := cachedCredits(authID)
-	if !ok {
+	if !ok || cr == nil {
 		return -1, false
 	}
 	return cr.TotalRemain, isCreditsExhausted(cr)

@@ -8,10 +8,17 @@
 // the host can fail over to other providers' accounts (e.g. workbuddy).
 // Only active when scheduler_mode: credits or session is configured
 // (default off).
+//
+// Only "available" accounts participate: 「测试」标签 (test_failed), 保号
+// (preserve) and 冷却 (failover cooldown) are hard-excluded — they are
+// unusable by product definition, so there is no fallback that re-admits them.
+// Survivors are ordered LOW-CREDIT-FIRST so the soonest-to-exhaust accounts
+// burn down before the watchdog parks them.
 package main
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"sync"
 
@@ -74,40 +81,42 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	if len(wbCandidates) == 0 {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
-	// Preserve filter: accounts the watchdog flagged (credits below
-	// preserve_threshold) are kept out of routing entirely so they keep a
-	// small credit buffer. Place this BEFORE the cooldown filter so the
-	// lastNonEmpty fallback can still see preserved accounts when every
-	// traework account is preserved — we don't want a fleet-wide credit
-	// reset to lock routing.
-	preserveFiltered := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
+	// Hard exclusion: 「测试」标签 (scheduled active ping failed while credits
+	// remained) / 保号 (watchdog parked below preserve_threshold) / 冷却
+	// (failover cooldown) accounts never carry traffic. All three are
+	// "not available" by product definition, so they are filtered
+	// unconditionally — there is NO keep-full-list fallback: when every
+	// candidate is excluded we defer (Handled: false) so the host's built-in
+	// scheduler can fail over to OTHER providers' accounts (e.g. workbuddy)
+	// instead of pinning the request to an account we just declared unusable.
+	available := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
-		if !isAccountPreserved(c.ID) {
-			preserveFiltered = append(preserveFiltered, c)
+		if isAccountPreserved(c.ID) || isTestFailed(c.ID) || isAccountCoolingDown(c.ID) {
+			continue
 		}
+		available = append(available, c)
 	}
-	if len(preserveFiltered) > 0 {
-		wbCandidates = preserveFiltered
-	}
-	filtered := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
-	for _, c := range wbCandidates {
-		if !isAccountCoolingDown(c.ID) {
-			filtered = append(filtered, c)
-		}
-	}
-	if len(filtered) == 0 {
-		// Every traework account is in failover cooldown: no healthy account
-		// exists on this provider. Defer to the host's built-in scheduler so
-		// it can fail over to OTHER providers' accounts (e.g. workbuddy)
-		// instead of pinning the request to a dead account. Returning the
-		// cooling accounts here (the old keep-full-list fallback) made the
-		// plugin answer with Handled:true and a doomed candidate, which
-		// blocked cross-provider failover until the request-level retry
-		// budget was exhausted.
+	if len(available) == 0 {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
-	wbCandidates = filtered
+	wbCandidates = available
 
+	// Low-credit first: burn the soonest-to-exhaust accounts before they are
+	// parked by the preserve watchdog. Unknown credits (-1, no cached snapshot
+	// yet) go LAST — never let an unmeasured account jump ahead of a measured
+	// one. Candidate order is what session routing and the panel fallback use.
+	sort.SliceStable(wbCandidates, func(i, j int) bool {
+		left, _ := cachedCreditsScore(wbCandidates[i].ID)
+		right, _ := cachedCreditsScore(wbCandidates[j].ID)
+		if (left < 0) != (right < 0) {
+			return right < 0
+		}
+		return left < right
+	})
+
+	// Build thin view for active-auth picker. Exhausted accounts are passed
+	// through with Exhausted=true (rather than pre-filtered) so the picker can
+	// skip them and still report "no healthy account" when they are all spent.
 	cands := make([]activeAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
 		_, exhausted := cachedCreditsScore(c.ID)

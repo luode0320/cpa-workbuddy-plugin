@@ -1,7 +1,7 @@
 // active_auth.go tracks the panel-selected TraeWork account used for routing.
 // The selection is sticky; when the active account becomes exhausted /
-// disabled / cooling down / anomalous / missing, routing switches to the next
-// healthy candidate and remembers the choice.
+// disabled / cooling down / 保号 / 测试失败 / missing, routing switches to the
+// next healthy candidate and remembers the choice.
 package main
 
 import (
@@ -49,8 +49,8 @@ type activeAuthCandidate struct {
 
 // pickActiveAuth chooses which traework auth to use from host candidates.
 // The panel selection is sticky; it switches to the next healthy candidate
-// when the current one is exhausted / disabled / cooling down / anomalous /
-// missing. When NO healthy candidate exists, it returns "" so the scheduler
+// when the current one is exhausted / disabled / cooling down / 保号 / 测试失败
+// / missing. When NO healthy candidate exists, it returns "" so the scheduler
 // defers to the host's built-in scheduler (cross-provider failover).
 func pickActiveAuth(candidates []activeAuthCandidate) string {
 	if len(candidates) == 0 {
@@ -63,20 +63,20 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 
 	cur := getActiveAuthID()
 	if cur != "" {
-		if c, ok := byID[cur]; ok && !c.Disabled && !c.Exhausted && !isAccountCoolingDown(cur) {
+		if c, ok := byID[cur]; ok && !c.Disabled && !c.Exhausted && accountRoutable(cur) {
 			return cur
 		}
 	}
 
 	var next string
 	for _, c := range candidates {
-		if !c.Disabled && !c.Exhausted && !isAccountCoolingDown(c.ID) {
+		if !c.Disabled && !c.Exhausted && accountRoutable(c.ID) {
 			next = c.ID
 			break
 		}
 	}
 	if next == "" {
-		// All candidates exhausted/disabled/cooling-down: no healthy account
+		// All candidates exhausted/disabled/unavailable: no healthy account
 		// exists. Return "" WITHOUT changing the panel selection so
 		// handleSchedulerPick defers (Handled: false) to the host's built-in
 		// scheduler, which can fail over to other providers' accounts (e.g.
@@ -116,6 +116,10 @@ type traeAccountView struct {
 
 // ensureDefaultActiveAuth keeps the panel selection consistent with routing
 // (same rules as pickActiveAuth).
+//
+// [参数] accounts：面板全量账号行（含本轮排除项）。
+// [返回] 面板应选中的 auth_id；无可用账号时退化为存活/首个账号。
+// 最近修改时间：2026-09-29；改动原因：面板选中项与「硬排除三类标签 + 低积分优先」路由口径对齐。
 func ensureDefaultActiveAuth(accounts []traeAccountView) string {
 	cur := getActiveAuthID()
 	live := make(map[string]traeAccountView, len(accounts))
@@ -123,7 +127,7 @@ func ensureDefaultActiveAuth(accounts []traeAccountView) string {
 		live[a.AuthID] = a
 	}
 	if cur != "" {
-		if a, ok := live[cur]; ok && !a.Disabled && !a.Exhausted && !a.CoolingDown {
+		if a, ok := live[cur]; ok && !a.Disabled && !a.Exhausted && accountRoutable(cur) {
 			return cur
 		}
 	}
@@ -138,7 +142,14 @@ func ensureDefaultActiveAuth(accounts []traeAccountView) string {
 		if firstOK == "" {
 			firstOK = a.AuthID
 		}
-		if !a.Exhausted && !a.CoolingDown && firstReady == "" {
+		if a.Exhausted || !accountRoutable(a.AuthID) {
+			continue
+		}
+		if firstReady == "" {
+			firstReady = a.AuthID
+			continue
+		}
+		if accountLowerCredits(a.AuthID, firstReady) {
 			firstReady = a.AuthID
 		}
 	}
@@ -158,4 +169,23 @@ func ensureDefaultActiveAuth(accounts []traeAccountView) string {
 		setActiveAuthID(next)
 	}
 	return next
+}
+
+// accountRoutable reports whether an auth ID may carry traffic at all: not
+// cooling down (failover), not preserved (watchdog), not test-failed. Shared
+// by the panel-selection rules and documented as the same predicate family
+// scheduler.pick applies before ordering candidates.
+func accountRoutable(authID string) bool {
+	return !isAccountCoolingDown(authID) && !isAccountPreserved(authID) && !isTestFailed(authID)
+}
+
+// accountLowerCredits reports whether left has fewer remaining credits than
+// right. Unknown credits rank LAST (never ahead of a measured account).
+func accountLowerCredits(left, right string) bool {
+	leftScore, _ := cachedCreditsScore(left)
+	rightScore, _ := cachedCreditsScore(right)
+	if (leftScore < 0) != (rightScore < 0) {
+		return rightScore < 0
+	}
+	return leftScore < rightScore
 }

@@ -5,7 +5,7 @@
 // the user, the executor tries the same request on a different traework
 // account. pickNextAuth returns the next usable (authID, traeAuth) pair in a
 // stable fallback order, skipping the current failing account and any that
-// are disabled / cooling down / failing-credits / anomalous.
+// are disabled / cooling down / 保号 / 测试失败 / failing-credits.
 //
 // Unlike qoderwork (per-account COSY signature over body+URL), the Trae
 // llm_utils_chat request body is account-independent — only the auth headers
@@ -47,6 +47,13 @@ func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *traeAuth, ok
 			continue
 		}
 		if isAccountCoolingDown(id) {
+			continue
+		}
+		// 「测试」/保号 accounts are unusable by product definition — they
+		// must not be picked up as an in-flight retry target either. Order
+		// stays host-provided (no credit sort) so a mid-request switch
+		// remains deterministic across the retry chain.
+		if isAccountPreserved(id) || isTestFailed(id) {
 			continue
 		}
 		if strings.TrimSpace(f.AuthIndex) == "" {

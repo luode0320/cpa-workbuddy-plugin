@@ -185,6 +185,14 @@ func handleAccounts() map[string]any {
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
+	// Rebuild the two disk-backed routing mirrors from the same auth list we
+	// just read. Both feed the availability contract used by the panel and by
+	// scheduler.pick (保号 / 测试标签), and both prune entries for accounts that
+	// no longer exist. traework previously never refreshed the preserve mirror,
+	// so persisted 保号 tags were invisible both to the panel and to routing
+	// after a process restart.
+	refreshPreserveSetFromDisk()
+	refreshTestFailedSetFromDisk()
 	views := make([]traeAccountView, 0, len(files))
 	for _, f := range files {
 		if strings.TrimSpace(f.AuthIndex) == "" {
@@ -203,7 +211,7 @@ func handleAccounts() map[string]any {
 			UID:        a.UserID,
 			Disabled:   phys.Disabled || f.Disabled,
 			Preserved:  isPreserve(f.ID),
-			TestFailed: parseTestFailedFromAuthJSON(phys.JSON),
+			TestFailed: isTestFailed(f.ID),
 		}
 		// Cumulative success/failed counters (plugin-owned, survive restart).
 		if strings.TrimSpace(a.UserID) != "" {

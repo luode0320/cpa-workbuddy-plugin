@@ -211,6 +211,11 @@ func runPreserveWatchdogTick() {
 	if err != nil {
 		return
 	}
+	// Rebuild both disk-backed routing mirrors on the same cadence: 保号 was
+	// never re-mirrored here (a persisted mark stayed invisible to routing),
+	// and 测试 tags otherwise only refresh when the panel is opened.
+	refreshPreserveSetFromDisk()
+	refreshTestFailedSetFromDisk()
 	threshold := preserveThreshold()
 	targets := make([]refreshTarget, 0, len(files))
 	for _, f := range files {

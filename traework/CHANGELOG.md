@@ -1,6 +1,18 @@
 # TraeWork Plugin Changelog
 
 
+## 0.1.68
+
+### Feat - 路由「硬排除三类标签 + 低积分优先」，可用账号优先承载流量
+
+- 变更要点:
+  1. 硬排除：`test_failed`（测试）/ 保号（preserve）/ 冷却（failover cooldown）三类账号不再参与任何路由，全部候选被排除时直接 `Handled:false` 交还宿主机做跨 provider 失败切换；移除旧版「全部保号时保留全量列表」的兜底（该兜底会让已声明不可用的账号重新承载流量）。
+  2. 低积分优先：存活候选按缓存剩余积分升序排序（未测积分排最后），先把临近耗尽的账号用完，再交由保号 watchdog 归池。
+  3. 统一判定：新增 `accountRoutable` / `accountLowerCredits`，`pickActiveAuth`、`ensureDefaultActiveAuth`、`pickSessionAuth` 与 `scheduler.pick` 共用同一「可用」口径；请求内换号 `pickNextAuth` 同样跳过测试/保号账号，但保持宿主顺序不排序以保证重试链可预测。
+  4. 修复保号镜像缺失：`handleAccounts` 与 `runPreserveWatchdogTick` 补齐 `refreshPreserveSetFromDisk`（此前全仓无调用点，重启后保号账号仍会被路由命中）；面板 `TestFailed` 改读 `isTestFailed(f.ID)` 内存镜像。
+  5. 修复 `cachedCreditsScore` 空指针：缓存条目存在但 credits 未拉取时原代码直接解引用 `entry.credits.TotalRemain` 会 panic，现归一为「未知积分 (-1)」。
+- 涉及文件: traework/scheduler.go、traework/active_auth.go、traework/session_auth.go、traework/failover_retry.go、traework/management.go、traework/watchdog.go、traework/active_ping.go、traework/test_failed_tag.go、traework/cache.go
+
 ## 0.1.67
 
 ### Fix - 测试标签账号排除出可用过滤 + 计数与汇总同步修正
