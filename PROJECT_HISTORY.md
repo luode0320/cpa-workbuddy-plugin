@@ -32,10 +32,10 @@
 ```yaml
 version: 1
 anchors:
-  - title: "workbuddy-provider / traework-provi"
-    usage_count: 0
-    usage_days: 0
-    last_used_at: null
+  - title: "workbuddy-provider **0.15.0** / tr"
+    usage_count: 1
+    usage_days: 1
+    last_used_at: 2026-09-30
     absorbed_to: null
   - title: "workbuddy-provider **0.14.43** / tr"
     usage_count: 0
