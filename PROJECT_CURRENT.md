@@ -26,7 +26,7 @@
   - 生产行为验收：`POST https://cpa.luode.vip/v1/responses` 流式 qwen3.8-max 16s 返回 56655 字节 / 144 帧 delta + 29 帧 reasoning delta + `response.completed`，末尾 nonce 命中 7 次；关联日志 `exec stream async scheduled: model=qwen3.8-max stream_id=10431` → `exec stream async done: attempt=1 chunks=174`（无 pseudo retry / pool exhausted）。
   - 面板结构验证：`/accounts` 两插件均无 `preserve` 键、含 `test_failed` 字段（workbuddy 51 账号 / traework 2 账号，当前 test_failed=0）；workbuddy `active_auth` 正常。
   - 仓库规则变更：AGENTS.md + CLAUDE.md 将 `## 严禁自动提交 Git` 段替换为 `## 提交 / 发布授权（默认授权，强制）`——本仓库默认处于「提交/发布已授权」状态，用户当轮显式边界绝对优先。
-  - 授权规则收口（2026-09-30 02:10）：AGENTS.md / CLAUDE.md 各 51,158 → 51,646 字节（纯 CRLF），新增一条「防回刷说明」——明确该段覆盖旧受管章节 `## 严禁自动提交 Git`，并注明其真源在另一项目 `luode-skills` 的 `bootstrap_agents.sh` 的 `BODY_NO_AUTO_COMMIT`，本会话按跨项目写入红线不能代改。**已提交推送**：`84265d6`(docs 记忆同步) → `7758178`(docs 修正 HISTORY 计数锚点) → `9e98df0`(docs 防回刷说明)，HEAD=origin/main。
+  - 授权规则收口（2026-09-30 02:10）：AGENTS.md / CLAUDE.md 各 51,158 → 51,646 字节（纯 CRLF），新增一条「防回刷说明」——明确该段覆盖旧受管章节 `## 严禁自动提交 Git`，并注明其真源在另一项目 `luode-skills` 的 `bootstrap_agents.sh` 的 `BODY_NO_AUTO_COMMIT`，本会话按跨项目写入红线不能代改。**已提交推送**：`84265d6`(docs 记忆同步) → `7758178`(docs 修正 HISTORY 计数锚点) → `9e98df0`(docs 防回刷说明) → `a70b7dd`(docs 收口记录与阻断项) → `f7485fc`(docs 6-review 风格回归)，HEAD=origin/main。
   - 项目记忆同步（本轮）：`PROJECT_CURRENT.md` 记录 0.15.0/0.2.0 发布链与行为验收；`PROJECT_MEMORY.md` 新增「仓库默认处于提交/发布已授权状态」条目，并把路由口径条目改为「硬排除两类标签」（保号池已移除）；`PROJECT_HISTORY.md` 置顶 2026-09-30 事件。`check_memory_anchors.py` 由 C4 两处告警修到 `ok=true`（20 事件 / 20 锚点）；本轮 HISTORY 窄读计数回写 `usage_count=1` / `usage_days=1` / `last_used_at=2026-09-30`。
 
 - 当前会话（2026-09-29 凌晨）：**账号路由口径改造「优先可用账号 + 硬排除三类标签 + 低积分优先」，workbuddy 0.14.43 / traework 0.1.68 已发布部署**。
