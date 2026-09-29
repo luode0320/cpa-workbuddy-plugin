@@ -10,7 +10,7 @@
 //
 // Trigger sources (three entry points converge on one runner):
 //  1. panel enter (auto, no button)  — POST /refresh → EnqueueAll(source="panel")
-//  2. preserve watchdog 10m tick     — EnqueueAll(source="watchdog")
+//  2. account watchdog 10m tick      — EnqueueAll(source="watchdog")
 //  3. GET /credits?track=1 (one card)— EnqueueOne(source="credits")
 //
 // All are idempotent. The runner keeps a per-account state machine

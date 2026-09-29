@@ -10,7 +10,7 @@ import (
 // is the single source of truth — lives on the physical auth JSON, never on
 // the host's auth record, because host.auth.save rebuilds the record and
 // drops top-level fields the host doesn't recognize (same root cause as
-// preserve / manual_disable).
+// manual_disable).
 func parseTestFailedFromAuthJSON(raw []byte) bool {
 	var m struct {
 		TestFailed bool `json:"test_failed"`
@@ -24,7 +24,7 @@ func parseTestFailedFromAuthJSON(raw []byte) bool {
 // remained" — such an account is kept out of routing until a later ping
 // succeeds. scheduler.pick / pickNextAuth read this on every request, so a
 // disk read per candidate is not an option; the set is rebuilt from disk by
-// refreshTestFailedSetFromDisk (same contract as preserveSet).
+// refreshTestFailedSetFromDisk (same contract as the other disk mirrors).
 var (
 	testFailedSetMu sync.RWMutex
 	testFailedSet   = make(map[string]struct{})
@@ -154,7 +154,7 @@ func persistTestFailedToggle(authIndex, authID string, on bool) error {
 	if err := json.Unmarshal(phys.JSON, &doc); err != nil {
 		// Treat malformed JSON as a fresh doc — losing the existing top-level
 		// flags is better than refusing the write (consistent with
-		// persistPreserveToggle).
+		// persistTestFailedToggle).
 		doc = map[string]any{}
 	}
 	if on {

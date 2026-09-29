@@ -19,11 +19,22 @@ func resetTestFailed(t *testing.T) {
 	})
 }
 
+// storeCredits seeds accountCache with a credits snapshot for one auth ID and
+// auto-clears it on test end. The routing tests below are its only callers.
+func storeCredits(t *testing.T, id string, remain, used, total int64) {
+	t.Helper()
+	accountCache.Store(id, &accountCacheEntry{credits: &creditsSummary{
+		TotalRemain: remain,
+		TotalUsed:   used,
+		TotalSize:   total,
+	}})
+	t.Cleanup(func() { accountCache.Delete(id) })
+}
+
 // TestSchedulerPick_TestFailedFiltered: a 「测试」account must never carry
 // traffic — not even when it is the panel-selected card.
 func TestSchedulerPick_TestFailedFiltered(t *testing.T) {
 	resetActiveAuth(t)
-	resetPreserve(t)
 	resetTestFailed(t)
 	resetFailover(t)
 	storeCredits(t, "wb-tagged", 30, 0, 30)
@@ -51,7 +62,6 @@ func TestSchedulerPick_TestFailedFiltered(t *testing.T) {
 // known-broken account.
 func TestSchedulerPick_AllTestFailed_Defers(t *testing.T) {
 	resetActiveAuth(t)
-	resetPreserve(t)
 	resetTestFailed(t)
 	resetFailover(t)
 	storeCredits(t, "wb-a", 30, 0, 30)
@@ -81,7 +91,6 @@ func TestSchedulerPick_AllTestFailed_Defers(t *testing.T) {
 // never jumps ahead of a measured one.
 func TestSchedulerPick_LowCreditFirstAndUnknownLast(t *testing.T) {
 	resetActiveAuth(t)
-	resetPreserve(t)
 	resetTestFailed(t)
 	resetFailover(t)
 	storeCredits(t, "wb-mid", 300, 0, 300)
@@ -109,7 +118,6 @@ func TestSchedulerPick_LowCreditFirstAndUnknownLast(t *testing.T) {
 // unmeasured one left, the measured account must win.
 func TestSchedulerPick_UnknownCreditsRankLast(t *testing.T) {
 	resetActiveAuth(t)
-	resetPreserve(t)
 	resetTestFailed(t)
 	resetFailover(t)
 	storeCredits(t, "wb-known", 900, 0, 900)
@@ -135,7 +143,6 @@ func TestSchedulerPick_UnknownCreditsRankLast(t *testing.T) {
 // scheduled ping does on success) must put the account back into rotation.
 func TestSchedulerPick_RecoversAfterTagCleared(t *testing.T) {
 	resetActiveAuth(t)
-	resetPreserve(t)
 	resetTestFailed(t)
 	resetFailover(t)
 	storeCredits(t, "wb-recovered", 20, 0, 20)
@@ -199,18 +206,17 @@ func TestTestFailedSetBasic(t *testing.T) {
 	testFailedSetClear("wb-missing") // no-op; must not panic
 }
 
-// TestEnsureDefaultActiveAuth_SkipsTestFailedAndPreserve keeps the panel
-// selection on the same availability contract as routing.
-func TestEnsureDefaultActiveAuth_SkipsTestFailedAndPreserve(t *testing.T) {
+// TestEnsureDefaultActiveAuth_SkipsTestFailed keeps the panel selection on the
+// same availability contract as routing.
+func TestEnsureDefaultActiveAuth_SkipsTestFailed(t *testing.T) {
 	resetActiveAuth(t)
-	resetPreserve(t)
 	resetTestFailed(t)
 	resetFailover(t)
 	storeCredits(t, "a1", 10, 0, 300)
 	storeCredits(t, "a2", 500, 0, 500)
 	storeCredits(t, "a3", 300, 0, 300)
 	testFailedSetPut("a1")
-	preserveSetPut("a2")
+	testFailedSetPut("a2")
 	setActiveAuthID("a1")
 	id := ensureDefaultActiveAuth([]wbAccount{
 		{AuthIndex: "a1", AuthID: "a1"},

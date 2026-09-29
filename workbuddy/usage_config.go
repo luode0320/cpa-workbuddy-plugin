@@ -71,11 +71,6 @@ func configure(raw []byte) {
 	// whole cooldown mechanism (pre-failover behavior).
 	nextFailoverEnabled := true
 
-	// Preserve watchdog defaults; overridden by config_yaml.
-	nextPreserveThreshold := preserveThresholdDefault
-	nextPreserveInterval := preserveWatchdogIntervalDefault
-	nextPreserveEnabled := preserveWatchdogEnabledDefault
-
 	// retry_on_4xx: per-request account-failover budget. Applied ONLY when
 	// the key is present in config_yaml: a valid value is clamped to
 	// [0, 10] and applied; an unparseable value resets to the default 10.
@@ -132,29 +127,6 @@ func configure(raw []byte) {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "token_keepalive:"))
 					v = strings.Trim(v, "\"'")
 					nextKeepaliveAuto = v == "true" || v == "1" || v == "yes" || v == "on"
-				}
-				// Preserve watchdog knobs: a credit-balance threshold below
-				// which an account is parked in the preserve set; the tick
-				// interval (Go duration syntax, e.g. "10m"); and the
-				// enable/disable switch.
-				if strings.HasPrefix(line, "preserve_threshold:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "preserve_threshold:"))
-					v = strings.Trim(v, "\"'")
-					if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n >= 0 {
-						nextPreserveThreshold = n
-					}
-				}
-				if strings.HasPrefix(line, "preserve_watchdog_interval:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "preserve_watchdog_interval:"))
-					v = strings.Trim(v, "\"'")
-					if d, perr := time.ParseDuration(v); perr == nil && d > 0 {
-						nextPreserveInterval = d
-					}
-				}
-				if strings.HasPrefix(line, "preserve_watchdog_enabled:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "preserve_watchdog_enabled:"))
-					v = strings.Trim(v, "\"'")
-					nextPreserveEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
 				}
 			if strings.HasPrefix(line, "retry_on_4xx:") {
 				retryOn4xxSeen = true
@@ -217,17 +189,11 @@ func configure(raw []byte) {
 	resolveUsageReport(cfgURL, cfgKey)
 	ensureScheduler()
 
-	// Preserve watchdog: apply threshold/interval/enabled under their own
-	// locks. The watchdog loop reads these on every iteration, so changes
-	// take effect at the next tick without restarting the goroutine.
-	setPreserveConfig(nextPreserveThreshold, nextPreserveInterval, nextPreserveEnabled)
-
-	// Drop a non-blocking tick request so the freshly (re)configured
-	// threshold/interval apply immediately rather than after a full interval
-	// (v0.12.1: closes the "register just changed something, why does the
-	// badge still show the old state?" UX gap). Reconfigure storms collapse
-	// onto one tick via requestPreserveTick's buffered chan cap 1.
-	requestPreserveTick()
+	// Drop a non-blocking tick request so a freshly (re)configured plugin
+	// refreshes the fleet immediately rather than after a full interval.
+	// Reconfigure storms collapse onto one tick via requestWatchdogTick's
+	// buffered chan cap 1.
+	requestWatchdogTick()
 
 	// Per-request retry-on-4xx budget: applied under its own lock so
 	// executor loops reading it (loadedRetryOn4xx) stay atomic. Only when

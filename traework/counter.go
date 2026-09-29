@@ -16,7 +16,7 @@
 //     flushed value. After that the in-memory counter is the source of truth.
 //   - flushCounters folds each account's not-yet-persisted delta into the
 //     auth file's top-level success_count / failed_count. It runs on the
-//     preserve watchdog's tick cadence (default 10m), NOT a dedicated fast
+//     account watchdog's tick cadence (default 10m), NOT a dedicated fast
 //     timer — the counters are pure observability; a crash loses at most one
 //     tick's worth of deltas.
 //
@@ -148,7 +148,7 @@ func loadCountersFromDisk() {
 
 // parseCountersFromAuthJSON reads the persisted success_count / failed_count
 // from a physical auth file's top-level JSON. Missing/malformed fields read
-// as zero (tolerant, like parsePreserveFromAuthJSON).
+// as zero (tolerant, like parseTestFailedFromAuthJSON).
 func parseCountersFromAuthJSON(raw []byte) (success, failed int64) {
 	if len(raw) == 0 {
 		return 0, 0
@@ -201,7 +201,7 @@ func flushCounters() {
 // persistCounterDelta adds addSuccess / addFailed to the account's physical
 // auth file top-level success_count / failed_count. The write goes through
 // persistAuthDirect (NOT host.auth.save) so the host's file watcher re-syncs
-// the record without rebuilding it — the same rule as preserve / anomaly /
+// the record without rebuilding it — the same rule as test_failed / anomaly /
 // manual_disable, because host.auth.save drops top-level fields it doesn't
 // recognize.
 func persistCounterDelta(uid string, addSuccess, addFailed int64) error {
@@ -236,7 +236,7 @@ func foldCounterIntoDoc(base []byte, addSuccess, addFailed int64) []byte {
 	var doc map[string]any
 	if json.Unmarshal(base, &doc) != nil || doc == nil {
 		// Tolerant of malformed JSON: fold into a fresh doc, consistent with
-		// persistPreserveToggle / stripAnomalyKey.
+		// persistTestFailedToggle / stripAnomalyKey.
 		doc = map[string]any{}
 	}
 	prevSuccess, prevFailed := parseCountersFromAuthJSON(base)

@@ -1,7 +1,7 @@
 // active_auth.go tracks the panel-selected TraeWork account used for routing.
 // The selection is sticky; when the active account becomes exhausted /
-// disabled / cooling down / 保号 / 测试失败 / missing, routing switches to the
-// next healthy candidate and remembers the choice.
+// disabled / cooling down / 测试失败 / missing, routing switches to the next
+// healthy candidate and remembers the choice.
 package main
 
 import (
@@ -49,8 +49,8 @@ type activeAuthCandidate struct {
 
 // pickActiveAuth chooses which traework auth to use from host candidates.
 // The panel selection is sticky; it switches to the next healthy candidate
-// when the current one is exhausted / disabled / cooling down / 保号 / 测试失败
-// / missing. When NO healthy candidate exists, it returns "" so the scheduler
+// when the current one is exhausted / disabled / cooling down / 测试失败 /
+// missing. When NO healthy candidate exists, it returns "" so the scheduler
 // defers to the host's built-in scheduler (cross-provider failover).
 func pickActiveAuth(candidates []activeAuthCandidate) string {
 	if len(candidates) == 0 {
@@ -102,7 +102,6 @@ type traeAccountView struct {
 	Credits       *traeCredits `json:"credits,omitempty"`
 	Exhausted     bool         `json:"exhausted"`
 	Disabled      bool         `json:"disabled"`
-	Preserved     bool         `json:"preserved"`
 	TestFailed    bool         `json:"test_failed"` // scheduled active-ping failed while credits remained
 	CheckinToday  bool         `json:"checkin_today"`
 	SuccessCount  int64        `json:"success_count,omitempty"`
@@ -172,11 +171,11 @@ func ensureDefaultActiveAuth(accounts []traeAccountView) string {
 }
 
 // accountRoutable reports whether an auth ID may carry traffic at all: not
-// cooling down (failover), not preserved (watchdog), not test-failed. Shared
-// by the panel-selection rules and documented as the same predicate family
+// cooling down (failover), not test-failed (「测试」标签). Shared by the
+// panel-selection rules and documented as the same predicate family
 // scheduler.pick applies before ordering candidates.
 func accountRoutable(authID string) bool {
-	return !isAccountCoolingDown(authID) && !isAccountPreserved(authID) && !isTestFailed(authID)
+	return !isAccountCoolingDown(authID) && !isTestFailed(authID)
 }
 
 // accountLowerCredits reports whether left has fewer remaining credits than

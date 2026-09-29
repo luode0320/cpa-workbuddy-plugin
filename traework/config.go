@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 // traeConfig holds the runtime-tunable knobs for the TraeWork upstream.
@@ -222,38 +221,8 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 			if b, ok := parseYAMLBool(val); ok {
 				setGuardEnabled(b)
 			}
-		case "preserve_threshold":
-			if n, ok := parsePositiveIntLine(ln); ok {
-				setPreserveConfig(int64(n), preserveWatchdogInterval(), preserveWatchdogEnabled())
-			}
-		case "preserve_watchdog_interval":
-			// Value is minutes (config-friendly); <=0 restores default.
-			if n, ok := parsePositiveIntLine(ln); ok {
-				interval := time.Duration(n) * time.Minute
-				if interval <= 0 {
-					interval = preserveWatchdogIntervalDefault
-				}
-				setPreserveConfig(preserveThreshold(), interval, preserveWatchdogEnabled())
-			}
-		case "preserve_watchdog_enabled":
-			if b, ok := parseYAMLBool(val); ok {
-				setPreserveConfig(preserveThreshold(), preserveWatchdogInterval(), b)
-			}
 		}
 	}
-}
-
-// parsePositiveIntLine extracts a positive integer from a "key: value" line.
-func parsePositiveIntLine(ln string) (int, bool) {
-	_, val, ok := splitYAMLKey(ln)
-	if !ok {
-		return 0, false
-	}
-	n, err := strconv.Atoi(val)
-	if err != nil || n <= 0 {
-		return 0, false
-	}
-	return n, true
 }
 
 // parseModelsValue 解析 config_yaml 中 `models:` 的 JSON 值，兼容面板/编辑器

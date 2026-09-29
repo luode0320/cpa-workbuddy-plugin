@@ -53,7 +53,7 @@ type activeAuthCandidate struct {
 // The panel selection is sticky: it stays on the current account unless that
 // account is no longer in the candidate list (disabled/deleted by host),
 // is marked exhausted in cache, or is no longer routable (cooling down /
-// preserved / test-failed). When switching, it picks the first ready
+// test-failed). When switching, it picks the first ready
 // candidate — the caller already ordered them low-credit-first — and updates
 // activeAuthID so the panel reflects the change on next dashboard load. When
 // NO healthy candidate exists, it returns "" so the scheduler defers to the
@@ -104,7 +104,7 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 //
 // Rules (single source of truth, same as pickActiveAuth):
 //  1. If current selection is live AND available (not disabled / exhausted /
-//     cooling / preserved / test-failed) → keep it.
+//     cooling / test-failed) → keep it.
 //  2. If current selection is not available → switch to the available account
 //     with the LOWEST remaining credits (unknown credits rank last).
 //  3. If current selection is gone (disabled/deleted) → same as rule 2.
@@ -178,11 +178,11 @@ func ensureDefaultActiveAuth(accounts []wbAccount) string {
 }
 
 // accountRoutable reports whether an auth ID may carry traffic at all: not
-// cooling down (failover), not preserved (watchdog), not test-failed. Shared
-// by the panel-selection rules and documented as the same predicate family
+// cooling down (failover), not test-failed (「测试」标签). Shared by the
+// panel-selection rules and documented as the same predicate family
 // scheduler.pick applies before ordering candidates.
 func accountRoutable(authID string) bool {
-	return !isAccountCoolingDown(authID) && !isAccountPreserved(authID) && !isTestFailed(authID)
+	return !isAccountCoolingDown(authID) && !isTestFailed(authID)
 }
 
 // accountLowerCredits reports whether left has fewer remaining credits than

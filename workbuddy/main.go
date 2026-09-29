@@ -119,16 +119,15 @@ var (
 const loginStatesPruneInterval = time.Minute
 
 func init() {
-	// Credits-preserve watchdog: every interval (default 10m) it pulls fresh
-	// credits for every workbuddy account and flips the preserve flag on
-	// disk when the balance drops below the configured threshold (default
-	// 50). Started here so the first tick fires immediately on plugin init,
-	// bringing the preserve set in sync without waiting a full interval. The
-	// loop reads enable/interval/threshold from atomic-snapshot getters so
-	// config_yaml reconfigure takes effect on the next tick without
-	// restarting the goroutine (avoids the SIGSEGV risk documented in
-	// checkin.go:31 from closing stop channels during plugin teardown).
-	go preserveWatchdogLoop()
+	// Account watchdog: every interval (default 10m) it refreshes the credits
+	// snapshot for every workbuddy account and fires the scheduled active ping
+	// (the 「hi」 reasoning request) that keeps accounts warm and writes/clears
+	// the 「测试」tag. Started here so the first tick fires immediately on
+	// plugin init instead of waiting a full interval. The loop is started here
+	// (not in a goroutine-closing shutdown path) to avoid the SIGSEGV risk
+	// documented in checkin.go:31 from closing stop channels during plugin
+	// teardown.
+	go watchdogLoop()
 	go func() {
 		ticker := time.NewTicker(loginStatesPruneInterval)
 		defer ticker.Stop()
@@ -336,7 +335,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.14.43"
+var version = "0.15.0"
 
 func wbRegistration() registration {
 	return registration{

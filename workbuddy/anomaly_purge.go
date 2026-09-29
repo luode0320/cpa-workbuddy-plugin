@@ -6,6 +6,10 @@
 // `anomaly: true`; nothing reads that key anymore, so it is dead weight.
 // purgeLegacyAnomalyFlags strips it once at watchdog startup so the files
 // stay clean.
+//
+// This file also hosts the shared auth-file error helpers (authFileErr /
+// errAuthIndexRequired / errAuthMissing) salvaged from the removed preserve.go
+// (2026-09-29 移除保号池时随迁)；仍被 counter.go / test_failed_tag.go 引用。
 package main
 
 import (
@@ -13,6 +17,16 @@ import (
 	"log"
 	"strings"
 )
+
+// authFileErr / errAuthIndexRequired / errAuthMissing 沿用原 preserve.go 的
+// 轻量错误包装，供直写物理 auth 文件的 persist*Toggle 复用：避免为稳定错误
+// 值额外分配 fmt.Errorf 字符串。
+type authFileErr struct{ msg string }
+
+func (e *authFileErr) Error() string { return e.msg }
+
+func errAuthIndexRequired() error { return &authFileErr{msg: "auth_index is required"} }
+func errAuthMissing() error       { return &authFileErr{msg: "auth file missing or empty"} }
 
 // stripAnomalyKey deletes the top-level "anomaly" key from an auth JSON doc.
 // Returns the (possibly unchanged) raw bytes and whether anything changed.
@@ -37,7 +51,7 @@ func stripAnomalyKey(raw []byte) ([]byte, bool) {
 // purgeLegacyAnomalyFlags walks every workbuddy auth file and strips the dead
 // top-level `anomaly` key. Idempotent: files without the key are never
 // rewritten. Per-file failures are logged and skipped so one bad file cannot
-// block the sweep. Called once from preserveWatchdogLoop startup (after the
+// block the sweep. Called once from watchdogLoop startup (after the
 // host is reachable, before the first tick).
 func purgeLegacyAnomalyFlags() {
 	files, err := hostAuthList()

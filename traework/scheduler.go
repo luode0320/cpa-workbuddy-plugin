@@ -9,11 +9,10 @@
 // Only active when scheduler_mode: credits or session is configured
 // (default off).
 //
-// Only "available" accounts participate: 「测试」标签 (test_failed), 保号
-// (preserve) and 冷却 (failover cooldown) are hard-excluded — they are
-// unusable by product definition, so there is no fallback that re-admits them.
-// Survivors are ordered LOW-CREDIT-FIRST so the soonest-to-exhaust accounts
-// burn down before the watchdog parks them.
+// Only "available" accounts participate: 「测试」标签 (test_failed) and 冷却
+// (failover cooldown) are hard-excluded — they are unusable by product
+// definition, so there is no fallback that re-admits them. Survivors are
+// ordered LOW-CREDIT-FIRST so the soonest-to-exhaust accounts burn down first.
 package main
 
 import (
@@ -82,16 +81,15 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
 	// Hard exclusion: 「测试」标签 (scheduled active ping failed while credits
-	// remained) / 保号 (watchdog parked below preserve_threshold) / 冷却
-	// (failover cooldown) accounts never carry traffic. All three are
-	// "not available" by product definition, so they are filtered
+	// remained) / 冷却 (failover cooldown) accounts never carry traffic. Both
+	// are "not available" by product definition, so they are filtered
 	// unconditionally — there is NO keep-full-list fallback: when every
 	// candidate is excluded we defer (Handled: false) so the host's built-in
 	// scheduler can fail over to OTHER providers' accounts (e.g. workbuddy)
 	// instead of pinning the request to an account we just declared unusable.
 	available := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
-		if isAccountPreserved(c.ID) || isTestFailed(c.ID) || isAccountCoolingDown(c.ID) {
+		if isTestFailed(c.ID) || isAccountCoolingDown(c.ID) {
 			continue
 		}
 		available = append(available, c)
@@ -101,10 +99,11 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	}
 	wbCandidates = available
 
-	// Low-credit first: burn the soonest-to-exhaust accounts before they are
-	// parked by the preserve watchdog. Unknown credits (-1, no cached snapshot
-	// yet) go LAST — never let an unmeasured account jump ahead of a measured
-	// one. Candidate order is what session routing and the panel fallback use.
+	// Low-credit first: burn the soonest-to-exhaust accounts first, so the
+	// fleet's remaining balance is concentrated on fewer accounts instead of
+	// spread thin everywhere. Unknown credits (-1, no cached snapshot yet) go
+	// LAST — never let an unmeasured account jump ahead of a measured one.
+	// Candidate order is what session routing and the panel fallback use.
 	sort.SliceStable(wbCandidates, func(i, j int) bool {
 		left, _ := cachedCreditsScore(wbCandidates[i].ID)
 		right, _ := cachedCreditsScore(wbCandidates[j].ID)
@@ -158,11 +157,4 @@ func candidateDisabled(c pluginapi.SchedulerAuthCandidate) bool {
 		}
 	}
 	return false
-}
-
-// isAccountPreserved reports whether the account is currently flagged by the
-// preserve watchdog and must be kept out of routing. Symmetric with
-// isAccountCoolingDown: every scheduler pick asks the same predicate family.
-func isAccountPreserved(authID string) bool {
-	return isPreserve(authID)
 }

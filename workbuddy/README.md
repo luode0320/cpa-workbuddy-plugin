@@ -131,16 +131,13 @@ plugins:
       #   off     → defer to CPA's built-in scheduler entirely
       scheduler_mode: "session"
 
-      # Preserve pool — credit watchdog. Every interval (default 10m, first
-      # tick immediate) fresh credits are pulled for every account; accounts
-      # with remaining credits below preserve_threshold (default 50) are
-      # parked in the preserve set (top-level `preserve: true` on the auth
-      # file): excluded from routing, sessions evicted, and auto-released
-      # when credits recover. Set preserve_watchdog_enabled: false to keep
-      # existing marks but stop adding new ones.
-      preserve_threshold: 50
-      preserve_watchdog_interval: "10m"
-      preserve_watchdog_enabled: true
+      # Account watchdog — every interval (fixed 10m, first tick immediate)
+      # fresh credits are pulled for every account and one lightweight "hi"
+      # reasoning ping is sent per account. A scheduled ping that fails
+      # while the account still has credits tags it with the 「测试」marker
+      # (top-level `test_failed: true` on the auth file): excluded from
+      # routing, listed under the panel's Test filter for manual cleanup.
+      # A later successful ping clears the tag. No config knobs.
 
       # CPAMP usage forwarding. Both must be set for any record to be sent.
       # Falls back to USAGE_REPORT_URL / USAGE_REPORT_KEY /
@@ -202,39 +199,38 @@ Model aliases and exclusions are handled natively by CPA's
 `oauth-model-alias` and `oauth-excluded-models` config — no plugin-side
 duplication needed.
 
-## Preserve pool (保号池)
+## Test tag (测试标签)
 
-The preserve pool is the only account separation: accounts are either
-**normal** (routed normally) or **preserved** (kept idle because their
-remaining credits just dropped below a threshold, so routing stops burning
-their last credits while the user recharges). The flag is toggled
-automatically by a watchdog — there is no manual pool selection (the v0.10.x
-priority/default/fallback pools were removed in v0.12.0).
+The 测试 tag is the only account separation: accounts are either **normal**
+(routed normally) or **test-failed** (kept out of routing because a scheduled
+liveness ping failed while the account still had credits — a strong signal the
+credential is no longer usable). The tag is written automatically by the
+account watchdog; there is no manual pool selection. The earlier credit-based
+preserve pool was removed on 2026-09-29 because a low balance is not by itself
+a usability failure — the test tag replaces it.
 
 How it works:
 
-1. **Watchdog loop** — every `preserve_watchdog_interval` (default `10m`,
-   first tick fires immediately at plugin start) the watchdog pulls fresh
-   credits for every workbuddy account via the shared singleflight channel.
-2. **Entering preserve** — when `total_remain < preserve_threshold` (default
-   `50`, strictly less), the account gets `preserve: true` on the physical
-   auth file (host watcher picks it up; survives restart) and all session
-   bindings pinned to it are evicted, so in-flight conversations re-pick a
-   healthy account on their next request.
-3. **Routing** — preserved accounts are excluded from `scheduler.pick`
-   (filtered together with disabled accounts, before failover cooldown).
-   Only when EVERY workbuddy account is preserved does routing keep the full
-   list and fall back to the current pin, so a fleet-wide credit reset never
-   locks routing.
-4. **Recovery** — when credits recover to `>= threshold`, the watchdog clears
-   the flag (`preserve` key removed) and the account rejoins normal routing
-   automatically. Manual toggling is intentionally not exposed: preserve
-   is a health gate, not a user preference.
+1. **Watchdog loop** — every `10m` (fixed, first tick fires immediately at
+   plugin start) the watchdog pulls fresh credits for every workbuddy account
+   via the concurrent refresh runner and sends one lightweight `hi` reasoning
+   ping per account.
+2. **Tagging** — when a scheduled ping fails AND `total_remain > 0`, the
+   account gets `test_failed: true` on the physical auth file (host watcher
+   picks it up; survives restart). Pings that fail on an account with unknown
+   or zero credits are not tagged — those are handled by the lifecycle rules.
+3. **Routing** — test-failed accounts are excluded from `scheduler.pick`
+   (filtered together with cooling-down accounts). When every account is
+   excluded the scheduler defers to the host, which fails over across
+   providers instead of pinning a broken account.
+4. **Recovery** — a later successful ping clears the flag (`test_failed` key
+   removed) and the account rejoins normal routing automatically. Manual
+   toggling is intentionally not exposed: the test tag is a health gate, not
+   a user preference.
 
-Config knobs: `preserve_threshold` (int), `preserve_watchdog_interval`
-(duration string), `preserve_watchdog_enabled` (bool) — see the config sample
-above. The panel shows a **保号** badge on parked accounts and a `保号 N`
-counter in the summary line.
+The panel shows a **测试** badge on tagged accounts, a `测试 N` counter in the
+summary line, and a dedicated **测试** filter chip so invalid accounts can be
+reviewed and deleted by hand.
 
 ## Lifecycle
 

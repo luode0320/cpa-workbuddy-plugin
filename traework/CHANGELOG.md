@@ -1,6 +1,18 @@
 # TraeWork Plugin Changelog
 
 
+## 0.2.0
+
+### Breaking Change - 移除保号池（preserve），路由健康闸门改由「测试」标签承担
+
+- 变更要点:
+  1. 删除保号池机制: `preserve.go` 整文件删除；`watchdog` 不再按 `preserve_threshold` 翻转账号状态，只保留「刷新积分 + 定时活跃测试」两项职责。
+  2. 配置项移除: `config.go` 不再解析 `preserve_threshold` / `preserve_watchdog_interval` / `preserve_watchdog_enabled`，`main.go` 去掉对应 ConfigFields，`management.go` 不再输出 `preserve` 字段。
+  3. 路由硬排除收敛为两类: `scheduler.go` 删除 `isAccountPreserved` 与保号过滤链，只保留 `test_failed` 与 failover cooldown；`accountRoutable`、`pickNextAuth`、会话选号同步收敛。
+  4. 面板移除保号 UI: 删除保号徽标、保号筛选按钮、`filterClass` / `accountsForFilter` 的 preserve 分支与 `保号 N` 计数；「测试」标签与筛选保持既有行为。
+  5. 保留定时活跃测试与 token 保号: 定时探测失败且 `TotalRemain > 0` 时仍写 `test_failed: true`，成功时清除；`token_keepalive`（面板「保号刷新」按钮）属于登录态续期，本轮不动。
+- 涉及文件: traework/preserve.go（删除）、traework/watchdog.go、traework/scheduler.go、traework/active_auth.go、traework/failover_retry.go、traework/management.go、traework/config.go、traework/main.go、traework/panel.html、traework/watchdog_test.go、traework/routing_exclusion_test.go、traework/auth_delete_test.go
+
 ## 0.1.68
 
 ### Feat - 路由「硬排除三类标签 + 低积分优先」，可用账号优先承载流量

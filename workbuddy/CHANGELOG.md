@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.15.0
+
+### Breaking Change - 移除保号池（preserve），路由健康闸门改由「测试」标签承担
+
+- 变更要点:
+  1. 删除保号池机制: `preserve.go` 整文件删除；`watchdog` 不再按 `preserve_threshold` 翻转账号状态，只保留「刷新积分 + 定时活跃测试」两项职责。
+  2. 配置项移除: `preserve_threshold` / `preserve_watchdog_interval` / `preserve_watchdog_enabled` 不再解析，`panel` 也不再输出 `preserve_*` 字段。
+  3. 路由硬排除收敛为两类: `scheduler.pick` 只排除 `test_failed`（「测试」标签）与 failover cooldown；`accountRoutable`、`pickNextAuth`、`pickActiveAuth`、`ensureDefaultActiveAuth`、会话选号同步收敛。
+  4. 面板移除保号 UI: 删除保号徽标、保号筛选按钮、`data-preserve` 属性与 `保号 N` 计数；「测试」标签与筛选保持既有行为。
+  5. 保留定时活跃测试: 定时探测失败且 `TotalRemain > 0` 时仍写 `test_failed: true`，成功时清除；手动「测试」按钮与 `token_keepalive` 不变。
+- 涉及文件: workbuddy/preserve.go（删除）、workbuddy/watchdog.go、workbuddy/scheduler.go、workbuddy/active_auth.go、workbuddy/failover_retry.go、workbuddy/session_auth.go、workbuddy/usage_config.go、workbuddy/panel.go、workbuddy/panel.html、workbuddy/credits_handler.go、workbuddy/anomaly_purge.go、workbuddy/lifecycle.go、workbuddy/main.go、workbuddy/watchdog_test.go、workbuddy/routing_exclusion_test.go、workbuddy/auth_delete_test.go、workbuddy/README.md、workbuddy/README_CN.md
+
 ## 0.14.43
 
 ### Feat - 路由「硬排除三类标签 + 低积分优先」，可用账号优先承载流量

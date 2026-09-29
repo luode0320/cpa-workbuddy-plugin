@@ -64,7 +64,6 @@ button.danger:hover{background:var(--err);color:#fff}
 .uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:12px}
 .badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border);white-space:nowrap}
 .badge.exhausted{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
-.badge.preserve{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-style:italic}
 .badge.test-failed{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-style:italic}
 .badge.disabled{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
 .badge.stat{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-weight:500}
@@ -217,7 +216,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 <body>
 <div class="wrap">
   <h1>TraeWork 账号面板</h1>
-  <div class="sub">积分余额 · 每日签到（09:00/21:00）· 保号池 · 失败计数 · 会话路由 · 生命周期</div>
+  <div class="sub">积分余额 · 每日签到（09:00/21:00）· 失败计数 · 会话路由 · 生命周期</div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
     <div style="display:flex;gap:8px">
@@ -239,8 +238,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   </div>
   <div class="filter-bar" id="filterBar">
     <button type="button" class="ftag active" data-f="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
-    <button type="button" class="ftag" data-f="available" onclick="filterRegion('available',this)" title="未禁用 · 未保号 · 未耗尽，可正常路由">可用 <span class="cnt" id="cntAvailable">0</span></button>
-    <button type="button" class="ftag" data-f="preserve" onclick="filterRegion('preserve',this)" title="积分低于保号阈值，watchdog 自动隔离兜底">保号 <span class="cnt" id="cntPreserve">0</span></button>
+    <button type="button" class="ftag" data-f="available" onclick="filterRegion('available',this)" title="未禁用 · 未打「测试」标签 · 未耗尽，可正常路由">可用 <span class="cnt" id="cntAvailable">0</span></button>
     <button type="button" class="ftag" data-f="exhausted" onclick="filterRegion('exhausted',this)" title="积分耗尽（remain &lt;= 0），lifecycle 自动停用">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
     <button type="button" class="ftag" data-f="failed" onclick="filterRegion('failed',this)" title="累计失败 &gt; 0 或连败中（fail_count &gt; 0）的账号">失败 <span class="cnt" id="cntFailed">0</span></button>
     <button type="button" class="ftag" data-f="disabled" onclick="filterRegion('disabled',this)" title="手动停用、耗尽自动停用（积分恢复后签到自动启用）或 refresh token 失效被标记的账号">停用 <span class="cnt" id="cntDisabled">0</span></button>
@@ -550,7 +548,6 @@ function card(a){
   if(a.active)badges.push(tag("active","活跃"));
   if(a.disabled)badges.push(tag("disabled","停用"));
   if(a.exhausted)badges.push(tag("exhausted","耗尽"));
-  if(a.preserved)badges.push(tag("preserve","保号"));
   if(a.test_failed)badges.push(tag("test-failed","测试"));
   if(!badges.length)badges.push(tag("stat","正常"));
   const cool=(!a.cooling_down&&(Number(a.fail_count)||0)>0)?tag("stat","失败"+a.fail_count+"次"):"";
@@ -575,7 +572,6 @@ function card(a){
 }
 function filterClass(a){
   if(a.disabled)return "disabled";
-  if(a.preserved)return "preserve";
   if(a.test_failed)return "test";
   if(a.exhausted)return "exhausted";
   return "available";
@@ -601,7 +597,7 @@ function toggleSort(btn){
 }
 function sortedAccounts(list){
   // 用户排序激活时按可用积分（未知 = -1 沉到"最少"端）；否则保留
-  // 停用 > 保号 > 耗尽 优先级沉底 + 积分降序的默认排序。
+  // 停用 > 耗尽 优先级沉底 + 积分降序的默认排序。
   if(currentSort!=="none"){
     const dir=currentSort==="asc"?1:-1;
     return (list||[]).slice().sort((x,y)=>{
@@ -611,8 +607,8 @@ function sortedAccounts(list){
     });
   }
   return (list||[]).slice().sort((x,y)=>{
-    const ax=x.disabled?1e12:(x.preserved?1e6:(x.exhausted?1e3:0));
-    const ay=y.disabled?1e12:(y.preserved?1e6:(y.exhausted?1e3:0));
+    const ax=x.disabled?1e12:(x.exhausted?1e3:0);
+    const ay=y.disabled?1e12:(y.exhausted?1e3:0);
     if(ax!==ay)return ax-ay;
     return (y.remain||0)-(x.remain||0);
   });
@@ -655,17 +651,16 @@ function onSearchChange(v){
   renderSummary();
 }
 function updateFilterCounts(accounts){
-  const cnt={all:accounts.length,available:0,preserve:0,exhausted:0,failed:0,disabled:0,test:0};
+  const cnt={all:accounts.length,available:0,exhausted:0,failed:0,disabled:0,test:0};
   accounts.forEach(a=>{
     // 测试失败账号不算可用（与可用过滤口径一致）。
     if(a.test_failed){ cnt.test++; }
     else if(a.disabled)cnt.disabled++;
-    else if(a.preserved)cnt.preserve++;
     else if(a.exhausted)cnt.exhausted++;
     else cnt.available++;
     if((a.failed_count||0)>0||(a.fail_count||0)>0)cnt.failed++;
   });
-  ["all","available","preserve","exhausted","failed","disabled","test"].forEach(k=>{
+  ["all","available","exhausted","failed","disabled","test"].forEach(k=>{
     const el=document.getElementById("cnt"+k.charAt(0).toUpperCase()+k.slice(1));
     if(el)el.textContent=cnt[k];
   });
@@ -683,7 +678,7 @@ function accountsForFilter(list){
     return accounts.filter(a=>!!a.test_failed);
   }
   return accounts.filter(a=>{
-    const f=a.disabled?"disabled":(a.preserved?"preserve":(a.test_failed?"test":(a.exhausted?"exhausted":"available")));
+    const f=a.disabled?"disabled":(a.test_failed?"test":(a.exhausted?"exhausted":"available"));
     return f===currentFilter;
   });
 }
@@ -708,11 +703,11 @@ function renderSummary(){
   }
   const scoped=accountsForFilter(accounts);
   // 5 卡片口径：剩余(可用) / 剩余(不可用) / 已用(消耗) / 额度池 / 消耗占比。
-  // 不可用 = 停用 / 保号 / 耗尽 / 测试失败，其积分独立统计（不能参与路由）。
+  // 不可用 = 停用 / 耗尽 / 测试失败，其积分独立统计（不能参与路由）。
   let remainAvail=0,remainUnavail=0,used=0,size=0,knownN=0,unavailN=0,exhaustedN=0;
   scoped.forEach(a=>{
     const c=creditOf(a);
-    const isUnavailable=!!a.disabled||!!a.preserved||!!a.exhausted||!!a.test_failed;
+    const isUnavailable=!!a.disabled||!!a.exhausted||!!a.test_failed;
     if(c.known){
       if(isUnavailable){remainUnavail+=c.remain;unavailN++;}
       else{remainAvail+=c.remain;used+=c.used;size+=c.size;knownN++;}
@@ -722,7 +717,7 @@ function renderSummary(){
   const total=size>0?size:(remainAvail+used);
   const pct=total>0?Math.round(used/total*100):0;
   let barColor="var(--ok)"; if(pct>60)barColor="var(--warn)"; if(pct>85)barColor="var(--err)";
-  const scopeLabel=(currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="preserve"?"保号账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="failed"?"失败账号":(currentFilter==="disabled"?"停用账号":(currentFilter==="test"?"测试账号":"全部账号")))))));
+  const scopeLabel=currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="failed"?"失败账号":(currentFilter==="disabled"?"停用账号":(currentFilter==="test"?"测试账号":"全部账号")))));
   box.style.display="block";
   box.innerHTML=
     '<div class="summary-hd"><span class="summary-title">用量汇总 · '+esc(scopeLabel)+"</span>"+

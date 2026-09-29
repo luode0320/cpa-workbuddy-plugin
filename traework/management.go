@@ -185,13 +185,9 @@ func handleAccounts() map[string]any {
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	// Rebuild the two disk-backed routing mirrors from the same auth list we
-	// just read. Both feed the availability contract used by the panel and by
-	// scheduler.pick (保号 / 测试标签), and both prune entries for accounts that
-	// no longer exist. traework previously never refreshed the preserve mirror,
-	// so persisted 保号 tags were invisible both to the panel and to routing
-	// after a process restart.
-	refreshPreserveSetFromDisk()
+	// Rebuild the 「测试」disk-backed routing mirror from the same auth list we
+	// just read. It feeds the availability contract used by the panel and by
+	// scheduler.pick, and prunes entries for accounts that no longer exist.
 	refreshTestFailedSetFromDisk()
 	views := make([]traeAccountView, 0, len(files))
 	for _, f := range files {
@@ -210,7 +206,6 @@ func handleAccounts() map[string]any {
 			Name:       f.Name,
 			UID:        a.UserID,
 			Disabled:   phys.Disabled || f.Disabled,
-			Preserved:  isPreserve(f.ID),
 			TestFailed: isTestFailed(f.ID),
 		}
 		// Cumulative success/failed counters (plugin-owned, survive restart).
@@ -251,15 +246,9 @@ func handleAccounts() map[string]any {
 		"active_id":    active,
 		"checkin_auto": autoCheckinEnabled(),
 		"server_time":  time.Now().Format("2006-01-02 15:04:05"),
-		// Plugin subsystem state for the panel header (watchdog / keepalive /
-		// lifecycle toggles + their config). Kept in one /accounts payload so
-		// the panel renders with a single fetch.
-		"preserve": map[string]any{
-			"threshold":        preserveThreshold(),
-			"interval_seconds": int64(preserveWatchdogInterval().Seconds()),
-			"enabled":          preserveWatchdogEnabled(),
-			"pool_size":        len(preserveSnapshot()),
-		},
+		// Plugin subsystem state for the panel header (keepalive / lifecycle
+		// toggles + their config). Kept in one /accounts payload so the panel
+		// renders with a single fetch.
 		"lifecycle": map[string]any{
 			"enabled": lifecycleEnabled(),
 		},
@@ -797,9 +786,9 @@ func handleDeleteAuth(req pluginapi.ManagementRequest) map[string]any {
 // clearDeletedAccountState removes every in-memory trace of a deleted account
 // for each provided key (auth.ID, auth_index, and account UID may each have
 // been used as a key by different code paths). Covers cached credits/plan,
-// active selection, preserve flag, failover cooldown/counter, and session
-// bindings pinned to the account. Idempotent — safe to call when maps are
-// empty or keys already absent.
+// active selection, failover cooldown/counter, and session bindings pinned to
+// the account. Idempotent — safe to call when maps are empty or keys already
+// absent.
 func clearDeletedAccountState(keys ...string) {
 	for _, k := range keys {
 		k = strings.TrimSpace(k)
@@ -808,7 +797,6 @@ func clearDeletedAccountState(keys ...string) {
 		}
 		accountCache.Delete(k)
 		clearActiveAuthIfMatch(k)
-		preserveSetClear(k)
 		clearFailoverStateForAuth(k)
 		evictSessionBindingsForAuth(k)
 	}

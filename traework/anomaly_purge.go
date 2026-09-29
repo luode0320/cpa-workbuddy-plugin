@@ -25,7 +25,7 @@
 //
 // This file also hosts the shared auth-file error helpers (authFileErr /
 // errAuthIndexRequired / errAuthMissing) that used to live in anomaly.go and
-// are referenced by counter.go / keepalive.go / management.go / preserve.go.
+// are referenced by counter.go / keepalive.go / management.go / test_failed_tag.go.
 package main
 
 import (
@@ -106,7 +106,7 @@ func stripLegacyDisabledFlag(raw []byte) ([]byte, bool) {
 
 // purgeLegacyDisabledFlags walks every traework auth file and re-enables
 // accounts carrying the legacy session-dead disable pair. Idempotent.
-// Called once from preserveWatchdogLoop startup (after the host is
+// Called once from watchdogLoop startup (after the host is
 // reachable), next to purgeLegacyAnomalyFlags. This is the self-healing path
 // for deployments upgraded from ≤0.1.54 whose auth files still carry flags
 // written by the old auto-disabler (or re-written afterwards by its leaked
@@ -149,7 +149,7 @@ func purgeLegacyDisabledFlags() {
 // purgeLegacyAnomalyFlags walks every traework auth file and strips the dead
 // top-level `anomaly` key. Idempotent: files without the key are never
 // rewritten. Per-file failures are logged and skipped so one bad file cannot
-// block the sweep. Called once from preserveWatchdogLoop startup (after the
+// block the sweep. Called once from watchdogLoop startup (after the
 // host is reachable, before the first tick).
 func purgeLegacyAnomalyFlags() {
 	files, err := hostAuthList()

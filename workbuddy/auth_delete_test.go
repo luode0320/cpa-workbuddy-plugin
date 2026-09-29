@@ -21,7 +21,7 @@ import (
 //     non-workbuddy files before any physical delete.
 //   - clearFailoverStateForAuth: single-key failover cooldown removal.
 //   - clearDeletedAccountState: the aggregate cleanup across every in-memory
-//     key dimension (lifecycle, cache, active selection, preserve,
+//     key dimension (lifecycle, cache, active selection,
 //     failover, session bindings).
 // ---------------------------------------------------------------------------
 
@@ -78,7 +78,6 @@ func TestClearDeletedAccountState(t *testing.T) {
 	rememberLifecycleState(id, true, "exhausted")
 	accountCache.Store(id, &accountCacheEntry{plan: "pro", credits: &creditsSummary{TotalRemain: 1}})
 	setActiveAuthID(id)
-	preserveSetPut(id)
 	recordAccountFailure(id, 429, "rate limit")
 	sessionAuthMu.Lock()
 	sessionAuthBindings["conv-1"] = sessionAuthBinding{AuthID: id, ExpiresAt: time.Now().Add(time.Hour)}
@@ -94,9 +93,6 @@ func TestClearDeletedAccountState(t *testing.T) {
 	}
 	if got := getActiveAuthID(); got != "" {
 		t.Fatalf("active selection should be cleared, got %q", got)
-	}
-	if isPreserve(id) {
-		t.Fatal("preserve flag should be cleared")
 	}
 	if _, _, ok := failoverStateSnapshot(id); ok {
 		t.Fatal("failover state should be cleared")
@@ -117,7 +113,6 @@ func TestClearDeletedAccountState_MultiKeyDimension(t *testing.T) {
 	for _, k := range []string{"f-id", "auth-index-1", "uid-xyz"} {
 		rememberLifecycleState(k, true, "x")
 		accountCache.Store(k, &accountCacheEntry{})
-		preserveSetPut(k)
 		recordAccountFailure(k, 429, "rate limit")
 	}
 
@@ -129,9 +124,6 @@ func TestClearDeletedAccountState_MultiKeyDimension(t *testing.T) {
 		}
 		if _, ok := accountCache.Load(k); ok {
 			t.Fatalf("account cache for %q should be cleared", k)
-		}
-		if isPreserve(k) {
-			t.Fatalf("preserve flag for %q should be cleared", k)
 		}
 		if _, _, ok := failoverStateSnapshot(k); ok {
 			t.Fatalf("failover state for %q should be cleared", k)

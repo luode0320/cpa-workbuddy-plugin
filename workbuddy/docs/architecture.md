@@ -63,7 +63,7 @@ anomaly_config.go anomalyThresholdDefault/Min/Max + clampAnomalyThreshold +
                   parseAnomalyThresholdLine/RefreshEnabledLine
 
 scheduler.go      handleSchedulerPick + candidateDisabled + cachedCreditsScore +
-                  isAccountAnomaly (filter chain: disabled → preserve → anomaly → cooldown)
+                  isTestFailed / isAccountCoolingDown (filter chain: disabled → test_failed → cooldown)
 active_auth.go    activeAuthID sticky state + pickActiveAuth + clearActiveAuthIfMatch
 
 cache.go          accountCache + accountDetailFlight singleflight + prune

@@ -377,15 +377,15 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 			}
 			cr, err := fetchUserResource(sa)
 		acct := map[string]any{
-			"auth_index": authIndex,
-			"nickname":   sa.Account.Nickname,
-			"uid":        sa.Account.UID,
-			"region":     accountRegion(sa),
-			"name":       f.Name,
-			"label":      f.Label,
-			"disabled":   f.Disabled,
-			"selected":   getActiveAuthID() == f.ID,
-			"preserve":   isPreserve(f.ID),
+			"auth_index":  authIndex,
+			"nickname":    sa.Account.Nickname,
+			"uid":         sa.Account.UID,
+			"region":      accountRegion(sa),
+			"name":        f.Name,
+			"label":       f.Label,
+			"disabled":    f.Disabled,
+			"selected":    getActiveAuthID() == f.ID,
+			"test_failed": isTestFailed(f.ID),
 		}
 			if err != nil {
 				acct["error"] = err.Error()

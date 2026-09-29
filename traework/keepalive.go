@@ -223,8 +223,8 @@ func isRefreshDeadError(msg string) bool {
 
 // persistKeepaliveTokens writes the rotated runtime token fields onto the TOP
 // LEVEL of the physical auth file, preserving every other key (disabled/note/
-// preserve/anomaly/counters/credential). Goes through persistAuthDirect — the
-// same direct-write channel as preserve/counter, because host.auth.save
+// test_failed/anomaly/counters/credential). Goes through persistAuthDirect — the
+// same direct-write channel as test_failed/counter, because host.auth.save
 // rebuilds the record and drops unknown top-level fields.
 func persistKeepaliveTokens(authIndex string, sa *traeAuth) error {
 	phys, err := hostAuthGetPhysical(authIndex)

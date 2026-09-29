@@ -289,7 +289,6 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 		rememberLifecycleState(authID, true, note)
 		accountCache.Delete(authID)
 		clearActiveAuthIfMatch(authID)
-		preserveSetClear(authID)
 		return nil
 	}
 	if err := deleteAuthFileInDir(path, filepath.Dir(path)); err != nil {
@@ -312,9 +311,9 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 // clearDeletedAccountState removes every in-memory trace of a deleted account
 // for each provided key (auth.ID, auth_index, and account UID may each have
 // been used as a key by different code paths). Covers lifecycle state, cached
-// credits/plan/checkin, active selection, preserve flag,
-// failover cooldown/counter, and session bindings pinned to the account.
-// Idempotent — safe to call when maps are empty or keys already absent.
+// credits/plan/checkin, active selection, failover cooldown/counter, and
+// session bindings pinned to the account. Idempotent — safe to call when maps
+// are empty or keys already absent.
 func clearDeletedAccountState(keys ...string) {
 	for _, k := range keys {
 		k = strings.TrimSpace(k)
@@ -324,7 +323,6 @@ func clearDeletedAccountState(keys ...string) {
 		lifecycleState.Delete(k)
 		accountCache.Delete(k)
 		clearActiveAuthIfMatch(k)
-		preserveSetClear(k)
 		clearFailoverStateForAuth(k)
 		evictSessionBindingsForAuth(k)
 	}

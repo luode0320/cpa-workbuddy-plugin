@@ -23,7 +23,6 @@ func resetTestFailed(t *testing.T) {
 // traffic — not even when it is the panel-selected card.
 func TestSchedulerPick_TestFailedFiltered(t *testing.T) {
 	resetActiveAuth(t)
-	resetPreserve(t)
 	resetTestFailed(t)
 	resetFailover(t)
 	storeCredits(t, "tr-tagged", 30)
@@ -51,7 +50,6 @@ func TestSchedulerPick_TestFailedFiltered(t *testing.T) {
 // known-broken account.
 func TestSchedulerPick_AllTestFailed_Defers(t *testing.T) {
 	resetActiveAuth(t)
-	resetPreserve(t)
 	resetTestFailed(t)
 	resetFailover(t)
 	storeCredits(t, "tr-a", 30)
@@ -82,7 +80,6 @@ func TestSchedulerPick_AllTestFailed_Defers(t *testing.T) {
 // which is exactly the LOW-CREDIT-FIRST contract under test.
 func TestSchedulerPick_LowCreditFirst(t *testing.T) {
 	resetActiveAuth(t)
-	resetPreserve(t)
 	resetTestFailed(t)
 	resetFailover(t)
 	storeCredits(t, "tr-mid", 300)
@@ -107,7 +104,6 @@ func TestSchedulerPick_LowCreditFirst(t *testing.T) {
 // unmeasured one left, the measured account must win.
 func TestSchedulerPick_UnknownCreditsRankLast(t *testing.T) {
 	resetActiveAuth(t)
-	resetPreserve(t)
 	resetTestFailed(t)
 	resetFailover(t)
 	storeCredits(t, "tr-known", 900)
@@ -133,7 +129,6 @@ func TestSchedulerPick_UnknownCreditsRankLast(t *testing.T) {
 // scheduled ping does on success) must put the account back into rotation.
 func TestSchedulerPick_RecoversAfterTagCleared(t *testing.T) {
 	resetActiveAuth(t)
-	resetPreserve(t)
 	resetTestFailed(t)
 	resetFailover(t)
 	storeCredits(t, "tr-recovered", 20)
@@ -196,18 +191,17 @@ func TestTestFailedSetBasic(t *testing.T) {
 	testFailedSetClear("tr-missing") // no-op; must not panic
 }
 
-// TestEnsureDefaultActiveAuth_SkipsTestFailedAndPreserve keeps the panel
-// selection on the same availability contract as routing.
-func TestEnsureDefaultActiveAuth_SkipsTestFailedAndPreserve(t *testing.T) {
+// TestEnsureDefaultActiveAuth_SkipsTestFailed keeps the panel selection on the
+// same availability contract as routing.
+func TestEnsureDefaultActiveAuth_SkipsTestFailed(t *testing.T) {
 	resetActiveAuth(t)
-	resetPreserve(t)
 	resetTestFailed(t)
 	resetFailover(t)
 	storeCredits(t, "a1", 10)
 	storeCredits(t, "a2", 500)
 	storeCredits(t, "a3", 300)
 	testFailedSetPut("a1")
-	preserveSetPut("a2")
+	testFailedSetPut("a2")
 	setActiveAuthID("a1")
 	id := ensureDefaultActiveAuth([]traeAccountView{
 		{AuthIndex: "a1", AuthID: "a1", Remain: 10},

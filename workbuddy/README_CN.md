@@ -112,14 +112,11 @@ plugins:
       #   off     → 完全交给 CPA 内置调度
       scheduler_mode: "session"
 
-      # 保号池 — 积分看护。每隔 preserve_watchdog_interval（默认 10m，首轮
-      # 立即执行）拉取全部账号真实积分；剩余积分低于 preserve_threshold
-      # （默认 50）的账号划入保号态（auth 文件顶级 preserve: true）：
-      # 不参与路由、驱逐已绑定会话，积分回血后自动释放。
-      # preserve_watchdog_enabled: false 可保留已保号账号但不再新增。
-      preserve_threshold: 50
-      preserve_watchdog_interval: "10m"
-      preserve_watchdog_enabled: true
+      # 账号看护 — 每隔固定 10m（首轮立即执行）拉取全部账号真实积分，
+      # 并对每个账号发一次轻量 "hi" 推理保活请求。定时请求失败且账号
+      # 仍有积分时，写入「测试」标记（auth 文件顶级 test_failed: true）：
+      # 不参与路由，并在面板「测试」筛选下列出供人工清理；后续一次
+      # 成功请求会自动清除标记。无配置项。
 
       # CPAMP usage 上报。URL+key 都设置才会上报。
       # 未配置时 fallback 到 USAGE_REPORT_URL / USAGE_REPORT_KEY /
@@ -168,31 +165,31 @@ plugins:
 模型 alias 和排除走 CPA 原生 `oauth-model-alias` 和 `oauth-excluded-models`
 配置，无需插件侧重复。
 
-## 保号池（积分看护）
+## 测试标签（测试）
 
-保号池是账号唯一的区分维度：账号要么**正常**（正常参与路由），要么**保号**
-（因剩余积分跌破阈值被暂时屏蔽，让路由停止消耗其最后一点积分，等用户充值
-回血）。标记由 watchdog 自动翻转——v0.12.0 起已移除手动三池选择
-（v0.10.x 的优先/默认/兜底池），不存在用户手动归属可被覆盖的问题。
+测试标签是账号唯一的区分维度：账号要么**正常**（正常参与路由），要么
+**测试失败**（一次定时保活请求失败且账号仍有积分，说明凭据很可能已
+不可用，因此摘出路由）。标签由账号看护循环自动写入，不存在手动池选择。
+此前的积分保号池已于 2026-09-29 移除——积分低本身并不等于不可用，
+由测试标签替代其路由排除职责。
 
 工作机制：
 
-1. **定时看护** — 每隔 `preserve_watchdog_interval`（默认 `10m`，插件启动
-   首轮立即执行）经共享 singleflight 通道拉取全部 workbuddy 账号真实积分。
-2. **进入保号** — 当 `total_remain < preserve_threshold`（默认 `50`，严格
-   小于）时，auth 文件写入 `preserve: true`（宿主 watcher 自动接管、重启
-   不丢），并**立即驱逐**所有绑定到该账号的会话 binding——正在使用的对话
-   下一次请求自动改走健康账号。
-3. **不参与路由** — 保号账号在 `scheduler.pick` 中整体剔除（与 disabled
-   同级过滤，先于 failover cooldown）。仅当**全部** workbuddy 账号都保号
-   时保留全列表回落到当前 pin，避免全库保号把路由锁死。
-4. **自动恢复** — 积分回到 `>= threshold` 后 watchdog 自动清除标记
-   （删除 `preserve` 键），账号恢复正常路由。刻意不提供手动开关：
-   保号是健康闸门，不是用户偏好。
+1. **账号看护** — 每隔固定 `10m`（插件启动首轮立即执行）经并发刷新
+   runner 拉取全部 workbuddy 账号真实积分，并对每个账号发一次轻量
+   `hi` 推理保活请求。
+2. **打标** — 当定时请求失败且 `total_remain > 0` 时，auth 文件写入
+   `test_failed: true`（宿主 watcher 自动接管、重启不丢）。积分未知或
+   已耗尽的账号不打标——那类账号由生命周期规则处理。
+3. **不参与路由** — 测试失败账号在 `scheduler.pick` 中整体剔除（与
+   冷却中账号同级过滤）。当全部账号都被排除时交还宿主做跨 provider
+   failover，而不是把坏账号钉死在路由里。
+4. **自动恢复** — 后续一次保活请求成功后自动清除标记（删除
+   `test_failed` 键），账号恢复正常路由。刻意不提供手动开关：
+   测试标签是健康闸门，不是用户偏好。
 
-配置项：`preserve_threshold`（int）、`preserve_watchdog_interval`
-（时长字符串）、`preserve_watchdog_enabled`（bool），见上方配置示例。
-面板对保号账号显示**保号**徽标，汇总栏显示 `保号 N` 计数。
+面板对测试失败账号显示**测试**徽标，汇总栏显示 `测试 N` 计数，并提供
+独立的**测试**筛选标签，便于人工复核后删除无效账号。
 
 ## 生命周期
 

@@ -228,9 +228,9 @@ func isPathUnder(path, dir string) bool {
 }
 
 // writeAuthFileDirect writes raw JSON to a physical auth file via atomic
-// temp-then-rename. This is the direct-write channel used by preserve /
+// temp-then-rename. This is the direct-write channel used by test_failed /
 // counter / lifecycle / keepalive: host.auth.save rebuilds the auth record
-// and DROPS top-level fields the host doesn't recognize (preserve /
+// and DROPS top-level fields the host doesn't recognize (test_failed /
 // success_count / etc.), so any plugin-owned top-level flag MUST go through
 // this path and let the host's file watcher re-synthesize the record with
 // the unknown fields intact. Confined to isSafeAuthPath + absolute paths.

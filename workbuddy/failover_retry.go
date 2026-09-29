@@ -40,7 +40,7 @@ func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *storedAuth, 
 
 	// First pass: find the first file-entry whose host-reported ID is
 	// NOT currentAuthID and passes the cheap filters (disabled,
-	// cooling down, preserved, test-failed). Order is host-provided so
+	// cooling down, test-failed). Order is host-provided so
 	// successive retries walk the same predictable path — unlike
 	// scheduler.pick, in-flight failover does NOT reorder by credits,
 	// because a mid-request switch must stay deterministic across the
@@ -60,9 +60,9 @@ func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *storedAuth, 
 		if isAccountCoolingDown(id) {
 			continue
 		}
-		// 「测试」/保号 accounts are unusable by product definition — they
-		// must not be picked up as an in-flight retry target either.
-		if isAccountPreserved(id) || isTestFailed(id) {
+		// 「测试」accounts are unusable by product definition — they must not
+		// be picked up as an in-flight retry target either.
+		if isTestFailed(id) {
 			continue
 		}
 		// Skip candidates with no usable auth index — we can't load

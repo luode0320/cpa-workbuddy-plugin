@@ -172,7 +172,7 @@ func headerSessionPrefix(header string) string {
 // sessionKey != "" → sticky session routing:
 //   - a fresh, still-usable binding is reused unchanged (1h stickiness);
 //   - a stale binding (expired) or a binding whose account became
-//     disabled/exhausted/cooling-down/保号/测试失败 is re-assigned;
+//     disabled/exhausted/cooling-down/测试失败 is re-assigned;
 //   - new assignments prefer accounts with no live bindings, then round-robin
 //     across all usable accounts (the candidate slice is already ordered
 //     LOW-CREDIT-FIRST by handleSchedulerPick);

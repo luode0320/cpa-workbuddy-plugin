@@ -278,7 +278,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.1.68"
+var version = "0.2.0"
 
 func wbRegistration() registration {
 	return registration{
@@ -301,9 +301,6 @@ func wbRegistration() registration {
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：用量上报使用的 CPAMP 管理密钥。"},
 				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
 				{Name: "usage_feed_path", Type: pluginapi.ConfigFieldTypeString, Description: "可选：共享用量数据流路径（默认 <CLIProxyAPI 根目录>/data/token-usage-feed.ndjson）。必须与 token-usage-tracker 的 usage_feed_path 保持一致。"},
-				{Name: "preserve_threshold", Type: pluginapi.ConfigFieldTypeString, Description: "保号池积分阈值（1-500，默认 50）：可用积分低于该值的账号自动进入保号池，仅在无其它可用账号时兜底路由。"},
-				{Name: "preserve_watchdog_interval", Type: pluginapi.ConfigFieldTypeString, Description: "保号看护（watchdog）检查间隔（分钟，默认 10）：周期性刷新积分快照并更新保号池归属。"},
-				{Name: "preserve_watchdog_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用保号看护循环（默认开启）：关闭后保号池不再自动维护，仅保留手动路由。"},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每4小时 token 保号刷新（默认开启）：access token 临近过期时通过 ExchangeToken 自动续期；刷新令牌失效的账号仅记录过期备注不停用（停用需面板手动操作），路由层靠失败冷却自动避开。"},
 				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用积分生命周期巡检（默认开启）：账号积分耗尽（remain<=0）自动停用并标记 exhausted_disable；每 4 小时签到刷新积分，恢复>0 自动重新启用；手动停用（manual_disable）永不自动覆盖。"},
 				{Name: "auth_flag_guard", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用禁用标记守护（默认开启）：每 5 分钟核对已停用账号的物理文件，若宿主自动刷新重建时抹掉了 disabled 标记则自动写回，防止停用账号悄悄回到路由池。"},
