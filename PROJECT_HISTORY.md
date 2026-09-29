@@ -4,6 +4,8 @@
 
 ## 事件
 
+- 2026-09-30：workbuddy-provider **0.15.0** / traework-provider **0.2.0** —— 移除保号池机制、路由排除改由「测试」标签（test_failed）承担，**已提交并发布部署**；同轮把「默认提交/发布授权」写入仓库级规则 AGENTS.md / CLAUDE.md。用户口径：保号已基本无意义 → 去掉保号池用「测试」标签代替；token keepalive（登录态续期）不在删除范围。关键设计：保留「定时活跃探测 + 积分刷新」循环（refresh_runner.doFetchOne → triggerActivePing 失败写 test_failed），它是测试标签唯一自动来源；删保号翻转语义并整体改名（preserveWatchdogLoop→watchdogLoop、runPreserveWatchdogTick→runWatchdogTick、requestPreserveTick→requestWatchdogTick、preserveTickCh→watchdogTickCh、preserveWatchdogStartupWait→watchdogStartupWait、preserveWatchdogReadyPoll→watchdogReadyPoll，删 preserveWatchdogDisabledPoll），固定 watchdogIntervalDefault=10m。改动：两插件删 preserve.go；scheduler/active_auth/failover_retry/session_auth 硬排除只留 isTestFailed + isAccountCoolingDown；workbuddy 删 preserve_* 解析 / panel Preserve 字段 / panel.html 保号 UI / lifecycle preserveSetClear / credits_handler 标签映射改 test_failed；traework 删 isAccountPreserved / refreshPreserveSetFromDisk / Preserved map / config case / main ConfigFields / panel.html 保号 UI。验证：cgo-shim 双插件 build/vet/test 全绿（11.229s/2.022s）+ 哨兵法证明新测试进编译 + 双 panel.html 4 script 块 node 校验全绿 + 本轮零新增 gofmt 抱怨 + grep 确认保号符号 0 命中 + 6-review STYLE PASS（doc/6-review/2026-09-30_000524）。发布链 1e4a571→5e08deb→8200656→55506b6；CI run 36603938568/36603955142 同 commit `5e08deb` 双 success；远端 raw ALL PASS（14 artifacts sha256 全对、旧版零残留）；生产 install 落盘 .so sha256 与本地 zip 一致（4727e7bb…/2d61f96f…）+ hot reloaded active=0.15.0 retired=0.14.43 与 active=0.2.0 retired=0.1.68 + accounts/panel 全 200；行为验收 `/v1/responses` 流式 qwen3.8-max 16s / 56655B / 144 帧 + nonce 完整 + `exec stream async done attempt=1 chunks=174`。同轮规则变更：AGENTS.md + CLAUDE.md 以「提交 / 发布授权（默认授权，强制）」段替换原「严禁自动提交 Git」段，确立本仓库默认提交/发布授权（当轮显式边界仍绝对优先）。
+
 - 2026-09-29：workbuddy-provider **0.14.43** / traework-provider **0.1.68** 路由口径改造「优先可用账号 + 硬排除测试/保号/冷却 + 低积分优先」发布部署。改造前：workbuddy 走「健康层优先高积分」（0.14.40），`test_failed` 在调度链路完全没有排除，保号「全部保号时回退全量列表」等于把不可用账号放回路由；traework 另有真实缺陷——`refreshPreserveSetFromDisk()` 全仓无调用点，重启后保号账号仍被命中。落地：scheduler.pick 三段硬排除 + 全排除即 `Handled:false` 交还宿主跨 provider failover（删除"回退全量"兜底）；`sort.SliceStable` 按缓存积分升序（未测 -1 排最后）；新增 `accountRoutable` / `accountLowerCredits` 由 pickActiveAuth / ensureDefaultActiveAuth / pickSessionAuth / scheduler.pick 共用，面板选中项改为「可用账号中积分最低者」；`pickNextAuth` 跳过测试/保号但保持宿主顺序；`testFailedSet` 内存镜像 + `refreshTestFailedSetFromDisk` 三处同步（面板构建 / 保号 watchdog tick / 标签直写），重启后仍正确排除；traework 补 `refreshPreserveSetFromDisk` 调用点并修 `cachedCreditsScore` 空指针。验证：cgo-shim 双插件全绿（11.45s / 2.23s）+ 哨兵法证明新测试进编译 + 双 panel.html 4 script 块 node --check 全绿。发布链 cbb18b6→a9a893a→1c792cb→b33613c；CI run 36466163784/36466175909 同 commit `a9a893a` 双 success；远端 raw ALL PASS（14 artifacts size+sha256 全对、零残留）；生产 install 落盘 .so sha256 与本地一致（21ba3df2…/872a32e3…）+ hot reloaded active=0.14.43 retired=0.14.42 与 active=0.1.68 retired=0.1.67 + accounts/credits/panel 全 200。行为强证据：可用账号积分最低者（remain=31 的 `16226361146 [CN]`）与面板 `active_auth` 完全一致；真实 `/v1/responses` 3s 200 + nonce 完整。
 - 2026-09-27：workbuddy 0.14.42 面板「创建」时间改用 JWT `auth_time` 真实创建时间（旧值取宿主 `HostAuthFileEntry.CreatedAt`，被 watcher 的 `time.Now()` 每次扫描刷成「最近写入时刻」）。新增 `created_at.go` + 8 用例；cgo-shim 全绿含哨兵；发布链 cb0a2be→f44eb08→6736c90；CI 36327182344 success；远端 raw ALL PASS；生产 hot reloaded 0.14.42 + 落盘 sha256 一致；行为验证 `242e1dde` 由错误 09-27 22:12 纠正为真实 08-20 23:11。（同日收口：按 project-memory-rules 主动裁剪 PROJECT_CURRENT.md「已完成」区最旧的 24 条（2026-08-22~08-30）以满足 51,200 字节硬限，63,445 → 47,493 字节；并同步对齐 PROJECT_HISTORY.md 既有漂移的计数锚点区（HEAD 为 20 事件/19 锚点，现为 20/20））
 - 2026-09-05：traework-provider **0.1.44 发布部署**（GetUserInfo 401 回落回调 userInfo）：0.1.43 实测 exchange 已成功换到 token，但 GetUserInfo 报 401 "The user is not logged in"（cookie 会话鉴权路由，新 bearer token 不被认）。SOLO main.js 取证：客户端优先用回调 URL 的 userInfo JSON（r ?? await getUserInfo(...)），GetUserInfo 只是兜底。修复：parseBounceUserInfo 提取回调 userInfo 的 UserID/ScreenName，GetUserInfo 失败时回落。发布链 f38147d→4c924aa→a162f44；CI run 33902405197 success（16m+，两轮轮询窗口）；远端 ALL PASS；生产 install 首两次 CDN 滞后 version not found → 等 7 分钟第三次成功，落盘 sha256 60cb72ae 一致 + hot reloaded active=0.1.44。
@@ -23,8 +25,6 @@
 - 2026-08-31：traework-provider **0.1.21 发布**（异步流改走宿主流桥实时读取 + 业务成功严格依赖 done 终止）：① `callLLMStream`/`hostHTTPDoStream` 透传 `host_callback_id`，实时读取避免长回答全量缓冲；② `validate` 收紧——部分 `output` 后 EOF 不补成空 stop；③ 最终 stop 下发失败走失败核算；④ `scanSSE` EOF 补齐无换行尾帧。cgo-shim build/vet/test 全绿。提交链 85262aa(fix)→7ad1e4f(assets 8 文件)→4bd1f07(registry)；CI 首 run 33324654919 因无关插件 workbuddy-provider darwin/amd64 checkout 网络瞬时失败拖累 Release job 跳过（Release needs build-cross 无 if:always），重跑 run 33325134505 success；Release `traework-provider-v0.1.21`（8 assets）；raw 远端 ALL PASS（7 平台 size+sha256 全 OK，无旧版本残留）。
 - 2026-08-26：token-usage-tracker「进 dashboard 页面概率性中断请求」修复 **已发布**（workbuddy-token-usage 0.2.1）：① `SyncOnRecord` 改 `false` 恢复 store 批量提交（dirty 聚合 + FlushMaxRecords=100 + 5s ticker），写放大降 ~100x；② 新增 `triggerFeedSync()`（容量 1 信号量合并并发触发 + 后台 loop）；③ `serveStatsResource` 读路径改异步触发（写路径保留同步）。cgo-shim build/vet/test 全绿（30s）。提交链 325d6e5(feat)→c582446(chore release assets)→(chore registry)，CI run 32970605823 success，8 assets checksums 全 OK，registry raw 200 含 0.2.1 + 7 artifacts raw URL 全 200。真实页面交互验证（进页面不中断、积压 feed 快速导入）待做。
 - 2026-08-26：token-usage-tracker「进 dashboard 页面概率性中断请求」根因定位+修复 **已改码未提交**：根因=读路径每请求同步 `syncUsageFeed()`（feedSyncMu 串行）+ `SyncOnRecord: true` 逐条 bbolt 事务+fsync（写放大）→ feed 积压时 6+ 并发请求排队超 10s 前端超时。修复：① `SyncOnRecord` 改 `false` 恢复 store 批量提交（dirty 聚合 + FlushMaxRecords=100 + 5s ticker）；② 新增 `triggerFeedSync()`（容量 1 信号量合并并发触发 + 后台 loop，feed_ingest.go）；③ `serveStatsResource` 读路径改异步触发（management.go，写路径保留同步）。`cgo-shim-build.py token-usage-tracker` build/vet/test 全绿（30s）。数据丢失窗口（硬崩溃 ≤100 条/1 flush interval）对用量统计可接受。未走发布链路。
-- 2026-08-23：账号面板「删除账号」功能 **已发布**（workbuddy 0.14.7）：卡片右上角 `×` 删除图标 + 二次确认模态框（取消不请求 / 确认 POST 后刷新 / 失败 Toast 保留卡片）；后端新增严格删除接口 `POST /delete`（仅收 `auth_index`，重新校验存在性 → `isWorkbuddyAuthFileName` 文件名归属 → `hostAuthGetBundle` 解析 → `phys.AuthIndex` 一致 → 路径非空 → `isSafeWorkbuddyAuthPath` → `deleteAuthFileInDir` 物理删除 → `clearDeletedAccountState` 全维度清理 f.ID/auth_index/UID 三个键）。新增 `clearFailoverStateForAuth` / `clearDeletedAccountState` / `isWorkbuddyAuthFileName` 三个纯函数 + `auth_delete_test.go` 单测；`cgo-shim-build.py workbuddy` build/vet/test 全绿，panel.html 两脚本块 `node --check` 通过。提交链 8003ae6→a6a5527→0cabb46，CI run 32635829837 success，8 assets checksums 全 OK，registry raw 200 含 0.14.7 + 7 assets raw URL 全 200。覆盖边界：`handleDeleteAuth` 完整链路因 `hostCall` 依赖 cgo `hostAPI` 无法在 shim 环境单测，真实页面交互验证待做。
-
 ## 计数锚点区
 
 > 本区由 `memory-usage-tracking-rules` 收口闸门维护：HISTORY 仅窄读计入，会话启动不读不计；被裁剪事件的锚点随事件一起删除（不保留 retired）；本区计数仅作主题热度弱信号。锚点 key 用事件 `- YYYY-MM-DD：` 后的核心主题短语（约前 12 字符，可前缀匹配）。
@@ -32,6 +32,11 @@
 ```yaml
 version: 1
 anchors:
+  - title: "workbuddy-provider / traework-provi"
+    usage_count: 0
+    usage_days: 0
+    last_used_at: null
+    absorbed_to: null
   - title: "workbuddy-provider **0.14.43** / tr"
     usage_count: 0
     usage_days: 0
@@ -123,11 +128,6 @@ anchors:
     last_used_at: null
     absorbed_to: null
   - title: "token-usage-tracker「进 dashboard 页面概率性中断请求」根"
-    usage_count: 0
-    usage_days: 0
-    last_used_at: null
-    absorbed_to: null
-  - title: "账号面板「删除账号」功能 **已发布**（workbuddy"
     usage_count: 0
     usage_days: 0
     last_used_at: null

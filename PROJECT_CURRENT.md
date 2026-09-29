@@ -8,11 +8,24 @@
 
 ## 项目概览
 
-- 状态：活跃维护中。生产现役与 registry 对齐（2026-09-29 03:04 发布）：traework-provider **0.1.68** / workbuddy-provider **0.14.43**（路由硬排除「测试/保号/冷却」+ 低积分优先）/ qoderwork-provider **0.9.20** / workbuddy-token-usage **0.2.2**。历史发布细节见「已完成」区。
+- 状态：活跃维护中。生产现役与 registry 对齐（2026-09-30 02:00 发布）：traework-provider **0.2.0** / workbuddy-provider **0.15.0**（移除保号池，路由健康闸门=「测试」标签 + 冷却 + 低积分优先）/ qoderwork-provider **0.9.20** / workbuddy-token-usage **0.2.2**。历史发布细节见「已完成」区。
 - 活动会话数：2（本会话 + 并行会话共享工作树 F:\cpa-plugin）
-- 更新时间：2026-09-29 (GMT+8)
+- 更新时间：2026-09-30 (GMT+8)
 
 ## 活动会话任务摘要
+
+- 当前会话（2026-09-30）：**移除保号池（preserve）机制，路由排除改由「测试」标签（`test_failed`）承担（workbuddy 0.15.0 / traework 0.2.0 已发布部署）**。
+  - 用户口径：「保号已基本无意义，可以去掉，用测试标签代替」；`token keepalive`（登录态续期，traework 面板「保号刷新」按钮 / `token_keepalive` 配置）属登录态续期，**不在删除范围**。
+  - 关键设计：保留「定时活跃探测 + 积分刷新」循环（`refresh_runner.doFetchOne` → `triggerActivePing` 失败写 `test_failed`），它是「测试」标签唯一自动来源；删除保号翻转语义后整体改名（`preserveWatchdogLoop`→`watchdogLoop`、`runPreserveWatchdogTick`→`runWatchdogTick`、`requestPreserveTick`→`requestWatchdogTick`、`preserveTickCh`→`watchdogTickCh`、`preserveWatchdogStartupWait`→`watchdogStartupWait`、`preserveWatchdogReadyPoll`→`watchdogReadyPoll`，删 `preserveWatchdogDisabledPoll`），固定 `watchdogIntervalDefault = 10 * time.Minute`；`waitHostReadyForWatchdog` / `hostReadyForWatchdog` 名字不变。
+  - 改动清单：两插件删 `preserve.go`，`watchdog.go` 重写为纯看护循环；`scheduler` / `active_auth` / `failover_retry` / `session_auth` 硬排除只留 `isTestFailed` + `isAccountCoolingDown`；workbuddy 删 `usage_config.go` 三个 `preserve_*` 解析、`panel.go` `Preserve` 字段与输出、`panel.html` 保号按钮/badge/`data-preserve`/`cntPreserve`、`lifecycle.go` `preserveSetClear`、`credits_handler.go` 标签映射 `"preserve"`→`"test_failed"`、`anomaly_purge.go` 迁入 `authFileErr`/`errAuthIndexRequired`/`errAuthMissing`；traework 删 `scheduler` `isAccountPreserved` + 过滤链、`management.go` `refreshPreserveSetFromDisk`/`Preserved:`/`"preserve"` map/`preserveSetClear`、`config.go` 三个 case + `parsePositiveIntLine` + `"time"` import、`main.go` 3 条 ConfigFields、`panel.html` 保号 CSS/badge/筛选按钮/`filterClass` 分支/排序权重/`cnt.preserve`/`accountsForFilter` 分支/`isUnavailable` preserve/`scopeLabel` 分支。
+  - 测试：`watchdog_test.go` 两插件重写（`TestWatchdogIntervalDefault`/`TestWaitHostReadyForWatchdog`/`TestRequestWatchdogTickCoalesces`）；`routing_exclusion_test.go` 删 `resetPreserve`、改名 `TestEnsureDefaultActiveAuth_SkipsTestFailed`；`auth_delete_test.go` 删 preserve 断言。
+  - 文档：workbuddy `README.md`/`README_CN.md` 删「Preserve pool」章节改「Test tag（测试标签）」；`docs/architecture.md` 判定链改 `isTestFailed`/`isAccountCoolingDown`（disabled→test_failed→cooldown）；两插件 `CHANGELOG.md` 顶部新增 `Unreleased` 段（**未 bump 版本号**）。
+  - 验证（发布前复跑）：cgo-shim 双插件 build/vet/test 全绿（workbuddy 11.229s / traework 2.022s）+ 哨兵法证明新测试真实进编译 + 双 `panel.html` 4 个 script 块 node 校验全绿 + 本轮零新增 gofmt 抱怨（残余为历史漂移，按变更最小化不修）+ grep 确认 `isPreserve`/`preserveSetPut`/`refreshPreserveSetFromDisk`/`preserveShouldFlip`/`parsePreserveFromAuthJSON`/`preserveThreshold` 等全部 0 命中（仅剩 `preserveExpiry` 属 token 过期保留、`token_keepalive`/「保号刷新」属登录态续期）+ `6-review` STYLE PASS（`doc/6-review/2026-09-30_000524_...`）。
+
+  - 发布链（2026-09-30）：1e4a571(refactor 47 文件 +524/-1791)→5e08deb(docs 默认提交发布授权写 AGENTS.md/CLAUDE.md)→8200656(chore assets 16 文件 7/7 sha256 OK)→55506b6(chore registry)；CI run 36603938568/36603955142 同 commit `5e08deb` 双 success；远端 raw ALL PASS（14 artifacts size+sha256 全对、旧版零残留）；生产 plugin-store install 落盘 .so sha256 与本地 zip 内一致（workbuddy `4727e7bb…3610` / traework `2d61f96f…36e8`）+ hot reloaded active=0.15.0 retired=0.14.43 与 active=0.2.0 retired=0.1.68 + accounts/panel 全 200。
+  - 生产行为验收：`POST https://cpa.luode.vip/v1/responses` 流式 qwen3.8-max 16s 返回 56655 字节 / 144 帧 delta + 29 帧 reasoning delta + `response.completed`，末尾 nonce 命中 7 次；关联日志 `exec stream async scheduled: model=qwen3.8-max stream_id=10431` → `exec stream async done: attempt=1 chunks=174`（无 pseudo retry / pool exhausted）。
+  - 面板结构验证：`/accounts` 两插件均无 `preserve` 键、含 `test_failed` 字段（workbuddy 51 账号 / traework 2 账号，当前 test_failed=0）；workbuddy `active_auth` 正常。
+  - 仓库规则变更：AGENTS.md + CLAUDE.md 将 `## 严禁自动提交 Git` 段替换为 `## 提交 / 发布授权（默认授权，强制）`——本仓库默认处于「提交/发布已授权」状态，用户当轮显式边界绝对优先。
 
 - 当前会话（2026-09-29 凌晨）：**账号路由口径改造「优先可用账号 + 硬排除三类标签 + 低积分优先」，workbuddy 0.14.43 / traework 0.1.68 已发布部署**。
   - 用户 goal：优先走可用账号；测试（`test_failed`）/ 保号（`preserve`）/ 冷却（failover cooldown）三类标签硬排除、不参与路由；低积分账号优先路由以便尽快用完。
