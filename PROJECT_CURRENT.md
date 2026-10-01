@@ -8,11 +8,21 @@
 
 ## 项目概览
 
-- 状态：活跃维护中。生产现役与 registry 对齐（2026-09-30 02:00 发布）：traework-provider **0.2.0** / workbuddy-provider **0.15.0**（移除保号池，路由健康闸门=「测试」标签 + 冷却 + 低积分优先）/ qoderwork-provider **0.9.20** / workbuddy-token-usage **0.2.2**。历史发布细节见「已完成」区。
-- 活动会话数：2（本会话 + 并行会话共享工作树 F:\cpa-plugin）
-- 更新时间：2026-09-30 (GMT+8)
+- 状态：活跃维护中。生产现役与 registry 对齐（2026-10-01 18:21 发布）：workbuddy-provider **0.15.1** / traework-provider **0.2.1** / qoderwork-provider **0.9.21**（面板筛选标签计数随积分回填重算）；workbuddy-token-usage **0.2.2**。路由健康闸门仍为「测试」标签 + 冷却 + 低积分优先。历史发布细节见「已完成」区。
+- 活动会话数：1（本会话独占工作树 F:\cpa-plugin）
+- 更新时间：2026-10-01 (GMT+8)
 
 ## 活动会话任务摘要
+
+- 当前会话（2026-10-01）：**修复面板筛选标签计数不随积分回填重算，三插件已发布部署（workbuddy 0.15.1 / traework 0.2.1 / qoderwork 0.9.21）**。
+  - 用户反馈：WorkBuddy 账号面板筛选标签「可用 51 / 耗尽 0」与同屏汇总卡「21 个账号 · 可用 20 · 耗尽 0」自相矛盾。
+  - 根因（唯一写入口被调用一次）：`updateFilterCounts()` 只在 `load()` 里调用过一次；积分回填链路的其余重绘入口（`filterRegion` / `renderGrid` / `updateOneCard`）只调用 `renderSummary()`，从不重算标签计数。冷启动 `accountCache` 为空 → 所有账号 `credits=null` → 首屏判「无耗尽证据即可用」写死 `可用=51 耗尽=0`；后台刷新回填真实 credits 后只有汇总卡重算，标签长期停在旧值。
+  - 修复：标签计数挂到统一渲染入口 `renderSummary()`（三插件同构），`load()` 去重；workbuddy 新增 `isAccountExhausted()`，把标签计数 / `accountsForFilter` / 卡片徽标 / 汇总卡四处各自展开的「耗尽」判定收敛为单一函数（与后端 `billing.go:isCreditsExhausted` 同口径）；traework / qoderwork 仅挂钩 + 去重，保留各自既有口径（qoderwork 仍为旧版「保号池」口径）。
+  - 验证：新增长期回归资产 `test/workbuddy/panel_filter_counts_repro.mjs`（Node `vm` + DOM 桩真实执行面板内联 JS，支持三插件参数、自带断言与退出码）；修复后三插件 PASS（cntAvailable=21 / cntExhausted=30 / 标签与筛选自洽），对 HEAD 版本反证 FAIL 3 项（51/0）精确对应截图；`cgo-shim-build.py` 三插件 build/vet/test 全绿（workbuddy 11.271s / traework 1.707s / qoderwork 7.115s）。
+  - 文档：Bug 主文档 `doc/4-bugs/2026-10-01_165945_账号面板筛选标签计数未随积分回填重算.md`（status: fixed-verified）、测试主文档 `doc/5-tests/2026-10-01_172233_账号面板筛选标签计数回归.md`、`doc/6-review/2026-10-01_172233_..._6-review.md`（STYLE: PASS）。
+  - 发布链（2026-10-01）：`df2c92c`(fix 16 文件 +620/-15)→`35a448b`(chore assets 24 文件，21/21 sha256 OK)→`c424c19`(chore registry)；CI run `36844068571`/`36844075308`/`36844081798` 同 commit `df2c92c` 三 success（Release job 均成功）。发布前曾误传 `version=AUTO` 派发三个 run，已在 release 阶段前全部取消（`conclusion=cancelled`），仓库无 `*-vAUTO` 假 tag / Release / registry 污染，随后以真实版本号重新派发。
+  - 远端 raw ALL PASS（三插件 21 artifacts size+sha256 全对、旧版零残留）；生产 plugin-store install 三插件落盘 `.so` sha256 与本地 zip 内一致（`8b317eff` / `801a9096` / `68748a36`）+ hot reloaded active=0.15.1/0.2.1/0.9.21（retired=0.15.0/0.2.0/0.9.20）+ accounts/panel 全 200。
+  - 生产面板标签实测（本轮核心验收，用生产 `panel` HTML + 生产 `/accounts` 数据在 Node vm 中真实执行）：workbuddy 51 账号「可用 21 / 耗尽 30 / 失败 3 / 测试 0」与各筛选结果**逐项自洽**（截图中「可用 51 / 耗尽 0」的错误形态已不复现）；traework 2 账号同样自洽。
 
 - 当前会话（2026-09-30）：**移除保号池（preserve）机制，路由排除改由「测试」标签（`test_failed`）承担（workbuddy 0.15.0 / traework 0.2.0 已发布部署）**。
   - 用户口径：「保号已基本无意义，可以去掉，用测试标签代替」；`token keepalive`（登录态续期，traework 面板「保号刷新」按钮 / `token_keepalive` 配置）属登录态续期，**不在删除范围**。
@@ -51,25 +61,9 @@
 
 - 当前会话（2026-09-14 凌晨，**跨平台 failover 双根因修复，traework 0.1.60 / workbuddy 0.14.31 / qoderwork 0.9.17 已发布部署**）：用户报 trae 全部账号失败后不切 workbuddy 直接失败。生产取证（stream 1253/1298/1326）坐实**两个互补根因**：①并行会话发现并已修复的调度层短路——插件 Scheduler 以 `Handled:true` 返回死账号，阻断宿主跨 provider 兜底（全部耗尽时改 `Handled:false` 延迟给宿主，scheduler/session_auth/active_auth 三处）；②本会话独立发现并修复的错误通道伪装——`streamEmitError`/`emitTraeAsyncError` 把终态错误当 payload 数据帧（`{"error":...}` SSE 事件）发出，宿主 conductor 视为正常流内容、请求以 200 "成功"告终，不轮换凭据/不冷却/不跨平台切换；改走 `host.stream.emit` 信封 `error` 字段（→ `chunk.Err`），traework 另加 `EmitError` 注入点。验证：cgo-shim 三插件全绿（含信封字段断言 + payload 泄漏哨兵 + 既有 5 个异步流测试迁移到错误通道断言）；发布链 40834b0(fix 27 文件)→d44767d(assets 24 文件，21/21 sha256 OK)→bb494d4(registry)；CI 三 run 34768147600/34768143943/34768140125 全 success；远端 raw ALL PASS + 旧版零残留；生产 install 三插件落盘 sha256 与本地一致（db9712be/5fdbf1c8/846b16ee）+ hot reloaded active=0.1.60/0.14.31/0.9.17 + 特征串 emitStreamErrorEnvelope 各 1 次 + accounts/panel 双 200；行为回归 deepseek stream 1741 attempt=1 完整 done、glm 经 workbuddy 正常。**观察项**：trae 全灭→workbuddy 接管的完整链路需真实全灭场景验证（下一次两 trae 账号同时失败时看 conductor 是否切 workbuddy）。qoderwork 的调度器层对齐（Scheduler capability 短路同病）未做，生产无 qoderwork 凭据、低优。沉淀知识库《插件终态错误伪装成成功流会让宿主跨平台failover永不触发》。
 
-- 历史会话（2026-09-08 晚，**traework 0.1.56 面板 scopeLabel hotfix**）：用户报 TraeWork 面板"加载账号失败，已保留上次数据 / scopeLabel is not defined"。根因：0.1.55 清理 panel.html 异常筛选时 `renderSummary` 内 `const scopeLabel=` 三元链被误删前缀，残留语法合法但语义残缺的孤立表达式（node --check 只查语法抓不到，生产运行时抛 ReferenceError 使 renderSummary 中断、面板整体失败）。修复：程序化重建完整定义（6 筛选分支 + fallback，括号由代码生成并断言平衡）；验证链升级——scopeLabel 运行时 7 分支断言 + **vm + DOM stub 真实执行三插件面板 JS 顶层**（新验证手段，抓未定义标识符）全过。workbuddy/qoderwork 零改动不 bump。发布链见「已完成」0.1.56 条目。教训已沉淀知识库笔记《HTML内嵌JS多级三元删层的括号程序化编辑法》。
-
 - 当前会话（2026-09-08，**三插件移除异常池 + MANUAL-TOGGLE-ONLY 固化，已发布部署**）：用户需求——①去掉"连续 3 次创建失败进异常池"逻辑，统一失败进冷却（固定 15s）；②审计停用路径，强制只有用户手动停用才能停用账号。决策（AskUserQuestion 确认）：三插件同步移除 / 启动时批量清理存量 anomaly:true / 保留连败计数与徽标（仅断开冻结联动）/ 审计确认 + 注释固化。六任务全完成：TASK-01/02 traework 后端+面板；TASK-03 workbuddy 后端+面板（含 usage_config.go anomaly 配置解析块、main.go ConfigFields、scheduler/active_auth/failover_retry/session_auth/management 全链清理）；TASK-04 qoderwork 同构移除（含 counter.go 落盘挂点注释漂移修正 → preserveWatchdogLoop:284、preserve.go 迁入 authFileErr 错误 helper）；每插件新增 anomaly_purge.go + 四态测试（watchdog 启动剥离遗留 anomaly:true 死字段）；TASK-05 停用复扫（traework 唯一写入口 persistDisabledToggle / workbuddy disableAuth auto 路径只透传 / qoderwork 无停用通道）+ 三插件入口固化 MANUAL-TOGGLE-ONLY POLICY 注释；TASK-06 版本 bump 0.1.55 / 0.14.26 / 0.9.14 + 三份 CHANGELOG 条目。验证：cgo-shim 三插件 build/vet/test 全绿 + panel.html node --check 全绿 + grep 零残留。**发布链完成（用户授权"完成后发布"）**：dcdeb95(feat 70 文件 +722/-2210)→fef8df4(assets 24 文件)→48941a2(registry)；CI 三 run 34151835600/34151839572/34151843275 全 success（runner 排队跨两轮轮询窗口，踩坑 45 模式）；远端 raw ALL PASS（21 artifacts sha256 一致 + 旧版零残留）；生产 install 三插件落盘 sha256 与本地一致（661376b6/a2460b39/209ff927）+ hot reloaded active=0.1.55/0.9.14/0.14.26 + accounts/panel 双 200 + accounts 响应零 anomaly/unfreeze 键（行为验证）。踩坑：panel.html scopeLabel 多级三元删层后括号层级必错（traework/workbuddy/qoderwork 三连），手改不可靠 → 用 Python 程序化删除三元层并断言 `count('(')==count(')')` 后写回。
 
-- 历史会话（2026-09-04，浏览器授权登录 **0.1.38 → 0.1.39 → 0.1.40 全链发布部署完成**）：0.1.38 免 IDE OAuth 导入 → 0.1.39 三缺陷修复（&amp; 转义 / callback 免鉴权 resource 前缀 / OAuth state）→ 0.1.40 白名单适配定案。
-
-- 历史会话（2026-09-03，usage feed 补齐「会话/首字延迟」列 **0.1.33**）：已完成发布部署 + 生产验收 PASS，细节见「已完成」区 0.1.33 条目与 CHANGELOG。
-
-- 历史会话（2026-09-03，工具调用链路 P1+P0 修复 **0.1.32**）：已完成发布部署，细节见「已完成」区 0.1.32 条目与 CHANGELOG；行为级验收（stream#3206/3208「回答不完整」不再复现）待用户真实工具链流量观察。
-
-- 历史会话（2026-09-02，**0.1.30+0.1.31**）：伪完成同号退避/401 核算/双轴健康度 reasoning 流式放行，两版均已发布部署 + 生产验收，细节见「已完成」区与 CHANGELOG。
-
 - 当前会话（2026-09-02，Trae 异步流式宿主流桥打开超时降级直连，**0.1.28 已发布部署 + 生产流式长推理验收 PASS**）：见下方「已完成」0.1.28 条目；该版本只覆盖宿主流桥 open 阶段挂死，read 阶段挂死由本会话 0.1.29 修复承接。
-
-- 历史会话（2026-09-01，**0.1.27** 伪完成同请求换号恢复）：六任务完成、已发布部署 + 生产真实流量验收（1607/1609 换号闭环），细节见「已完成」区。
-
-- 历史会话（2026-09-01，token-usage-tracker **0.2.2**）：feed 新增 usage 经 SSE 通知 dashboard（/usage/events seq + 15s 轮询 fallback），已发布部署，细节见 CHANGELOG 与「下一执行点」0.2.2 行。
-
-- 历史会话（2026-08-30~31，traework **0.1.16/0.1.17/0.1.21/0.1.22**）：面板对齐五件套、异步流改宿主流桥实时读取、断流兜底收尾等已完成，细节见「已完成」区与 CHANGELOG。
 
 - 并行会话（0.1.11→0.1.15 发布链已完成）：WAF UA 加固（0.1.11）/ content parts 数组 4001 修复（0.1.12）/ 对话签到 host 分离（0.1.13）/ 动态模型发现（0.1.14）/ usage_feed 适配 token-usage-tracker（0.1.15）+ workbuddy 0.14.18 定时刷新稳定性修复
 - 关键新铁律：dispatch 必须传 plugin(provider id)+version；download/publish 脚本参数顺序互反；store install 的 CDN 边缘滞后误报（等几分钟重试）；生产部署唯一路径 plugin-store install；并行会话 checkout/reset 会覆盖未提交改动（发版前先 fetch 对齐或及时提交）
@@ -143,101 +137,53 @@
 {
   "version": 4,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "2026-09-01T16:00:00Z",
+  "registry_updated_at": "2026-10-01T09:47:48.429822Z",
   "projections": [
     {
-      "projection_id": "SESSION/04cf5eabb75248877efa7344b93256256893bb44b74a8fd5dc500807f794938f",
-      "session_id": "e886ddd6-7dfb-4771-b677-b86263a1775a",
-      "projection_origin": "persisted",
-      "synthesis_mode": "none",
-      "state": "inactive",
-      "plan_key": "RELEASE/traework-0.1.3",
-      "source_document": "PROJECT_CURRENT.md",
-      "plan_fingerprint": "9ea40d6eef6bb6be029161b9107c277251895a71a901661f47f6631f8619c97d",
-      "updated_at": "2026-08-28T14:40:00Z",
-      "steps": [
-        {
-          "id": "REL-01",
-          "step": "[REL-01] bump traework 版本至 0.1.3",
-          "status": "completed"
-        },
-        {
-          "id": "REL-02",
-          "step": "[REL-02] cgo-shim 验证全绿",
-          "status": "completed"
-        },
-        {
-          "id": "REL-03",
-          "step": "[REL-03] 提交并推送发布 commit",
-          "status": "completed"
-        },
-        {
-          "id": "REL-04",
-          "step": "[REL-04] CI dispatch 并轮询 success",
-          "status": "completed"
-        },
-        {
-          "id": "REL-05",
-          "step": "[REL-05] 下载 8 assets 并校验 checksum",
-          "status": "completed"
-        },
-        {
-          "id": "REL-06",
-          "step": "[REL-06] assets 提交推送",
-          "status": "completed"
-        },
-        {
-          "id": "REL-07",
-          "step": "[REL-07] publish-assets + validate-registry",
-          "status": "completed"
-        },
-        {
-          "id": "REL-08",
-          "step": "[REL-08] registry 提交推送 + 远端 raw 验证",
-          "status": "completed"
-        }
-      ]
-    },
-    {
-      "projection_id": "SESSION/8cc82507ccabf8b481da00a42180fa29e3a3e5ba11f8faa972820e1b8360a7cc",
-      "session_id": "sess_3ce56d55-2881-4d50-90f2-a97c5d4f6e91",
+      "projection_id": "SESSION/71be5ed10371f684a3d1498a024babb2101371a98a9c270886e5549365bcb789",
+      "session_id": "01a0f678-72a0-7900-9c19-bf43949e829f",
       "projection_origin": "persisted",
       "synthesis_mode": "none",
       "state": "active",
-      "plan_key": "BUG/TRAE-PSEUDO-SAME-REQUEST-001",
-      "source_document": ".zcode/plans/plan-sess_3ce56d55-2881-4d50-90f2-a97c5d4f6e91.md",
-      "plan_fingerprint": "499849b62eeaa4dea85e10da2542dc86b381ca3e70e4a07171f295caf0c799c3",
-      "updated_at": "2026-09-01T16:00:00Z",
+      "plan_key": "BUG/PANEL-FILTER-COUNTS-STALE-20261001",
+      "source_document": "doc/4-bugs/2026-10-01_165945_账号面板筛选标签计数未随积分回填重算.md",
+      "plan_fingerprint": "a042e130613a3d7427b41883d0ff93c59fd582af0be6a0b32398ceaf3f2a1a5b",
+      "updated_at": "2026-10-01T09:45:00Z",
       "steps": [
         {
-          "id": "TASK-001",
-          "step": "[TASK-001] 单次 SSE 健康门槛与零泄漏",
+          "id": "TF-01",
+          "step": "[TF-01] 定位缺陷：筛选标签计数未随积分回填重算",
           "status": "completed"
         },
         {
-          "id": "TASK-002",
-          "step": "[TASK-002] 同步流式路径当前请求换号",
+          "id": "TF-02",
+          "step": "[TF-02] 统一耗尽判定 isAccountExhausted 并挂在 renderSummary",
           "status": "completed"
         },
         {
-          "id": "TASK-003",
-          "step": "[TASK-003] 异步同 StreamID 协调器",
+          "id": "TF-03",
+          "step": "[TF-03] 复写脚本收为长期测试资产 + 三面板回归",
           "status": "completed"
         },
         {
-          "id": "TASK-004",
-          "step": "[TASK-004] 完整 local 回归与状态纠偏",
+          "id": "TF-04",
+          "step": "[TF-04] cgo-shim 三插件 build/vet/test 全绿",
           "status": "completed"
         },
         {
-          "id": "TASK-005",
-          "step": "[TASK-005] 0.1.27 发布与生产部署",
+          "id": "TF-05",
+          "step": "[TF-05] 落盘 doc/5-tests 与 doc/6-review",
           "status": "completed"
         },
         {
-          "id": "TASK-006",
-          "step": "[TASK-006] 生产真实 /v1/responses 验收（已完成：1607/1609 同请求换号闭环 + 池耗尽显式失败 + 失败核算冷却；健康恢复成功 NOT_OBSERVED 待观察）",
+          "id": "TF-06",
+          "step": "[TF-06] 项目记忆计数锚点回写 + 知识库沉淀",
           "status": "completed"
+        },
+        {
+          "id": "TF-07",
+          "step": "[TF-07] 提交推送 + CI 发布 + 生产热重载验证 + 面板标签实测",
+          "status": "in_progress"
         }
       ]
     }

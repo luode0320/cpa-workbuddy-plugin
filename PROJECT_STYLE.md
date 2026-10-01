@@ -54,8 +54,8 @@ anchors:
     last_used_at: 2026-09-01
     absorbed_to: null
   - title: 修改函数使用中文元信息和就近步骤编号
-    usage_count: 1
-    usage_days: 1
-    last_used_at: 2026-09-01
+    usage_count: 2
+    usage_days: 2
+    last_used_at: 2026-10-01
     absorbed_to: null
 ```
