@@ -1,6 +1,15 @@
 # TraeWork Plugin Changelog
 
 
+## 0.2.1
+
+### Fix - 面板筛选标签计数随积分回填重算
+
+- 根因：`updateFilterCounts()` 只在 `load()` 里调用一次，后台刷新回填积分后只经 `renderSummary()` 重画汇总卡，筛选标签计数不再重算，长期停在首屏旧值。
+- 修复：标签计数挂到统一渲染入口 `renderSummary()`，`load()` 去掉重复调用；「耗尽」判定保持该面板既有口径不变。
+- 验证：`node test/workbuddy/panel_filter_counts_repro.mjs traework` PASS；`cgo-shim-build.py` build/vet/test 全绿。
+- 涉及文件: traework/panel.html
+
 ## 0.2.0
 
 ### Breaking Change - 移除保号池（preserve），路由健康闸门改由「测试」标签承担

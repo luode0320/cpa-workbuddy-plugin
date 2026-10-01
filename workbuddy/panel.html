@@ -446,10 +446,21 @@ function fmtCST(s){
   if(isNaN(d.getTime())) return String(s);
   return d.toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"}).replaceAll("/","-");
 }
+// 「耗尽」统一判定：与后端 isCreditsExhausted 同口径，供标签计数与卡片共用。
+function isAccountExhausted(a){
+  if(!a) return false;
+  if(a.exhausted) return true;
+  const cr=a.credits;
+  if(!cr) return false;
+  if((Number(cr.total_remain)||0)>0) return false;
+  const used=Number(cr.total_used)||0;
+  const size=Number(cr.total_size)||0;
+  return used>0||size>0||(Array.isArray(cr.packages)&&cr.packages.length>0);
+}
 function card(a){
   const plan=(a.plan||"unknown").toLowerCase();
   const ci=a.checkin||{}, cr=a.credits;
-  const exhausted=!!a.exhausted||(!!cr&&(cr.total_remain||0)===0&&((cr.total_used||0)>0||(cr.total_size||0)>0||(cr.packages&&cr.packages.length)));
+  const exhausted=isAccountExhausted(a);
   const region=a.region||"cn";
   const isGlobal=region==="global";
   const selected=!!a.selected;
@@ -726,12 +737,12 @@ function updateFilterCounts(accounts){
   let cn=0, gl=0, ex=0, ava=0, fail=0, test=0;
   (accounts||[]).forEach(a=>{
     if((a.region||"cn")==="global") gl++; else cn++;
-    if(a.exhausted||(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length)))) ex++;
+    if(isAccountExhausted(a)) ex++;
     if(a.test_failed) test++;
     // 失败 = 累计失败 > 0 或连败中（fail_count > 0）
     if((Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0) fail++;
     // 可用 = 未打「测试」标签 / 未耗尽
-    const isUnavailable=!!a.test_failed||!!a.exhausted||(!!a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length)));
+    const isUnavailable=!!a.test_failed||isAccountExhausted(a);
     if(!isUnavailable) ava++;
   });
   const elAll=document.getElementById("cntAll");
@@ -753,10 +764,10 @@ function accountsForFilter(accounts){
   const list=accounts||[];
   if(currentFilter==="all") return list;
   if(currentFilter==="available"){
-    return list.filter(a=>!a.test_failed&&!a.exhausted&&!(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length))));
+    return list.filter(a=>!a.test_failed&&!isAccountExhausted(a));
   }
   if(currentFilter==="exhausted"){
-    return list.filter(a=>a.exhausted||(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length))));
+    return list.filter(a=>isAccountExhausted(a));
   }
   if(currentFilter==="test"){
     return list.filter(a=>!!a.test_failed);
@@ -780,6 +791,8 @@ function renderSummary(accounts){
   const box=document.getElementById("summaryBox");
   if(!box) return;
   const all=accounts||[];
+  // 标签计数与汇总卡一起刷新，避免派生计数停在首屏旧值。
+  updateFilterCounts(all);
   if(!all.length){
     box.style.display="none";
     box.innerHTML="";
@@ -794,7 +807,7 @@ function renderSummary(accounts){
   scoped.forEach(a=>{
     const c=creditOf(a);
     // 不可用 = 「测试」标签 / 耗尽（积分耗尽的等价判定）
-    const isExhausted=!!a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0));
+    const isExhausted=isAccountExhausted(a);
     const isUnavailable=!!a.test_failed||isExhausted;
     if(c.known){
       if(isUnavailable){ remainUnavail+=c.remain; unavailN++; }
@@ -940,7 +953,6 @@ async function load(){
     }
     lastAccounts=accounts;
     activeAuthId=d.active_auth||"";
-    updateFilterCounts(accounts);
     if(!accounts.length){
       g.innerHTML='<div class="loading">暂无 WorkBuddy 账号</div>';
       renderSummary([]);

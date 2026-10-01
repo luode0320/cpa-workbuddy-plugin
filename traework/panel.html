@@ -696,6 +696,8 @@ function renderSummary(){
   if(!box)return;
   const d=lastDash||{};
   const accounts=d.accounts||lastAccounts||[];
+  // 标签计数与汇总卡一起刷新，避免派生计数停在首屏旧值。
+  updateFilterCounts(accounts);
   if(!accounts.length){
     box.style.display="none";
     box.innerHTML="";
@@ -759,7 +761,6 @@ async function load(){
     lastAccounts=accounts;
     lastDash=d;
     activeAuthId=d.active_id||"";
-    updateFilterCounts(accounts);
     renderSummary();
     if(!accounts.length){
       g.innerHTML='<div class="empty">暂无账号 — 在插件配置中添加 traework 凭据，或点击「导入凭证」导入后刷新。</div>';

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.15.1
+
+### Fix - 面板筛选标签计数随积分回填重算
+
+- 根因：`updateFilterCounts()` 只在 `load()` 里调用一次，后台刷新把 `/credits` 回填进账号对象后只经由 `renderSummary()` 重画汇总卡，标签计数不再重算；冷启动缓存为空时所有账号积分未知，首屏把所有账号判为「可用」，标签长期停在 `可用=全部 / 耗尽=0`。
+- 修复：标签计数挂到统一渲染入口 `renderSummary()`（`filterRegion` / `renderGrid` / `updateOneCard` 的重绘都经过它），`load()` 去掉重复调用。
+- 修复：新增 `isAccountExhausted()`，把标签计数、`accountsForFilter`、卡片徽标、汇总卡四处各自展开的「耗尽」判定收敛为单一函数，与后端 `isCreditsExhausted` 同口径。
+- 验证：新增 `test/workbuddy/panel_filter_counts_repro.mjs`（Node vm + DOM 桩，支持 workbuddy / traework / qoderwork 三插件），修复前 FAIL 3 项、修复后 PASS；`cgo-shim-build.py` build/vet/test 全绿。
+- 涉及文件: workbuddy/panel.html、test/workbuddy/panel_filter_counts_repro.mjs
+
 ## 0.15.0
 
 ### Breaking Change - 移除保号池（preserve），路由健康闸门改由「测试」标签承担

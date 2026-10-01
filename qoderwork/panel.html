@@ -620,6 +620,8 @@ function renderSummary(accounts){
   const box=document.getElementById("summaryBox");
   if(!box) return;
   const all=accounts||[];
+  // 标签计数与汇总卡一起刷新，避免派生计数停在首屏旧值。
+  updateFilterCounts(all);
   if(!all.length){
     box.style.display="none";
     box.innerHTML="";
@@ -781,7 +783,6 @@ async function load(force, btn){
     const accounts=d.accounts||[];
     lastAccounts=accounts;
     activeAuthId=d.active_auth||"";
-    updateFilterCounts(accounts);
     if(!accounts.length){
       g.innerHTML='<div class="loading">暂无 QoderWork 账号</div>';
       renderSummary([]);
