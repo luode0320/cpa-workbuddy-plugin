@@ -137,18 +137,18 @@
 {
   "version": 4,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "2026-10-01T09:47:48.429822Z",
+  "registry_updated_at": "2026-10-01T10:29:40.061630Z",
   "projections": [
     {
       "projection_id": "SESSION/71be5ed10371f684a3d1498a024babb2101371a98a9c270886e5549365bcb789",
       "session_id": "01a0f678-72a0-7900-9c19-bf43949e829f",
       "projection_origin": "persisted",
       "synthesis_mode": "none",
-      "state": "active",
+      "state": "inactive",
       "plan_key": "BUG/PANEL-FILTER-COUNTS-STALE-20261001",
       "source_document": "doc/4-bugs/2026-10-01_165945_账号面板筛选标签计数未随积分回填重算.md",
       "plan_fingerprint": "a042e130613a3d7427b41883d0ff93c59fd582af0be6a0b32398ceaf3f2a1a5b",
-      "updated_at": "2026-10-01T09:45:00Z",
+      "updated_at": "2026-10-01T10:29:40.061158Z",
       "steps": [
         {
           "id": "TF-01",
@@ -183,7 +183,7 @@
         {
           "id": "TF-07",
           "step": "[TF-07] 提交推送 + CI 发布 + 生产热重载验证 + 面板标签实测",
-          "status": "in_progress"
+          "status": "completed"
         }
       ]
     }
