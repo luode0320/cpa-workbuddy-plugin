@@ -78,6 +78,7 @@
 
 ## 已完成
 
+- 2026-10-05 **gemini-provider 0.1.0 正式发布并成功热重载部署生产（本会话闭环）**：将开源插件 `cpa-plugin-gemini-cli` 引入为仓库第 4 个插件（3 服务商 + 1 用量统计），发布名称为 "Gemini Provider"（ID: `gemini-provider`，版本: `0.1.0`）。CI 发布工作流（Run 37279598274，head `3648f58`）全部 success，成功创建 GitHub Release `gemini-provider-v0.1.0` 并生成 8 个资产（7 平台 zip + checksums.txt）；通过 `download-release-assets.py` 下载并通过双重 SHA256 校验；提交 assets 并推送远端 main（`f5ccdd4`）；更新 `registry.json` 补充 7 平台 URL、哈希和大小并推送（`aa66f6f`）；远端 raw ALL PASS 验证通过；生产环境调用 `plugin-store install` API 成功安装，生产落盘 `.so` sha256 `ca9a64f4...` 与本地 release 产物 100% 吻合，CPA 容器成功热重载 `gemini-provider`（`registered=True, enabled=True, supports_oauth=True`），端点及用量看板联动验证全绿。
 - 2026-09-08 **traework 0.1.56 面板 scopeLabel hotfix（本会话）**：用户报面板"加载账号失败 / scopeLabel is not defined"。根因：0.1.55 清理 panel.html 时 `renderSummary` 的 `const scopeLabel=` 三元链被误删前缀（残留语法合法的孤立表达式，node --check 抓不到，运行时 ReferenceError 中断 renderSummary）。修复：程序化重建完整定义（all/available/preserve/exhausted/failed/disabled 6 分支 + fallback，括号由代码生成断言平衡）。验证升级：scopeLabel 运行时 7 分支断言 + vm+DOM stub 真实执行三插件面板 JS 顶层全过（新验证手段）；cgo-shim traework 全绿；dcdeb95 diff 逐行复盘确认无其他残行。workbuddy/qoderwork 零改动不 bump。发布链 f8ac3af(fix 6 文件 +18/-6)→646a407(assets 8 文件)→d0ac6eb(registry)；CI run 34233803018 success（8m9s）；远端 raw ALL PASS（7 artifacts sha256 一致 + 旧版零残留）；生产 install status=installed restart_required=false + 落盘 sha256 与本地一致（1e3b4af7）+ hot reloaded active=0.1.56 retired=0.1.55 + accounts/panel 双 200 + 生产面板 HTML grep `const scopeLabel` 命中 1 次（定义真实存在）。
 - 2026-09-08 **三插件移除异常池发布部署（traework 0.1.55 / workbuddy 0.14.26 / qoderwork 0.9.14，已发布）**：删除三插件 anomaly.go/anomaly_config.go（连败冻结、异常集合、每日复活、/unfreeze 路由、anomaly_pool_threshold/anomaly_refresh_enabled 配置与解析）；accountFailover 冻结判定删除、失败只进 15s 冷却；scheduler/active_auth/failover_retry/session_auth anomaly 过滤层与谓词全清；panel.html 异常徽标/解冻按钮/异常筛选/计数与汇总口径全清；新增 anomaly_purge.go（watchdog 启动剥离遗留 anomaly:true，幂等不盲写）+ 四态测试；qoderwork counter.go 挂点注释漂移修正 + preserve.go 迁入 authFileErr helper。停用复扫：traework 唯一写入口 persistDisabledToggle（仅手动 toggle）/ workbuddy auto 路径只透传 disabled / qoderwork 无停用通道；三插件入口固化 MANUAL-TOGGLE-ONLY POLICY 注释。发布链 dcdeb95→fef8df4→48941a2；CI 三 run success；远端 raw ALL PASS（21 artifacts sha256 一致）；生产 install 落盘 sha256 一致 + hot reloaded active=0.1.55/0.9.14/0.14.26 + accounts/panel 双 200 + 行为验证零 anomaly 键。踩坑 50：发布前 VERSION 文件漏 bump（main.go 已改）→ push 前 `cat */VERSION` 与 main.go 两两核对。
 - 2026-09-08 **三插件每 4 小时调度批量发布部署（traework 0.1.54 / workbuddy 0.14.25 / qoderwork 0.9.13，历史会话）**：自动签到从每日两班（09:00/21:00）改每 4 小时六班（00/04/08/12/16/20 本地时间），token 保活从每日 22:00 单次改与签到同节奏，缩小 Keycloak 离线会话失效窗口；注释/ConfigFields 描述/panel schedule/测试用例（workbuddy nextCheckinTime 三用例、traework keepalive 窗口用例）同步。动机背景：analysis/traework-0.1.50-keepalive-2200-acceptance-20260906.md 记录 22:00 每日保活的生产行为不一致回归。顺带修复 workbuddy/qoderwork checkin.go 注释 tab 缩进错乱；随批提交 SKILL.md 踩坑 47/48。验证：cgo-shim 三插件全绿。发布链 d43caea→9a424f5→a30a7e6；CI 三 run success（并行排队 25+ 分钟跨两个轮询窗口，踩坑 45 再次验证）；远端 raw ALL PASS；生产 install 三插件落盘 sha256 一致（c1c6a931/c70b4d4b/07ca3f70）+ hot reloaded 全部生效（qoderwork 本轮无踩坑 48 现象）+ accounts/panel 双 200 + 生产 dashboard schedule 已是新班表。
@@ -93,8 +94,6 @@
 - 2026-09-02 traework **0.1.28 已发布并部署生产，生产流式长推理验收 PASS**（异步流式宿主流桥打开超时降级直连，本会话）：0.1.27 生产直连复现 qwen3.8-max「积分够却一直失败」——非流式 `/v1/responses` 一次成功（13.3s 聚合路径），带 `StreamID` 异步流式请求 240s 无字节后宿主 499（stream_id=1664 仅 scheduled 一条日志）。根因：`hostCall`（cgo 同步无超时）在宿主流桥 **open 阶段**永久阻塞协调器 goroutine。修复：host_bridge.go 加 `hostBridgeOpenTimeout=30s` 竞速打开，超时/失败降级 `hostHTTPDoStreamDirect` live 实时流（边读边发不缓冲完整 body）；抽出 `hostBridgeAvailableFn`/`hostStreamOpenFn` 注入点；新增 host_stream_timeout_test.go 两用例（哨兵先 FAIL 后删除证明进编译）。cgo-shim 全绿 + 6-review `STYLE: PASS`。发布链 02dc323→b7ae103→a05b252；CI run 33535588336 success；raw 远端 7 资产 ALL PASS；生产 install 0.1.28 + 落盘 sha256 8ec5343f 与本地一致 + hot reloaded active=0.1.28 retired=0.1.27。生产验收：4 次流式 qwen3.8-max 长推理（stream_id 1850/1853/1856/1857，覆盖两账号 + 同 session 粘性，**agent 自发请求，非用户真实流量**）全部 `attempt=1` 完整 done，无挂死/499/伪完成；修复前 1664 场景闭环（1664 是用户 00:29 `/v1/responses` 真实请求，4m0s 499）。
 - 2026-09-01 traework **0.1.26 已发布部署，但完成结论已撤回**：伪完成阈值修正为输出<600 字节且输入≥200 字节，但检测发生在正文/stop/close 下发之后，当前请求仍提前结束，不能恢复；同请求恢复由 0.1.27 承接。
 - 2026-09-01 traework **0.1.25 已发布部署，历史结论已由后续版本推翻**：补充伪完成记账/会话驱逐/active_id 优先，只影响下一请求且失败账号少量内容仍下发，不能恢复当前请求；由 0.1.26→0.1.27 承接。
-- 2026-09-01 **trae-local-verify 项目级 skill 创建**（辅助资产，本会话）：`skills/project-cpa-workbuddy-plugin-trae-local-verify-rules` 吸收"本地直连 Trae 上游验证账号推理"经验——5 步流程（临时目录→cgo-shim→verify_main.go→运行判定→清理）+ 复用解密/header/payload/SSE（decryptCredentialString / buildTraePayload / scanSSE / classify）+ 5 条踩坑（sharedHTTPClient 120s 截断长流式→自定义 client+context 10min、先 reasoning 后正文、storage.json 账号≠生产账号、Windows 直连、SSE output 双格式）；references 含 verify-main-template.md 完整模板 + source-notes.md。quick_validate.py PASS、同域冗余扫描无交叉、skill-audit 边界清晰。同步沉淀知识库笔记《长流式客户端Timeout会掐断SSE直连》（新账号 uid 2257747741770235 qwen3.8-max 2m37s/595chunk/2.4万字完整 done vs 生产账号 77tokens 短输出 → 账号级问题定案）。
-
 ## 待办
 
 - 【已完成 ✅】traework **0.1.37 已发布部署 + 生产验收 PASS**（2026-09-04，并行会话 token_usage 接入，本会话代发）：解析上游 `event:token_usage` 真实用量，dashboard 输入/输出/思考/总 Token 列不再依赖估算（诊断见知识库《traework用量全靠估算不解析上游usage.md》）。改动：stream.go（traeUsageCollector + usageDetailFromTraeMap + collect/aggregate 返回值扩 5/3 值 + traeStreamAttemptResult.Usage + usageDetailForAttempt/ForCompletion 兜底 helper）；executor.go（非流式 handleExecExecute + 同步 runTraeSyncStream + 异步 runTraeAsyncStream 5 处全部改发真实 usage，失败路径空 Detail 不变）；测试 9 处调用适配 + 新增 token_usage_test.go 8 用例；cgo-shim build/vet/test 全绿（本会话代发前复核）。提交链 7f0068a feat → 98bcb66 assets（7 平台 ALL CHECKSUMS OK）→ 58f886b registry；CI run 33783473893 success（12m48s）；远端验证 ALL PASS（0.1.33~0.1.36 零残留）；生产 install：落盘 .so sha256 `1314d84f...016364` 与本地一致、内置版本 0.1.37、特征串 traeUsageCollector×1/usageDetailFromTraeMap×1、hot reloaded active_version=0.1.37 retired=0.1.36、accounts/panel 200。验证遗留：dashboard 四列真实值需发新 trae 请求观测（并行会话闭环项）。
@@ -196,6 +195,16 @@
         {
           "id": "GP-08",
           "step": "[GP-08] 知识库沉淀与项目记忆四件套同步",
+          "status": "completed"
+        },
+        {
+          "id": "GP-09",
+          "step": "[GP-09] CI 发布与 7 平台 Release 资产下载及哈希校验",
+          "status": "completed"
+        },
+        {
+          "id": "GP-10",
+          "step": "[GP-10] registry.json 更新、远端验证与生产环境热重载部署",
           "status": "completed"
         }
       ]
