@@ -5,7 +5,7 @@
 ### 仓库与发布
 
 - 仓库：`luode0320/cpa-workbuddy-plugin`（原 cpa-plugin，2026-08-22 改名）；物理目录 F:\cpa-plugin
-- 三插件：workbuddy-provider（主，腾讯 CodeBuddy CN+Global）、qoderwork-provider（QoderWork CN）、workbuddy-token-usage（用量 dashboard）
+- 多插件架构（3 服务商 + 1 用量统计，2026-10-05 扩展）：workbuddy-provider（腾讯 CodeBuddy CN+Global）、traework-provider（Trae SOLO）、gemini-provider（发布名称 "Gemini Provider"，Google Gemini CLI）、workbuddy-token-usage（用量 dashboard 统一查询各服务商 token 使用），历史兼容 qoderwork-provider（QoderWork CN）
 - 发布链路（不可跳步）：bump VERSION+main.go → commit → push main → dispatch CI（plugin=xxx version=yyy）→ 下载 8 assets → **git add assets + push（0.9.7 教训）** → publish-assets.py → commit registry + push → 远端验证 raw URL 200
 - git push 必带：`GIT_TERMINAL_PROMPT=0 GIT_ASKPASS='C:\Users\luode\.github\git-askpass.sh' git -c credential.helper= push https://...`（askpass 用完即删）；tag pattern：`workbuddy-provider-v*` 等
 - **仓库默认处于「提交 / 发布已授权」状态（2026-09-30 起）**：`AGENTS.md` / `CLAUDE.md` 的「提交 / 发布授权（默认授权，强制）」段规定——用户不需要每轮显式说「提交」「推送」「发布」，agent 在完成改动并通过全部门禁后可直接 commit → push → CI → assets → registry → 生产 plugin-store 部署；**用户当轮显式边界（如「只提交 git, 不要推送」「先不发布」）绝对优先**；默认授权不免除门禁；本仓库内以该仓库级规则覆盖全局 `git-collaboration-rules` 的「仅当前轮授权」默认语义。
@@ -32,7 +32,7 @@
 - 40x 换号重试（2026-08-22）：401/403/404/405 计入账号级故障，`retry_on_4xx` 预算默认 3（0-5），**缺省键保持当前值**（kill switch 安全），400 直通不重试
 - 路由：0.12.0 起移除三池只留保号池；**2026-09-30 起保号池也已移除**，路由健康闸门只保留「测试标签 `test_failed` + failover cooldown」硬排除 + 低积分优先；存量 `pool`/`priority`/`preserve` 字段忽略式读取不清理
 - 版本三轨（qoderwork）：main.go 0.8.2 / VERSION 0.4.1 / registry 0.2.x 历史双轨，发版以 registry 为准
-- 跨插件数据通道：NDJSON 文件 feed（token-usage-feed.ndjson，超 128MB 截断），不用共享 bbolt（排它锁冲突）
+- 跨插件数据通道：NDJSON 文件 feed（token-usage-feed.ndjson，超 128MB 截断），不用共享 bbolt（排它锁冲突）；2026-10-05 扩展支持 gemini-provider（写入 usageMetadata 与 TTFT 耗时），token-usage-tracker 统一将 gemini/gemini-cli/gemini-provider 归一化展示为 "Gemini"
 - **面板「成功/失败」计数是 CPA 宿主的 recent 窗口计数，纯内存态不落盘**（2026-08-23 根因确认）：`CLIProxyAPI v7 sdk/cliproxy/auth/types.go` 里 `Auth.Success int64 json:"-"` / `Auth.Failed int64 json:"-"` / `recentRequests json:"-"`，序列化写 auth 文件时被显式跳过 → 容器重启必然清零，与挂载无关（deploy-server.yml 的 auths 目录其实挂了 `-v "${AUTH_DIR}":/root/.cli-proxy-api`，但字段本就不写盘）。workbuddy 插件只透传 `host.auth.list` 的 `HostAuthFileEntry.Success/Failed`（panel.go 注释「persisted by the host」），自己不维护。窗口约 10min×20 桶≈200 分钟，是滚动健康度指标而非全量历史累计
 - **方案 B 落地（workbuddy 0.14.10，2026-08-23）**：插件自维护累计计数并持久化到 auth 文件顶层 `success_count`/`failed_count`（**字段名刻意避开宿主的 `success`/`failed`**，避免与 HostAuthFileEntry recent 窗口形成双源歧义）。`counter.go`：`recordOutcome(uid, success)` 内存递增（key=UID，与调度/failover/preserve/anomaly 同键）→ `startCounterFlusher` 后台 10s flusher `flushCounters` 把增量经 `foldCounterIntoDoc`（保留其余顶层字段）折入物理文件 → `persistAuthDirect` 直写（非 host.auth.save）。埋点在 `publishUsage` 统一 `recordOutcome(authID, !failed)`（每请求恰好一次，authID 即 UID）。panel 读取：UID 账号用 `parseCountersFromAuthJSON(phys.JSON)` + `counterPendingDelta` 合并，legacy 无 UID 账号回退 recent 窗口
 - **计数持久化重构「内存为主 + 跟随保号落盘」（workbuddy 0.14.11，2026-08-24）**：0.14.10 的 10s 独立 flusher + 面板每次 parse json 改为——`counter.go` 用 `counterEntries`（UID→`counterEntry{success,failed,persistedSuccess,persistedFailed}`）作内存累计真相源：`recordOutcome` 纯内存递增、`ensureCounterLoaded` 首次从 json 初始化（合并进程内增量不丢）、`counterSnapshot` 供面板读（不每次 parse json）；落盘删除独立 flusher，改挂 `watchdogLoop`（启动 `loadCountersFromDisk` 恢复历史 + 每次醒来 `flushCounters`，启用默认 10min、禁用 30s 兜底），`flushCounters` 算 `total-persisted` 增量折入后回写 persisted、失败保留重试。json 语义=兜底持久化（最多丢一个 tick 增量，可接受），内存=运行期唯一真相源

@@ -4,6 +4,7 @@
 
 ## 事件
 
+- 2026-10-05：gemini-provider **0.1.0** 集成与多插件 Token 用量统一统计——引入开源插件 `cpa-plugin-gemini-cli` 作为仓库第 4 个插件（3 服务商 + 1 用量统计），发布名称定为 "Gemini Provider"（ID: `gemini-provider`，版本: `0.1.0`）。建立 `gemini/` 独立模块（Go 1.26，对齐 `CLIProxyAPI/v7 v7.2.129`），导出标准 C ABI（`cliproxy_plugin_init`、`cliproxyPluginCall`、`cliproxyPluginFree`、`cliproxyPluginShutdown` 等），提供 panic recover 保护；实现 `usage.go` 与 `usage_feed.go`，将流式/非流式请求的 `usageMetadata` 与 TTFT 首包耗时写入共享 `<root>/data/token-usage-feed.ndjson`；更新 `token-usage-tracker` 身份归一化，将 `gemini` / `gemini-cli` / `gemini-provider` 统一展示为 `"Gemini"`；更新 CI 构建矩阵与 `registry.json`（新增 7 平台 artifacts 配置）。验证：`cgo-shim-build.py` 5 插件全绿通过（gemini, token-usage-tracker, traework, workbuddy, qoderwork），测试用例经哨兵拦截确认真实进编译，`validate-registry.py` 校验 5 插件全绿。沉淀知识库《集成GeminiProvider插件与多服务商Token用量统一聚合》。
 - 2026-10-01：workbuddy-provider **0.15.1** / traework-provider **0.2.1** / qoderwork-provider **0.9.21** —— 修复账号面板筛选标签计数不随积分回填重算（三插件已发布部署：CI 三 run 同 commit `df2c92c` success、远端 raw ALL PASS、生产 hot reloaded active=0.15.1/0.2.1/0.9.21、生产面板标签实测与筛选自洽）。用户反馈 WorkBuddy 面板筛选标签「可用 51 / 耗尽 0」与同屏汇总卡「21 个账号 · 可用 20 · 耗尽 0」自相矛盾。根因：`updateFilterCounts()` 是标签计数唯一写入口却只在 `load()` 调用一次，积分回填链路的其余重绘入口（`filterRegion` / `renderGrid` / `updateOneCard`）只走 `renderSummary()`；冷启动缓存为空使所有账号 `credits=null`，首屏把「未知」当「可用」写死 `可用=51 耗尽=0`，后台回填真实 credits 后只有汇总卡重算。修复：标签计数挂到统一渲染入口 `renderSummary()`（三插件同构）+ `load()` 去重；workbuddy 新增 `isAccountExhausted()` 收敛标签计数 / `accountsForFilter` / 卡片徽标 / 汇总卡四处判定（与后端 `isCreditsExhausted` 同口径）。验证：新增长期回归资产 `test/workbuddy/panel_filter_counts_repro.mjs`（Node vm + DOM 桩真实执行内联 JS，三插件参数），修复后 PASS（21/30 且标签与筛选自洽）、对 HEAD 反证 FAIL 3 项（51/0）；`cgo-shim-build.py` 三插件 build/vet/test 全绿。沉淀知识库《派生计数只在首屏算一次会长期停在旧值》。
 
 - 2026-09-30：workbuddy-provider **0.15.0** / traework-provider **0.2.0** —— 移除保号池机制、路由排除改由「测试」标签（test_failed）承担，**已提交并发布部署**；同轮把「默认提交/发布授权」写入仓库级规则 AGENTS.md / CLAUDE.md。用户口径：保号已基本无意义 → 去掉保号池用「测试」标签代替；token keepalive（登录态续期）不在删除范围。关键设计：保留「定时活跃探测 + 积分刷新」循环（refresh_runner.doFetchOne → triggerActivePing 失败写 test_failed），它是测试标签唯一自动来源；删保号翻转语义并整体改名（preserveWatchdogLoop→watchdogLoop、runPreserveWatchdogTick→runWatchdogTick、requestPreserveTick→requestWatchdogTick、preserveTickCh→watchdogTickCh、preserveWatchdogStartupWait→watchdogStartupWait、preserveWatchdogReadyPoll→watchdogReadyPoll，删 preserveWatchdogDisabledPoll），固定 watchdogIntervalDefault=10m。改动：两插件删 preserve.go；scheduler/active_auth/failover_retry/session_auth 硬排除只留 isTestFailed + isAccountCoolingDown；workbuddy 删 preserve_* 解析 / panel Preserve 字段 / panel.html 保号 UI / lifecycle preserveSetClear / credits_handler 标签映射改 test_failed；traework 删 isAccountPreserved / refreshPreserveSetFromDisk / Preserved map / config case / main ConfigFields / panel.html 保号 UI。验证：cgo-shim 双插件 build/vet/test 全绿（11.229s/2.022s）+ 哨兵法证明新测试进编译 + 双 panel.html 4 script 块 node 校验全绿 + 本轮零新增 gofmt 抱怨 + grep 确认保号符号 0 命中 + 6-review STYLE PASS（doc/6-review/2026-09-30_000524）。发布链 1e4a571→5e08deb→8200656→55506b6；CI run 36603938568/36603955142 同 commit `5e08deb` 双 success；远端 raw ALL PASS（14 artifacts sha256 全对、旧版零残留）；生产 install 落盘 .so sha256 与本地 zip 一致（4727e7bb…/2d61f96f…）+ hot reloaded active=0.15.0 retired=0.14.43 与 active=0.2.0 retired=0.1.68 + accounts/panel 全 200；行为验收 `/v1/responses` 流式 qwen3.8-max 16s / 56655B / 144 帧 + nonce 完整 + `exec stream async done attempt=1 chunks=174`。同轮规则变更：AGENTS.md + CLAUDE.md 以「提交 / 发布授权（默认授权，强制）」段替换原「严禁自动提交 Git」段，确立本仓库默认提交/发布授权（当轮显式边界仍绝对优先）。
@@ -25,7 +26,7 @@
 - 2026-09-01：**trae-local-verify 项目级 skill 创建**（`skills/project-cpa-workbuddy-plugin-trae-local-verify-rules`）：吸收"本地直连 Trae 上游验证账号推理"经验。覆盖 5 步流程（临时目录→cgo-shim→verify_main.go→运行判定→清理）、解密/header/payload/SSE 复用（decryptCredentialString / buildTraePayload / scanSSE / classify）、5 条踩坑（sharedHTTPClient 120s 截断长流式→必须自定义 client+context 10min、先 reasoning 后正文、storage.json 账号≠生产账号、Windows 直连、SSE output 双格式）。references 含 verify-main-template.md 完整模板 + source-notes.md。quick_validate.py PASS。另沉淀知识库笔记《长流式客户端Timeout会掐断SSE直连》（新账号 uid 2257747741770235 qwen3.8-max 2m37s/595chunk/2.4万字完整 done，生产账号 77tokens 短输出为账号级问题）。
 - 2026-08-31：traework-provider **0.1.22 改码未提交**（上游长回答中途断流兜底收尾）：根因=0.1.21 `validate` 收紧把「部分 output 后 EOF 无 done」的上游断流从静默补 stop 改成报 truncated 错误中断 → IDE"生成中途停止"。宿主取证：`http_stream_bridge.read` 无 idle 超时、`DoStream` 无总超时、插件 cgo 桥接 Background ctx 客户端断开不取消上游 → 断流是上游 Trae 长回答中途 EOF 非宿主掐流。修复：`stream.go` `validate`→`classify` 返回 `traeStreamTermination` 三态（Done/OutputEOF/Invalid），仅空响应报 invalid，三条路径对 OutputEOF 统一补 `finish_reason="length"` 收尾；`pumpTraeStream` 断流不清零账号、不记成功、以"不完整"落用量。测试 +3（断流补 length/空响应仍报错/断流不清零账号，哨兵验证进编译）。cgo-shim 全绿，gofmt 干净。VERSION/main.go bump 0.1.22。**未提交未发布**。
 - 2026-08-31：traework-provider **0.1.21 发布**（异步流改走宿主流桥实时读取 + 业务成功严格依赖 done 终止）：① `callLLMStream`/`hostHTTPDoStream` 透传 `host_callback_id`，实时读取避免长回答全量缓冲；② `validate` 收紧——部分 `output` 后 EOF 不补成空 stop；③ 最终 stop 下发失败走失败核算；④ `scanSSE` EOF 补齐无换行尾帧。cgo-shim build/vet/test 全绿。提交链 85262aa(fix)→7ad1e4f(assets 8 文件)→4bd1f07(registry)；CI 首 run 33324654919 因无关插件 workbuddy-provider darwin/amd64 checkout 网络瞬时失败拖累 Release job 跳过（Release needs build-cross 无 if:always），重跑 run 33325134505 success；Release `traework-provider-v0.1.21`（8 assets）；raw 远端 ALL PASS（7 平台 size+sha256 全 OK，无旧版本残留）。
-- 2026-08-26：token-usage-tracker「进 dashboard 页面概率性中断请求」修复 **已发布**（workbuddy-token-usage 0.2.1）：① `SyncOnRecord` 改 `false` 恢复 store 批量提交（dirty 聚合 + FlushMaxRecords=100 + 5s ticker），写放大降 ~100x；② 新增 `triggerFeedSync()`（容量 1 信号量合并并发触发 + 后台 loop）；③ `serveStatsResource` 读路径改异步触发（写路径保留同步）。cgo-shim build/vet/test 全绿（30s）。提交链 325d6e5(feat)→c582446(chore release assets)→(chore registry)，CI run 32970605823 success，8 assets checksums 全 OK，registry raw 200 含 0.2.1 + 7 artifacts raw URL 全 200。真实页面交互验证（进页面不中断、积压 feed 快速导入）待做。
+
 ## 计数锚点区
 
 > 本区由 `memory-usage-tracking-rules` 收口闸门维护：HISTORY 仅窄读计入，会话启动不读不计；被裁剪事件的锚点随事件一起删除（不保留 retired）；本区计数仅作主题热度弱信号。锚点 key 用事件 `- YYYY-MM-DD：` 后的核心主题短语（约前 12 字符，可前缀匹配）。
@@ -33,6 +34,11 @@
 ```yaml
 version: 1
 anchors:
+  - title: "gemini-provider **0.1.0** 集成与多"
+    usage_count: 0
+    usage_days: 0
+    last_used_at: null
+    absorbed_to: null
   - title: "workbuddy-provider **0.15.1** / tr"
     usage_count: 0
     usage_days: 0
@@ -127,10 +133,5 @@ anchors:
     usage_count: 1
     usage_days: 1
     last_used_at: 2026-09-01
-    absorbed_to: null
-  - title: "token-usage-tracker「进 dashboard 页面概率性中断请求」修"
-    usage_count: 0
-    usage_days: 0
-    last_used_at: null
     absorbed_to: null
 ```

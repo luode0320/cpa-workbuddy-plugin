@@ -2,17 +2,31 @@
 
 ## 目标与范围
 
-- 目标：维护 CLIProxyAPI (CPA) 的 Go 插件集合 `cpa-workbuddy-plugin`——将腾讯 CodeBuddy（WorkBuddy）与 QoderWork CN 封装为 OpenAI 兼容 provider，提供多账号管理、动态模型、流式推理、每日签到、积分生命周期与 token 用量统计。
-- 范围：四插件（workbuddy-provider / qoderwork-provider / traework-provider / workbuddy-token-usage）的迭代、测试、发布、生产部署与 registry 同步；QoderWork / Trae SOLO 逆向知识维护。
+- 目标：维护 CLIProxyAPI (CPA) 的 Go 插件集合 `cpa-workbuddy-plugin`——将腾讯 CodeBuddy（WorkBuddy）、Trae SOLO、Google Gemini CLI 封装为 OpenAI 兼容 provider，提供多账号管理、动态模型、流式推理、每日签到、积分生命周期与统一 token 用量统计。
+- 范围：多插件（workbuddy-provider / traework-provider / gemini-provider / workbuddy-token-usage，历史兼容 qoderwork-provider）的迭代、测试、发布、生产部署与 registry 同步；Trae SOLO / QoderWork / Gemini CLI 适配维护。
 - 非范围：CLIProxyAPI 网关本体；CPA 内置调度器逻辑的修改（插件只做 host 契约适配）。
 
 ## 项目概览
 
-- 状态：活跃维护中。生产现役与 registry 对齐（2026-10-01 18:21 发布）：workbuddy-provider **0.15.1** / traework-provider **0.2.1** / qoderwork-provider **0.9.21**（面板筛选标签计数随积分回填重算）；workbuddy-token-usage **0.2.2**。路由健康闸门仍为「测试」标签 + 冷却 + 低积分优先。历史发布细节见「已完成」区。
+- 状态：活跃维护中。4 插件体系（3 服务商 + 1 用量统计）构建就绪，新增 gemini-provider **0.1.0**（发布名 "Gemini Provider"），打通 token 用量跨插件统计；生产现役 workbuddy-provider **0.15.1** / traework-provider **0.2.1** / qoderwork-provider **0.9.21** / workbuddy-token-usage **0.2.2**。
 - 活动会话数：1（本会话独占工作树 F:\cpa-plugin）
-- 更新时间：2026-10-01 (GMT+8)
+- 更新时间：2026-10-05 (GMT+8)
 
 ## 活动会话任务摘要
+
+- 当前会话（2026-10-05）：**集成 Gemini Provider（发布名称 "Gemini Provider"，gemini-provider 0.1.0）与多插件 Token 用量统一统计已完成**。
+  - 用户目标：将开源插件 `https://github.com/router-for-me/cpa-plugin-gemini-cli` 引入为仓库第 4 个插件（3 服务商 + 1 用量统计），发布名称指定为 "Gemini Provider"。
+  - 核心实施：
+    1. 模块收敛与 C ABI 导出：建立 `gemini/` 独立目录，内部 import 路径统一收敛为 `github.com/luode0320/cpa-workbuddy-plugin/gemini/internal/...`，对齐 Go 1.26 与 `CLIProxyAPI/v7 v7.2.129`；创建 `gemini/main.go` 导出标准 C ABI（`cliproxy_plugin_init`、`cliproxyPluginCall`、`cliproxyPluginFree`、`cliproxyPluginShutdown` 等），注册元数据为 Name="Gemini Provider", ID="gemini-provider", Version="0.1.0"。
+    2. Token 用量跨插件管道：编写 `gemini/usage.go` 与 `gemini/usage_feed.go`，解析流式/非流式响应中的 `usageMetadata`，流式响应通过包装 `io.ReadCloser` 计算 TTFT 耗时纳秒并在流关闭时写入共享 `<root>/data/token-usage-feed.ndjson`。
+    3. 用量监控插件适配：更新 `token-usage-tracker/usage_stats/auth_identity.go` 的 `displayAuthProvider`，将 `gemini` / `gemini-cli` / `gemini-provider` 统一归一化展示为 `"Gemini"`；更新 `token-usage-tracker/README.md`。
+    4. CI 与注册表：更新 `.github/workflows/build.yml` 新增 `gemini-provider-v*` 触发、构建矩阵与发布任务；更新 `registry.json`，补充 `gemini-provider` 7 平台 artifacts 注册表槽位。
+  - 验证与门禁：
+    1. `gemini/main_test.go` 新增 capabilities 与用量提取测试，双向哨兵拦截证明真实进编译；
+    2. `token-usage-tracker/feed_ingest_test.go` 新增 `TestFeedIngestGeminiProvider` 真实用量摄取与聚合测试，双向哨兵拦截证明真实进编译；
+    3. `python scripts/cgo-shim-build.py <plugin>` 针对 5 个插件全量执行 build/vet/test 全绿（gemini 0.142s~0.674s / token-usage-tracker 0.782s / traework 1.593s / workbuddy 11.101s / qoderwork 7.014s）；
+    4. `python scripts/validate-registry.py registry.json` 校验 5 插件配置通过（schema_version=2）；
+    5. 落盘测试主文档 `doc/5-tests/2026-10-05_集成GeminiProvider与多插件Token用量测试.md` 与审查文档 `doc/6-review/2026-10-05_集成GeminiProvider与多插件Token用量_6-review.md`（STYLE: PASS）。
 
 - 当前会话（2026-10-01）：**修复面板筛选标签计数不随积分回填重算，三插件已发布部署（workbuddy 0.15.1 / traework 0.2.1 / qoderwork 0.9.21）**。
   - 用户反馈：WorkBuddy 账号面板筛选标签「可用 51 / 耗尽 0」与同屏汇总卡「21 个账号 · 可用 20 · 耗尽 0」自相矛盾。
@@ -61,12 +75,6 @@
 
 - 当前会话（2026-09-14 凌晨，**跨平台 failover 双根因修复，traework 0.1.60 / workbuddy 0.14.31 / qoderwork 0.9.17 已发布部署**）：用户报 trae 全部账号失败后不切 workbuddy 直接失败。生产取证（stream 1253/1298/1326）坐实**两个互补根因**：①并行会话发现并已修复的调度层短路——插件 Scheduler 以 `Handled:true` 返回死账号，阻断宿主跨 provider 兜底（全部耗尽时改 `Handled:false` 延迟给宿主，scheduler/session_auth/active_auth 三处）；②本会话独立发现并修复的错误通道伪装——`streamEmitError`/`emitTraeAsyncError` 把终态错误当 payload 数据帧（`{"error":...}` SSE 事件）发出，宿主 conductor 视为正常流内容、请求以 200 "成功"告终，不轮换凭据/不冷却/不跨平台切换；改走 `host.stream.emit` 信封 `error` 字段（→ `chunk.Err`），traework 另加 `EmitError` 注入点。验证：cgo-shim 三插件全绿（含信封字段断言 + payload 泄漏哨兵 + 既有 5 个异步流测试迁移到错误通道断言）；发布链 40834b0(fix 27 文件)→d44767d(assets 24 文件，21/21 sha256 OK)→bb494d4(registry)；CI 三 run 34768147600/34768143943/34768140125 全 success；远端 raw ALL PASS + 旧版零残留；生产 install 三插件落盘 sha256 与本地一致（db9712be/5fdbf1c8/846b16ee）+ hot reloaded active=0.1.60/0.14.31/0.9.17 + 特征串 emitStreamErrorEnvelope 各 1 次 + accounts/panel 双 200；行为回归 deepseek stream 1741 attempt=1 完整 done、glm 经 workbuddy 正常。**观察项**：trae 全灭→workbuddy 接管的完整链路需真实全灭场景验证（下一次两 trae 账号同时失败时看 conductor 是否切 workbuddy）。qoderwork 的调度器层对齐（Scheduler capability 短路同病）未做，生产无 qoderwork 凭据、低优。沉淀知识库《插件终态错误伪装成成功流会让宿主跨平台failover永不触发》。
 
-- 当前会话（2026-09-08，**三插件移除异常池 + MANUAL-TOGGLE-ONLY 固化，已发布部署**）：用户需求——①去掉"连续 3 次创建失败进异常池"逻辑，统一失败进冷却（固定 15s）；②审计停用路径，强制只有用户手动停用才能停用账号。决策（AskUserQuestion 确认）：三插件同步移除 / 启动时批量清理存量 anomaly:true / 保留连败计数与徽标（仅断开冻结联动）/ 审计确认 + 注释固化。六任务全完成：TASK-01/02 traework 后端+面板；TASK-03 workbuddy 后端+面板（含 usage_config.go anomaly 配置解析块、main.go ConfigFields、scheduler/active_auth/failover_retry/session_auth/management 全链清理）；TASK-04 qoderwork 同构移除（含 counter.go 落盘挂点注释漂移修正 → preserveWatchdogLoop:284、preserve.go 迁入 authFileErr 错误 helper）；每插件新增 anomaly_purge.go + 四态测试（watchdog 启动剥离遗留 anomaly:true 死字段）；TASK-05 停用复扫（traework 唯一写入口 persistDisabledToggle / workbuddy disableAuth auto 路径只透传 / qoderwork 无停用通道）+ 三插件入口固化 MANUAL-TOGGLE-ONLY POLICY 注释；TASK-06 版本 bump 0.1.55 / 0.14.26 / 0.9.14 + 三份 CHANGELOG 条目。验证：cgo-shim 三插件 build/vet/test 全绿 + panel.html node --check 全绿 + grep 零残留。**发布链完成（用户授权"完成后发布"）**：dcdeb95(feat 70 文件 +722/-2210)→fef8df4(assets 24 文件)→48941a2(registry)；CI 三 run 34151835600/34151839572/34151843275 全 success（runner 排队跨两轮轮询窗口，踩坑 45 模式）；远端 raw ALL PASS（21 artifacts sha256 一致 + 旧版零残留）；生产 install 三插件落盘 sha256 与本地一致（661376b6/a2460b39/209ff927）+ hot reloaded active=0.1.55/0.9.14/0.14.26 + accounts/panel 双 200 + accounts 响应零 anomaly/unfreeze 键（行为验证）。踩坑：panel.html scopeLabel 多级三元删层后括号层级必错（traework/workbuddy/qoderwork 三连），手改不可靠 → 用 Python 程序化删除三元层并断言 `count('(')==count(')')` 后写回。
-
-- 当前会话（2026-09-02，Trae 异步流式宿主流桥打开超时降级直连，**0.1.28 已发布部署 + 生产流式长推理验收 PASS**）：见下方「已完成」0.1.28 条目；该版本只覆盖宿主流桥 open 阶段挂死，read 阶段挂死由本会话 0.1.29 修复承接。
-
-- 并行会话（0.1.11→0.1.15 发布链已完成）：WAF UA 加固（0.1.11）/ content parts 数组 4001 修复（0.1.12）/ 对话签到 host 分离（0.1.13）/ 动态模型发现（0.1.14）/ usage_feed 适配 token-usage-tracker（0.1.15）+ workbuddy 0.14.18 定时刷新稳定性修复
-- 关键新铁律：dispatch 必须传 plugin(provider id)+version；download/publish 脚本参数顺序互反；store install 的 CDN 边缘滞后误报（等几分钟重试）；生产部署唯一路径 plugin-store install；并行会话 checkout/reset 会覆盖未提交改动（发版前先 fetch 对齐或及时提交）
 
 ## 已完成
 
@@ -137,8 +145,61 @@
 {
   "version": 4,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "2026-10-01T10:29:40.061630Z",
+  "registry_updated_at": "2026-10-05T18:50:00.000000Z",
   "projections": [
+    {
+      "projection_id": "SESSION/gemini-provider-integration-20261005",
+      "session_id": "01a10add-b83c-7500-bc4c-2c92ff9393ca",
+      "projection_origin": "persisted",
+      "synthesis_mode": "none",
+      "state": "completed",
+      "plan_key": "FEAT/INTEGRATE-GEMINI-PROVIDER-20261005",
+      "source_document": "doc/5-tests/2026-10-05_集成GeminiProvider与多插件Token用量测试.md",
+      "plan_fingerprint": "cpa-gemini-provider-010-token-usage",
+      "updated_at": "2026-10-05T18:50:00.000000Z",
+      "steps": [
+        {
+          "id": "GP-01",
+          "step": "[GP-01] 迁入开源 cpa-plugin-gemini-cli 并收敛模块与 import 路径",
+          "status": "completed"
+        },
+        {
+          "id": "GP-02",
+          "step": "[GP-02] 实现 main.go C ABI 导出与元数据暴露 (Gemini Provider 0.1.0)",
+          "status": "completed"
+        },
+        {
+          "id": "GP-03",
+          "step": "[GP-03] 打通跨插件 Token 用量追加写入 NDJSON feed",
+          "status": "completed"
+        },
+        {
+          "id": "GP-04",
+          "step": "[GP-04] token-usage-tracker 适配支持 Gemini 归一化展示与测试",
+          "status": "completed"
+        },
+        {
+          "id": "GP-05",
+          "step": "[GP-05] 更新 CI build.yml 与 registry.json (schema v2)",
+          "status": "completed"
+        },
+        {
+          "id": "GP-06",
+          "step": "[GP-06] cgo-shim 全绿回归测试与哨兵防假验证",
+          "status": "completed"
+        },
+        {
+          "id": "GP-07",
+          "step": "[GP-07] 落盘 doc/5-tests 与 doc/6-review 文档",
+          "status": "completed"
+        },
+        {
+          "id": "GP-08",
+          "step": "[GP-08] 知识库沉淀与项目记忆四件套同步",
+          "status": "completed"
+        }
+      ]
+    },
     {
       "projection_id": "SESSION/71be5ed10371f684a3d1498a024babb2101371a98a9c270886e5549365bcb789",
       "session_id": "01a0f678-72a0-7900-9c19-bf43949e829f",
