@@ -2,6 +2,12 @@
 
 All notable changes to the "Gemini Provider" plugin (`gemini-provider`) will be documented in this file.
 
+## [0.1.1] - 2026-10-05
+
+### Added
+- Add official Google standard colorful logo asset (`assets/icons/Gemini.png` and `assets/icons/Google.png`).
+- Update `pluginLogoURL` metadata to point to repository-hosted Google icon.
+
 ## [0.1.0] - 2026-10-05
 
 ### Added

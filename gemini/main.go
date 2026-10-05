@@ -67,7 +67,7 @@ const (
 	pluginLogoURL     = "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/Gemini.png"
 )
 
-var version = "0.1.0"
+var version = "0.1.1"
 
 var abiState = struct {
 	sync.RWMutex
