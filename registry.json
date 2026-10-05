@@ -280,6 +280,78 @@
           }
         ]
       }
+    },
+    {
+      "id": "gemini-provider",
+      "name": "Gemini Provider",
+      "description": "Google Gemini Code Assist / Gemini CLI provider for CLIProxyAPI: adds Google Gemini Code Assist / Gemini CLI upstream support via Cloud Code API, multi-project virtual auth expansion, OAuth login, dynamic model discovery, request/response translation, thinking configuration, and token usage tracking.",
+      "author": "router-for-me / luode",
+      "version": "0.1.0",
+      "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
+      "logo": "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/Gemini.png",
+      "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/gemini",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "Gemini",
+        "Google",
+        "OAuth",
+        "CodeAssist"
+      ],
+      "install": {
+        "type": "direct",
+        "artifacts": [
+          {
+            "goos": "darwin",
+            "goarch": "amd64",
+            "url": "",
+            "sha256": "",
+            "size": 0
+          },
+          {
+            "goos": "darwin",
+            "goarch": "arm64",
+            "url": "",
+            "sha256": "",
+            "size": 0
+          },
+          {
+            "goos": "freebsd",
+            "goarch": "amd64",
+            "url": "",
+            "sha256": "",
+            "size": 0
+          },
+          {
+            "goos": "linux",
+            "goarch": "amd64",
+            "url": "",
+            "sha256": "",
+            "size": 0
+          },
+          {
+            "goos": "linux",
+            "goarch": "arm64",
+            "url": "",
+            "sha256": "",
+            "size": 0
+          },
+          {
+            "goos": "windows",
+            "goarch": "amd64",
+            "url": "",
+            "sha256": "",
+            "size": 0
+          },
+          {
+            "goos": "windows",
+            "goarch": "arm64",
+            "url": "",
+            "sha256": "",
+            "size": 0
+          }
+        ]
+      }
     }
   ]
 }

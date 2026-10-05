@@ -1,12 +1,12 @@
 # token-usage-tracker
 
-本项目（`cpa-workbuddy-plugin`）的**第三个插件**（与 `workbuddy`、`qoderwork` 并列）：
-记录并可视化 **workbuddy / traework 账户的真实 token 消耗**（实盘数据）。
+本项目（`cpa-workbuddy-plugin`）的 token 用量统计插件（统一统计各服务商插件用量）：
+记录并可视化 **workbuddy / traework / gemini 账户的真实 token 消耗**（实盘数据）。
 
 ## 数据链路
 
 ```
-workbuddy / traework 插件               token-usage-tracker 插件
+workbuddy / traework / gemini 插件       token-usage-tracker 插件
 ┌─────────────────────────┐          ┌──────────────────────────┐
 │ 每次请求完成后          │  NDJSON  │ 轮询读取（默认 5s）        │
 │ publishUsage 汇聚点 ─────┼──append──▶ 共享 feed 文件            │
@@ -17,13 +17,13 @@ workbuddy / traework 插件               token-usage-tracker 插件
 ```
 
 - **共享 feed**：`<CLIProxyAPI root>/data/token-usage-feed.ndjson`（默认），
-  与 workbuddy / traework 的 `usage_feed_path` 保持一致即可互相发现。
+  与各服务商插件的 `usage_feed_path` 保持一致即可互相发现。
 - **为什么是文件 feed**：CPA 宿主的 `UsagePlugin` 广播对插件 executor 恒为
   空；bbolt 排它文件锁不允许两个长驻进程共享同一个数据库文件。追加写
   NDJSON 文件是唯一干净的跨插件数据通道（无锁、可回放、可轮转）。
-- **写入方为 workbuddy 与 traework（双写入方）**：两个插件均在每次请求
+- **写入方支持多服务商插件**：各服务商插件均在每次请求
   完成后向同一 feed 追加一行（`provider` 字段区分 `workbuddy-provider` /
-  `traework-provider`）；本插件是唯一打开 bbolt 库的进程，不会出现文件锁
+  `traework-provider` / `gemini-provider`）；本插件是唯一打开 bbolt 库的进程，不会出现文件锁
   冲突。feed 行结构由消费方（`usage_stats/feed_import.go`）定义，写入方只
   负责对齐该结构。
 - 统计核心（`usage_stats/` 子包）移植自社区插件

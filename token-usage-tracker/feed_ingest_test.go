@@ -518,3 +518,61 @@ func TestFeedNotifierSSE(t *testing.T) {
 		t.Fatal("statsReadAPIPath(/usage/events) = false, want true")
 	}
 }
+
+func TestFeedIngestGeminiProvider(t *testing.T) {
+	resetFeedState()
+	defer resetFeedState()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "gemini_stats.db")
+	feedPath := filepath.Join(dir, "gemini_feed.ndjson")
+
+	store, err := usagestats.Open(usagestats.Config{
+		DataPath:        dbPath,
+		RetentionDays:   365,
+		FlushInterval:   time.Second,
+		FlushMaxRecords: 100,
+		SyncOnRecord:    true,
+	})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	storeMu.Lock()
+	usageStore = store
+	storeMu.Unlock()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	geminiLine := `{"timestamp":"` + now.Format(time.RFC3339Nano) + `","latency_ms":1200,"source":"test@gmail.com","auth_index":"gemini-cli-1",` +
+		`"provider":"gemini-provider","model":"gemini-2.5-pro","alias":"gemini-2.5-pro",` +
+		`"endpoint":"POST /v1internal:generateContent","auth_type":"oauth","executor_type":"gemini-provider",` +
+		`"failed":false,"status_code":200,"tokens":{"input_tokens":50,"output_tokens":150,"reasoning_tokens":0,"cached_tokens":0,"cache_read_tokens":0,"cache_creation_tokens":0,"total_tokens":200}}` + "\n"
+
+	if err := os.WriteFile(feedPath, []byte(geminiLine), 0o644); err != nil {
+		t.Fatalf("write feed: %v", err)
+	}
+
+	trackerCfgMu.Lock()
+	trackerCfg.FeedPath = feedPath
+	trackerCfg.DBPath = dbPath
+	trackerCfgMu.Unlock()
+
+	syncUsageFeed()
+
+	res := store.HandleQuery(http.MethodGet, "/requests", url.Values{"limit": []string{"10"}}, nil, nil)
+	if res.Status != http.StatusOK {
+		t.Fatalf("/requests status=%d body=%s", res.Status, res.Body)
+	}
+	var page struct {
+		Items []struct {
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		} `json:"items"`
+	}
+	if err := jsonUnmarshal(res.Body, &page); err != nil {
+		t.Fatalf("decode /requests: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Provider != "gemini-provider" || page.Items[0].Model != "gemini-2.5-pro" {
+		t.Fatalf("unexpected items: %+v", page.Items)
+	}
+}

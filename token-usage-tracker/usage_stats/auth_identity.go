@@ -18,6 +18,8 @@ func displayAuthProvider(value string) string {
 		return "Antigravity"
 	case "xai", "x-ai", "grok":
 		return "Grok"
+	case "gemini", "gemini-cli", "gemini-provider":
+		return "Gemini"
 	default:
 		return value
 	}

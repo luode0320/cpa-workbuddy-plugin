@@ -27,13 +27,14 @@ on:
       - "qoderwork-provider-v*"
       - "workbuddy-token-usage-v*"
       - "traework-provider-v*"
+      - "gemini-provider-v*"
   workflow_dispatch:
     inputs:
       plugin:
         description: "Plugin to release"
         required: true
         type: choice
-        options: [workbuddy-provider, qoderwork-provider, workbuddy-token-usage, traework-provider]
+        options: [workbuddy-provider, qoderwork-provider, workbuddy-token-usage, traework-provider, gemini-provider]
       version:
         description: "Version without v (empty = plugin's VERSION file)"
         required: false
@@ -54,6 +55,7 @@ jobs:
           - dir: qoderwork
           - dir: token-usage-tracker
           - dir: traework
+          - dir: gemini
     defaults:
       run:
         working-directory: ${{ matrix.dir }}
@@ -203,6 +205,37 @@ jobs:
             goarch: amd64
             runner: windows-2025
             ext: dll
+          # gemini-provider native (sources in gemini/)
+          - id: gemini-provider
+            src: gemini
+            goos: linux
+            goarch: amd64
+            runner: ubuntu-24.04
+            ext: so
+          - id: gemini-provider
+            src: gemini
+            goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+            ext: so
+          - id: gemini-provider
+            src: gemini
+            goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+            ext: dylib
+          - id: gemini-provider
+            src: gemini
+            goos: darwin
+            goarch: arm64
+            runner: macos-15
+            ext: dylib
+          - id: gemini-provider
+            src: gemini
+            goos: windows
+            goarch: amd64
+            runner: windows-2025
+            ext: dll
     defaults:
       run:
         shell: bash
@@ -334,6 +367,14 @@ jobs:
             src: traework
             target: freebsd-amd64
             ext: so
+          - id: gemini-provider
+            src: gemini
+            target: windows-arm64
+            ext: dll
+          - id: gemini-provider
+            src: gemini
+            target: freebsd-amd64
+            ext: so
     defaults:
       run:
         shell: bash
@@ -451,7 +492,8 @@ jobs:
       startsWith(github.ref, 'refs/tags/workbuddy-provider-v') ||
       startsWith(github.ref, 'refs/tags/qoderwork-provider-v') ||
       startsWith(github.ref, 'refs/tags/workbuddy-token-usage-v') ||
-      startsWith(github.ref, 'refs/tags/traework-provider-v')
+        startsWith(github.ref, 'refs/tags/traework-provider-v') ||
+        startsWith(github.ref, 'refs/tags/gemini-provider-v')
     needs:
       - build
       - build-cross
@@ -474,6 +516,8 @@ jobs:
             P="qoderwork-provider"; V="${GITHUB_REF_NAME#qoderwork-provider-v}"
           elif [[ "${GITHUB_REF_NAME}" == traework-provider-v* ]]; then
             P="traework-provider"; V="${GITHUB_REF_NAME#traework-provider-v}"
+            elif [[ "${GITHUB_REF_NAME}" == gemini-provider-v* ]]; then
+              P="gemini-provider"; V="${GITHUB_REF_NAME#gemini-provider-v}"
           else
             P="workbuddy-token-usage"; V="${GITHUB_REF_NAME#workbuddy-token-usage-v}"
           fi
@@ -553,6 +597,7 @@ jobs:
             qoderwork-provider)    DISPLAY="QoderWork Provider" ;;
             workbuddy-token-usage) DISPLAY="WorkBuddy Token Usage" ;;
             traework-provider)     DISPLAY="TraeWork Provider" ;;
+            gemini-provider)       DISPLAY="Gemini Provider" ;;
           esac
           TITLE="${DISPLAY:-$PLUGIN} v${VERSION}"
           if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then
