@@ -64,7 +64,7 @@ import (
 const (
 	providerName      = "gemini-provider"
 	pluginDisplayName = "Gemini Provider"
-	pluginLogoURL     = "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/Gemini.png"
+	pluginLogoURL     = "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/Gemini.png"
 )
 
 var version = "0.1.0"

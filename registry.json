@@ -288,7 +288,7 @@
       "author": "router-for-me / luode",
       "version": "0.1.0",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
-      "logo": "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/Gemini.png",
+      "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/Gemini.png",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/gemini",
       "license": "MIT",
       "tags": [
