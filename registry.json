@@ -286,7 +286,7 @@
       "name": "Gemini Provider",
       "description": "Google Gemini Code Assist / Gemini CLI provider for CLIProxyAPI: adds Google Gemini Code Assist / Gemini CLI upstream support via Cloud Code API, multi-project virtual auth expansion, OAuth login, dynamic model discovery, request/response translation, thinking configuration, and token usage tracking.",
       "author": "router-for-me / luode",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
       "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/Gemini.png",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/gemini",
@@ -304,51 +304,51 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.0/gemini-provider_0.1.0_darwin_amd64.zip",
-            "sha256": "15f0a2d31b64fa25cda60f655e502f9d90aeefacc2a2b35b48a4b2c21df0562e",
-            "size": 4886109
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.1/gemini-provider_0.1.1_darwin_amd64.zip",
+            "sha256": "2c6ab9df2380c2a1005cb7876ed937069f3891e1d894641756e191d4050a2238",
+            "size": 4886092
           },
           {
             "goos": "darwin",
             "goarch": "arm64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.0/gemini-provider_0.1.0_darwin_arm64.zip",
-            "sha256": "9e11717e2e5ae3a7bc96fc618a75df46eebc5d17c7110bf97f8a88d40569b4cb",
-            "size": 4511573
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.1/gemini-provider_0.1.1_darwin_arm64.zip",
+            "sha256": "3c8ac80c55130caf468044790abcdd55c83d976738c412276b8b2a8a7a9127df",
+            "size": 4511608
           },
           {
             "goos": "freebsd",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.0/gemini-provider_0.1.0_freebsd_amd64.zip",
-            "sha256": "13070a319d45003c753578276c1941189a052786a0b17b5b8c0772af982bf2c2",
-            "size": 5002366
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.1/gemini-provider_0.1.1_freebsd_amd64.zip",
+            "sha256": "acf98273cb86ca4a7b9f3e2da3a7d2a6e90db4d4537eef5cde051535e614e422",
+            "size": 5002187
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.0/gemini-provider_0.1.0_linux_amd64.zip",
-            "sha256": "482e9846a342db7243c162e41f98f5bc0acefab99d60f2f3081ef62ee6f4a0fc",
-            "size": 5124467
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.1/gemini-provider_0.1.1_linux_amd64.zip",
+            "sha256": "e131108232e2159fc9ca95c1e6d62b7caca1ed551d28c756a25d45531c7f10b3",
+            "size": 5124465
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.0/gemini-provider_0.1.0_linux_arm64.zip",
-            "sha256": "b265514b8df7d157d3653a93db6d6b31ae3e7178d6791f815f30d5181985be51",
-            "size": 4649891
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.1/gemini-provider_0.1.1_linux_arm64.zip",
+            "sha256": "b97feae586c8684532cf4aefb98b6d830b56529d4a87a9ec02d90b72f9136951",
+            "size": 4650871
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.0/gemini-provider_0.1.0_windows_amd64.zip",
-            "sha256": "ca33910b430bff072b2a1938ffe30bba1a7f8b4585b664e32ce7095f89d48fe2",
-            "size": 5005682
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.1/gemini-provider_0.1.1_windows_amd64.zip",
+            "sha256": "d270072c7a2fb32fade97c398744651b792c1d1fd0cb0a62e44c251f743251e9",
+            "size": 5005690
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.0/gemini-provider_0.1.0_windows_arm64.zip",
-            "sha256": "54b9ac8d6ba9d39ecfd710bf99156948adcd66ab81776d4d7477134288fb0e11",
-            "size": 4573296
+            "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/gemini-provider-0.1.1/gemini-provider_0.1.1_windows_arm64.zip",
+            "sha256": "4887a9d71895cd32644288dbfe0a64f86ca15599e154bbef25970a81173ae4b9",
+            "size": 4573180
           }
         ]
       }
