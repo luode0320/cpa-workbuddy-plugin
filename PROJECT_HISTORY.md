@@ -4,6 +4,8 @@
 
 ## 事件
 
+- 2026-10-06：workbuddy-ai-provider **0.1.0** 独立国际版插件落地、双通道扫码授权与生产部署——新设独立插件 ID: workbuddy-ai-provider（版本 0.1.0），唯一锁定国际站基址 https://www.workbuddy.ai，凭证文件名前缀固定为 workbuddyai-（type: workbuddy-ai-provider），彻底杜绝与国内版凭证碰撞。实现双通道扫码登录：支持宿主原生 OAuth 与专属管理面板 panel.html「📱 扫码登录 / 添加账号」弹窗（方案 B）；保留低积分优先与会话粘性调度、10分钟活跃心跳探测（watchdog）、4小时 token 保活刷新（keepalive）、4xx 换号重试与用量统计归一化；彻底剔除国内签到与 CN 保号池。本地 cgo-shim 全绿（含哨兵）；GitHub Actions CI Run 37469999135 成功，8 资产推送入库，registry.json 原子发布且 CDN 校验 ALL PASS；生产环境通过 plugin-store install 热重载部署上线，二进制 SHA256 100% 吻合，accounts 接口 200，panel 资源 200。
+
 - 2026-10-05：gemini-provider **0.1.1** 补充 Google 官方彩色图标、正式发布并成功热重载部署生产。提取 Google 官方标准正方形彩色矢量 PNG（192×192 RGBA 透明底，6,382 字节），分别落盘 `assets/icons/Gemini.png` 与 `assets/icons/Google.png`；更新 `registry.json` 与 `gemini/main.go` 中的 Logo URL 指向 raw.githubusercontent 仓库源；atomic bump 版本为 `0.1.1`，补齐 CHANGELOG.md；本地 `cgo-shim-build.py gemini` 验证 build/vet/test 全绿；代码提交推送至 main（commit `e1e0b7f`）；派发 GitHub Actions CI（Run ID `37286392309`）40 个 jobs 全部 success；下载 8 个 release assets，7 平台 zip + checksums.txt 双重 SHA256 校验全绿（commit `809100c`）；执行 `publish-assets.py` 回填 registry.json 并推送（commit `8cf6e90`），远端 raw CDN 与哈希验证 ALL PASS；生产环境调用 `plugin-store install` 安装，落盘 .so SHA256 `779c73be...` 与本地 release zip 100% 一致，CPA 容器日志证实热重载成功：`pluginhost: plugin hot reloaded plugin_id=gemini-provider active_version=0.1.1 retired_version=0.1.0`，管理端 plugin-store 图标正常显示。
 
 - 2026-10-05：gemini-provider **0.1.0** 正式发布部署与多插件 Token 用量统一统计——引入开源插件 `cpa-plugin-gemini-cli` 作为仓库第 4 个插件（3 服务商 + 1 用量统计），发布名称定为 "Gemini Provider"（ID: `gemini-provider`，版本: `0.1.0`）。CI 发布工作流 Run 37279598274 全部 success，生成 8 个 release assets 并 push 到 main；registry.json 0.1.0 远端验证 ALL PASS；生产服务器通过 plugin-store install 成功热重载加载 gemini-provider v0.1.0（.so sha256 ca9a64f4... 吻合，registered=True, enabled=True），成为仓库正式第 4 个插件。
@@ -42,8 +44,6 @@
 
 - 2026-09-01：workbuddy-token-usage「feed 新增 usage SSE 实时通知 dashboard」**已改码未提交**：用户目标「创建一个名为 workbuddy-token-usage 的插件并把 feed usage 通过 ws 推给前端」——该插件已存在（token-usage-tracker），真实需求=改造现有插件做 feed→dashboard 实时通知。宿主 SDK v7.2.129 逐层核实：插件 ABI 无任何注册 ws/SSE 长连接的方法（`AttachWebsocketRoute` 仅服务内部 wsrelay；`MethodHostStreamEmit/Close` 的 StreamID 只在 executor 流式路径创建，token-usage-tracker 无 executor capability）；management/resource 桥接单次写回（`w.WriteHeader + w.Write` 无 Flush/ws 升级）→ 实测宿主对 SSE body 原样透传。落地「SSE 短连接轮询通知 + REST 拉取」：`feed_ingest.go` feedNotifier 单调递增 seq（每条 feed 记录 bump）；`management.go` `/usage/events` 路由返回 `retry: 2000\n\ndata: {"seq":N}`（EventSource 自动重连）；`dashboard.go` `startUsageEvents()`（fullModePage 禁用）+ 15s 轮询 fallback。验证：cgo-shim 全绿 + 哨兵（移除 bump FAIL `want 1`）+ node --check 4 script 块 + `git diff --check` PASS + UTF-8 校验 + 6-review `STYLE: PASS`（doc/6-review/2026-09-01_011812_TokenUsageSSE通知_6-review.md）。**未提交未发布**（等用户提交授权）。
 
-- 2026-09-01：**trae-local-verify 项目级 skill 创建**（`skills/project-cpa-workbuddy-plugin-trae-local-verify-rules`）：吸收"本地直连 Trae 上游验证账号推理"经验。覆盖 5 步流程（临时目录→cgo-shim→verify_main.go→运行判定→清理）、解密/header/payload/SSE 复用（decryptCredentialString / buildTraePayload / scanSSE / classify）、5 条踩坑（sharedHTTPClient 120s 截断长流式→必须自定义 client+context 10min、先 reasoning 后正文、storage.json 账号≠生产账号、Windows 直连、SSE output 双格式）。references 含 verify-main-template.md 完整模板 + source-notes.md。quick_validate.py PASS。另沉淀知识库笔记《长流式客户端Timeout会掐断SSE直连》（新账号 uid 2257747741770235 qwen3.8-max 2m37s/595chunk/2.4万字完整 done，生产账号 77tokens 短输出为账号级问题）。
-
 ## 计数锚点区
 
 > 本区由 `memory-usage-tracking-rules` 收口闸门维护：HISTORY 仅窄读计入，会话启动不读不计；被裁剪事件的锚点随事件一起删除（不保留 retired）；本区计数仅作主题热度弱信号。锚点 key 用事件 `- YYYY-MM-DD：` 后的核心主题短语（约前 12 字符，可前缀匹配）。
@@ -51,32 +51,37 @@
 ```yaml
 version: 1
 anchors:
-- title: gemini-provider **0.1.1** 补充 Google
+- title: 'workbuddy-ai-provider **0.1.0** 独立国际版'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: gemini-provider **0.1.0** 正式发布部
+- title: 'gemini-provider **0.1.1** 补充 Google'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: gemini-provider **0.1.0** 集成与多
+- title: 'gemini-provider **0.1.0** 正式发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: workbuddy-provider **0.15.1** / tr
+- title: 'gemini-provider **0.1.0** 集成与多'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: workbuddy-provider **0.15.0** / tr
+- title: 'workbuddy-provider **0.15.1** / tr'
+  usage_count: 0
+  usage_days: 0
+  last_used_at: null
+  absorbed_to: null
+- title: 'workbuddy-provider **0.15.0** / tr'
   usage_count: 1
   usage_days: 1
   last_used_at: 2026-09-30
   absorbed_to: null
-- title: workbuddy-provider **0.14.43** / tr
+- title: 'workbuddy-provider **0.14.43** / tr'
   usage_count: 0
   usage_days: 0
   last_used_at: null
@@ -86,57 +91,57 @@ anchors:
   usage_days: 1
   last_used_at: 2026-09-27
   absorbed_to: null
-- title: traework-provider **0.1.44 发布部
+- title: 'traework-provider **0.1.44 发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: traework-provider **0.1.43 发布部
+- title: 'traework-provider **0.1.43 发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: traework-provider **0.1.42 发布部
+- title: 'traework-provider **0.1.42 发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: traework-provider **0.1.40 发布部
+- title: 'traework-provider **0.1.40 发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: traework-provider **0.1.39 发布部
+- title: 'traework-provider **0.1.39 发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: traework-provider **0.1.38 发布部
+- title: 'traework-provider **0.1.38 发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: traework-provider **0.1.30 三缺陷
+- title: 'traework-provider **0.1.30 三缺陷'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: traework-provider **0.1.29 纠偏—
+- title: 'traework-provider **0.1.29 纠偏—'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: traework-provider **0.1.29 发布部
+- title: 'traework-provider **0.1.29 发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: traework-provider **0.1.28 发布部
+- title: 'traework-provider **0.1.28 发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: traework-provider **0.1.27 发布部
+- title: 'traework-provider **0.1.27 发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null
@@ -145,10 +150,5 @@ anchors:
   usage_count: 0
   usage_days: 0
   last_used_at: null
-  absorbed_to: null
-- title: '**trae-local-verify 项目级 skill '
-  usage_count: 1
-  usage_days: 1
-  last_used_at: 2026-09-01
   absorbed_to: null
 ```
