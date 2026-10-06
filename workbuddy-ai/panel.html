@@ -219,7 +219,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 <body>
 <div class="wrap">
   <h1>WorkBuddy AI 账号面板</h1>
-  <div class="sub">积分余额 · CN 每日签到（09:00/21:00）· Global 专家包一次性手动领取 · 耗尽自动关/删</div>
+  <div class="sub">积分余额 · 14天 Pro 体验包 · 活跃探测 · 耗尽自动关/删</div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
     <div style="display:flex;gap:8px">
@@ -958,7 +958,7 @@ async function load(){
   // 后台异步刷新完成（前端无感知），另有每 10 分钟定时机制兜底。
   try{
     const d=await api("/accounts");
-    document.getElementById("autoToggle").checked=!!d.checkin_auto;
+    const at=document.getElementById("autoToggle");if(at)at.checked=!!d.checkin_auto;
     document.getElementById("svtime").textContent="服务器时间 "+(d.server_time||"");
     if(d.error){
       // 单次偶发失败不得清空面板：保留上一次渲染结果，仅顶部提示。

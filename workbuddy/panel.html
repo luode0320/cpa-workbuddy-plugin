@@ -219,7 +219,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 <body>
 <div class="wrap">
   <h1>WorkBuddy 账号面板</h1>
-  <div class="sub">积分余额 · CN 每日签到（09:00/21:00）· Global 专家包一次性手动领取 · 耗尽自动关/删</div>
+  <div class="sub">积分余额 · 每日签到（09:00/21:00）· 耗尽自动关/删</div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
     <div style="display:flex;gap:8px">
@@ -231,19 +231,16 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="sec" id="importBtn" onclick="openImportModal()">导入凭证</button>
     <button class="sec" id="exportBtn" onclick="exportAuth(this)" title="导出全部账号凭证为 JSON，可直接再导入">导出凭证</button>
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
-    <button class="sec" onclick="claimTrialAll(this)" title="仅 Global · 一次性">全部领取</button>
     <button class="sec" id="unfreezeAllBtn" onclick="unfreezeAll(this)" title="将异常池中所有账号解除冻结（每日 0 点也会自动做）">全部解冻</button>
     <input id="searchInput" class="search" type="search" placeholder="搜索 nickname / UID" oninput="onSearchChange(this.value)" autocomplete="off">
 <button class="sec sort-btn" id="sortBtn" onclick="toggleSort(this)" title="当前：创建时间倒序（新→旧），点击切积分升序">创建 ↓</button>
-    <label class="toggle" title="仅 CN 账号 09:00 / 21:00"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到(CN)</label>
+    <label class="toggle" title="每日 09:00 / 21:00 定时签到"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到</label>
     <span class="toggle" id="svtime"></span>
     <span class="toggle ref-progress" id="refreshProgress" style="display:none"></span>
   </div>
   <div class="filter-bar" id="filterBar">
     <button type="button" class="ftag active" data-region="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
     <button type="button" class="ftag" data-region="available" onclick="filterRegion('available',this)" title="未耗尽 · 未打「测试」标签，可用积分能正常路由">可用 <span class="cnt" id="cntAvailable">0</span></button>
-    <button type="button" class="ftag" data-region="cn" onclick="filterRegion('cn',this)">CN <span class="cnt" id="cntCn">0</span></button>
-    <button type="button" class="ftag" data-region="global" onclick="filterRegion('global',this)">Global <span class="cnt" id="cntGlobal">0</span></button>
     <button type="button" class="ftag" data-region="exhausted" onclick="filterRegion('exhausted',this)">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
     <button type="button" class="ftag" data-region="failed" onclick="filterRegion('failed',this)" title="累计失败 > 0 或连败中（fail_count > 0）的账号；卡片上的「失败/连败/冷却」段即数据来源">失败 <span class="cnt" id="cntFailed">0</span></button>
     <button type="button" class="ftag" data-region="test" onclick="filterRegion('test',this)" title="定时活跃测试失败且仍有积分的账号；建议人工复核后清理">测试 <span class="cnt" id="cntTest">0</span></button>
@@ -848,7 +845,7 @@ function renderSummary(accounts){
       <div class="pb-meta">可用 ${remainAvail} · 已用 ${used} · 池 ${total||0}（签到加包会抬高池和可用，不等于没消耗）</div>
     </div>
     ${currentFilter==="all"?`
-    <div class="pb-meta" style="margin-top:10px">分区域：CN 可用 ${cnRemain} / 已用 ${cnUsed} · Global 可用 ${glRemain} / 已用 ${glUsed}</div>
+    ${(glRemain>0||glUsed>0)?`<div class="pb-meta" style="margin-top:10px">分区域：CN 可用 ${cnRemain} / 已用 ${cnUsed} · Global 可用 ${glRemain} / 已用 ${glUsed}</div>`:""}
     `:`
     <div class="pb-meta" style="margin-top:10px">全部账号池：可用 ${allRemain} · 已用 ${allUsed} · 池 ${allTotal||0}</div>
     `}
