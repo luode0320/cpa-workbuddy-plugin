@@ -8,32 +8,28 @@
 
 ## 项目概览
 
-- 状态：活跃维护中。已新增并成功发布、上线部署独立的 WorkBuddy AI 国际版插件 **0.1.0**（ID: `workbuddy-ai-provider`，名称: "WorkBuddy AI"）。
+- 状态：活跃维护中。已成功发布并生产部署 WorkBuddy AI 国际版 **0.1.1** 与 WorkBuddy 国内版 **0.15.2**。
 - 活动工作区：F:\cpa-plugin
-- 更新时间：2026-10-06 (GMT+8)
+- 更新时间：2026-10-07 (GMT+8)
 
 ## 活动会话工作摘要
 
-- 当前会话：2026-10-06：**完成独立国际版 WorkBuddy AI 插件（workbuddy-ai-provider 0.1.0）全流程发版与生产部署上线**。
-  - 用户目标：支持国际版 WorkBuddy AI 独立插件，端点唯一固定为国际站，提供独立的扫码登录与专属面板，核心保活、测试与切换调度与国内版保持通用；确认发布后全自主推进完整发版与部署。
+- 当前会话：2026-10-07：**WorkBuddy AI 0.1.1 与 WorkBuddy 国内版 0.15.2 全流程发版与生产热重载部署上线**。
+  - 用户目标：解决 OAuth 国际版账号授权后面板白屏、获取不到模型的问题；清理国内版面板冗余文案与 Global 标签；全流程自主发版并部署上线。
   - 核心实现与发版成果：
-    1. 新建独立模块 `workbuddy-ai/`（ID: `workbuddy-ai-provider`，Name: "WorkBuddy AI"，VERSION: 0.1.0）；
-    2. 凭证防碰撞：文件名前缀唯一固定为 `workbuddyai-`，顶层类型为 `workbuddy-ai-provider`；
-    3. 端点纯化：基地址固定为 `https://www.workbuddy.ai`，彻底移除国内版混用与 CN 签到；
-    4. 双通道扫码：支持 CPA 宿主原生扫码 + 插件自身专属面板（`panel.html`）提供「📱 扫码登录 / 添加账号」弹窗；
-    5. 保留核心特性：14天 Pro 体验包一键领取、4小时 access-token 保活刷新（keepalive）、10分钟活跃巡检与定时 ping（watchdog）、低积分优先与会话粘性调度、`retry_on_4xx` 与 NDJSON 共享用量 feed；
-    6. 跨插件联动：在 `token-usage-tracker/usage_stats/auth_identity.go` 接入 "WorkBuddy AI" 显示归一化；
-    7. GitHub Actions 跨平台 CI 构建成功（Run ID: 37469999135，7 平台架构 build+vet+test+release 全绿）；
-    8. 8 个 Release 资产（7 个 zip 包 + checksums.txt）下载自检通过并推送入库；
-    9. `registry.json` 原子同步 0.1.0 资产哈希与尺寸，经 `validate-registry.py` 及 GitHub raw CDN 远程验证 ALL PASS；
-    10. 生产部署落地：调用生产环境（45.207.222.65:8317）plugin-store install 接口完成热加载，落盘二进制 SHA256 100% 吻合，`accounts` 接口 200，`panel` 资源接口 200，专属面板方案 B 扫码弹窗正常渲染。
+    1. **国际版模型兜底（workbuddy-ai-provider 0.1.1）**：在 `models.go` 补齐 17 个静态模型兜底（`auto`, `deepseek-v4.1-flash`, `deepseek-v4-pro`, `glm-5.3`, `glm-5.3-flash`, `glm-5.2`, `glm-5.1`, `glm-5v-turbo`, `kimi-k3-1`, `kimi-k2.8-preview`, `kimi-k2.7`, `kimi-k2.6`, `minimax-m3`, `hy4-preview`, `hy3`, `hy3-x`, `space-bunny`），在上游控制台动态接口偶发 500 时 100% 确保 CPA 宿主能识别完整模型列表；
+    2. **国际版面板容错**：在 `workbuddy-ai/panel.html` 增加 `autoToggle` 空指针安全保护，彻底根除国际版缺少该元素抛错导致的白屏中断；
+    3. **国内版面板精简（workbuddy-provider 0.15.2）**：彻底移除“全部领取”Global 体验包按钮、筛选栏中冗余的 CN/Global 标签、文案简化为“自动签到”，分区域统计在无 Global 账号时不冗余展示；
+    4. **CI 跨平台流水线验证**：两插件版本（0.1.1 与 0.15.2）经 GitHub Actions CI（Run ID: 37485980329 & 37485990761）7 平台全量构建成功并生成 Release 资产；
+    5. **资产入库与 Registry 原子同步**：下载 16 个 Release 资产校验通过入库，`registry.json` 同步资产哈希与尺寸，经 `validate-registry.py` 验证通过，推送至 GitHub main 分支并通过 raw CDN 200 验证；
+    6. **生产环境热重载落地与在线验证**：通过生产环境（45.207.222.65:8317）管理接口完成热加载，落盘 `.so` 哈希完全匹配；真实调用管理接口验证：CPA 宿主成功挂载全部 17 个模型；国际版面板与国内版面板均返回 HTTP 200，账号信息正常展示且无脚本抛错。
 
 <!-- BEGIN RECENT PROJECT SESSIONS -->
 ## 最近 5 个同项目会话
 
 | 会话 ID | 标题 / 意图 | 状态 | 最后活动时间 | 关键交付物 / 影响 |
 |---|---|---|---|---|
-| `01a110f3-1891-72c1-914e-7600d0e8b6df` | 独立国际版 WorkBuddy AI 插件落地、发布与生产部署 | completed | 2026-10-06 22:10 | 独立 workbuddy-ai-provider 0.1.0 发版与生产热重载部署，双通道扫码授权，workbuddy.ai 纯化 |
+| `01a110f3-1891-72c1-914e-7600d0e8b6df` | 修复国际版模型兜底与白屏、清理国内版冗余标签、发版与生产部署 | completed | 2026-10-07 00:15 | workbuddy-ai 0.1.1 静态模型兜底与白屏修复、workbuddy 0.15.2 面板精简，全流程发布与生产热重载上线 |
 | `01a10add-b83c-7500-bc4c-2c92ff9393ca` | 移植 Gemini Provider 插件与 Token 用量统一统计 | completed | 2026-10-05 19:30 | 移植 gemini-provider 0.1.1，接入 Google 图标，打通 NDJSON feed，CI 全平台流水线 |
 | `01a0f678-72a0-7900-9c19-bf43949e829f` | 修复面板筛选标签计数未随积分回填重算缺陷 | completed | 2026-10-01 18:30 | workbuddy 0.15.1 / traework 0.2.1 / qoderwork 0.9.21 面板筛选标签计数刷新修复 |
 | `01a0c4f8-1120-7500-b88a-df4598124801` | 移除可疑重复可测试标签中的路由排除 | completed | 2026-09-30 02:40 | workbuddy 0.15.0 / traework 0.2.0 发布，默认提交发布授权机制生效 |
