@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -11,58 +12,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+// wbModels 原为硬编码静态模型列表。现已根据规范彻底去除写死模型，
+// 模型完全依赖上游动态拉取（自动获取），返回 nil。
 func wbModels() []pluginapi.ModelInfo {
-	return []pluginapi.ModelInfo{
-		// 通用与默认
-		{ID: "auto", Name: "Auto", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-
-		// OpenAI (GPT 系列)
-		{ID: "gpt-5.4", Name: "GPT-5.4", ContextLength: 1000000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "gpt-5.3-codex", Name: "GPT-5.3 Codex", ContextLength: 1000000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "gpt-5", Name: "GPT-5", ContextLength: 1000000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "gpt-5-mini", Name: "GPT-5 mini", ContextLength: 1000000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "gpt-5-nano", Name: "GPT-5 nano", ContextLength: 1000000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "gpt-4.1", Name: "GPT-4.1", ContextLength: 1000000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "gpt-4o", Name: "GPT-4o", ContextLength: 128000, MaxCompletionTokens: 4096, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "gpt-4o-mini", Name: "GPT-4o mini", ContextLength: 128000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "o3", Name: "o3", ContextLength: 200000, MaxCompletionTokens: 100000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "o3-mini", Name: "o3-mini", ContextLength: 200000, MaxCompletionTokens: 100000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "o1", Name: "o1", ContextLength: 200000, MaxCompletionTokens: 100000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-
-		// Google Gemini 系列
-		{ID: "gemini-3.5-flash", Name: "Gemini 3.5 Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "gemini-3.1-pro-preview", Name: "Gemini 3.1 Pro", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "gemini-3.1-flash", Name: "Gemini 3.1 Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "gemini-3.1-flash-lite", Name: "Gemini 3.1 Flash-Lite", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-
-		// DeepSeek 系列
-		{ID: "deepseek-v4.1-flash", Name: "DeepSeek V4.1 Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "deepseek-v4-flash", Name: "DeepSeek-V4 Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "deepseek-chat", Name: "DeepSeek Chat", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "deepseek-reasoner", Name: "DeepSeek Reasoner", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-
-		// GLM / Kimi / MiniMax / 腾讯混元等主流模型
-		{ID: "glm-5.3", Name: "GLM-5.3", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "glm-5.3-flash", Name: "GLM-5.3 Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "glm-5.2", Name: "GLM-5.2", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "glm-5.1", Name: "GLM-5.1", ContextLength: 131072, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "glm-5v-turbo", Name: "GLM-5V Turbo", ContextLength: 131072, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "kimi-k3-1", Name: "Kimi K3.1", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "kimi-k2.8-preview", Name: "Kimi K2.8 Preview", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "kimi-k2.7", Name: "Kimi K2.7", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "kimi-k2.6", Name: "Kimi K2.6", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "kimi-k2.5", Name: "Kimi K2.5", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "minimax-m3", Name: "MiniMax M3", ContextLength: 204800, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "minimax-m2.7", Name: "MiniMax M2.7", ContextLength: 204800, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "minimax-m2.5", Name: "MiniMax M2.5", ContextLength: 204800, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "hy4-preview", Name: "Hy4 Preview", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "hy3", Name: "Hy3", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "hy3-x", Name: "Hy3-X", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "space-bunny", Name: "Space Bunny", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-	}
+	return nil
 }
 
 var (
@@ -142,32 +95,16 @@ func modelInfoFromConfig(id, name string, ctxLen, maxTok int64) pluginapi.ModelI
 	}
 }
 
+// resolveModels 按优先级链解析最终模型列表：动态拉取 > config_yaml 覆盖 > 静态兜底(nil)。
+// 动态拉取或配置有值时直接返回该列表；未配置且动态不可用时返回空切片，严禁注入硬编码写死模型。
 func resolveModels(dynamic, configured, fallback []pluginapi.ModelInfo) []pluginapi.ModelInfo {
+	if dm := nonEmptyModels(dynamic); len(dm) > 0 {
+		return dm
+	}
 	if cm := nonEmptyModels(configured); len(cm) > 0 {
 		return cm
 	}
-	dm := nonEmptyModels(dynamic)
-	fb := nonEmptyModels(fallback)
-	if len(dm) == 0 {
-		return fb
-	}
-	seen := make(map[string]struct{}, len(dm)+len(fb))
-	out := make([]pluginapi.ModelInfo, 0, len(dm)+len(fb))
-	for _, m := range dm {
-		lower := strings.ToLower(m.ID)
-		if _, exists := seen[lower]; !exists {
-			seen[lower] = struct{}{}
-			out = append(out, m)
-		}
-	}
-	for _, m := range fb {
-		lower := strings.ToLower(m.ID)
-		if _, exists := seen[lower]; !exists {
-			seen[lower] = struct{}{}
-			out = append(out, m)
-		}
-	}
-	return out
+	return nonEmptyModels(fallback)
 }
 
 func nonEmptyModels(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
@@ -199,6 +136,148 @@ func storeDynamicModels(models []pluginapi.ModelInfo) {
 	dynamicModelsCache.Unlock()
 }
 
+// upstreamModelEntry 承载 models 接口返回的单个条目，兼容驼峰、下划线及对象形式。
+type upstreamModelEntry struct {
+	ID                 string          `json:"id"`
+	Name               string          `json:"name"`
+	Disabled           bool            `json:"disabled"`
+	Status             string          `json:"status"`
+	MaxInputTokens     *int64          `json:"maxInputTokens"`
+	MaxOutputTokens    *int64          `json:"maxOutputTokens"`
+	MaxAllowedSize     *int64          `json:"maxAllowedSize"`
+	MaxContextLength   *int64          `json:"maxContextLength"`
+	ContextWindow      json.RawMessage `json:"contextWindow"`
+	MaxTokens          *int64          `json:"maxTokens"`
+	MaxCompletionToken *int64          `json:"maxCompletionTokens"`
+
+	// 兼容蛇形命名
+	MaxInputTokensSnake     *int64 `json:"max_input_tokens"`
+	MaxOutputTokensSnake    *int64 `json:"max_output_tokens"`
+	MaxTokensSnake          *int64 `json:"max_tokens"`
+	RecommendedContextSnake *int64 `json:"recommended_context"`
+}
+
+func firstPositive(vals ...*int64) int64 {
+	for _, v := range vals {
+		if v != nil && *v > 0 {
+			return *v
+		}
+	}
+	return 0
+}
+
+func (m upstreamModelEntry) contextWindowVal() *int64 {
+	if len(m.ContextWindow) == 0 {
+		return nil
+	}
+	var n int64
+	if err := json.Unmarshal(m.ContextWindow, &n); err == nil && n > 0 {
+		return &n
+	}
+	var cw struct {
+		DefaultLength    *int64  `json:"defaultLength"`
+		SupportedLengths []int64 `json:"supportedLengths"`
+	}
+	if err := json.Unmarshal(m.ContextWindow, &cw); err == nil {
+		var maxLen int64
+		for _, v := range cw.SupportedLengths {
+			if v > maxLen {
+				maxLen = v
+			}
+		}
+		if maxLen > 0 {
+			return &maxLen
+		}
+		if cw.DefaultLength != nil && *cw.DefaultLength > 0 {
+			return cw.DefaultLength
+		}
+	}
+	return nil
+}
+
+func (m upstreamModelEntry) contextLength() int64 {
+	return firstPositive(m.MaxInputTokens, m.MaxAllowedSize, m.MaxContextLength, m.contextWindowVal(), m.MaxInputTokensSnake, m.RecommendedContextSnake)
+}
+
+func (m upstreamModelEntry) maxOutputTokens() int64 {
+	return firstPositive(m.MaxOutputTokens, m.MaxCompletionToken, m.MaxTokens, m.MaxOutputTokensSnake, m.MaxTokensSnake)
+}
+
+func parseModelsAPIResponse(body []byte) ([]pluginapi.ModelInfo, error) {
+	var rawEnvelope struct {
+		Code int `json:"code"`
+		Data struct {
+			List   []upstreamModelEntry `json:"list"`
+			Models []upstreamModelEntry `json:"models"`
+			Agents []struct {
+				Name   string   `json:"name"`
+				Models []string `json:"models"`
+			} `json:"agents"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &rawEnvelope); err != nil {
+		return nil, err
+	}
+	if rawEnvelope.Code != 0 {
+		return nil, fmt.Errorf("models API code %d", rawEnvelope.Code)
+	}
+
+	var cliModelIDs []string
+	for _, a := range rawEnvelope.Data.Agents {
+		if a.Name == "cli" {
+			cliModelIDs = a.Models
+			break
+		}
+	}
+
+	var out []pluginapi.ModelInfo
+	seen := make(map[string]struct{})
+
+	addEntry := func(m upstreamModelEntry) {
+		if m.ID == "" || m.Disabled || strings.EqualFold(m.Status, "offline") || strings.EqualFold(m.Status, "disabled") {
+			return
+		}
+		lower := strings.ToLower(m.ID)
+		if _, exists := seen[lower]; exists {
+			return
+		}
+		seen[lower] = struct{}{}
+		name := m.Name
+		if name == "" {
+			name = m.ID
+		}
+		out = append(out, pluginapi.ModelInfo{
+			ID:                         m.ID,
+			Name:                       name,
+			ContextLength:              m.contextLength(),
+			MaxCompletionTokens:        m.maxOutputTokens(),
+			OwnedBy:                    providerName,
+			SupportedGenerationMethods: []string{"chat"},
+		})
+	}
+
+	if len(cliModelIDs) > 0 {
+		modelMap := make(map[string]upstreamModelEntry, len(rawEnvelope.Data.Models))
+		for _, m := range rawEnvelope.Data.Models {
+			modelMap[m.ID] = m
+		}
+		for _, id := range cliModelIDs {
+			if m, ok := modelMap[id]; ok {
+				addEntry(m)
+			}
+		}
+	} else {
+		for _, m := range rawEnvelope.Data.Models {
+			addEntry(m)
+		}
+		for _, m := range rawEnvelope.Data.List {
+			addEntry(m)
+		}
+	}
+
+	return out, nil
+}
+
 func callModelsAPI(accessToken, enterpriseID string) ([]pluginapi.ModelInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -219,77 +298,10 @@ func callModelsAPI(accessToken, enterpriseID string) ([]pluginapi.ModelInfo, err
 	if err != nil {
 		return nil, err
 	}
-	var rawEnvelope struct {
-		Code int `json:"code"`
-		Data struct {
-			List []struct {
-				ID                 string `json:"id"`
-				Name               string `json:"name"`
-				MaxTokens          int64  `json:"max_tokens"`
-				MaxInputTokens     int64  `json:"max_input_tokens"`
-				MaxOutputTokens    int64  `json:"max_output_tokens"`
-				RecommendedContext int64  `json:"recommended_context"`
-				Status             string `json:"status"`
-			} `json:"list"`
-			Models []struct {
-				ID                 string `json:"id"`
-				Name               string `json:"name"`
-				MaxTokens          int64  `json:"max_tokens"`
-				MaxInputTokens     int64  `json:"max_input_tokens"`
-				MaxOutputTokens    int64  `json:"max_output_tokens"`
-				RecommendedContext int64  `json:"recommended_context"`
-				Status             string `json:"status"`
-				Disabled           bool   `json:"disabled"`
-			} `json:"models"`
-		} `json:"data"`
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("models API status %d", resp.StatusCode)
 	}
-	if err := json.Unmarshal(resp.Body, &rawEnvelope); err != nil {
-		return nil, err
-	}
-	var out []pluginapi.ModelInfo
-	for _, m := range rawEnvelope.Data.List {
-		if strings.EqualFold(m.Status, "offline") || strings.EqualFold(m.Status, "disabled") {
-			continue
-		}
-		ctxLen := m.RecommendedContext
-		if ctxLen <= 0 {
-			ctxLen = m.MaxInputTokens
-		}
-		maxTok := m.MaxOutputTokens
-		if maxTok <= 0 {
-			maxTok = m.MaxTokens
-		}
-		out = append(out, pluginapi.ModelInfo{
-			ID:                         m.ID,
-			Name:                       m.Name,
-			ContextLength:              ctxLen,
-			MaxCompletionTokens:        maxTok,
-			OwnedBy:                    providerName,
-			SupportedGenerationMethods: []string{"chat"},
-		})
-	}
-	for _, m := range rawEnvelope.Data.Models {
-		if m.Disabled || strings.EqualFold(m.Status, "offline") || strings.EqualFold(m.Status, "disabled") {
-			continue
-		}
-		ctxLen := m.RecommendedContext
-		if ctxLen <= 0 {
-			ctxLen = m.MaxInputTokens
-		}
-		maxTok := m.MaxOutputTokens
-		if maxTok <= 0 {
-			maxTok = m.MaxTokens
-		}
-		out = append(out, pluginapi.ModelInfo{
-			ID:                         m.ID,
-			Name:                       m.Name,
-			ContextLength:              ctxLen,
-			MaxCompletionTokens:        maxTok,
-			OwnedBy:                    providerName,
-			SupportedGenerationMethods: []string{"chat"},
-		})
-	}
-	return out, nil
+	return parseModelsAPIResponse(resp.Body)
 }
 
 func extractAuthInfo(raw []byte) (string, string, bool) {
