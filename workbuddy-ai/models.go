@@ -254,6 +254,19 @@ func parseModelsAPIResponse(body []byte) ([]pluginapi.ModelInfo, error) {
 			OwnedBy:                    providerName,
 			SupportedGenerationMethods: []string{"chat"},
 		})
+		if lower == "default-model" {
+			if _, exists := seen["auto"]; !exists {
+				seen["auto"] = struct{}{}
+				out = append(out, pluginapi.ModelInfo{
+					ID:                         "auto",
+					Name:                       "Auto",
+					ContextLength:              m.contextLength(),
+					MaxCompletionTokens:        m.maxOutputTokens(),
+					OwnedBy:                    providerName,
+					SupportedGenerationMethods: []string{"chat"},
+				})
+			}
+		}
 	}
 
 	if len(cliModelIDs) > 0 {
@@ -278,13 +291,9 @@ func parseModelsAPIResponse(body []byte) ([]pluginapi.ModelInfo, error) {
 	return out, nil
 }
 
-func callModelsAPI(accessToken, enterpriseID string) ([]pluginapi.ModelInfo, error) {
+func fetchModelsFromURL(accessToken, targetURL string) ([]pluginapi.ModelInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	targetURL := endpointModels
-	if enterpriseID != "" {
-		targetURL = upstreamBase + "/console/enterprises/" + enterpriseID + "/config/models"
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return nil, err
@@ -302,6 +311,16 @@ func callModelsAPI(accessToken, enterpriseID string) ([]pluginapi.ModelInfo, err
 		return nil, fmt.Errorf("models API status %d", resp.StatusCode)
 	}
 	return parseModelsAPIResponse(resp.Body)
+}
+
+func callModelsAPI(accessToken, enterpriseID string) ([]pluginapi.ModelInfo, error) {
+	if enterpriseID != "" {
+		targetURL := upstreamBase + "/console/enterprises/" + enterpriseID + "/config/models"
+		if models, err := fetchModelsFromURL(accessToken, targetURL); err == nil && len(models) > 0 {
+			return models, nil
+		}
+	}
+	return fetchModelsFromURL(accessToken, endpointModels)
 }
 
 func extractAuthInfo(raw []byte) (string, string, bool) {
@@ -435,6 +454,9 @@ func resolveUpstreamModel(model string, authAttrs map[string]string) string {
 		return model
 	}
 	lower := strings.ToLower(model)
+	if lower == "auto" {
+		return "default-model"
+	}
 	for _, k := range []string{"model_alias", "model-alias", "oauth-model-alias"} {
 		if mapping, ok := authAttrs[k]; ok {
 			var m map[string]string

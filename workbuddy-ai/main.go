@@ -83,7 +83,7 @@ const (
 	endpointAuthToken    = upstreamBase + "/v2/plugin/auth/token?state="
 	endpointTokenRefresh = upstreamBase + "/v2/plugin/auth/token/refresh"
 	endpointChat         = upstreamBase + "/v2/chat/completions"
-	endpointModels       = upstreamBase + "/console/enterprises/personal/models"
+	endpointModels       = upstreamBase + "/v3/config"
 
 	loginTTL = 5 * time.Minute
 )
@@ -287,7 +287,7 @@ type registrationCapability struct {
 	UsagePlugin           bool                         `json:"usage_plugin"`
 }
 
-var version = "0.1.3"
+var version = "0.1.4"
 
 func wbRegistration() registration {
 	return registration{
@@ -441,7 +441,7 @@ func endpointTokenRefreshFor(sa *storedAuth) string {
 }
 
 func endpointModelsFor(sa *storedAuth) string {
-	return upstreamBase + "/console/enterprises/personal/models"
+	return upstreamBase + "/v3/config"
 }
 
 func backendHeaders(req *http.Request, sa *storedAuth) {

@@ -108,3 +108,53 @@ func TestParseModelsAPIResponse(t *testing.T) {
 		t.Fatalf("unexpected token limits for gemini: %+v", models2[0])
 	}
 }
+
+func TestResolveUpstreamModelAuto(t *testing.T) {
+	resolved := resolveUpstreamModel("auto", nil)
+	if resolved != "default-model" {
+		t.Fatalf("expected auto to resolve to default-model, got %s", resolved)
+	}
+	resolvedUpper := resolveUpstreamModel("Auto", nil)
+	if resolvedUpper != "default-model" {
+		t.Fatalf("expected Auto to resolve to default-model, got %s", resolvedUpper)
+	}
+	resolvedNormal := resolveUpstreamModel("gpt-5.4", nil)
+	if resolvedNormal != "gpt-5.4" {
+		t.Fatalf("expected gpt-5.4 to stay unchanged, got %s", resolvedNormal)
+	}
+}
+
+func TestParseModelsAPIResponseV3Config(t *testing.T) {
+	v3JSON := []byte(`{
+		"code": 0,
+		"data": {
+			"agents": [{"name": "cli", "models": ["default-model", "gpt-6-astra", "deepseek-v4.1-flash"]}],
+			"models": [
+				{"id": "default-model", "name": "Auto", "maxInputTokens": 176000, "maxOutputTokens": 24000},
+				{"id": "gpt-6-astra", "name": "GPT-6-Astra", "maxInputTokens": 1000000, "maxOutputTokens": 128000},
+				{"id": "deepseek-v4.1-flash", "name": "Deepseek-V4.1-Flash", "maxInputTokens": 1000000, "maxOutputTokens": 128000},
+				{"id": "ignored-web-model", "name": "Ignored"}
+			]
+		}
+	}`)
+	models, err := parseModelsAPIResponse(v3JSON)
+	if err != nil {
+		t.Fatalf("parseModelsAPIResponse failed: %v", err)
+	}
+	// default-model + auto alias + gpt-6-astra + deepseek-v4.1-flash = 4
+	if len(models) != 4 {
+		t.Fatalf("expected 4 models (including auto alias), got %d: %+v", len(models), models)
+	}
+	foundAuto := false
+	for _, m := range models {
+		if m.ID == "auto" {
+			foundAuto = true
+			if m.ContextLength != 176000 || m.MaxCompletionTokens != 24000 {
+				t.Fatalf("auto alias did not inherit limits from default-model: %+v", m)
+			}
+		}
+	}
+	if !foundAuto {
+		t.Fatal("expected auto alias to be generated")
+	}
+}
