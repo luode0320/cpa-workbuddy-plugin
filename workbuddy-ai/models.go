@@ -13,9 +13,38 @@ import (
 
 func wbModels() []pluginapi.ModelInfo {
 	return []pluginapi.ModelInfo{
+		// 通用与默认
 		{ID: "auto", Name: "Auto", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+
+		// OpenAI (GPT 系列)
+		{ID: "gpt-5.4", Name: "GPT-5.4", ContextLength: 1000000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gpt-5.3-codex", Name: "GPT-5.3 Codex", ContextLength: 1000000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gpt-5", Name: "GPT-5", ContextLength: 1000000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gpt-5-mini", Name: "GPT-5 mini", ContextLength: 1000000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gpt-5-nano", Name: "GPT-5 nano", ContextLength: 1000000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gpt-4.1", Name: "GPT-4.1", ContextLength: 1000000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gpt-4o", Name: "GPT-4o", ContextLength: 128000, MaxCompletionTokens: 4096, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gpt-4o-mini", Name: "GPT-4o mini", ContextLength: 128000, MaxCompletionTokens: 16384, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "o3", Name: "o3", ContextLength: 200000, MaxCompletionTokens: 100000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "o3-mini", Name: "o3-mini", ContextLength: 200000, MaxCompletionTokens: 100000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "o1", Name: "o1", ContextLength: 200000, MaxCompletionTokens: 100000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+
+		// Google Gemini 系列
+		{ID: "gemini-3.5-flash", Name: "Gemini 3.5 Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gemini-3.1-pro-preview", Name: "Gemini 3.1 Pro", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gemini-3.1-flash", Name: "Gemini 3.1 Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gemini-3.1-flash-lite", Name: "Gemini 3.1 Flash-Lite", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+
+		// DeepSeek 系列
 		{ID: "deepseek-v4.1-flash", Name: "DeepSeek V4.1 Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "deepseek-v4-flash", Name: "DeepSeek-V4 Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "deepseek-chat", Name: "DeepSeek Chat", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "deepseek-reasoner", Name: "DeepSeek Reasoner", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+
+		// GLM / Kimi / MiniMax / 腾讯混元等主流模型
 		{ID: "glm-5.3", Name: "GLM-5.3", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "glm-5.3-flash", Name: "GLM-5.3 Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "glm-5.2", Name: "GLM-5.2", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
@@ -25,7 +54,10 @@ func wbModels() []pluginapi.ModelInfo {
 		{ID: "kimi-k2.8-preview", Name: "Kimi K2.8 Preview", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "kimi-k2.7", Name: "Kimi K2.7", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "kimi-k2.6", Name: "Kimi K2.6", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "kimi-k2.5", Name: "Kimi K2.5", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "minimax-m3", Name: "MiniMax M3", ContextLength: 204800, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "minimax-m2.7", Name: "MiniMax M2.7", ContextLength: 204800, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "minimax-m2.5", Name: "MiniMax M2.5", ContextLength: 204800, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "hy4-preview", Name: "Hy4 Preview", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "hy3", Name: "Hy3", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "hy3-x", Name: "Hy3-X", ContextLength: 262144, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
@@ -111,13 +143,31 @@ func modelInfoFromConfig(id, name string, ctxLen, maxTok int64) pluginapi.ModelI
 }
 
 func resolveModels(dynamic, configured, fallback []pluginapi.ModelInfo) []pluginapi.ModelInfo {
-	if dm := nonEmptyModels(dynamic); len(dm) > 0 {
-		return dm
-	}
 	if cm := nonEmptyModels(configured); len(cm) > 0 {
 		return cm
 	}
-	return nonEmptyModels(fallback)
+	dm := nonEmptyModels(dynamic)
+	fb := nonEmptyModels(fallback)
+	if len(dm) == 0 {
+		return fb
+	}
+	seen := make(map[string]struct{}, len(dm)+len(fb))
+	out := make([]pluginapi.ModelInfo, 0, len(dm)+len(fb))
+	for _, m := range dm {
+		lower := strings.ToLower(m.ID)
+		if _, exists := seen[lower]; !exists {
+			seen[lower] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	for _, m := range fb {
+		lower := strings.ToLower(m.ID)
+		if _, exists := seen[lower]; !exists {
+			seen[lower] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func nonEmptyModels(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
@@ -149,10 +199,14 @@ func storeDynamicModels(models []pluginapi.ModelInfo) {
 	dynamicModelsCache.Unlock()
 }
 
-func callModelsAPI(accessToken string) ([]pluginapi.ModelInfo, error) {
+func callModelsAPI(accessToken, enterpriseID string) ([]pluginapi.ModelInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpointModels, nil)
+	targetURL := endpointModels
+	if enterpriseID != "" {
+		targetURL = upstreamBase + "/console/enterprises/" + enterpriseID + "/config/models"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +231,16 @@ func callModelsAPI(accessToken string) ([]pluginapi.ModelInfo, error) {
 				RecommendedContext int64  `json:"recommended_context"`
 				Status             string `json:"status"`
 			} `json:"list"`
+			Models []struct {
+				ID                 string `json:"id"`
+				Name               string `json:"name"`
+				MaxTokens          int64  `json:"max_tokens"`
+				MaxInputTokens     int64  `json:"max_input_tokens"`
+				MaxOutputTokens    int64  `json:"max_output_tokens"`
+				RecommendedContext int64  `json:"recommended_context"`
+				Status             string `json:"status"`
+				Disabled           bool   `json:"disabled"`
+			} `json:"models"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(resp.Body, &rawEnvelope); err != nil {
@@ -204,21 +268,51 @@ func callModelsAPI(accessToken string) ([]pluginapi.ModelInfo, error) {
 			SupportedGenerationMethods: []string{"chat"},
 		})
 	}
+	for _, m := range rawEnvelope.Data.Models {
+		if m.Disabled || strings.EqualFold(m.Status, "offline") || strings.EqualFold(m.Status, "disabled") {
+			continue
+		}
+		ctxLen := m.RecommendedContext
+		if ctxLen <= 0 {
+			ctxLen = m.MaxInputTokens
+		}
+		maxTok := m.MaxOutputTokens
+		if maxTok <= 0 {
+			maxTok = m.MaxTokens
+		}
+		out = append(out, pluginapi.ModelInfo{
+			ID:                         m.ID,
+			Name:                       m.Name,
+			ContextLength:              ctxLen,
+			MaxCompletionTokens:        maxTok,
+			OwnedBy:                    providerName,
+			SupportedGenerationMethods: []string{"chat"},
+		})
+	}
 	return out, nil
 }
 
-func extractAccessToken(raw []byte) (string, bool) {
+func extractAuthInfo(raw []byte) (string, string, bool) {
 	var flat struct {
-		AccessToken string `json:"accessToken"`
+		AccessToken  string `json:"accessToken"`
+		EnterpriseID string `json:"enterpriseId"`
 	}
-	if err := json.Unmarshal(raw, &flat); err == nil && strings.TrimSpace(flat.AccessToken) != "" {
-		return flat.AccessToken, true
+	token := ""
+	entID := ""
+	if err := json.Unmarshal(raw, &flat); err == nil {
+		token = strings.TrimSpace(flat.AccessToken)
+		entID = strings.TrimSpace(flat.EnterpriseID)
 	}
 	var nested storedAuth
-	if err := json.Unmarshal(raw, &nested); err == nil && strings.TrimSpace(nested.Auth.AccessToken) != "" {
-		return nested.Auth.AccessToken, true
+	if err := json.Unmarshal(raw, &nested); err == nil {
+		if token == "" {
+			token = strings.TrimSpace(nested.Auth.AccessToken)
+		}
+		if entID == "" {
+			entID = strings.TrimSpace(nested.Account.EnterpriseID)
+		}
 	}
-	return "", false
+	return token, entID, token != ""
 }
 
 func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
@@ -226,15 +320,17 @@ func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 		return models
 	}
 	accessToken := ""
+	enterpriseID := ""
 	if len(storageJSON) > 0 {
-		if tok, ok := extractAccessToken(storageJSON); ok {
+		if tok, ent, ok := extractAuthInfo(storageJSON); ok {
 			accessToken = tok
+			enterpriseID = ent
 		}
 	}
 	if accessToken == "" {
 		return nil
 	}
-	dyn, err := callModelsAPI(accessToken)
+	dyn, err := callModelsAPI(accessToken, enterpriseID)
 	if err != nil || len(dyn) == 0 {
 		return nil
 	}
@@ -258,7 +354,7 @@ func dynamicModelsFromCacheOrAuth() []pluginapi.ModelInfo {
 		if err != nil || sa == nil || sa.Auth.AccessToken == "" {
 			continue
 		}
-		dyn, err := callModelsAPI(sa.Auth.AccessToken)
+		dyn, err := callModelsAPI(sa.Auth.AccessToken, sa.Account.EnterpriseID)
 		if err == nil && len(dyn) > 0 {
 			storeDynamicModels(dyn)
 			return dyn

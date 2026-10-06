@@ -62,7 +62,7 @@ func pickRandomWorkbuddyModel(sa *storedAuth) string {
 	}
 
 	if len(candidates) == 0 && sa != nil && strings.TrimSpace(sa.Auth.AccessToken) != "" {
-		if dyn, err := callModelsAPI(sa.Auth.AccessToken); err == nil && len(dyn) > 0 {
+		if dyn, err := callModelsAPI(sa.Auth.AccessToken, sa.Account.EnterpriseID); err == nil && len(dyn) > 0 {
 			storeDynamicModels(dyn)
 			for _, m := range dyn {
 				id := strings.TrimSpace(m.ID)

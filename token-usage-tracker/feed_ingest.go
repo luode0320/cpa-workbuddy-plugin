@@ -209,11 +209,23 @@ func reopenStore(cfg trackerConfig) {
 		storeMu.Unlock()
 		return
 	}
+	flushInterval := cfg.FlushInterval
+	if flushInterval <= 0 {
+		flushInterval = defaultUsageFlushInterval
+	}
+	flushMaxRecords := cfg.FlushMaxRecords
+	if flushMaxRecords <= 0 {
+		flushMaxRecords = defaultUsageFlushMaxRecords
+	}
+	retentionDays := cfg.RetentionDays
+	if retentionDays <= 0 {
+		retentionDays = defaultUsageRetentionDays
+	}
 	next, err := usagestats.Open(usagestats.Config{
 		DataPath:             cfg.DBPath,
-		RetentionDays:        cfg.RetentionDays,
-		FlushInterval:        cfg.FlushInterval,
-		FlushMaxRecords:      cfg.FlushMaxRecords,
+		RetentionDays:        retentionDays,
+		FlushInterval:        flushInterval,
+		FlushMaxRecords:      flushMaxRecords,
 		// SyncOnRecord=false: batch durability. The store actor already keeps
 		// an in-memory dirty aggregate and only needs a bbolt transaction when
 		// FlushMaxRecords (default 100) is reached or the flush ticker fires.
@@ -247,6 +259,32 @@ func reopenStore(cfg trackerConfig) {
 }
 
 func usageStatsOpen() bool {
+	if ensureStoreOpen() {
+		return true
+	}
+	storeMu.RLock()
+	defer storeMu.RUnlock()
+	return usageStore != nil
+}
+
+// ensureStoreOpen attempts to recover a closed/uninitialized bbolt store.
+// If the store is already open, it returns true immediately.
+// If storage was disabled due to a transient hot-reload handover collision,
+// this periodic check automatically heals the store once the lock clears.
+func ensureStoreOpen() bool {
+	storeMu.RLock()
+	open := usageStore != nil
+	storeMu.RUnlock()
+	if open {
+		return true
+	}
+	trackerCfgMu.RLock()
+	cfg := trackerCfg
+	trackerCfgMu.RUnlock()
+	if !cfg.FeedEnabled {
+		return false
+	}
+	reopenStore(cfg)
 	storeMu.RLock()
 	defer storeMu.RUnlock()
 	return usageStore != nil
@@ -271,6 +309,7 @@ func usageStatsOpen() bool {
 func handleUsage(raw []byte) ([]byte, error) {
 	trackerInfof("usage.handle: received %d bytes", len(raw))
 
+	ensureStoreOpen()
 	storeMu.RLock()
 	store := usageStore
 	storeMu.RUnlock()
@@ -298,6 +337,7 @@ func handleUsage(raw []byte) ([]byte, error) {
 
 // usageStatsQuery dispatches a statistics query against the store.
 func usageStatsQuery(method, rel string, query url.Values, body []byte, headers http.Header) usagestats.QueryResult {
+	ensureStoreOpen()
 	storeMu.RLock()
 	store := usageStore
 	storeMu.RUnlock()
@@ -329,6 +369,7 @@ func feedImporterLoop() {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
+		ensureStoreOpen()
 		syncUsageFeed()
 	}
 }

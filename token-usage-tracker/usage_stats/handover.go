@@ -18,7 +18,7 @@ const (
 	// unnecessary handover request. A longer retry follows only when bbolt reports
 	// that another plugin instance still owns its exclusive file lock.
 	storeOpenProbeTimeout    = 100 * time.Millisecond
-	storeOpenHandoverTimeout = 5 * time.Second
+	storeOpenHandoverTimeout = 15 * time.Second
 	storeLeasePollInterval   = 50 * time.Millisecond
 )
 

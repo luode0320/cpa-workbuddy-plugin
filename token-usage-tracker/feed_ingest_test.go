@@ -576,3 +576,29 @@ func TestFeedIngestGeminiProvider(t *testing.T) {
 		t.Fatalf("unexpected items: %+v", page.Items)
 	}
 }
+
+func TestEnsureStoreOpenHealing(t *testing.T) {
+	resetFeedState()
+	defer resetFeedState()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "heal.db")
+	trackerCfgMu.Lock()
+	trackerCfg = trackerConfig{
+		FeedEnabled:   true,
+		DBPath:        dbPath,
+		RetentionDays: 30,
+	}
+	trackerCfgMu.Unlock()
+
+	storeMu.Lock()
+	usageStore = nil
+	storeMu.Unlock()
+
+	if !ensureStoreOpen() {
+		t.Fatalf("ensureStoreOpen failed to heal")
+	}
+	if !usageStatsOpen() {
+		t.Fatalf("usageStatsOpen should be true after heal")
+	}
+}
