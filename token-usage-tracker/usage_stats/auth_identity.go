@@ -20,6 +20,10 @@ func displayAuthProvider(value string) string {
 		return "Grok"
 	case "gemini", "gemini-cli", "gemini-provider":
 		return "Gemini"
+	case "workbuddy-ai", "workbuddy-ai-provider":
+		return "WorkBuddy AI"
+	case "workbuddy", "workbuddy-provider":
+		return "WorkBuddy"
 	default:
 		return value
 	}

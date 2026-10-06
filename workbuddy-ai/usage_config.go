@@ -1,0 +1,460 @@
+// usage_config.go decodes plugin config from config_yaml on every
+// register/reconfigure call and resolves the CPAMP usage report URL/key.
+// All plugin-level config lives here so the rest of the plugin reads
+// consistent, lock-protected snapshots.
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// check-in schedule: every 4 hours starting at 00:00 local time.
+var checkinHours = []int{0, 4, 8, 12, 16, 20}
+
+// plugin-level config decoded from plugin.register/reconfigure config_yaml.
+var (
+	checkinAuto   = true // enabled by default
+	checkinAutoMu sync.RWMutex
+
+	// usageReportURL / usageReportKey: POST NDJSON to CPA-Manager-Plus
+	// /v0/management/usage/import (only path that reaches request monitoring;
+	// c-shared plugins cannot use host usage.DefaultManager/redisqueue).
+	//
+	// Resolution order (community-style, like codex-auth-importer env injection):
+	//  1) plugins.configs.workbuddy.usage_report_* in config.yaml
+	//  2) env USAGE_REPORT_URL / USAGE_REPORT_KEY / CPAMP_ADMIN_KEY
+	//  3) secret files (docker secrets / bind-mount), e.g. /run/secrets/cpamp_admin_key
+	// Default URL targets the compose service name of CPA-Manager-Plus.
+	usageReportURL = defaultUsageReportURL
+	usageReportKey = ""
+	usageReportMu  sync.RWMutex
+
+	// managementAPIKey: plugin-layer auth for /v0/management/plugins/workbuddy/*
+	// write endpoints. When empty, plugin relies on host-side auth (CPA's
+	// management middleware) — that's the historical default and stays
+	// backward-compatible. When set via config_yaml management_key: or env
+	// WB_MANAGEMENT_KEY, handleManagement enforces constant-time Bearer match
+	// plus per-IP token-bucket rate limiting on mutating endpoints.
+	managementAPIKey   = ""
+	managementAPIKeyMu sync.RWMutex
+)
+
+// Default URL tries localhost first (works for both bare-metal and Docker
+// host-network), falls back to Docker compose service name. The probe runs
+// once at configure() time; a reachable endpoint wins.
+//
+// For users who run CPA Manager Plus on a different host/port, set
+// usage_report_url in plugin config or env USAGE_REPORT_URL.
+const defaultUsageReportURL = "http://127.0.0.1:18317/v0/management/usage/import"
+
+const fallbackUsageReportURL = "http://cpa-manager-plus:18317/v0/management/usage/import"
+
+// configure decodes plugin config from the lifecycle request.
+func configure(raw []byte) {
+	// Parse config without holding any lock (fixes nested-lock hazard).
+	nextCheckinAuto := true
+	nextLifecycleAuto := true
+	// scheduler default: session (per-conversation round-robin). Explicit
+	// scheduler_mode in config_yaml overrides it; unknown values fall back to
+	// this default (NOT off) so multi-account deployments get spread routing
+	// out of the box.
+	nextSchedulerMode := schedulerModeSession
+	nextKeepaliveAuto := true
+	nextMgmtKey := ""
+	// failover default: enabled. Explicit account_failover: false disables the
+	// whole cooldown mechanism (pre-failover behavior).
+	nextFailoverEnabled := true
+
+	// retry_on_4xx: per-request account-failover budget. Applied ONLY when
+	// the key is present in config_yaml: a valid value is clamped to
+	// [0, 10] and applied; an unparseable value resets to the default 10.
+	// An absent key keeps the current budget so an unrelated reconfigure
+	// never silently lifts a `retry_on_4xx: 0` kill switch.
+	nextRetryOn4xx := retryOn4xxDefault
+	retryOn4xxSeen := false
+
+	cfgURL, cfgKey := "", ""
+	if len(raw) > 0 {
+		var req struct {
+			ConfigYAML []byte `json:"config_yaml"`
+		}
+		if err := json.Unmarshal(raw, &req); err == nil {
+			lines := strings.Split(string(req.ConfigYAML), "\n")
+			for i, line := range lines {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "checkin_auto:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "checkin_auto:"))
+					nextCheckinAuto = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "lifecycle_auto:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "lifecycle_auto:"))
+					v = strings.Trim(v, "\"'")
+					nextLifecycleAuto = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "account_failover:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "account_failover:"))
+					v = strings.Trim(v, "\"'")
+					nextFailoverEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "scheduler_mode:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "scheduler_mode:"))
+					v = strings.Trim(v, "\"'")
+					if v == schedulerModeCredits {
+						nextSchedulerMode = schedulerModeCredits
+					} else if v == schedulerModeSession {
+						nextSchedulerMode = schedulerModeSession
+					}
+				}
+				if strings.HasPrefix(line, "usage_report_url:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "usage_report_url:"))
+					cfgURL = strings.Trim(v, "\"'")
+				}
+				if strings.HasPrefix(line, "usage_report_key:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "usage_report_key:"))
+					cfgKey = strings.Trim(v, "\"'")
+				}
+				if strings.HasPrefix(line, "management_key:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "management_key:"))
+					nextMgmtKey = strings.Trim(v, "\"'")
+				}
+				if strings.HasPrefix(line, "token_keepalive:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "token_keepalive:"))
+					v = strings.Trim(v, "\"'")
+					nextKeepaliveAuto = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "retry_on_4xx:") {
+					retryOn4xxSeen = true
+					if n, ok := parseRetryOn4xxLine(line); ok {
+						nextRetryOn4xx = clampRetryOn4xx(n)
+					}
+				}
+				if strings.HasPrefix(line, "models:") {
+					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
+					// 交给 parseModelsConfig（显式配置优先于动态获取与
+					// 静态默认，见 models.go）。
+					// 兼容两种面板落盘形态：
+					// ① 单行/多行 pretty-print JSON（`models: [...]` /
+					//    `models: [\n  {...},\n  {...}\n]`）——按括号配对
+					//    收集后续行直到闭合再整体解析；
+					// ② 宿主把 JSON 数组序列化回 YAML block sequence
+					//    （`models:` 换行逐行 `- key: value`）——回退到
+					//    parseModelsYAMLBlock 按缩进收集条目。
+					if j := strings.Index(line, ":"); j >= 0 {
+						rest := strings.TrimSpace(line[j+1:])
+						if v, ok := parseModelsValue(lines, i, rest); ok {
+							parseModelsConfig(v)
+						} else if v, ok := parseModelsYAMLBlock(lines, i+1, indentOf(lines[i])); ok {
+							parseModelsConfig(v)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Apply each setting under its own lock — no nesting.
+	checkinAutoMu.Lock()
+	checkinAuto = nextCheckinAuto
+	checkinAutoMu.Unlock()
+
+	lifecycleAutoMu.Lock()
+	lifecycleAuto = nextLifecycleAuto
+	lifecycleAutoMu.Unlock()
+
+	setFailoverEnabled(nextFailoverEnabled)
+
+	schedulerModeMu.Lock()
+	schedulerMode = nextSchedulerMode
+	schedulerModeMu.Unlock()
+
+	keepaliveAutoMu.Lock()
+	keepaliveAuto = nextKeepaliveAuto
+	keepaliveAutoMu.Unlock()
+
+	// management key: config_yaml > env > keep existing. Empty stays empty
+	// (plugin-layer auth disabled, host middleware still guards).
+	if nextMgmtKey == "" {
+		nextMgmtKey = strings.TrimSpace(os.Getenv("WB_MANAGEMENT_KEY"))
+	}
+	managementAPIKeyMu.Lock()
+	managementAPIKey = nextMgmtKey
+	managementAPIKeyMu.Unlock()
+
+	resolveUsageReport(cfgURL, cfgKey)
+	ensureScheduler()
+
+	// Drop a non-blocking tick request so a freshly (re)configured plugin
+	// refreshes the fleet immediately rather than after a full interval.
+	// Reconfigure storms collapse onto one tick via requestWatchdogTick's
+	// buffered chan cap 1.
+	requestWatchdogTick()
+
+	// Per-request retry-on-4xx budget: applied under its own lock so
+	// executor loops reading it (loadedRetryOn4xx) stay atomic. Only when
+	// the key was present — absent keeps the current budget (kill-switch
+	// safety).
+	if retryOn4xxSeen {
+		setRetryOn4xx(nextRetryOn4xx)
+	}
+
+	// Shared usage feed for the standalone token-usage-tracker plugin.
+	// Parses usage_feed_* fields from the same config_yaml. Non-fatal by
+	// design: a failure only disables the feed, never chat.
+	configureUsageFeed(raw)
+}
+
+// parseModelsValue 解析 config_yaml 中 `models:` 的 JSON 值，兼容面板/编辑器
+// 把单行 JSON 自动美化成多行 pretty-print 的场景（如
+// `models: [\n  {...},\n  {...}\n]`）。单行解析失败时按括号配对收集后续行
+// 直到 JSON 闭合，再整体解析。无法闭合或解析失败时返回 ok=false（调用方
+// 保持现状，与"全非法条目保持现状"语义一致）。
+// [参数] lines：config_yaml 全部分行；i：models: 所在行下标；
+//
+//	rest：该行冒号后的内容（已 TrimSpace）
+//
+// [返回] (解析出的 JSON 值, 是否成功)
+// 最近修改时间 2026-08-28（新增多行 JSON 兼容）
+func parseModelsValue(lines []string, i int, rest string) (any, bool) {
+	var b strings.Builder
+	b.WriteString(rest)
+	depth, inStr, esc, closed := 0, false, false, false
+	scan := func(s string) {
+		for _, r := range s {
+			if inStr {
+				if esc {
+					esc = false
+					continue
+				}
+				if r == '\\' {
+					esc = true
+					continue
+				}
+				if r == '"' {
+					inStr = false
+				}
+				continue
+			}
+			switch r {
+			case '"':
+				inStr = true
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if depth == 0 {
+					closed = true
+				}
+			}
+		}
+	}
+	scan(rest)
+	for j := i + 1; j < len(lines) && !closed; j++ {
+		line := strings.TrimSpace(lines[j])
+		if line == "" {
+			continue
+		}
+		b.WriteString(line)
+		scan(line)
+	}
+	if !closed {
+		return nil, false
+	}
+	var v any
+	if err := json.Unmarshal([]byte(b.String()), &v); err != nil {
+		return nil, false
+	}
+	return v, true
+}
+
+// parseModelsYAMLBlock 解析宿主管理面板把 JSON 数组序列化回 YAML 的 block
+// sequence 形态：
+//
+//	models:
+//	  - context: 2000000
+//	    id: hy4-preview
+//	    max_tokens: 20000
+//	    name: Hy4 preview
+//	  - context: 2000000
+//	    id: hy3
+//
+// 输出与 json.Unmarshal 到 []any 的产物同构（元素为 map[string]any，标量
+// 字段转 int64/float64/bool/string/nil），可直接交给 parseModelsConfig。
+// 无任何可识别条目时返回 ok=false（调用方保持现状）。
+// [参数] lines：config_yaml 原始分行（保留缩进）；start：models: 下一行下标；
+//
+//	baseIndent：models: 行的空格缩进数（block 内容必须更深）
+//
+// [返回] (条目列表, 是否成功)
+// 最近修改时间 2026-08-29（新增 YAML block sequence 兼容，实证宿主
+// config_store 把面板 JSON 数组序列化为该形态）
+func parseModelsYAMLBlock(lines []string, start, baseIndent int) (any, bool) {
+	var out []any
+	first := -1
+	for j := start; j < len(lines); j++ {
+		ind := indentOf(lines[j])
+		trimmed := strings.TrimSpace(lines[j])
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if ind <= baseIndent {
+			return nil, false
+		}
+		if strings.HasPrefix(trimmed, "- ") {
+			first = j
+			break
+		}
+		return nil, false
+	}
+	if first < 0 {
+		return nil, false
+	}
+	dashIndent := indentOf(lines[first])
+	cur := map[string]any{}
+	flush := func() {
+		if len(cur) > 0 {
+			out = append(out, cur)
+		}
+	}
+	for j := first; j < len(lines); j++ {
+		ind := indentOf(lines[j])
+		trimmed := strings.TrimSpace(lines[j])
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") && ind == dashIndent {
+			flush()
+			cur = map[string]any{}
+			if k, v, ok := splitYAMLPair(trimmed[2:]); ok {
+				cur[k] = parseYAMLScalar(v)
+			}
+			continue
+		}
+		if ind <= baseIndent || ind <= dashIndent {
+			break
+		}
+		if k, v, ok := splitYAMLPair(trimmed); ok {
+			cur[k] = parseYAMLScalar(v)
+		}
+	}
+	flush()
+	return out, len(out) > 0
+}
+
+// indentOf 返回行首空格数（YAML block 缩进，tab 不计入）。
+func indentOf(s string) int {
+	n := 0
+	for n < len(s) && s[n] == ' ' {
+		n++
+	}
+	return n
+}
+
+// splitYAMLPair 按第一个冒号切分 "key: value"，返回 (key, value)。
+func splitYAMLPair(s string) (string, string, bool) {
+	s = strings.TrimSpace(s)
+	j := strings.Index(s, ":")
+	if j <= 0 {
+		return "", "", false
+	}
+	return strings.TrimSpace(s[:j]), strings.TrimSpace(s[j+1:]), true
+}
+
+// parseYAMLScalar 把 YAML 标量值转为与 json.Unmarshal 同构的类型
+// （int64/float64/bool/string/nil），保证 parseModelsConfig 的 JSON 通道
+// 后续处理一致。
+func parseYAMLScalar(v string) any {
+	v = strings.TrimSpace(v)
+	if v == "" || v == "null" || v == "~" {
+		return nil
+	}
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return n
+	}
+	if f, err := strconv.ParseFloat(v, 64); err == nil {
+		return f
+	}
+	switch strings.ToLower(v) {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	return strings.Trim(v, "\"'")
+}
+
+// resolveUsageReport fills usageReportURL/key from config → env → secret files.
+// Mirrors community plugins that inject management keys via env/build (e.g.
+// codex-auth-importer CODEX_AUTH_IMPORTER_MANAGEMENT_KEY), not plaintext CPA
+// remote-management.secret-key (that field is bcrypt-hashed).
+func resolveUsageReport(cfgURL, cfgKey string) {
+	url := firstNonEmpty(
+		strings.TrimSpace(cfgURL),
+		strings.TrimSpace(os.Getenv("USAGE_REPORT_URL")),
+		strings.TrimSpace(os.Getenv("CPAMP_USAGE_IMPORT_URL")),
+	)
+	if url == "" {
+		url = probeUsageReportURL()
+	}
+	key := firstNonEmpty(
+		strings.TrimSpace(cfgKey),
+		strings.TrimSpace(os.Getenv("USAGE_REPORT_KEY")),
+		strings.TrimSpace(os.Getenv("CPAMP_ADMIN_KEY")),
+		strings.TrimSpace(os.Getenv("CPA_MANAGER_ADMIN_KEY")),
+		readSecretFile(os.Getenv("USAGE_REPORT_KEY_FILE")),
+		readSecretFile(os.Getenv("CPAMP_ADMIN_KEY_FILE")),
+		readSecretFile(os.Getenv("CPA_MANAGER_ADMIN_KEY_FILE")),
+		// docker compose secrets default path
+		readSecretFile("/run/secrets/cpamp_admin_key"),
+		readSecretFile("/run/secrets/cpamp-admin-key"),
+		// optional bind-mounts used on this host
+		readSecretFile("/CLIProxyAPI/secrets/cpamp-admin-key"),
+		readSecretFile("/CLIProxyAPI/secrets/cpamp_admin_key"),
+	)
+	usageReportMu.Lock()
+	usageReportURL = url
+	usageReportKey = key
+	usageReportMu.Unlock()
+}
+
+// probeUsageReportURL tries localhost first (bare-metal + Docker host-network),
+// then Docker compose service name. Returns whichever responds; defaults to
+// localhost if both fail (better to try localhost than an unreachable hostname).
+func probeUsageReportURL() string {
+	for _, candidate := range []string{defaultUsageReportURL, fallbackUsageReportURL} {
+		if probeURL(candidate, 2*time.Second) {
+			return candidate
+		}
+	}
+	return defaultUsageReportURL
+}
+
+// probeURL does a quick HEAD/GET to check if the endpoint is reachable.
+func probeURL(target string, timeout time.Duration) bool {
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(target)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	// Any HTTP response (even 401) means the endpoint is reachable;
+	// connection refused / DNS failure means not reachable.
+	return resp.StatusCode > 0
+}
+
+func readSecretFile(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
