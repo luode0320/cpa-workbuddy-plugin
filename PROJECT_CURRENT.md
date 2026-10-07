@@ -8,22 +8,20 @@
 
 ## 项目概况
 
-- 状态：活跃维护中。已成功发布并部署 WorkBuddy AI 国际版 **0.1.3** 与 WorkBuddy 国内版 **0.15.2**。
+- 状态：活跃维护中。已成功发布并部署 WorkBuddy AI 国际版 **0.1.5** 与 WorkBuddy 国内版 **0.15.2**。
 - 活动工作区：F:\cpa-plugin
 - 当前时间：2026-10-07 (GMT+8)
 
 ## 活动会话进展摘要
 
-- 当前会话（2026-10-07）：**WorkBuddy AI 0.1.3 彻底清空写死模型、完全依赖动态发现并完成全链路发布与生产热部署**。
-  - 用户反馈：弹窗中展示的 GPT 及多系列模型系写死模型，明确要求坚决遵循此前规范，彻底去除写死模型，完全由动态获取。
-  - 核心实施与发布成果：
-    1. **彻底清空写死模型**：在 `workbuddy-ai/models.go` 中将 `wbModels()` 清空并返回 `nil`，坚决对齐国内版规范。
-    2. **标准优先级链**：`resolveModels()` 严格按“动态发现 > config_yaml 覆盖 > 静态兜底(nil)”解析，动态与配置均为空时返回 `[]`，绝不向用户伪造硬编码模型。
-    3. **双模式兼容解析**：`callModelsAPI()` / `parseModelsAPIResponse()` 兼容 agents 过滤模式与 models 列表模式，并兼容驼峰与蛇形字段，严格过滤 offline/disabled 模型。
-    4. **单测全绿**：`workbuddy-ai/models_test.go` 增加 `TestWBModelsReturnsNil`、`TestResolveModelsPriority` 等全量单测，`cgo-shim-build.py` 验证全绿。
-    5. **CI 多架构构建**：版本升级至 `0.1.3`，GitHub Actions CI（Run ID: 37513461781）48 个构建任务全部成功并完成 Release 打包。
-    6. **资产同步与 Registry 发布**：下载全部 8 个 release 资产并通过 SHA256 校验入库；更新 `registry.json`（0.1.3）并通过校验推送至 main 分支。
-    7. **生产热更新验证**：通过 SSH 在生产服务器（45.207.222.65:8317）完成 `workbuddy-ai-provider 0.1.3` 容器内安装，成功加载热重载日志，账号接口返回模型与动态发现契约完全对齐。
+- 当前会话（2026-10-07）：**定位模型未展示根因、支持双重 agent 结构与 default 映射，并全链路发布部署 WorkBuddy AI 0.1.5**。
+  - 用户反馈：截图反馈“该凭证暂无可用模型 / 该认证凭证可能尚未被服务器加载或没有绑定任何模型”。
+  - 核心排查与根因收敛：
+    1. **截图时段与旧版本原因**：用户截图时间为今日凌晨 03:21:35，当时线上运行为旧版 0.1.3，其错误请求内网 `/console/enterprises/personal/models` 返回 500 导致动态发现失败；
+    2. **凭证禁用状态注销机制**：截图显示该凭证右侧处于【未启用】（灰色禁用）状态。CPA 宿主核心（`service_models.go`）设计规定，禁用凭证立即从 `ModelRegistry` 注销，故点击模型弹窗返回空；
+    3. **上游真实协议结构增强兼容 (v0.1.5)**：`https://www.workbuddy.ai/v3/config` 结构增加 `data.agent.agents` 与 `data.agents` 双重提取兼容，增强 `default` / `default-model` 至 `auto` 映射，并补齐带前缀的可观测动态发现日志；
+    4. **单测与全架构 CI**：单测覆盖嵌套 agent 结构及 auto 别名继承，全绿通过；版本 bump 至 0.1.5，CI（Run ID: 37575092982）48 个任务构建全绿；
+    5. **资产同步与生产热更新**：下载 8 个 Release 资产入库推送到 main，同步更新 `registry.json` 并通过校验，在生产服务器完成 0.1.5 热重载加载生效。
 
 <!-- BEGIN RECENT PROJECT SESSIONS -->
 ## 最近 5 个同项目会话
