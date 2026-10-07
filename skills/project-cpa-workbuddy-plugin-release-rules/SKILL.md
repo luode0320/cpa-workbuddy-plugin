@@ -1,6 +1,6 @@
 ---
 name: project-cpa-workbuddy-plugin-release-rules
-description: 当需要发布 cpa-workbuddy-plugin 仓库任意插件新版本（workbuddy-provider / qoderwork-provider / traework-provider / workbuddy-token-usage 四插件），或走完「修复→发布→生产验证」闭环（发布后对生产真实入口 https://cpa.luode.vip/v1 做行为验收，如流式 qwen3.8-max 长推理、用生产日志 stream_id 判定成败）时触发：版本 bump、commit、push、dispatch CI（必须带 version 输入）、下载 assets、更新 registry、远端验证、生产 plugin-store 部署、生产行为验收的一整套链路，含 GitHub 上行大流量稳定阻断时经生产服务器 SOCKS 隧道绕过。负责发布执行与门禁；本地逻辑验证用 cgo-plugin-isolated-test（cgo-shim-build.py），本 skill 只引用它，不重复实现。
+description: 当需要发布 cpa-workbuddy-plugin 仓库任意插件新版本（workbuddy-provider / qoderwork-provider / traework-provider / workbuddy-token-usage 四插件），或走完「修复→发布→生产验证」闭环（发布后对生产真实入口 https://cpa.luode.vip/v1 做行为验收，如流式 qwen3.8-max 长推理、用生产日志 stream_id 判定成败）时触发：版本 bump、commit、push、dispatch CI（必须带 version 输入）、下载 assets、更新 registry、远端验证、生产 plugin-store 部署、生产行为验收、发布后清理（Step 13.5，见 project-cpa-workbuddy-plugin-release-asset-prune-rules）的一整套链路，含 GitHub 上行大流量稳定阻断时经生产服务器 SOCKS 隧道绕过。负责发布执行与门禁；本地逻辑验证用 cgo-plugin-isolated-test（cgo-shim-build.py），本 skill 只引用它，不重复实现。
 ---
 
 # cpa-workbuddy-plugin 插件发布链路
@@ -227,6 +227,19 @@ rm -rf /tmp/cpa-0xxx cpa-shim-* 2>/dev/null
 git log --oneline -5 && git status --short | grep -cE "^ M|^\?\?"   # 并行改动条数应不变
 ```
 
+### Step 13.5 · 发布后清理（每次发布闭环后必做）
+
+> 授权：本仓库默认发布授权（AGENTS.md「提交 / 发布授权」段），清理随发布链路一并提交推送，无需另行确认。
+
+- **仓库 `release-assets/` 受 git 跟踪**，且被 registry raw URL（`.../main/release-assets/<id>-<version>/...`）与生产 `plugin-store install` 直接引用——**只保留 registry.json 中每个插件的当前版本目录**，历史版本目录全部删除。
+- 一键清理：`python scripts/prune-release-assets.py --dry-run`（先看保留集 / 待删集 / 体积）→ `python scripts/prune-release-assets.py --apply`（对受跟踪目录 `git rm -r`，对空/未跟踪目录 rmdir）。
+- 判定铁律：保留集**逐插件读 registry.json 的 `id` + `version`**，禁用"最新 N 个 / 最近日期"等启发式；删除前二次断言保留集不在删除列表。
+- 只暂存 `release-assets/` 删除：`git diff --cached --name-only` 必须全部以 `release-assets/` 开头，防混入并行改动；随后 commit + push。
+- 远端抽查：当前版本资产 raw URL HEAD 200、任一被删旧版本 404；记录释放体积（如 3.75 GB → 0.13 GB）。
+- 本地未跟踪缓存 `.workbuddy/release-assets/`（被 .gitignore 忽略）可一并删除。
+- 完整规则见项目 skill `project-cpa-workbuddy-plugin-release-asset-prune-rules`。
+
+
 ### Step 14 · 生产行为验收（真实入口，非冒烟）
 
 > **授权说明（2026-09-01，traework 0.1.27/0.1.28 闭环实跑）**：用户显式走「修复→发布→生产验证」闭环时，生产直连验证已获授权；只有「部署冒烟」（install 后版本/hash/面板 200）不算验收完成，必须对生产真实入口做**行为验收**。生产行为验收属于用户显式授权的闭环步骤，agent 不得以"生产禁区"为由跳过；但凭据必须全程脱敏（见 Step 15）。
@@ -281,6 +294,7 @@ git -c http.proxy=socks5h://127.0.0.1:1080 push origin main
 | 生产行为验收 | `POST https://cpa.luode.vip/v1/responses`（或 `/v1/chat/completions`），流式 `qwen3.8-max` 长推理 + 关联生产日志 stream_id（Step 14） |
 | 网络阻断绕过 | `ssh -i ~/.ssh/id_ed25519_cpa-server -p 18998 -N -D 127.0.0.1:1080 root@45.207.222.65` + git `-c http.proxy=socks5h://127.0.0.1:1080`；HTTP 走 `curl --socks5-hostname`（Step 16） |
 | registry 校验 | `python scripts/validate-registry.py` |
+| 发布后清理 | `python scripts/prune-release-assets.py --dry-run` → `--apply`（只保留 registry 当前版本目录，`git rm` 后提交推送） |
 
 ## 踩坑清单（全部实测）
 

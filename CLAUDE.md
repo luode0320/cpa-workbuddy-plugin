@@ -319,6 +319,7 @@
 - push 必须带：`GIT_TERMINAL_PROMPT=0 GIT_ASKPASS='C:\Users\luode\.github\git-askpass.sh' git -c credential.helper= push https://...`；askpass 用完即删；Windows 路径必须用 `C:\...` 形式（Git 不认 `/c/`）。
 - 并行工作区安全发布：`git add` 必须显式列文件（禁 `git add <dir>`），staged 后 `git diff --cached --name-only | grep` 反向确认无外来文件混入。
 - 资产下载：`scripts/download-release-assets.py`（urllib 直连 releases/download + sha256 自校验）；registry 校验 `scripts/validate-registry.py`。
+- 发布后清理（每次发布闭环后必做）：`release-assets/` 受 git 跟踪且被 registry raw URL 直接引用，只保留 registry 当前版本目录，历史版本用 `scripts/prune-release-assets.py` 删除（`git rm` 后提交推送）；本地未跟踪缓存 `.workbuddy/release-assets/` 直接删。详见项目 skill `project-cpa-workbuddy-plugin-release-asset-prune-rules`。
 
 ### 插件架构事实
 

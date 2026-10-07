@@ -49,3 +49,15 @@
 - **凭据纪律**：URL 与密钥不入 skill 正文原值——Step 14/15/16 仅写占位与提取命令，key 不落盘（正文只提「与 management key 相同，从 config 提取」），符合禁止回显凭据原值的仓库红线。
 - **字典刷新**：本项目 skills/ 无 data.js / 字典.md（skill 字典机制属于 luode-skills 仓库，跨项目只读），不适用。
 - **验证**：全文回读 + `git diff --check` PASS；UTF-8 读取无乱码。
+
+## 2026-10-07 更新：吸收「发布后清理」为 Step 13.5
+
+- **更新原因**：用户要求"每次发布后都需要清理不需要的垃圾"，把该规则固化到发布链路。
+- **来源**：2026-10-07 实操——`release-assets` 累积 3.75 GB，删 185 个历史版本目录 / 1469 文件，保留 registry 当前 6 个版本目录，降到 0.13 GB；提交 `095f4a4` 并推送。
+- **主要变更（SKILL.md）**：新增 `### Step 13.5 · 发布后清理`（保留集 = registry 每插件当前版本；`scripts/prune-release-assets.py` 一键清理；只暂存 release-assets 删除；远端 200/404 抽查）；description 增补"发布后清理（Step 13.5）"触发语义；命令速查表加"发布后清理"一行。
+- **拆分落点**：细节规则另立项目 skill `project-cpa-workbuddy-plugin-release-asset-prune-rules`，本 skill 只保留一句指针，避免重复维护。
+- **整理去重**：Step 13.5 与 Step 13（发布链内临时文件 /tmp、cpa-shim-* 清理）职责互补——13 清发布临时文件，13.5 清仓库 release-assets 资产与本地缓存，无逐字重复。
+- **同域冗余扫描**：范围=release-rules + release-asset-prune-rules + trae-local-verify-rules。发现 0 处逐字重复、0 处门控层叠、0 处散落产物。PASS。
+- **环境依赖登记**：无新增环境依赖。
+- **字典刷新**：本项目 skills/ 无 data.js / 字典.md，不适用。
+- **验证**：SKILL.md 全文回读无乱码；`prune-release-assets.py` py_compile OK + dry-run 幂等（0 待删）。
