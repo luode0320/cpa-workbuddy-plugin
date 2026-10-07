@@ -1,6 +1,16 @@
 # TraeWork Plugin Changelog
 
 
+## 0.2.2
+
+### Feat - 生命周期自动停用默认关闭
+
+- 变更要点:
+  1. lifecycle_auto 默认值由 true 改为 false：新装 / 未显式配置的部署不再自动停用积分耗尽的账号，也不再自动重新启用回血账号。
+  2. 两处默认值同步：包级 lifecycleAuto 初值、ConfigField 描述文案（「默认开启」→「默认关闭」）；traework 的 configure() 沿用「缺省键保持当前值」语义，默认值来自包级初值。
+  3. 显式 lifecycle_auto: true 行为不变。
+- 涉及文件: traework/lifecycle.go、traework/main.go、traework/VERSION
+
 ## 0.2.1
 
 ### Fix - 面板筛选标签计数随积分回填重算

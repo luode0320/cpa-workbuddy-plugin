@@ -59,7 +59,7 @@ const fallbackUsageReportURL = "http://cpa-manager-plus:18317/v0/management/usag
 func configure(raw []byte) {
 	// Parse config without holding any lock (fixes nested-lock hazard).
 	nextCheckinAuto := true
-	nextLifecycleAuto := true
+	nextLifecycleAuto := false
 	// scheduler default: session (per-conversation round-robin). Explicit
 	// scheduler_mode in config_yaml overrides it; unknown values fall back to
 	// this default (NOT off) so multi-account deployments get spread routing

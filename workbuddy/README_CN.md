@@ -102,8 +102,8 @@ plugins:
       # CN 账号每日自动签到（默认 true），09:00 和 21:00 本地时间。
       checkin_auto: true
 
-      # 积分生命周期：CN 耗尽禁用 / Global 耗尽删除 / CN 回血恢复（默认 true）。
-      lifecycle_auto: true
+      # 积分生命周期：CN 耗尽禁用 / Global 耗尽删除 / CN 回血恢复（默认 false）。
+      lifecycle_auto: false
 
       # 调度行为（默认 "session"）：
       #   session → 按会话轮询：同一会话 1 小时内固定同一账号，不同会话分散

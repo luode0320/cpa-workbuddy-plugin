@@ -1,5 +1,15 @@
 # QoderWork Plugin Changelog
 
+## 0.9.22
+
+### Feat - 生命周期自动停用默认关闭
+
+- 变更要点:
+  1. lifecycle_auto 默认值由 true 改为 false：新装 / 未显式配置的部署不再自动停用积分耗尽的账号，也不再自动重新启用回血账号。
+  2. 三处默认值同步：包级 lifecycleAuto 初值、configure() 的 nextLifecycleAuto 默认值、ConfigField 描述文案（「默认开启」→「默认关闭」）。
+  3. 显式 lifecycle_auto: true 行为不变。
+- 涉及文件: qoderwork/policy.go、qoderwork/usage_config.go、qoderwork/main.go、qoderwork/VERSION
+
 ## 0.9.21
 
 ### Fix - 面板筛选标签计数随积分回填重算

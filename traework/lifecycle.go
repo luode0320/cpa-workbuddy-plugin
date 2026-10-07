@@ -26,7 +26,7 @@ import (
 )
 
 var (
-	lifecycleAuto   = true
+	lifecycleAuto   = false
 	lifecycleAutoMu sync.RWMutex
 )
 

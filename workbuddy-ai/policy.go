@@ -33,9 +33,9 @@ func (a lifecycleAction) String() string {
 	}
 }
 
-// lifecycleAuto gates automatic delete. Default true.
+// lifecycleAuto gates automatic delete. Default false.
 var (
-	lifecycleAuto   = true
+	lifecycleAuto   = false
 	lifecycleAutoMu sync.RWMutex
 )
 

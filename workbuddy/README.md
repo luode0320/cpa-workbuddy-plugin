@@ -118,8 +118,8 @@ plugins:
       checkin_auto: true
 
       # Credit lifecycle: disable CN on exhaust, delete Global on exhaust,
-      # re-enable CN after check-in restores credits (default true).
-      lifecycle_auto: true
+      # re-enable CN after check-in restores credits (default false).
+      lifecycle_auto: false
 
       # Scheduler behavior (default "session"):
       #   session → per-conversation round-robin: same conversation stays on

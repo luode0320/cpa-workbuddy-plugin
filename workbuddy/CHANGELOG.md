@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.15.3
+
+### Feat - 生命周期自动停用默认关闭
+
+- 变更要点:
+  1. lifecycle_auto 默认值由 true 改为 false：新装 / 未显式配置的部署不再自动停用积分耗尽的 CN 账号、不再自动删除耗尽的 Global 账号、也不再自动重新启用回血账号；账号停用与恢复改由面板手动操作。
+  2. 三处默认值同步：包级 lifecycleAuto 初值、configure() 的 nextLifecycleAuto 每次重配置默认值、ConfigField 描述文案（「默认开启」→「默认关闭」）。
+  3. 显式 lifecycle_auto: true 行为不变，仍可开启自动停用 / 删除 / 恢复。
+  4. 无配置项新增，配置键与解析逻辑不变，仅默认值变更。
+- 涉及文件: workbuddy/policy.go、workbuddy/usage_config.go、workbuddy/main.go、workbuddy/VERSION、workbuddy/README.md、workbuddy/README_CN.md
+
 ## 0.15.1
 
 ### Fix - 面板筛选标签计数随积分回填重算
