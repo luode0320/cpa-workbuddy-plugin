@@ -1,0 +1,38 @@
+message_type {
+  name: "ExecServerMessage"
+  field { name: "mcp_state_exec_args" number: 36 type: TYPE_MESSAGE type_name: ".agent.v1.McpStateExecArgs" label: LABEL_OPTIONAL oneof_index: 0 }
+}
+message_type {
+  name: "ExecClientMessage"
+  field { name: "mcp_state_exec_result" number: 36 type: TYPE_MESSAGE type_name: ".agent.v1.McpStateExecResult" label: LABEL_OPTIONAL oneof_index: 0 }
+}
+message_type {
+  name: "McpStateExecArgs"
+  field { name: "server_identifiers" number: 1 type: TYPE_STRING label: LABEL_REPEATED }
+  field { name: "kick_only" number: 2 type: TYPE_BOOL label: LABEL_OPTIONAL }
+}
+message_type {
+  name: "McpStateExecResult"
+  oneof_decl { name: "result" }
+  field { name: "success" number: 1 type: TYPE_MESSAGE type_name: ".agent.v1.McpStateSuccess" label: LABEL_OPTIONAL oneof_index: 0 }
+  field { name: "error" number: 2 type: TYPE_MESSAGE type_name: ".agent.v1.McpStateError" label: LABEL_OPTIONAL oneof_index: 0 }
+  field { name: "rejected" number: 3 type: TYPE_MESSAGE type_name: ".agent.v1.McpStateRejected" label: LABEL_OPTIONAL oneof_index: 0 }
+}
+message_type {
+  name: "McpStateServer"
+  field { name: "server_name" number: 1 type: TYPE_STRING label: LABEL_OPTIONAL }
+  field { name: "server_identifier" number: 2 type: TYPE_STRING label: LABEL_OPTIONAL }
+  field { name: "tools" number: 5 type: TYPE_MESSAGE type_name: ".agent.v1.McpToolDefinition" label: LABEL_REPEATED }
+}
+message_type {
+  name: "McpStateSuccess"
+  field { name: "servers" number: 1 type: TYPE_MESSAGE type_name: ".agent.v1.McpStateServer" label: LABEL_REPEATED }
+}
+message_type {
+  name: "McpStateError"
+  field { name: "error" number: 1 type: TYPE_STRING label: LABEL_OPTIONAL }
+}
+message_type {
+  name: "McpStateRejected"
+  field { name: "reason" number: 1 type: TYPE_STRING label: LABEL_OPTIONAL }
+}

@@ -2,18 +2,30 @@
 
 ## 目标与范围
 
-- 目标：维护 CLIProxyAPI (CPA) 的 Go 原生插件 `cpa-workbuddy-plugin`，将腾讯 CodeBuddy（国内版）、WorkBuddy AI（独立国际版）、Trae SOLO、Google Gemini CLI 封装为 OpenAI 兼容 provider，提供多账号管理、动态模型、流式转发、专属面板、扫码登录、保号巡检，并通过统一 token 用量统计服务。
-- 范围：仓库内 workbuddy-provider / workbuddy-ai-provider / traework-provider / gemini-provider / workbuddy-token-usage（历史归档 qoderwork-provider）的代码实现、测试、资产构建、发布流水线、registry 同步等。
+- 目标：维护 CLIProxyAPI (CPA) 的 Go 原生插件 `cpa-workbuddy-plugin`，将腾讯 CodeBuddy（国内版）、WorkBuddy AI（独立国际版）、Trae SOLO、Google Gemini CLI、Cursor（cursor.sh）封装为 OpenAI 兼容 provider，提供多账号管理、动态模型、流式转发、专属面板、扫码登录、保号巡检，并通过统一 token 用量统计服务。
+- 范围：仓库内 workbuddy-provider / workbuddy-ai-provider / traework-provider / gemini-provider / cursor-provider / workbuddy-token-usage（历史归档 qoderwork-provider）的代码实现、测试、资产构建、发布流水线、registry 同步等。
 - 非范围：CLIProxyAPI 核心服务本体；跨项目文件修改。
 
 ## 项目概况
 
-- 状态：活跃维护中。已成功发布并部署 WorkBuddy AI 国际版 **0.1.5** 与 WorkBuddy 国内版 **0.15.2**。
+- 状态：活跃维护中。已成功发布并部署 WorkBuddy AI 国际版 **0.1.6** 与 WorkBuddy 国内版 **0.15.2**；新增第六个插件 cursor-provider **0.1.0**（Cursor 会话 Token 导入，本地验证完成，待发布）。
 - 活动工作区：F:\cpa-plugin
 - 当前时间：2026-10-07 (GMT+8)
 
 ## 活动会话进展摘要
 
+- 当前会话（2026-10-07）：**固化「发布后清理」规则 + release-assets 瘦身**。
+  - 用户要求：把「每次发布后都需要清理不需要的垃圾」吸收到项目 skill 与规则中。
+  - 落地：新增项目 skill `project-cpa-workbuddy-plugin-release-asset-prune-rules`（保留集=registry 每插件当前版本目录）+ 通用脚本 `scripts/prune-release-assets.py`（--dry-run/--apply，受跟踪目录 git rm、空目录 rmdir）；`AGENTS.md`/`CLAUDE.md`「仓库与发布」小节新增「发布后清理」条；发布 skill 增 Step 13.5 并更新 description。
+  - 实操：`release-assets` 3.75 GB → 0.13 GB（删 185 个历史版本目录 / 1469 文件，保留 registry 当前 6 个版本目录），提交 `095f4a4` 推送 `origin/main`；远端当前版本 raw 200、旧版本 404。
+
+- 当前会话（2026-10-07）：**移植 Cursor Provider 插件并新增会话 Token 导入账号能力（cursor-provider 0.1.0）**。
+  - 来源：`https://github.com/yobo2u/omsub`（cursor 分支）的 cursor-plugin，按 workbuddy 面板口径全量移植并改造，落在独立插件 `cursor/`（id `cursor-provider`），不依赖 CLIProxyAPI SDK。
+  - Token 导入链路：粘贴 `user_<id>::<jwt>`（或 URL 编码 / Cookie 前缀 / 裸 JWT）→ 取 `::` 后段 JWT → `POST https://api2.cursor.sh/oauth/token`（grant_type=refresh_token + client_id + refresh_token）兑换 access_token → `host.auth.save` 落盘为 `cursor-<hash8>.json`（顶层 type=cursor-provider）；按 account_id/email 去重。
+  - 管理面板：import / export / delete / enable / disable 五条路由 + 卡片删除/启停、全部启停、导入弹窗、导出、双语 i18n、key 三回退，与 workbuddy 面板一致。
+  - 保留移植全量能力：OAuth 轮询登录、executor tool-loop、checkpoint/会话粘性、图片输入、上下文准入。
+  - 验证：`python scripts/cgo-shim-build.py cursor` build/vet/test 全绿（含必失败哨兵）；面板单 script 块 node --check 通过；cursor 全量 LF 镜像 gofmt -l 清零；6-review STYLE: PASS。
+  - CI/registry：.github/workflows/build.yml 增 cursor-provider-v* tag、dispatch option、test/build 矩阵；registry.json 增 cursor-provider 0.1.0（7 平台 artifacts，sha256/size 占位待 CI 产出后由 publish-assets.py 回填）。
 - 当前会话（2026-10-07）：**定位新授权账号离奇消失根因，彻底移除自动物理删除机制，发布并部署 WorkBuddy AI 0.1.6**。
   - 用户反馈：刚刚成功授权了一个号，出现在了面板中，但很短的时间过后账号消失了；
   - 核心排查与根因：
@@ -48,3 +60,90 @@
 | `01a0c4f8-1120-7500-b88a-df4598124801` | 移除不可用重复测试标签与全选路径重构 | completed | 2026-09-30 02:40 | workbuddy 0.15.0 / traework 0.2.0 仓库级默认提交发布授权长效生效 |
 | `01a09d31-4400-7500-9988-cc7722119933` | 账号路由重构：移除优先级+硬排除+客户端粘性 | completed | 2026-09-29 02:30 | workbuddy 0.14.43 / traework 0.1.68 单路由池与保号池逻辑 |
 <!-- END RECENT PROJECT SESSIONS -->
+<!-- BEGIN TASK PLAN PROJECTION -->
+```json
+{
+  "version": 4,
+  "registry_schema": "task_plan_projection_registry",
+  "registry_updated_at": "2026-10-07T14:03:47.571953Z",
+  "projections": [
+    {
+      "projection_id": "SESSION/30608b3616fa2311bfb720a2776c09ac96b2738601ec3752b03a252c810cdb70",
+      "session_id": "01a115da-13cb-7f90-ac94-25c133fdc31e",
+      "projection_origin": "synthesized",
+      "synthesis_mode": "exact",
+      "state": "active",
+      "plan_key": "IMPL-CURSOR-PROVIDER-PORT-20261007",
+      "source_document": "doc/3-实施/2026-10-07_Cursor插件移植与Token导入实施总览.md",
+      "plan_fingerprint": "9eea12fd114fb3e34cb60dd2a60eceb2eacd227a7e9a481c5b3f73c954a2a3b6",
+      "updated_at": "2026-10-07T12:25:35Z",
+      "steps": [
+        {
+          "id": "TASK-001",
+          "step": "[TASK-001] 移植源码并统一标识",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-002",
+          "step": "[TASK-002] 令牌解析与导入",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-003",
+          "step": "[TASK-003] 导出删除启停接口",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-004",
+          "step": "[TASK-004] 面板与本地回归收口",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-005",
+          "step": "[TASK-005] 发布与部署",
+          "status": "in_progress"
+        }
+      ]
+    },
+    {
+      "projection_id": "SESSION/b7bb272cea839ad00154909ba5c6f5976dc459430c297f68c2845b27fa9853bc",
+      "session_id": "01a115b7-7f04-7b81-8e96-cb269a144fa4",
+      "projection_origin": "synthesized",
+      "synthesis_mode": "exact",
+      "state": "active",
+      "plan_key": "IMPL-CURSOR-PROVIDER-PORT-20261007",
+      "source_document": "doc/3-实施/2026-10-07_Cursor插件移植与Token导入实施总览.md",
+      "plan_fingerprint": "9eea12fd114fb3e34cb60dd2a60eceb2eacd227a7e9a481c5b3f73c954a2a3b6",
+      "updated_at": "2026-10-07T14:03:46.758376Z",
+      "steps": [
+        {
+          "id": "TASK-001",
+          "step": "[TASK-001] 移植源码并统一标识",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-002",
+          "step": "[TASK-002] 令牌解析与导入",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-003",
+          "step": "[TASK-003] 导出删除启停接口",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-004",
+          "step": "[TASK-004] 面板与本地回归收口",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-005",
+          "step": "[TASK-005] 发布与部署",
+          "status": "in_progress"
+        }
+      ]
+    }
+  ]
+}
+```
+<!-- END TASK PLAN PROJECTION -->

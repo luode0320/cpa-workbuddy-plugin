@@ -5,8 +5,9 @@
 ### 仓库与发布
 
 - 仓库：`luode0320/cpa-workbuddy-plugin`（原 cpa-plugin，2026-08-22 改名）；物理目录 F:\cpa-plugin
-- 多插件架构（3 服务商 + 1 用量统计，2026-10-05 扩展）：workbuddy-provider（腾讯 CodeBuddy CN+Global）、traework-provider（Trae SOLO）、gemini-provider（发布名称 "Gemini Provider"，Google Gemini CLI）、workbuddy-token-usage（用量 dashboard 统一查询各服务商 token 使用），历史兼容 qoderwork-provider（QoderWork CN）
+- 多插件架构（5 服务商 + 1 用量统计，2026-10-07 扩展）：workbuddy-provider（腾讯 CodeBuddy CN+Global）、workbuddy-ai-provider（WorkBuddy AI 国际版）、traework-provider（Trae SOLO）、gemini-provider（发布名称 "Gemini Provider"，Google Gemini CLI）、cursor-provider（Cursor，cursor.sh）、workbuddy-token-usage（用量 dashboard 统一查询各服务商 token 使用），历史兼容 qoderwork-provider（QoderWork CN）
 - 发布链路（不可跳步）：bump VERSION+main.go → commit → push main → dispatch CI（plugin=xxx version=yyy）→ 下载 8 assets → **git add assets + push（0.9.7 教训）** → publish-assets.py → commit registry + push → 远端验证 raw URL 200
+- 发布后清理（每次发布闭环后必做，2026-10-07 固化）：`release-assets/` 受 git 跟踪且被 registry raw URL / 生产 `plugin-store install` 直接引用——**只保留 registry.json 每个插件的当前版本目录**，历史版本用 `scripts/prune-release-assets.py`（`--dry-run` 先看，`--apply` 执行）删除并提交推送；判定只认 registry 的 `id`+`version`，禁用日期/数量启发式；本地未跟踪缓存 `.workbuddy/release-assets/` 直接删。详见项目 skill `project-cpa-workbuddy-plugin-release-asset-prune-rules`（发布 skill Step 13.5）。
 - git push 必带：`GIT_TERMINAL_PROMPT=0 GIT_ASKPASS='C:\Users\luode\.github\git-askpass.sh' git -c credential.helper= push https://...`（askpass 用完即删）；tag pattern：`workbuddy-provider-v*` 等
 - **仓库默认处于「提交 / 发布已授权」状态（2026-09-30 起）**：`AGENTS.md` / `CLAUDE.md` 的「提交 / 发布授权（默认授权，强制）」段规定——用户不需要每轮显式说「提交」「推送」「发布」，agent 在完成改动并通过全部门禁后可直接 commit → push → CI → assets → registry → 生产 plugin-store 部署；**用户当轮显式边界（如「只提交 git, 不要推送」「先不发布」）绝对优先**；默认授权不免除门禁；本仓库内以该仓库级规则覆盖全局 `git-collaboration-rules` 的「仅当前轮授权」默认语义。
 - registry.json：`plugins` 是 list，artifacts 在 `install.artifacts`
@@ -20,6 +21,7 @@
 - 插件是 c-shared（import "C"），Windows 无 gcc 时 main.go 被工具链忽略（undefined: storedAuth 是环境假象），验证一律走 `python scripts/cgo-shim-build.py <plugin>`
 - **插件侧无 ws/SSE 长连接通道（宿主 SDK v7.2.129 实测，2026-09-01）**：插件 ABI 无任何注册 ws/SSE 长连接的方法（`AttachWebsocketRoute` 仅服务内部 wsrelay；`MethodHostStreamEmit/Close` 的 StreamID 只在 executor 流式路径创建）；management/resource 桥接单次写回（`w.WriteHeader + w.Write` 无 Flush/ws 升级）。SSE body 原样透传（`text/event-stream` 不触发 JSON 转义）→ 实时推送落地「SSE 短连接轮询通知 + REST 拉取」：`/usage/events` 返回 `retry: 2000\n\ndata: {"seq":N}`，EventSource 自动重连，seq 前进才触发 load()；15s 轮询 fallback。前端 `fullModePage` 禁用 EventSource（无法带 session header）。详见知识库《插件侧无WebSocket长连接只能SSE短连接轮询》
 - 磁盘写路径：host.auth.save 会丢未知顶层字段 → 直写物理 auth 文件（writeAuthFileDirect + fsnotify）；auth 目录 `~/.antigravity_cockpit/<plugin>_accounts/`
+- **cursor-provider 架构事实（2026-10-07 移植）**：来源 yobo2u/omsub cursor 分支的 cursor-plugin，落在仓库 `cursor/`，不依赖 CLIProxyAPI SDK（仅 testify + protobuf）；provider id `cursor-provider`，凭据文件名前缀 `cursor-`（`cursor-<hash8>.json`，顶层 `type=cursor-provider`）。Token 导入：会话 JWT 作为 refresh_token 走 `POST https://api2.cursor.sh/oauth/token`（body `grant_type=refresh_token` + `client_id=KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB` + `refresh_token`；**不返回 refresh_token，须保留原 JWT 段继续刷新**）；旧端点 `/auth/exchange_user_api_key`（401）与 `/auth/exchange`（404）已失效。管理路由前缀 `/v0/management/plugins/cursor-provider/*`（import/export/delete/enable/disable）；禁用标记走直写物理文件顶层 `disabled`（同 workbuddy，host.auth.save 会丢未知顶层字段）。
 - **账号路由口径 = 「硬排除两类标签 + 低积分优先」（2026-09-30 起移除保号池）**：`scheduler.pick` 只让「可用」账号承载流量——「测试」`test_failed` 与「冷却」failover cooldown 两类**无条件硬排除且无任何回退**（旧版「全部保号时回退全量列表」已删除；候选全被排除即 `Handled:false` 交还宿主做跨 provider failover）。存活候选按缓存剩余积分**升序**排序（未测积分 -1 排最后），意图是先把临近耗尽的账号用完，再由定时活跃探测失败打「测试」标签。统一判定：`workbuddy/active_auth.go` 与 `traework/active_auth.go` 各导出 `accountRoutable(authID)`（`!cooling && !testFailed`）与 `accountLowerCredits(left,right)`，被 `pickActiveAuth` / `ensureDefaultActiveAuth` / `pickSessionAuth` / `scheduler.pick` 共用；面板选中项 = 「可用账号中积分最低者」，与调度口径一致。请求内换号 `pickNextAuth` 同样跳过测试账号，但**保持宿主顺序不排序**（同一请求重试链必须可预测）。`test_failed` 内存镜像 `testFailedSet` + `refreshTestFailedSetFromDisk` 在面板构建 / 账号 watchdog tick / 标签直写三处同步，重启后仍正确排除。**保号池（`preserve`）已于 2026-09-30 移除，其原职责由 `test_failed` 标签承担。**
 - **traework `cachedCreditsScore` 空指针曾致 panic（2026-09-29 修复；保号池已于 2026-09-30 移除）**：缓存条目存在但 credits 尚未拉取时原代码直接解引用 `entry.credits.TotalRemain` 会 panic，现归一为「未知积分 (-1), not exhausted」。workbuddy 侧对应函数本就有 `entry.credits == nil` 守卫，无需改。
 - config_yaml 经 host RPC 传输时 []byte 走 base64；测试必须 `json.Marshal(map{"config_yaml": []byte(yaml)})`
@@ -39,6 +41,7 @@
 
 ## 变更记录
 
+- 2026-10-07: 新增「发布后清理」规则（AGENTS.md/CLAUDE.md 发布小节 + 发布 skill Step 13.5）与项目 skill `project-cpa-workbuddy-plugin-release-asset-prune-rules` + `scripts/prune-release-assets.py`；`release-assets` 3.75 GB → 0.13 GB
 - 2026-08-23: 由 `project-rule-file-bootstrap-rules` 的 `memory-bootstrap` 初始化双区骨架；核心记忆由项目分析沉淀
 - 2026-07-03: 模板骨架初始化（模板原始记录）
 

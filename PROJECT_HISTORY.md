@@ -4,6 +4,10 @@
 
 ## 事件
 
+- 2026-10-07：发布后清理规则固化与 release-assets 瘦身——把「每次发布后清理不需要的垃圾」吸收为项目规则与 skill：新增项目 skill project-cpa-workbuddy-plugin-release-asset-prune-rules（保留集=registry 每插件当前版本目录）+ 通用脚本 scripts/prune-release-assets.py（--dry-run/--apply，受跟踪目录 git rm、空目录 rmdir）；AGENTS.md/CLAUDE.md「仓库与发布」小节新增「发布后清理」条；发布 skill 增 Step 13.5。实操：release-assets 从 3.75 GB（191 版本目录）清理到 0.13 GB（保留 registry 当前 6 个版本目录：workbuddy-provider-0.15.3 / qoderwork-provider-0.9.22 / traework-provider-0.2.2 / workbuddy-ai-provider-0.1.7 / workbuddy-token-usage-0.2.3 / gemini-provider-0.1.1），删 185 个历史版本目录 / 1469 文件，提交 095f4a4 推送 origin/main；远端抽查当前版本 raw 200、旧版本 404。
+
+- 2026-10-07：cursor-provider **0.1.0** 移植与 Token 导入——新增第六个插件 cursor-provider（来源 yobo2u/omsub cursor-plugin，按 workbuddy 面板口径全量移植，落 cursor/，不依赖 CLIProxyAPI SDK），并新增会话 Token 导入账号能力：粘贴 user_<id>::<jwt>（或 URL 编码 / Cookie 前缀 / 裸 JWT）→ 取 :: 后段 JWT → POST https://api2.cursor.sh/oauth/token（grant_type=refresh_token + client_id + refresh_token）兑换 access_token → host.auth.save 落盘 cursor-<hash8>.json（顶层 type=cursor-provider），按 account_id/email 去重；管理面板增 import/export/delete/enable/disable 五路由与卡片删除/启停、全部启停、导入弹窗、导出、双语 i18n、key 三回退；保留 OAuth 轮询登录、executor tool-loop、checkpoint/会话粘性、图片输入、上下文准入。本地 cgo-shim build/vet/test 全绿（含必失败哨兵），面板 node --check 通过，cursor 全量 LF 镜像 gofmt 清零，6-review STYLE: PASS；registry.json 增 cursor-provider 0.1.0（7 平台 artifacts 占位待 CI 回填），待发布。
+
 - 2026-10-06：workbuddy-ai-provider **0.1.0** 独立国际版插件落地、双通道扫码授权与生产部署——新设独立插件 ID: workbuddy-ai-provider（版本 0.1.0），唯一锁定国际站基址 https://www.workbuddy.ai，凭证文件名前缀固定为 workbuddyai-（type: workbuddy-ai-provider），彻底杜绝与国内版凭证碰撞。实现双通道扫码登录：支持宿主原生 OAuth 与专属管理面板 panel.html「📱 扫码登录 / 添加账号」弹窗（方案 B）；保留低积分优先与会话粘性调度、10分钟活跃心跳探测（watchdog）、4小时 token 保活刷新（keepalive）、4xx 换号重试与用量统计归一化；彻底剔除国内签到与 CN 保号池。本地 cgo-shim 全绿（含哨兵）；GitHub Actions CI Run 37469999135 成功，8 资产推送入库，registry.json 原子发布且 CDN 校验 ALL PASS；生产环境通过 plugin-store install 热重载部署上线，二进制 SHA256 100% 吻合，accounts 接口 200，panel 资源 200。
 
 - 2026-10-05：gemini-provider **0.1.1** 补充 Google 官方彩色图标、正式发布并成功热重载部署生产。提取 Google 官方标准正方形彩色矢量 PNG（192×192 RGBA 透明底，6,382 字节），分别落盘 `assets/icons/Gemini.png` 与 `assets/icons/Google.png`；更新 `registry.json` 与 `gemini/main.go` 中的 Logo URL 指向 raw.githubusercontent 仓库源；atomic bump 版本为 `0.1.1`，补齐 CHANGELOG.md；本地 `cgo-shim-build.py gemini` 验证 build/vet/test 全绿；代码提交推送至 main（commit `e1e0b7f`）；派发 GitHub Actions CI（Run ID `37286392309`）40 个 jobs 全部 success；下载 8 个 release assets，7 平台 zip + checksums.txt 双重 SHA256 校验全绿（commit `809100c`）；执行 `publish-assets.py` 回填 registry.json 并推送（commit `8cf6e90`），远端 raw CDN 与哈希验证 ALL PASS；生产环境调用 `plugin-store install` 安装，落盘 .so SHA256 `779c73be...` 与本地 release zip 100% 一致，CPA 容器日志证实热重载成功：`pluginhost: plugin hot reloaded plugin_id=gemini-provider active_version=0.1.1 retired_version=0.1.0`，管理端 plugin-store 图标正常显示。
@@ -40,10 +44,6 @@
 
 - 2026-09-02：traework-provider **0.1.28 发布部署 + 生产流式长推理验收 PASS**（异步流式宿主流桥打开超时降级直连）：0.1.27 生产直连复现 qwen3.8-max 长推理「积分够却一直失败」——非流式 `/v1/responses` 一次成功（13.3s），带 `StreamID` 异步流式请求 240s 无字节后宿主 499（stream_id=1664 仅 `exec stream async scheduled` 一条日志）。根因：`hostCall`（cgo 同步无超时）在宿主流桥打开阶段永久阻塞协调器 goroutine。修复：`hostBridgeOpenTimeout=30s` 竞速打开，超时/失败降级插件直连 live 实时流（边读边发不缓冲完整 body）；抽出 `hostBridgeAvailableFn`/`hostStreamOpenFn` 注入点；新增 host_stream_timeout_test.go 两用例（哨兵先 FAIL 后删除证明进编译）。cgo-shim 全绿 + 6-review `STYLE: PASS`。发布链 02dc323(fix 6 文件)→b7ae103(assets 8)→a05b252(registry)；CI run 33535588336 success（head=02dc323）；raw 远端 7 资产 ALL PASS；生产 plugin-store install 0.1.28 + 落盘 sha256 8ec5343f 与本地 zip .so 完全一致 + hot reloaded active=0.1.28 retired=0.1.27。生产验收：4 次流式 qwen3.8-max 长推理（stream_id 1850/1853/1856/1857，覆盖两账号 + 同 session 粘性，**agent 自发请求**）全部 `attempt=1` 完整 done，正文含 END_NONCE 结尾，无挂死/499/伪完成/换号；修复前 stream_id=1664 240s 宿主 499 场景闭环（注：1664 是用户 00:29 `/v1/responses` 真实请求；1850-1857 为 01:20-01:32 agent 自发，非用户）。注：本机网络对 GitHub 上行大流量稳定阻断（git push / 5MB 对象均被断），发布经生产服务器 SOCKS 隧道（ssh -D 127.0.0.1:1080）绕过，askpass 脚本用完即删。
 
-- 2026-09-01：traework-provider **0.1.27 发布部署 + 生产真实流量验收完成**（伪完成同请求换号恢复）：长输入 600 字节门槛前缓存，A 短正文 `done` 时零泄漏丢弃并在同一宿主 `StreamID` 内选择 B、复用原 `HostCallbackID`，最终只发送 B 的 finish 和一次 close，全 pseudo 显式池耗尽失败。发布链 dd241fc(fix, 9 文件)→b7516cc(assets 8)→7b6df7a(registry)；CI run 33525997576 success；远端 raw ALL PASS；生产 plugin-store install 0.1.27 + 落盘 sha256 2864da0e 与本地 zip .so 一致 + hot reloaded active=0.1.27 retired=0.1.26 + 二进制含新符号 `pumpTraeStreamAttempt`（0.1.26 无）。生产真实流量证据（23:54-23:57）：stream_id=1607（df45ea3f）与 1609（4d1fcf6f）均走 attempt1→attempt2 双伪完成→池耗尽显式失败，失败核算落盘 203343 fail_count=2、225774 fail_count=2 且冷却生效；0.1.27 不再把伪完成短答当成功下发。「一账号伪完成→另一账号健康成功」NOT_OBSERVED，待自然流量继续观察。
-
-- 2026-09-01：workbuddy-token-usage「feed 新增 usage SSE 实时通知 dashboard」**已改码未提交**：用户目标「创建一个名为 workbuddy-token-usage 的插件并把 feed usage 通过 ws 推给前端」——该插件已存在（token-usage-tracker），真实需求=改造现有插件做 feed→dashboard 实时通知。宿主 SDK v7.2.129 逐层核实：插件 ABI 无任何注册 ws/SSE 长连接的方法（`AttachWebsocketRoute` 仅服务内部 wsrelay；`MethodHostStreamEmit/Close` 的 StreamID 只在 executor 流式路径创建，token-usage-tracker 无 executor capability）；management/resource 桥接单次写回（`w.WriteHeader + w.Write` 无 Flush/ws 升级）→ 实测宿主对 SSE body 原样透传。落地「SSE 短连接轮询通知 + REST 拉取」：`feed_ingest.go` feedNotifier 单调递增 seq（每条 feed 记录 bump）；`management.go` `/usage/events` 路由返回 `retry: 2000\n\ndata: {"seq":N}`（EventSource 自动重连）；`dashboard.go` `startUsageEvents()`（fullModePage 禁用）+ 15s 轮询 fallback。验证：cgo-shim 全绿 + 哨兵（移除 bump FAIL `want 1`）+ node --check 4 script 块 + `git diff --check` PASS + UTF-8 校验 + 6-review `STYLE: PASS`（doc/6-review/2026-09-01_011812_TokenUsageSSE通知_6-review.md）。**未提交未发布**（等用户提交授权）。
-
 ## 计数锚点区
 
 > 本区由 `memory-usage-tracking-rules` 收口闸门维护：HISTORY 仅窄读计入，会话启动不读不计；被裁剪事件的锚点随事件一起删除（不保留 retired）；本区计数仅作主题热度弱信号。锚点 key 用事件 `- YYYY-MM-DD：` 后的核心主题短语（约前 12 字符，可前缀匹配）。
@@ -51,6 +51,16 @@
 ```yaml
 version: 1
 anchors:
+- title: '发布后清理规则固化与 release-assets'
+  usage_count: 0
+  usage_days: 0
+  last_used_at: null
+  absorbed_to: null
+- title: 'cursor-provider **0.1.0** 移植与 Token 导入'
+  usage_count: 0
+  usage_days: 0
+  last_used_at: null
+  absorbed_to: null
 - title: 'workbuddy-ai-provider **0.1.0** 独立国际版'
   usage_count: 0
   usage_days: 0
@@ -141,14 +151,5 @@ anchors:
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: 'traework-provider **0.1.27 发布部'
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
-  absorbed_to: null
-- title: 'workbuddy-token-usage「feed 新增 '
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
-  absorbed_to: null
+
 ```

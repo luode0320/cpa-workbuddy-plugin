@@ -10,6 +10,7 @@
 #   - tag 'qoderwork-provider-v*'           → release qoderwork-provider at that version
 #   - tag 'workbuddy-token-usage-v*'        → release workbuddy-token-usage at that version
 #   - tag 'traework-provider-v*'            → release traework-provider at that version
+#   - tag 'cursor-provider-v*'              → release cursor-provider at that version
 #   - workflow_dispatch                       → pick plugin + version manually
 #   - plain push/PR                          → CI builds for all (artifacts only, no release)
 #
@@ -29,13 +30,14 @@ on:
       - "traework-provider-v*"
       - "gemini-provider-v*"
       - "workbuddy-ai-provider-v*"
+      - "cursor-provider-v*"
   workflow_dispatch:
     inputs:
       plugin:
         description: "Plugin to release"
         required: true
         type: choice
-        options: [workbuddy-provider, qoderwork-provider, workbuddy-token-usage, traework-provider, gemini-provider, workbuddy-ai-provider]
+        options: [workbuddy-provider, qoderwork-provider, workbuddy-token-usage, traework-provider, gemini-provider, workbuddy-ai-provider, cursor-provider]
       version:
         description: "Version without v (empty = plugin's VERSION file)"
         required: false
@@ -58,6 +60,7 @@ jobs:
           - dir: traework
           - dir: gemini
           - dir: workbuddy-ai
+          - dir: cursor
     defaults:
       run:
         working-directory: ${{ matrix.dir }}
@@ -269,6 +272,37 @@ jobs:
             goarch: amd64
             runner: windows-2025
             ext: dll
+          # cursor-provider native (sources in cursor/)
+          - id: cursor-provider
+            src: cursor
+            goos: linux
+            goarch: amd64
+            runner: ubuntu-24.04
+            ext: so
+          - id: cursor-provider
+            src: cursor
+            goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+            ext: so
+          - id: cursor-provider
+            src: cursor
+            goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+            ext: dylib
+          - id: cursor-provider
+            src: cursor
+            goos: darwin
+            goarch: arm64
+            runner: macos-15
+            ext: dylib
+          - id: cursor-provider
+            src: cursor
+            goos: windows
+            goarch: amd64
+            runner: windows-2025
+            ext: dll
     defaults:
       run:
         shell: bash
@@ -416,6 +450,14 @@ jobs:
             src: workbuddy-ai
             target: freebsd-amd64
             ext: so
+          - id: cursor-provider
+            src: cursor
+            target: windows-arm64
+            ext: dll
+          - id: cursor-provider
+            src: cursor
+            target: freebsd-amd64
+            ext: so
     defaults:
       run:
         shell: bash
@@ -535,7 +577,8 @@ jobs:
       startsWith(github.ref, 'refs/tags/workbuddy-token-usage-v') ||
         startsWith(github.ref, 'refs/tags/traework-provider-v') ||
         startsWith(github.ref, 'refs/tags/gemini-provider-v') ||
-        startsWith(github.ref, 'refs/tags/workbuddy-ai-provider-v')
+        startsWith(github.ref, 'refs/tags/workbuddy-ai-provider-v') ||
+        startsWith(github.ref, 'refs/tags/cursor-provider-v')
     needs:
       - build
       - build-cross
@@ -562,6 +605,8 @@ jobs:
               P="gemini-provider"; V="${GITHUB_REF_NAME#gemini-provider-v}"
             elif [[ "${GITHUB_REF_NAME}" == workbuddy-ai-provider-v* ]]; then
               P="workbuddy-ai-provider"; V="${GITHUB_REF_NAME#workbuddy-ai-provider-v}"
+            elif [[ "${GITHUB_REF_NAME}" == cursor-provider-v* ]]; then
+              P="cursor-provider"; V="${GITHUB_REF_NAME#cursor-provider-v}"
           else
             P="workbuddy-token-usage"; V="${GITHUB_REF_NAME#workbuddy-token-usage-v}"
           fi
@@ -643,6 +688,7 @@ jobs:
             traework-provider)     DISPLAY="TraeWork Provider" ;;
             gemini-provider)       DISPLAY="Gemini Provider" ;;
             workbuddy-ai-provider) DISPLAY="WorkBuddy AI" ;;
+            cursor-provider)       DISPLAY="Cursor Provider" ;;
           esac
           TITLE="${DISPLAY:-$PLUGIN} v${VERSION}"
           if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then
