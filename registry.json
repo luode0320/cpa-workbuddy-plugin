@@ -448,50 +448,50 @@
             "goos": "darwin",
             "goarch": "amd64",
             "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/cursor-provider-0.1.0/cursor-provider_0.1.0_darwin_amd64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "d61de9f51798838086e2bcda05d79c25a61c03b9ca41eed49c94461fbe5625c3",
+            "size": 3729459
           },
           {
             "goos": "darwin",
             "goarch": "arm64",
             "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/cursor-provider-0.1.0/cursor-provider_0.1.0_darwin_arm64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "30287c77333df624a8883576d55f995c852ec57107190124152c4ecc062ab03b",
+            "size": 3465442
           },
           {
             "goos": "freebsd",
             "goarch": "amd64",
             "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/cursor-provider-0.1.0/cursor-provider_0.1.0_freebsd_amd64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "e7e590a11aa7214f4aad23f3aadcf7d324987d354a06af06cff19203dffbed52",
+            "size": 3833111
           },
           {
             "goos": "linux",
             "goarch": "amd64",
             "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/cursor-provider-0.1.0/cursor-provider_0.1.0_linux_amd64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "e8642ff7557fd131db27d55ddea99dfcf19365925814e1c773aa6a9d66ce7349",
+            "size": 3926581
           },
           {
             "goos": "linux",
             "goarch": "arm64",
             "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/cursor-provider-0.1.0/cursor-provider_0.1.0_linux_arm64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "1ee55afeb64904ae644af3698a929abc4afe4a8cf20f65a87df99b8e72754290",
+            "size": 3583018
           },
           {
             "goos": "windows",
             "goarch": "amd64",
             "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/cursor-provider-0.1.0/cursor-provider_0.1.0_windows_amd64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "26d16bae317ee37d0539e3161141dcb25c45297751ecd067fdc736710f0f7829",
+            "size": 3808943
           },
           {
             "goos": "windows",
             "goarch": "arm64",
             "url": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/release-assets/cursor-provider-0.1.0/cursor-provider_0.1.0_windows_arm64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "a0b69d87ce578d4807507b58dd36c2364902963f66c8479a3cd2258a67d08b67",
+            "size": 3523174
           }
         ]
       }
