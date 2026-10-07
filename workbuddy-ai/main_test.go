@@ -81,13 +81,27 @@ func TestWorkBuddyAI_Policy(t *testing.T) {
 		t.Fatalf("displayNote for disabled account = %q; want 已禁用", disabledNote)
 	}
 
-	// shouldReenableCN behavior for recovered credits
+	// shouldReenable / shouldReenableCN behavior for recovered credits
+	if !shouldReenable(true, cr) {
+		t.Fatalf("shouldReenable should be true when remain > 0")
+	}
 	if !shouldReenableCN(true, cr) {
 		t.Fatalf("shouldReenableCN should be true when remain > 0")
 	}
 	exhaustedCR := &creditsSummary{TotalRemain: 0, TotalUsed: 150, TotalSize: 150}
+	if shouldReenable(true, exhaustedCR) {
+		t.Fatalf("shouldReenable should be false when exhausted")
+	}
 	if shouldReenableCN(true, exhaustedCR) {
 		t.Fatalf("shouldReenableCN should be false when exhausted")
+	}
+
+	// lifecycleActionFor asserts: exhausted accounts must be disabled, NEVER deleted
+	if act := lifecycleActionFor("global", exhaustedCR); act != lifecycleDisable {
+		t.Fatalf("lifecycleActionFor(global, exhausted) = %v; want lifecycleDisable (never delete)", act)
+	}
+	if act := lifecycleActionFor("global", cr); act != lifecycleNone {
+		t.Fatalf("lifecycleActionFor(global, healthy) = %v; want lifecycleNone", act)
 	}
 }
 

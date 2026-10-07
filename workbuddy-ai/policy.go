@@ -127,20 +127,27 @@ func isTransientThrottle(status int, body string) bool {
 	return isSoftRateLimit(status, body) || isEmptyStreamBody(body)
 }
 
-// lifecycleActionFor chooses delete/none from credits.
+// lifecycleActionFor chooses disable/none from credits.
+// 与国内版保持一致：额度耗尽时仅禁用（lifecycleDisable），绝不物理删除账号。
+// 账号保留在专属面板与凭证库中，支持保号分析与充值/更新后自动重新启用。
 func lifecycleActionFor(region string, cr *creditsSummary) lifecycleAction {
 	if !shouldActOnCredits(cr) {
 		return lifecycleNone
 	}
-	return lifecycleDelete
+	return lifecycleDisable
 }
 
-// shouldReenableCN returns whether an exhausted account has recovered credits.
-func shouldReenableCN(disabled bool, cr *creditsSummary) bool {
+// shouldReenable returns whether an exhausted account has recovered credits.
+func shouldReenable(disabled bool, cr *creditsSummary) bool {
 	if !disabled || cr == nil || isCreditsExhausted(cr) {
 		return false
 	}
 	return cr.TotalRemain > 0
+}
+
+// shouldReenableCN returns whether an exhausted account has recovered credits.
+func shouldReenableCN(disabled bool, cr *creditsSummary) bool {
+	return shouldReenable(disabled, cr)
 }
 
 // displayNote builds a one-line note for CPAMP Auth cards.

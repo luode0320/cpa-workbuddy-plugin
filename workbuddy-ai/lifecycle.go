@@ -352,7 +352,7 @@ func applyExhaustedPolicy(authIndex, authID string, sa *storedAuth, cr *creditsS
 	action := lifecycleActionFor(accountRegion(sa), cr)
 	switch action {
 	case lifecycleDelete:
-		return deleteAuth(authIndex, authID, sa)
+		return disableAuth(authIndex, authID, sa, cr, "耗尽", nil)
 	case lifecycleDisable:
 		return disableAuth(authIndex, authID, sa, cr, reason, nil)
 	default:
@@ -452,7 +452,8 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 	}
 
 	region := accountRegion(sa)
-	if region == "cn" && disabled {
+	_ = region
+	if disabled {
 		// Manual disable (manual_disable marker) must stick: never
 		// auto-re-enable an account the user explicitly disabled, even when
 		// credits recover.
@@ -468,7 +469,7 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 			_ = syncAuthNote(authIndex, authID, sa, cr, true)
 			return lifecycleNone, nil
 		}
-		if shouldReenableCN(true, cr) {
+		if shouldReenable(true, cr) {
 			if err := reenableAuth(authIndex, authID, sa, cr); err != nil {
 				return lifecycleReenable, err
 			}
@@ -482,15 +483,8 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 	act := lifecycleActionFor(region, cr)
 	switch act {
 	case lifecycleDelete:
-		// P1-4: confirm before deleting a Global account — a transient 402
-		// from the upstream billing API could otherwise cause an irreversible
-		// delete. Re-fetch credits once more; only proceed if still exhausted.
-		cr2, err2 := fetchUserResource(sa)
-		if err2 != nil || !isCreditsExhausted(cr2) {
-			// Credits may have recovered (or fetch failed) — don't delete.
-			return lifecycleNone, nil
-		}
-		return lifecycleDelete, deleteAuth(authIndex, authID, sa)
+		// 防误删保护：WorkBuddy AI 独立插件中耗尽仅软禁用，绝不物理删除账号
+		return lifecycleDisable, disableAuth(authIndex, authID, sa, cr, "耗尽", nil)
 	case lifecycleDisable:
 		return lifecycleDisable, disableAuth(authIndex, authID, sa, cr, "耗尽", nil)
 	default:

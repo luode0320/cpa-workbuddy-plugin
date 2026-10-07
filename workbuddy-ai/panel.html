@@ -482,7 +482,7 @@ function card(a){
   const plan=(a.plan||"unknown").toLowerCase();
   const ci=a.checkin||{}, cr=a.credits;
   const exhausted=isAccountExhausted(a);
-  const region=a.region||"cn";
+  const region=a.region||"global";
   const isGlobal=region==="global";
   const selected=!!a.selected;
   const regionBadge=`<span class="badge ${region}">${isGlobal?"Global":"CN"}</span>`;
@@ -590,7 +590,7 @@ function renderGrid(){
 function applyCardVisibility(){
   const q=(currentSearch||"").toLowerCase();
   document.querySelectorAll("#grid .card").forEach(c=>{
-    const r=c.dataset.region||"cn";
+    const r=c.dataset.region||"global";
     let show=true;
     if(currentFilter==="all") show=true;
     else if(currentFilter==="available"){
@@ -757,7 +757,7 @@ function filterRegion(region, btn){
 function updateFilterCounts(accounts){
   let cn=0, gl=0, ex=0, ava=0, fail=0, test=0;
   (accounts||[]).forEach(a=>{
-    if((a.region||"cn")==="global") gl++; else cn++;
+    if((a.region||"global")==="global") gl++; else cn++;
     if(isAccountExhausted(a)) ex++;
     if(a.test_failed) test++;
     // 失败 = 累计失败 > 0 或连败中（fail_count > 0）
@@ -796,7 +796,7 @@ function accountsForFilter(accounts){
   if(currentFilter==="failed"){
     return list.filter(a=>(Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0);
   }
-  return list.filter(a=>(a.region||"cn")===currentFilter);
+  return list.filter(a=>(a.region||"global")===currentFilter);
 }
 function creditOf(a){
   const cr=a&&a.credits;
@@ -841,7 +841,7 @@ function renderSummary(accounts){
     const c=creditOf(a);
     if(!c.known) return;
     allRemain+=c.remain; allUsed+=c.used; allSize+=c.size;
-    if((a.region||"cn")==="global"){ glRemain+=c.remain; glUsed+=c.used; }
+    if((a.region||"global")==="global"){ glRemain+=c.remain; glUsed+=c.used; }
     else { cnRemain+=c.remain; cnUsed+=c.used; }
   });
   const total=size>0?size:(remainAvail+used);
@@ -1233,7 +1233,7 @@ async function checkinAll(btn){
     // Mark CN check-in buttons done immediately when any success/already
     if(ok||already){
       document.querySelectorAll("#grid .card").forEach(c=>{
-        if((c.dataset.region||"cn")==="cn"){
+        if((c.dataset.region||"global")==="cn"){
           const b=c.querySelector("button.sec,button.done");
           if(b && /签到|处理中/.test(b.textContent||"")) markCheckinDone(b);
         }
@@ -1259,7 +1259,7 @@ async function claimTrialAll(btn){
   busy(btn,true);
   try{
     const d=await api("/accounts");
-    const accounts=(d.accounts||[]).filter(a=>(a.region||"cn")==="global"&&!a.trial_claimed);
+    const accounts=(d.accounts||[]).filter(a=>(a.region||"global")==="global"&&!a.trial_claimed);
     if(!accounts.length){toast("没有可领取的账号","warn");busy(btn,false);return;}
     let ok=0,fail=0,already=0;
     for(const a of accounts){
