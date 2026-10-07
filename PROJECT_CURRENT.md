@@ -8,7 +8,7 @@
 
 ## 项目概况
 
-- 状态：活跃维护中。已成功发布并部署 WorkBuddy AI 国际版 **0.1.6** 与 WorkBuddy 国内版 **0.15.2**；新增第六个插件 cursor-provider **0.1.0**（Cursor 会话 Token 导入，本地验证完成，待发布）。
+- 状态：活跃维护中。已成功发布并部署 WorkBuddy AI 国际版 **0.1.6**、WorkBuddy 国内版 **0.15.2** 与新增第六插件 cursor-provider **0.1.0**（Cursor 会话 Token 导入，发布 + 生产热重载 + 端到端验收完成）。
 - 活动工作区：F:\cpa-plugin
 - 当前时间：2026-10-07 (GMT+8)
 
@@ -25,7 +25,10 @@
   - 管理面板：import / export / delete / enable / disable 五条路由 + 卡片删除/启停、全部启停、导入弹窗、导出、双语 i18n、key 三回退，与 workbuddy 面板一致。
   - 保留移植全量能力：OAuth 轮询登录、executor tool-loop、checkpoint/会话粘性、图片输入、上下文准入。
   - 验证：`python scripts/cgo-shim-build.py cursor` build/vet/test 全绿（含必失败哨兵）；面板单 script 块 node --check 通过；cursor 全量 LF 镜像 gofmt -l 清零；6-review STYLE: PASS。
-  - CI/registry：.github/workflows/build.yml 增 cursor-provider-v* tag、dispatch option、test/build 矩阵；registry.json 增 cursor-provider 0.1.0（7 平台 artifacts，sha256/size 占位待 CI 产出后由 publish-assets.py 回填）。
+  - CI/registry：.github/workflows/build.yml 增 cursor-provider-v* tag、dispatch option、test/build 矩阵；registry.json 增 cursor-provider 0.1.0（7 平台 artifacts）。
+  - **发布闭环（已完成）**：commit 44d2bb4 → push；CI run 37636155616 全 57 jobs success；下载 8 资产（7 zip + checksums）并校验 ALL OK，commit a17c2aa；publish-assets 回填 registry（commit 92f569c）；远端 raw 7 资产 size+sha256 ALL PASS；生产 plugin-store install 0.1.0，落盘 .so sha256 与本地 zip 100% 一致，容器日志 plugin loaded + plugin registered 热重载成功；plugin-store 状态 installed/registered/enabled/effective_enabled 全 true。
+  - **生产端到端验收（已完成）**：真实 token 导入 → oauth/token 兑换 → 落盘 cursor-6c2463e563a13c02.json → 面板可见（246 模型）→ 重复导入正确去重；推理验收 cursor/default 非流式 3 次 + 流式（1..5 完整 + finish_reason:stop + [DONE]）+ 多轮全部成功；export 接口 200。高级模型（gpt-5.3-codex / composer-2.5 / claude-4-sonnet / gemini-3.x 等）返回上游 resource_exhausted（429，约 280ms 快速拒绝），属 Cursor 服务端对该账号订阅的配额判定，插件按真实 429 语义透传，非移植缺陷。
+  - 发布后清理：release-assets prune dry-run 确认 7 保留集完整、无待删；本地缓存 .workbuddy/release-assets 已删。
 - 当前会话（2026-10-07）：**定位新授权账号离奇消失根因，彻底移除自动物理删除机制，发布并部署 WorkBuddy AI 0.1.6**。
   - 用户反馈：刚刚成功授权了一个号，出现在了面板中，但很短的时间过后账号消失了；
   - 核心排查与根因：
@@ -54,18 +57,18 @@
 
 | 会话 ID | 标题 / 意图 | 状态 | 活跃时间 | 关键改动 / 影响 |
 |---|---|---|---|---|
+| `01a115b7-7f04-7b81-8e96-cb269a144fa4` | Cursor 插件移植与 Token 导入实施 | completed | 2026-10-07 23:41 | 新增第六个插件 cursor-provider 0.1.0，支持会话 Token 导入账号；全链路发布、生产热重载与端到端验收均通过 |
+| `01a11624-7389-7fe2-ac2b-82eb433267bd` | release-assets 3.75 GB 清理旧发布缓存 | completed | 2026-10-07 19:34 | release-assets 从 3.75 GB 清理至 0.13 GB；发布后清理规则固化为项目 skill 与 prune 脚本 |
 | `01a110f3-1891-72c1-914e-7600d0e8b6df` | WorkBuddy AI 彻底清空写死模型与 0.1.3 全链路发布部署 | completed | 2026-10-07 03:20 | workbuddy-ai 彻底剔除硬编码模型，完全动态拉取；0.1.3 发布并生产部署热重载验证通过 |
 | `01a10add-b83c-7500-bc4c-2c92ff9393ca` | 移植 Gemini Provider 并接入 Token 用量统一统计 | completed | 2026-10-05 19:30 | 移植 gemini-provider 0.1.1，引入 Google 图标，打通 NDJSON feed，CI 全平台流水线 |
 | `01a0f678-72a0-7900-9c19-bf43949e829f` | 修复三插件筛选标签计数未随积分回填重算缺陷 | completed | 2026-10-01 18:30 | workbuddy 0.15.1 / traework 0.2.1 / qoderwork 0.9.21 派生筛选标签计数重绘修复 |
-| `01a0c4f8-1120-7500-b88a-df4598124801` | 移除不可用重复测试标签与全选路径重构 | completed | 2026-09-30 02:40 | workbuddy 0.15.0 / traework 0.2.0 仓库级默认提交发布授权长效生效 |
-| `01a09d31-4400-7500-9988-cc7722119933` | 账号路由重构：移除优先级+硬排除+客户端粘性 | completed | 2026-09-29 02:30 | workbuddy 0.14.43 / traework 0.1.68 单路由池与保号池逻辑 |
 <!-- END RECENT PROJECT SESSIONS -->
 <!-- BEGIN TASK PLAN PROJECTION -->
 ```json
 {
   "version": 4,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "2026-10-07T14:03:47.571953Z",
+  "registry_updated_at": "2026-10-07T15:25:33.083696Z",
   "projections": [
     {
       "projection_id": "SESSION/30608b3616fa2311bfb720a2776c09ac96b2738601ec3752b03a252c810cdb70",
@@ -110,11 +113,11 @@
       "session_id": "01a115b7-7f04-7b81-8e96-cb269a144fa4",
       "projection_origin": "synthesized",
       "synthesis_mode": "exact",
-      "state": "active",
+      "state": "inactive",
       "plan_key": "IMPL-CURSOR-PROVIDER-PORT-20261007",
       "source_document": "doc/3-实施/2026-10-07_Cursor插件移植与Token导入实施总览.md",
       "plan_fingerprint": "9eea12fd114fb3e34cb60dd2a60eceb2eacd227a7e9a481c5b3f73c954a2a3b6",
-      "updated_at": "2026-10-07T14:03:46.758376Z",
+      "updated_at": "2026-10-07T15:25:33.083533Z",
       "steps": [
         {
           "id": "TASK-001",
@@ -139,7 +142,7 @@
         {
           "id": "TASK-005",
           "step": "[TASK-005] 发布与部署",
-          "status": "in_progress"
+          "status": "completed"
         }
       ]
     }

@@ -4,6 +4,8 @@
 
 ## 事件
 
+- 2026-10-07：cursor-provider **0.1.0** 发布部署与端到端验收——发布闭环：commit 44d2bb4（162 文件）推送后派发 CI run 37636155616，全 57 jobs success；下载 8 资产（7 平台 zip + checksums）SHA256 校验 ALL OK（commit a17c2aa）；publish-assets 回填 registry（commit 92f569c）；远端 raw 7 资产 size+sha256 ALL PASS；生产 plugin-store install 0.1.0，落盘 .so sha256 bae19b38 与本地 zip 100% 一致，容器日志 plugin loaded + plugin registered 热重载成功，plugin-store 状态 installed/registered/enabled/effective_enabled 全 true。生产端到端验收：真实 token 导入成功（auth_index 9c0e4081ebf23fa7 → cursor-6c2463e563a13c02.json，面板可见 246 模型），重复导入正确去重；推理验收 cursor/default 非流式 3 次 + 流式（1..5 完整 + finish_reason:stop + [DONE]）+ 多轮对话全部成功；export 接口 200。高级模型（gpt-5.3-codex / composer-2.5 / claude-4-sonnet / gemini-3.x 等）统一返回上游 resource_exhausted（429，约 280ms 快速拒绝），判定为 Cursor 服务端对该账号订阅的配额限制，插件按真实 429 语义透传，非移植缺陷。发布后清理：release-assets prune dry-run 确认保留集完整、无待删；本地缓存 .workbuddy/release-assets 已删除。
+
 - 2026-10-07：发布后清理规则固化与 release-assets 瘦身——把「每次发布后清理不需要的垃圾」吸收为项目规则与 skill：新增项目 skill project-cpa-workbuddy-plugin-release-asset-prune-rules（保留集=registry 每插件当前版本目录）+ 通用脚本 scripts/prune-release-assets.py（--dry-run/--apply，受跟踪目录 git rm、空目录 rmdir）；AGENTS.md/CLAUDE.md「仓库与发布」小节新增「发布后清理」条；发布 skill 增 Step 13.5。实操：release-assets 从 3.75 GB（191 版本目录）清理到 0.13 GB（保留 registry 当前 6 个版本目录：workbuddy-provider-0.15.3 / qoderwork-provider-0.9.22 / traework-provider-0.2.2 / workbuddy-ai-provider-0.1.7 / workbuddy-token-usage-0.2.3 / gemini-provider-0.1.1），删 185 个历史版本目录 / 1469 文件，提交 095f4a4 推送 origin/main；远端抽查当前版本 raw 200、旧版本 404。
 
 - 2026-10-07：cursor-provider **0.1.0** 移植与 Token 导入——新增第六个插件 cursor-provider（来源 yobo2u/omsub cursor-plugin，按 workbuddy 面板口径全量移植，落 cursor/，不依赖 CLIProxyAPI SDK），并新增会话 Token 导入账号能力：粘贴 user_<id>::<jwt>（或 URL 编码 / Cookie 前缀 / 裸 JWT）→ 取 :: 后段 JWT → POST https://api2.cursor.sh/oauth/token（grant_type=refresh_token + client_id + refresh_token）兑换 access_token → host.auth.save 落盘 cursor-<hash8>.json（顶层 type=cursor-provider），按 account_id/email 去重；管理面板增 import/export/delete/enable/disable 五路由与卡片删除/启停、全部启停、导入弹窗、导出、双语 i18n、key 三回退；保留 OAuth 轮询登录、executor tool-loop、checkpoint/会话粘性、图片输入、上下文准入。本地 cgo-shim build/vet/test 全绿（含必失败哨兵），面板 node --check 通过，cursor 全量 LF 镜像 gofmt 清零，6-review STYLE: PASS；registry.json 增 cursor-provider 0.1.0（7 平台 artifacts 占位待 CI 回填），待发布。
@@ -42,7 +44,6 @@
 
 - 2026-09-02：traework-provider **0.1.29 发布部署 + 生产流式长推理验收 PASS**（异步流式宿主流桥 read 阶段超时降级直连）：用户报 0.1.28 "完全不行"，生产直连复现 qwen3.8-max「分析项目」——插件直接客户端 `hostHTTPDoStreamDirect` 完整流式（327/264 事件），宿主桥 read 阶段在生产无限阻塞（stream_id=1945 scheduled 后 2 分钟零日志 → gin 499）。根因：`hostCall(MethodHostHTTPStreamRead)` 同步 cgo 无超时，阻塞在 host 侧无缓冲 chunk channel；`sharedHTTPClient` 120s 整体超时还会截断长流。修复：host_bridge.go 加 `hostBridgeReadTimeout=90s`（goroutine+select 竞速）超时经 `hostStreamDirectFn` seam 降级插件直连 live 实时流（覆盖 0.1.28 只做的 open 阶段）；新增 `streamHTTPClient()` 无整体超时（长流不被 120s 截断）；`hostHTTPStream` 增 req/bodyBytes 保存降级重开所需。新增 host_bridge_read_timeout_test.go 三用例（桥 read 挂起→降级直连读完整内存 SSE / 健康读不过滤 / 无 req 降级报错），哨兵先 FAIL 后删除证明进编译。cgo-shim 全绿 + 6-review `STYLE: PASS`。发布链 7424cd7(fix)→99f6177(assets 8)→706b85d(registry)；CI success；raw 远端 7 资产 ALL PASS；生产 plugin-store install 0.1.29 + 落盘 sha256 与本地 zip .so 一致 + hot reloaded active=0.1.29 retired=0.1.28。生产验证：3 次流式 qwen3.8-max **agent 自发的超长请求**全部完整——stream_id 2139（账号 e1987432，208.6s，718 chunks）、2146（账号 19ca85be，292.5s，957 chunks）、2154（账号 e1987432，298.4s，867 chunks）均 `attempt=1` 完整 done，正文含 END_NONCE 结尾，无 error/length、无 pseudo retry / pool exhausted / degrade（健康路径直接走桥，降级未触发）。**注意：非用户真实流量，用户真实形态是短请求 ~10s，0.1.29 尚未被用户验证（见顶部纠偏事件）。**
 
-- 2026-09-02：traework-provider **0.1.28 发布部署 + 生产流式长推理验收 PASS**（异步流式宿主流桥打开超时降级直连）：0.1.27 生产直连复现 qwen3.8-max 长推理「积分够却一直失败」——非流式 `/v1/responses` 一次成功（13.3s），带 `StreamID` 异步流式请求 240s 无字节后宿主 499（stream_id=1664 仅 `exec stream async scheduled` 一条日志）。根因：`hostCall`（cgo 同步无超时）在宿主流桥打开阶段永久阻塞协调器 goroutine。修复：`hostBridgeOpenTimeout=30s` 竞速打开，超时/失败降级插件直连 live 实时流（边读边发不缓冲完整 body）；抽出 `hostBridgeAvailableFn`/`hostStreamOpenFn` 注入点；新增 host_stream_timeout_test.go 两用例（哨兵先 FAIL 后删除证明进编译）。cgo-shim 全绿 + 6-review `STYLE: PASS`。发布链 02dc323(fix 6 文件)→b7ae103(assets 8)→a05b252(registry)；CI run 33535588336 success（head=02dc323）；raw 远端 7 资产 ALL PASS；生产 plugin-store install 0.1.28 + 落盘 sha256 8ec5343f 与本地 zip .so 完全一致 + hot reloaded active=0.1.28 retired=0.1.27。生产验收：4 次流式 qwen3.8-max 长推理（stream_id 1850/1853/1856/1857，覆盖两账号 + 同 session 粘性，**agent 自发请求**）全部 `attempt=1` 完整 done，正文含 END_NONCE 结尾，无挂死/499/伪完成/换号；修复前 stream_id=1664 240s 宿主 499 场景闭环（注：1664 是用户 00:29 `/v1/responses` 真实请求；1850-1857 为 01:20-01:32 agent 自发，非用户）。注：本机网络对 GitHub 上行大流量稳定阻断（git push / 5MB 对象均被断），发布经生产服务器 SOCKS 隧道（ssh -D 127.0.0.1:1080）绕过，askpass 脚本用完即删。
 
 ## 计数锚点区
 
@@ -51,6 +52,11 @@
 ```yaml
 version: 1
 anchors:
+- title: 'cursor-provider **0.1.0** 发布部署与端到端验收'
+  usage_count: 0
+  usage_days: 0
+  last_used_at: null
+  absorbed_to: null
 - title: '发布后清理规则固化与 release-assets'
   usage_count: 0
   usage_days: 0
@@ -142,11 +148,6 @@ anchors:
   last_used_at: null
   absorbed_to: null
 - title: 'traework-provider **0.1.29 发布部'
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
-  absorbed_to: null
-- title: 'traework-provider **0.1.28 发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null

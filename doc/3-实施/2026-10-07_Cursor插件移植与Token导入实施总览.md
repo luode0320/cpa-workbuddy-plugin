@@ -4,12 +4,12 @@ template_version: implementation-overview-v1
 doc_id: IMPL-CURSOR-PROVIDER-PORT-20261007
 doc_type: implementation_overview
 source_ids: [REQ-CURSOR-TOKEN-IMPORT-20261007]
-status: in_progress
+status: accepted
 version: v1.0
 complexity: L3
-current_slice: CYCLE-03 发布准备
+current_slice: CYCLE-03 发布与生产部署（已收口）
 baseline_commit: b8759de
-updated_at: 2026-10-07 19:40:00
+updated_at: 2026-10-07 23:20:00
 reader_level: business_general
 writing_style: plain_chinese
 appendix_policy: preserve_existing_or_one_terminal_appendix
@@ -18,7 +18,7 @@ style_regression: required_after_tests
 
 # Cursor Provider 插件移植与 Token 导入实施总览
 
-结论：把上游 Cursor 插件移植为仓库独立插件，并新增用会话令牌导入账号的能力；影响：CPA 宿主新增一个 Cursor 供应商，可粘贴会话令牌批量导入账号而无需浏览器登录；范围：新增插件目录、令牌导入与导出删除启停管理接口、面板改造、单元测试、持续集成与插件注册表接入；非范围：不修改宿主核心二进制，不改动既有其它插件；变化：账号接入从仅浏览器登录扩展为可直接粘贴会话令牌导入；完成标准：本地隔离构建、静态检查与单元测试全绿，新增测试真实进入编译，注册表校验通过；术语说明：会话令牌是浏览器登录后得到的账号凭据串，可换取调用令牌；验证状态：本地构建、静态检查、单元测试、面板语法与注册表校验均已通过，发布与生产部署尚未执行。
+结论：把上游 Cursor 插件移植为仓库独立插件，并新增用会话令牌导入账号的能力；影响：CPA 宿主新增一个 Cursor 供应商，可粘贴会话令牌批量导入账号而无需浏览器登录；范围：新增插件目录、令牌导入与导出删除启停管理接口、面板改造、单元测试、持续集成与插件注册表接入；非范围：不修改宿主核心二进制，不改动既有其它插件；变化：账号接入从仅浏览器登录扩展为可直接粘贴会话令牌导入；完成标准：本地隔离构建、静态检查与单元测试全绿，新增测试真实进入编译，注册表校验通过；术语说明：会话令牌是浏览器登录后得到的账号凭据串，可换取调用令牌；验证状态：本地构建、静态检查、单元测试、面板语法与注册表校验均已通过，发布、生产部署与端到端验收均已完成。
 
 ## 当前计划最终方案简要说明
 
@@ -119,7 +119,7 @@ flowchart LR
 | `REQ-001` / `AC-001` | `CYCLE-01` | `TASK-002` | `cursor/internal/plugin/import.go::importCredential` | `TEST-002` | `STYLE-CURSOR-PROVIDER-PORT-20261007` | `EVIDENCE-001` | 已完成 |
 | `REQ-002` / `AC-002` | `CYCLE-01` | `TASK-003` | `cursor/internal/plugin/operations.go::deleteCredential` | `TEST-003` | `STYLE-CURSOR-PROVIDER-PORT-20261007` | `EVIDENCE-003` | 已完成 |
 | `REQ-003` / `AC-003` | `CYCLE-02` | `TASK-004` | `cursor/internal/plugin/assets/management.html` | `TEST-004` | `STYLE-CURSOR-PROVIDER-PORT-20261007` | `EVIDENCE-002` | 已完成 |
-| `SRC-002` / `AC-004` | `CYCLE-03` | `TASK-005` | `registry.json` | `TEST-005` | `STYLE-CURSOR-PROVIDER-PORT-20261007` | `EVIDENCE-005` | 未开始 |
+| `SRC-002` / `AC-004` | `CYCLE-03` | `TASK-005` | `registry.json` | `TEST-005` | `STYLE-CURSOR-PROVIDER-PORT-20261007` | `EVIDENCE-005` | 已完成 |
 
 图形目的：说明令牌导入的数据流与去重分支。关联 ID：`TASK-002`、`AC-001`。
 
@@ -172,7 +172,7 @@ sequenceDiagram
 
 | ID | 风险/阻断 | 触发证据 | 当前措施 | 恢复路径 | 禁止动作 |
 | --- | --- | --- | --- | --- | --- |
-| `GAP-001` | 注册表资产哈希与体积为占位值 | 资产未产出 | 由发布脚本在资产产出后回填 | 产出后回填并校验 | 未回填即发布 |
+| `GAP-001` | 注册表资产哈希与体积为占位值 | 资产未产出 | 已由发布脚本回填并通过远端校验（2026-10-07 闭环） | 已闭环，无需恢复 | 未回填即发布 |
 | `ROLLBACK-001` | 移植缺陷影响既有插件 | 构建失败 | 只改本插件目录 | 撤销本来源对象改动 | 覆盖共享工作树 |
 
 - 任务完成条件：本地构建、静态检查、单元测试与面板语法全绿，注册表校验通过。

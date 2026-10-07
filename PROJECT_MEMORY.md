@@ -41,6 +41,7 @@
 
 ## 变更记录
 
+- 2026-10-07: cursor-provider 0.1.0 发布完成——发布链 44d2bb4 → a17c2aa（8 资产）→ 92f569c（registry 回填），CI run 37636155616 全 57 jobs success，生产 plugin-store install 热重载成功，端到端验收通过（token 导入、去重、流式/非流式推理、export 接口）；高级模型上游 resource_exhausted 为 Cursor 服务端账号配额限制
 - 2026-10-07: 新增「发布后清理」规则（AGENTS.md/CLAUDE.md 发布小节 + 发布 skill Step 13.5）与项目 skill `project-cpa-workbuddy-plugin-release-asset-prune-rules` + `scripts/prune-release-assets.py`；`release-assets` 3.75 GB → 0.13 GB
 - 2026-08-23: 由 `project-rule-file-bootstrap-rules` 的 `memory-bootstrap` 初始化双区骨架；核心记忆由项目分析沉淀
 - 2026-07-03: 模板骨架初始化（模板原始记录）
