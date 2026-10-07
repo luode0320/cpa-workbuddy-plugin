@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -213,6 +214,12 @@ func parseModelsAPIResponse(body []byte) ([]pluginapi.ModelInfo, error) {
 				Name   string   `json:"name"`
 				Models []string `json:"models"`
 			} `json:"agents"`
+			Agent struct {
+				Agents []struct {
+					Name   string   `json:"name"`
+					Models []string `json:"models"`
+				} `json:"agents"`
+			} `json:"agent"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &rawEnvelope); err != nil {
@@ -222,8 +229,13 @@ func parseModelsAPIResponse(body []byte) ([]pluginapi.ModelInfo, error) {
 		return nil, fmt.Errorf("models API code %d", rawEnvelope.Code)
 	}
 
+	agents := rawEnvelope.Data.Agents
+	if len(agents) == 0 && len(rawEnvelope.Data.Agent.Agents) > 0 {
+		agents = rawEnvelope.Data.Agent.Agents
+	}
+
 	var cliModelIDs []string
-	for _, a := range rawEnvelope.Data.Agents {
+	for _, a := range agents {
 		if a.Name == "cli" {
 			cliModelIDs = a.Models
 			break
@@ -254,7 +266,7 @@ func parseModelsAPIResponse(body []byte) ([]pluginapi.ModelInfo, error) {
 			OwnedBy:                    providerName,
 			SupportedGenerationMethods: []string{"chat"},
 		})
-		if lower == "default-model" {
+		if lower == "default-model" || lower == "default" {
 			if _, exists := seen["auto"]; !exists {
 				seen["auto"] = struct{}{}
 				out = append(out, pluginapi.ModelInfo{
@@ -359,12 +371,15 @@ func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 		}
 	}
 	if accessToken == "" {
+		log.Printf("[workbuddy-ai] models: dynamic discovery skipped, no access token in StorageJSON (len=%d)", len(storageJSON))
 		return nil
 	}
 	dyn, err := callModelsAPI(accessToken, enterpriseID)
 	if err != nil || len(dyn) == 0 {
+		log.Printf("[workbuddy-ai] models: dynamic discovery failed (err=%v, count=%d)", err, len(dyn))
 		return nil
 	}
+	log.Printf("[workbuddy-ai] models: dynamic discovery ok: %d models", len(dyn))
 	storeDynamicModels(dyn)
 	return dyn
 }

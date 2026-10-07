@@ -158,3 +158,40 @@ func TestParseModelsAPIResponseV3Config(t *testing.T) {
 		t.Fatal("expected auto alias to be generated")
 	}
 }
+
+func TestParseModelsAPIResponseV3ConfigNestedAgent(t *testing.T) {
+	v3NestedJSON := []byte(`{
+		"code": 0,
+		"data": {
+			"agent": {
+				"agents": [{"name": "cli", "models": ["default", "gpt-6-sol", "claude-sonnet-4"]}]
+			},
+			"models": [
+				{"id": "default", "name": "Default Auto", "maxInputTokens": 200000, "maxOutputTokens": 24000},
+				{"id": "gpt-6-sol", "name": "GPT-6-Sol", "maxInputTokens": 1000000, "maxOutputTokens": 128000},
+				{"id": "claude-sonnet-4", "name": "Claude-Sonnet-4", "maxInputTokens": 200000, "maxOutputTokens": 64000},
+				{"id": "other-agent-model", "name": "Other"}
+			]
+		}
+	}`)
+	models, err := parseModelsAPIResponse(v3NestedJSON)
+	if err != nil {
+		t.Fatalf("parseModelsAPIResponse failed for nested agent: %v", err)
+	}
+	// default + auto alias + gpt-6-sol + claude-sonnet-4 = 4
+	if len(models) != 4 {
+		t.Fatalf("expected 4 models (including auto alias), got %d: %+v", len(models), models)
+	}
+	foundAuto := false
+	for _, m := range models {
+		if m.ID == "auto" {
+			foundAuto = true
+			if m.ContextLength != 200000 || m.MaxCompletionTokens != 24000 {
+				t.Fatalf("auto alias did not inherit limits from default: %+v", m)
+			}
+		}
+	}
+	if !foundAuto {
+		t.Fatal("expected auto alias to be generated from default")
+	}
+}
