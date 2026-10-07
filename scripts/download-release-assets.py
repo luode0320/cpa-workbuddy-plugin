@@ -35,10 +35,9 @@ def main():
         print("usage: download-release-assets.py <version> [plugin]")
         return 2
     version = sys.argv[1].lstrip("v")
-    if len(sys.argv) == 3:
-        PLUGIN = sys.argv[2]
-    tag = f"{PLUGIN}-v{version}"
-    out_dir = os.path.join("release-assets", f"{PLUGIN}-{version}")
+    plugin = sys.argv[2] if len(sys.argv) == 3 else PLUGIN
+    tag = f"{plugin}-v{version}"
+    out_dir = os.path.join("release-assets", f"{plugin}-{version}")
     os.makedirs(out_dir, exist_ok=True)
 
     # Resolve release + asset names via API
