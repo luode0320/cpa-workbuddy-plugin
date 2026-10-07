@@ -14,6 +14,20 @@
 
 ## 活动会话进展摘要
 
+- 当前会话（2026-10-07）：**定位新授权账号离奇消失根因，彻底移除自动物理删除机制，发布并部署 WorkBuddy AI 0.1.6**。
+  - 用户反馈：刚刚成功授权了一个号，出现在了面板中，但很短的时间过后账号消失了；
+  - 核心排查与根因：
+    1. 13:52:07 账号授权成功创建（workbuddyai-3d749a7f-ec76-4a55-a316-37d86c9ff47c.json）；
+    2. 13:52:09 有并发请求调用该账号，上游接口返回 upstream 429: Credits exhausted（code: 14018），命中 isHardCreditError；
+    3. 旧逻辑中将 Global 账号生命周期硬编码为 lifecycleDelete，触发 reconcileOneAccount 后二次调用 fetchUserResource 确认 0 额度，随即执行 deleteAuth 物理删除了磁盘文件；
+  - 架构与生命周期对齐修复 (v0.1.6)：
+    1. 彻底将 lifecycleActionFor 返回值调整为 lifecycleDisable（仅软禁用，绝不物理删除账号），与国内版完全对齐；
+    2. 放开通用恢复通道：去除 cn 专属判定，当 disabled 账号在后续充值或刷新中检测到 remain > 0 时自动重新激活（lifecycleReenable）；
+    3. 修正专属管理面板前端 region 默认 fallback 为 global；
+    4. 单测补充断言并通过必失败哨兵编译验证；版本 bump 至 0.1.6，GitHub Actions 48 个构建任务全绿；
+    5. 8 个 Release 资产已下载入库并推送到 GitHub，registry.json 0.1.6 校验全绿并推送，生产服务器已成功热重载加载 0.1.6。
+
+
 - 当前会话（2026-10-07）：**定位模型未展示根因、支持双重 agent 结构与 default 映射，并全链路发布部署 WorkBuddy AI 0.1.5**。
   - 用户反馈：截图反馈“该凭证暂无可用模型 / 该认证凭证可能尚未被服务器加载或没有绑定任何模型”。
   - 核心排查与根因收敛：
