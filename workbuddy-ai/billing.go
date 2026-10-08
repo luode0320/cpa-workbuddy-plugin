@@ -12,6 +12,18 @@ import (
 
 var billingRetryDelays = []time.Duration{time.Second, 2 * time.Second}
 
+// billingBase hosts the check-in / billing API endpoints. It is a var (not
+// const) so tests can override it with an httptest server.
+var billingBase = "https://www.workbuddy.ai"
+
+// setBillingBase temporarily overrides billingBase for tests; returns a
+// restore func.
+func setBillingBase(s string) func() {
+	old := billingBase
+	billingBase = s
+	return func() { billingBase = old }
+}
+
 type resourcePackage struct {
 	PackageName         string `json:"PackageName"`
 	CapacityRemain      int64  `json:"CapacityRemain"`
@@ -87,7 +99,7 @@ func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, er
 	} else {
 		reader = bytes.NewReader([]byte("{}"))
 	}
-	req, err := http.NewRequest(http.MethodPost, upstreamBase+path, reader)
+	req, err := http.NewRequest(http.MethodPost, billingBase+path, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -307,4 +319,136 @@ func isCreditsExhausted(cr *creditsSummary) bool {
 		return true
 	}
 	return false
+}
+
+// fetchCheckinStatus probes the daily check-in state for one account. The
+// international service exposes two candidate status endpoints; the first
+// (checkin-activity-status) is the current one, the second is kept as a
+// fallback for older deployments.
+func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
+	var data json.RawMessage
+	var lastErr error
+	for _, path := range []string{"/v2/billing/meter/checkin-activity-status", "/v2/billing/meter/checkin-status"} {
+		d, err := billingCall(sa, path, nil)
+		if err == nil {
+			data = d
+			lastErr = nil
+			break
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	sum := &checkinSummary{
+		Active:          jsonBool(m, "active", "Active"),
+		TodayCheckedIn:  jsonBool(m, "today_checked_in", "todayCheckedIn"),
+		StreakDays:      jsonI64(m, "streak_days", "streakDays"),
+		DailyCredit:     jsonI64(m, "daily_credit", "dailyCredit"),
+		TodayCredit:     jsonI64(m, "today_credit", "todayCredit"),
+		TotalCredits:    jsonI64(m, "total_credits", "totalCredits"),
+		WeekCheckinDays: jsonI64(m, "week_checkin_days", "weekCheckinDays"),
+		ActivityName:    jsonStr(m, "activity_name", "activityName"),
+		Season:          jsonI64(m, "season", "season"),
+	}
+	if dates, ok := m["checkin_dates"].([]any); ok {
+		for _, d := range dates {
+			if s, ok := d.(string); ok {
+				sum.CheckinDates = append(sum.CheckinDates, s)
+			}
+		}
+	} else if dates, ok := m["checkinDates"].([]any); ok {
+		for _, d := range dates {
+			if s, ok := d.(string); ok {
+				sum.CheckinDates = append(sum.CheckinDates, s)
+			}
+		}
+	}
+	return sum, nil
+}
+
+// performCheckinCall claims the daily check-in credits. Business failures come
+// back as a structured result (not an error) so the panel can render precise
+// states; explicit error codes are mapped in checkinErrorResult (DEC-004):
+// 1001 already / 1002 not eligible / 1003 event ended.
+func performCheckinCall(sa *storedAuth) (map[string]any, error) {
+	data, err := billingCall(sa, "/v2/billing/meter/daily-checkin", nil)
+	if err != nil {
+		return checkinErrorResult(err.Error()), nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	// success is explicitly set as a bool: upstream may return "true" (string),
+	// which would make the downstream out["success"] == true check fail silently.
+	m["success"] = true
+	return m, nil
+}
+
+// checkinErrorResult maps a daily-checkin failure into a panel-friendly
+// structured result. Explicit business codes win over the raw message;
+// unmatched failures keep the original text for the already-checked-in
+// string fallback in checkinOneAccount.
+func checkinErrorResult(msg string) map[string]any {
+	out := map[string]any{"success": false, "message": msg}
+	switch {
+	case strings.Contains(msg, "code=1001"):
+		out["reason"] = "already"
+		out["message"] = "already checked in today"
+	case strings.Contains(msg, "code=1002"):
+		out["reason"] = "not_eligible"
+		out["message"] = "account not eligible for check-in"
+	case strings.Contains(msg, "code=1003"):
+		out["reason"] = "event_ended"
+		out["message"] = "check-in event ended"
+	}
+	return out
+}
+
+func jsonBool(m map[string]any, keys ...string) bool {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			switch t := v.(type) {
+			case bool:
+				return t
+			case float64:
+				return t != 0
+			case string:
+				return t == "true" || t == "1"
+			}
+		}
+	}
+	return false
+}
+
+func jsonI64(m map[string]any, keys ...string) int64 {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			switch t := v.(type) {
+			case float64:
+				return int64(t)
+			case int64:
+				return t
+			case string:
+				var n int64
+				fmt.Sscanf(t, "%d", &n)
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+func jsonStr(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if s, ok := m[k].(string); ok {
+			return s
+		}
+	}
+	return ""
 }

@@ -300,7 +300,7 @@ func doFetchOne(authIndex, authID string) error {
 	if err != nil {
 		return err
 	}
-	_, _, errs := cachedAccountDetails(authID, sa, true)
+	_, _, _, errs := cachedAccountDetails(authID, sa, true)
 	for _, e := range errs {
 		if strings.Contains(e, "credits:") {
 			return errors.New(e)

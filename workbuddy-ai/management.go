@@ -63,6 +63,8 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/refresh", Description: "Force refresh quota/cache for all accounts."},
 			{Method: http.MethodGet, Path: base + "/refresh/status", Description: "Async refresh progress snapshot."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one or all accounts."},
+			{Method: http.MethodPost, Path: base + "/checkin", Description: "Manually check in one account (auth_index) or all."},
+			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import WorkBuddy AI credential JSON into host auth store."},
 			{Method: http.MethodGet, Path: base + "/export", Description: "Export all WorkBuddy AI credentials as JSON backup."},
 			{Method: http.MethodPost, Path: base + "/trial", Description: "Claim expert trial pack for one account (auth_index). 250 credits / 14 days."},
@@ -110,6 +112,10 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, globalRefresh.Snapshot()))
 	case req.Method == http.MethodGet && path == base+"/credits":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCreditsQuery(req)))
+	case req.Method == http.MethodPost && path == base+"/checkin":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleManualCheckin(req)))
+	case req.Method == http.MethodPost && path == base+"/checkin/config":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinConfig(req)))
 	case req.Method == http.MethodPost && path == base+"/import":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportAuth(req)))
 	case req.Method == http.MethodGet && path == base+"/export":
@@ -249,6 +255,8 @@ func mutatingManagementPath(path string) bool {
 	base := loadedManagementBasePath() + "/plugins/" + providerName
 	switch path {
 	case base + "/refresh",
+		base + "/checkin",
+		base + "/checkin/config",
 		base + "/import",
 		base + "/export",
 		base + "/trial",

@@ -68,7 +68,7 @@
 {
   "version": 4,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "2026-10-07T15:25:33.083696Z",
+  "registry_updated_at": "2026-10-08T19:57:24.500230Z",
   "projections": [
     {
       "projection_id": "SESSION/30608b3616fa2311bfb720a2776c09ac96b2738601ec3752b03a252c810cdb70",
@@ -109,40 +109,111 @@
       ]
     },
     {
-      "projection_id": "SESSION/b7bb272cea839ad00154909ba5c6f5976dc459430c297f68c2845b27fa9853bc",
+      "projection_id": "SESSION/df86ce8afa18a9515072ffdfb460ee7e85402285d28ea505ed37f9133e10c0e8",
       "session_id": "01a115b7-7f04-7b81-8e96-cb269a144fa4",
       "projection_origin": "synthesized",
       "synthesis_mode": "exact",
-      "state": "inactive",
-      "plan_key": "IMPL-CURSOR-PROVIDER-PORT-20261007",
-      "source_document": "doc/3-实施/2026-10-07_Cursor插件移植与Token导入实施总览.md",
-      "plan_fingerprint": "9eea12fd114fb3e34cb60dd2a60eceb2eacd227a7e9a481c5b3f73c954a2a3b6",
-      "updated_at": "2026-10-07T15:25:33.083533Z",
+      "state": "active",
+      "plan_key": "IMPL-CURSOR-PANEL-AUTOENTRY-20261008",
+      "source_document": "doc/3-实施/2026-10-08_Cursor面板免密直入与workbuddy对齐实施总览.md",
+      "plan_fingerprint": "16acf9f349058ff187e5a3a7fb9bcc2f856cc447c47c98da76c8206319350112",
+      "updated_at": "2026-10-07T17:15:57Z",
       "steps": [
         {
           "id": "TASK-001",
-          "step": "[TASK-001] 移植源码并统一标识",
+          "step": "[TASK-001] 面板免密直入改造：密钥区默认隐藏、启动自动加载、移除订阅额度说明区块",
+          "status": "in_progress"
+        },
+        {
+          "id": "TASK-002",
+          "step": "[TASK-002] 测试与本地回归：management_test 断言更新、面板自动进入回归脚本、cgo-shim-build 全绿",
+          "status": "pending"
+        },
+        {
+          "id": "TASK-003",
+          "step": "[TASK-003] 文档与版本收口：DESIGN/CHANGELOG/VERSION 0.1.1、6-review 风格回归",
+          "status": "pending"
+        },
+        {
+          "id": "TASK-004",
+          "step": "[TASK-004] 发布与生产部署验证：commit/push/CI/资产入库/registry/热重载验收",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "projection_id": "SESSION/20e8ec46dba59302295da066dda5bf5a2a66b4529a4bae4bb9cdc4698f67c8d1",
+      "session_id": "01a11ba7-3193-7ab0-9618-11075ecaba63",
+      "projection_origin": "synthesized",
+      "synthesis_mode": "exact",
+      "state": "inactive",
+      "plan_key": "IMPL-TOKEN-USAGE-PERF-ICON-20261008",
+      "source_document": "doc/3-实施/2026-10-08_Token用量面板性能优化与插件图标修复实施总览.md",
+      "plan_fingerprint": "e41673af031195fb8992a957a1a20efa15ce3eac1bf8bc3dee3e5f2c8de406cc",
+      "updated_at": "2026-10-08T17:23:47.766782Z",
+      "steps": [
+        {
+          "id": "TASK-001",
+          "step": "[TASK-001] 后端移除 SSE 通道（路由、函数、通知序列、测试同步）",
           "status": "completed"
         },
         {
           "id": "TASK-002",
-          "step": "[TASK-002] 令牌解析与导入",
+          "step": "[TASK-002] 面板前端改造（去自动刷新、新增 last_1_hour、本地化）",
           "status": "completed"
         },
         {
           "id": "TASK-003",
-          "step": "[TASK-003] 导出删除启停接口",
+          "step": "[TASK-003] 图标资产与注册（新图标入库、Logo URL、registry logo）",
           "status": "completed"
         },
         {
           "id": "TASK-004",
-          "step": "[TASK-004] 面板与本地回归收口",
+          "step": "[TASK-004] 版本与文档收口（VERSION/main.go bump、6-review、测试文档）",
           "status": "completed"
         },
         {
           "id": "TASK-005",
-          "step": "[TASK-005] 发布与部署",
+          "step": "[TASK-005] 发布与生产部署验证",
           "status": "completed"
+        }
+      ]
+    },
+    {
+      "projection_id": "SESSION/6d9b35f8481be4fb66fbe631557cd5e155caef128cb55e64f7b4d110746dca96",
+      "session_id": "01a11b9b-eb7d-7830-afed-7c8dd64c6629",
+      "projection_origin": "synthesized",
+      "synthesis_mode": "exact",
+      "state": "active",
+      "plan_key": "IMPL-WBAI-CHECKIN-20261008",
+      "source_document": "doc/3-实施/2026-10-08_WorkBuddyAI国际版签到改造实施总览.md",
+      "plan_fingerprint": "6cd82fd431385b7bf05b43a41d7600cfc93bd4126cc463516ef891fb986687b5",
+      "updated_at": "2026-10-09T03:58:00.000000Z",
+      "steps": [
+        {
+          "id": "TASK-001",
+          "step": "[TASK-001] 后端签到数据链路：新增 checkin.go，扩展缓存 3 路与面板回填",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-002",
+          "step": "[TASK-002] 后端控制面与调度：/checkin 路由、配置开关、调度器合并",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-003",
+          "step": "[TASK-003] 面板签到改造与 vm 回归脚本",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-004",
+          "step": "[TASK-004] 文档与版本收口：bump 0.1.8、6-review",
+          "status": "in_progress"
+        },
+        {
+          "id": "TASK-005",
+          "step": "[TASK-005] 发布与生产部署验收",
+          "status": "pending"
         }
       ]
     }

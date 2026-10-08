@@ -363,14 +363,18 @@ func ensureScheduler() {
 
 func schedulerLoop(stop <-chan struct{}) {
 	for {
-		next := nextKeepaliveTime(time.Now())
+		next := nextCheckinTime(time.Now())
 		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-stop:
 			timer.Stop()
 			return
 		case <-timer.C:
-			if keepaliveEnabled() && shouldRunKeepaliveNow(time.Now()) {
+			runAutoCheckin()
+			// Fire keepalive if the current tick falls within its scheduled
+			// window (e.g. 04:00 keepalive fires on the 04:00 tick even though
+			// the previous checkin tick was 00:00).
+			if shouldRunKeepaliveNow(time.Now()) {
 				runTokenKeepalive()
 			}
 		}

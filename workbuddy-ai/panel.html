@@ -219,7 +219,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 <body>
 <div class="wrap">
   <h1>WorkBuddy AI 账号面板</h1>
-  <div class="sub">积分余额 · 14天 Pro 体验包 · 活跃探测 · 耗尽自动关/删</div>
+  <div class="sub">积分余额 · 每日签到（00/04/08/12/16/20） · 活跃探测 · 耗尽自动关/删</div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
     <div style="display:flex;gap:8px">
@@ -231,10 +231,10 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="primary" id="qrLoginBtn" onclick="openLoginModal()" style="font-weight:600;background:var(--accent,#0066cc);color:#fff">📱 扫码登录 / 添加账号</button>
     <button class="sec" id="importBtn" onclick="openImportModal()">导入凭证</button>
     <button class="sec" id="exportBtn" onclick="exportAuth(this)" title="导出全部账号凭证为 JSON，可直接再导入">导出凭证</button>
-    <button class="sec" onclick="claimTrialAll(this)" title="14天 Pro 体验包 · 一次性">全部领取 Pro</button>
+    <button class="sec" onclick="checkinAll(this)">全部签到</button>
     <input id="searchInput" class="search" type="search" placeholder="搜索 nickname / UID" oninput="onSearchChange(this.value)" autocomplete="off">
 <button class="sec sort-btn" id="sortBtn" onclick="toggleSort(this)" title="当前：创建时间倒序（新→旧），点击切积分升序">创建 ↓</button>
-
+    <label class="toggle" title="每日 00/04/08/12/16/20 点定时签到"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到</label>
     <span class="toggle" id="svtime"></span>
     <span class="toggle ref-progress" id="refreshProgress" style="display:none"></span>
   </div>
@@ -410,13 +410,6 @@ function markCheckinDone(btn){
   btn.innerHTML="已签到";
   btn.dataset.orig="已签到";
 }
-function markTrialDone(btn){
-  if(!btn)return;
-  btn.disabled=true;
-  btn.className="done";
-  btn.innerHTML="已领取";
-  btn.dataset.orig="已领取";
-}
 function fmtRemain(c){if(!c)return "-";const t=(c.total_remain||0)+(c.total_used||0);return c.total_remain+" 余 / "+t+" 总"}
 function esc(s){return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function progressHTML(c, a){
@@ -451,7 +444,6 @@ function bindCardActions(root){
       const act=ev.currentTarget.dataset.action;
       const idx=ev.currentTarget.dataset.authIndex;
       if(act==="checkin") checkin(idx, ev.currentTarget);
-      else if(act==="claim") claimTrial(idx, ev.currentTarget);
       else if(act==="select") selectAuth(idx, ev.currentTarget);
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
       else if(act==="test") testActive(idx, ev.currentTarget);
@@ -486,21 +478,12 @@ function card(a){
   const isGlobal=region==="global";
   const selected=!!a.selected;
   const regionBadge=`<span class="badge ${region}">${isGlobal?"Global":"CN"}</span>`;
-  // CN: 签到 button; Global: 领取专家加油包 button (or 已领取 if trial_claimed)
-  let actionHTML;
-  if(isGlobal){
-    if(a.trial_claimed){
-      actionHTML='<button class="done" disabled="disabled">已领取</button>';
-    }else{
-      actionHTML=`<button class="sec" data-action="claim" data-auth-index="${esc(a.auth_index)}">领取专家加油包</button>`;
-    }
-  }else{
-    const checked=ci.today_checked_in;
-    const btnClass=checked?"done":"sec";
-    const btnText=checked?"已签到":"签到";
-    const btnDisabled=checked?" disabled=\"disabled\"":"";
-    actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`;
-  }
+  // 每日签到按钮：今日已签显示已签到并置灰。
+  const checked=ci.today_checked_in;
+  const btnClass=checked?"done":"sec";
+  const btnText=checked?"已签到":"签到";
+  const btnDisabled=checked?" disabled=\"disabled\"":"";
+  const actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`;
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
   const testFailedBadge=a.test_failed?`<span class="badge test-failed" title="定时活跃测试失败且仍有积分；建议人工复核后清理">测试</span>`:"";
   const badges=testFailedBadge+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
@@ -621,7 +604,6 @@ async function fetchAndPatchCredits(idx, opts={}){
   if(a){
     if(acct.credits) a.credits=acct.credits;
     if(acct.exhausted!=null) a.exhausted=acct.exhausted;
-    if(acct.trial_claimed!=null) a.trial_claimed=acct.trial_claimed;
     if(acct.plan) a.plan=acct.plan;
     a.error="";
     updateOneCard(a);
@@ -1026,9 +1008,6 @@ async function startBackgroundRefresh(){
 function checkinResultToast(res, who){
   const name=res.nickname||who||"账号";
   if(res.error){toast(name+"：签到失败","err",res.error);return}
-  if(res.reason==="global"||(/国际版|不支持/.test(String(res.message||"")))){
-    toast(name+"：国际版无需签到","warn",res.message||"请用领取专家加油包");return;
-  }
   if(res.reason==="already"||(res.skipped&&/already|已签|今日/.test(String(res.message||"")))){
     toast(name+"：今日已签到","ok",res.message||"");return;
   }
@@ -1037,11 +1016,10 @@ function checkinResultToast(res, who){
 }
 function isCheckinDoneResult(res){
   if(!res||res.error) return false;
-  if(res.reason==="global") return false;
   if(res.success) return true;
   const msg=String(res.message||"");
-  // already checked in today (backend) — treat as done, not failure
-  if(/already|已签|今日/.test(msg) && !/国际版|不支持/.test(msg)) return true;
+  // 上游已签幂等返回：按已完成处理，不当作失败。
+  if(/already|已签|今日/.test(msg)) return true;
   return false;
 }
 async function checkin(idx, btn){
@@ -1203,17 +1181,15 @@ async function confirmDeleteAuth(){
 async function checkinAll(btn){
   busy(btn,true);
   try{
-    // Backend prefilters: Global skipped, already-checked skipped; only CN-need-checkin run.
+    // 批量签到：后端按国际版口径统计，summary 回填 success/already/fail/eligible。
     const d=await api("/checkin",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
     const rs=d.results||[];
     const s=d.summary||{};
     const ok=Number(s.success??rs.filter(x=>x.success&&x.reason!=="already"&&!x.skipped).length)||0;
     const already=Number(s.already??rs.filter(x=>isCheckinDoneResult(x)&&(x.reason==="already"||x.skipped||!x.success)).length)||0;
     const fail=Number(s.fail??rs.filter(x=>x.error).length)||0;
-    const skippedGlobal=Number(s.skipped_global||0);
     const eligible=Number(s.eligible??(ok+fail))||0;
     const detailParts=[];
-    if(skippedGlobal) detailParts.push("跳过 Global "+skippedGlobal);
     if(already) detailParts.push("今日已签 "+already);
     if(eligible) detailParts.push("待签 "+eligible);
     const detail=detailParts.join(" · ");
@@ -1223,56 +1199,23 @@ async function checkinAll(btn){
       toast("批量签到："+ok+" 成功 / "+fail+" 失败"+(already?" / "+already+" 已签":""),"err",errDetail||detail);
     }else if(ok){
       toast("批量签到："+ok+" 成功"+(already?" / "+already+" 今日已签":""),"ok",detail);
-    }else if(already||skippedGlobal){
-      toast("无需签到","ok",detail||"CN 今日已签 · Global 已跳过");
+    }else if(already){
+      toast("无需签到","ok",detail||"今日已签");
     }else if(!rs.length && !eligible){
-      toast("没有需要签到的 CN 账号","warn",detail||"Global 不参与签到");
+      toast("没有需要签到的账号","warn",detail||"全部账号已完成签到");
     }else{
       toast("没有需要签到的账号","warn",detail);
     }
-    // Mark CN check-in buttons done immediately when any success/already
+    // 立即把已签到按钮置为完成态，避免 load() 重绘前闪现「签到」
     if(ok||already){
       document.querySelectorAll("#grid .card").forEach(c=>{
-        if((c.dataset.region||"global")==="cn"){
-          const b=c.querySelector("button.sec,button.done");
-          if(b && /签到|处理中/.test(b.textContent||"")) markCheckinDone(b);
-        }
+        const b=c.querySelector("button.sec,button.done");
+        if(b && /签到|处理中/.test(b.textContent||"")) markCheckinDone(b);
       });
     }
     await load();
   }catch(e){toast("批量签到失败","err",e.message)}
   // load() re-renders grid; only restore toolbar button
-  busy(btn,false);
-}
-async function claimTrial(idx, btn){
-  busy(btn,true);
-  try{
-    const d=await api("/trial",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx})});
-    if(d.error){toast("领取失败","err",d.error);busy(btn,false);}
-    else if(d.already_claimed){toast((d.nickname||"账号")+"：已领取过","warn",d.message||"");markTrialDone(btn);}
-    else if(d.success){toast((d.nickname||"账号")+"：领取成功","ok","+250 积分 · 14天有效");markTrialDone(btn);}
-    else{toast((d.nickname||"账号")+"："+(d.message||"未知"),"warn");busy(btn,false);}
-    await load();
-  }catch(e){toast("领取请求失败","err",e.message);busy(btn,false);}
-}
-async function claimTrialAll(btn){
-  busy(btn,true);
-  try{
-    const d=await api("/accounts");
-    const accounts=(d.accounts||[]).filter(a=>(a.region||"global")==="global"&&!a.trial_claimed);
-    if(!accounts.length){toast("没有可领取的账号","warn");busy(btn,false);return;}
-    let ok=0,fail=0,already=0;
-    for(const a of accounts){
-      try{
-        const r=await api("/trial",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:a.auth_index})});
-        if(r.success)ok++;else if(r.already_claimed||r.error)already++;else fail++;
-      }catch(e){fail++;}
-    }
-    if(fail)toast("批量领取："+ok+" 成功 / "+already+" 已领 / "+fail+" 失败","err");
-    else if(ok)toast("批量领取："+ok+" 成功"+(already?" / "+already+" 已领":""),"ok");
-    else toast("全部账号已领取","warn");
-    await load();
-  }catch(e){toast("批量领取失败","err",e.message)}
   busy(btn,false);
 }
 async function toggleAuto(on){

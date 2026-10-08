@@ -28,6 +28,7 @@ type wbAccount struct {
 	Selected     bool            `json:"selected"`
 	TestFailed   bool            `json:"test_failed"`
 	Credits      *creditsSummary `json:"credits,omitempty"`
+	Checkin      *checkinSummary `json:"checkin,omitempty"`
 	TrialClaimed bool            `json:"trial_claimed,omitempty"`
 	Error        string          `json:"error,omitempty"`
 	Success      int64           `json:"success,omitempty"`
@@ -104,8 +105,9 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 			acct.Region = "global"
 
 			if fetchCredits {
-				plan, cr, errs := cachedAccountDetails(f.ID, sa, force)
+				plan, ci, cr, errs := cachedAccountDetails(f.ID, sa, force)
 				acct.Plan = plan
+				acct.Checkin = ci
 				acct.Credits = cr
 				acct.Exhausted = isCreditsExhausted(cr)
 				acct.TrialClaimed = hasTrialPack(cr)
@@ -115,6 +117,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 				if v, ok := accountCache.Load(f.ID); ok {
 					if e, ok2 := v.(*accountCacheEntry); ok2 {
 						acct.Plan = e.plan
+						acct.Checkin = e.checkin
 						acct.Credits = e.credits
 						acct.Exhausted = isCreditsExhausted(e.credits)
 						acct.TrialClaimed = hasTrialPack(e.credits)
@@ -153,6 +156,9 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 						if e.plan != "" {
 							a.Plan = e.plan
 						}
+						if e.checkin != nil {
+							a.Checkin = e.checkin
+						}
 					}
 				}
 				filtered = append(filtered, a)
@@ -166,6 +172,9 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	if force {
 		refreshTestFailedSetFromDisk()
 	}
+	checkinAutoMu.RLock()
+	auto := checkinAuto
+	checkinAutoMu.RUnlock()
 	sum := summarizeCredits(out)
 	for i := range out {
 		out[i].Selected = out[i].AuthID == activeID
@@ -182,6 +191,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 		"accounts":       out,
 		"active_auth":    activeID,
 		"scheduler_mode": loadedSchedulerMode(),
+		"checkin_auto":   auto,
 		"lifecycle_auto": lifecycleEnabled(),
 		"server_time":    time.Now().Format("2006-01-02 15:04:05"),
 		"summary":        sum,

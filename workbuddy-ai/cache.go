@@ -1,4 +1,4 @@
-// cache.go holds the per-account in-memory cache for plan / credits
+// cache.go holds the per-account in-memory cache for plan / checkin / credits
 // snapshots and the singleflight machinery that dedups concurrent upstream
 // fetches for the same account. The cache is the coordination point between
 // the dashboard, reconcile, and scheduler pick paths.
@@ -12,6 +12,7 @@ import (
 
 // the failed field falls back to the previous value instead of being wiped.
 type accountCacheEntry struct {
+	checkin *checkinSummary
 	credits *creditsSummary
 	plan    string
 	fetched time.Time
@@ -30,20 +31,21 @@ var accountDetailFlight sync.Map // authID -> *accountDetailCall
 type accountDetailCall struct {
 	done chan struct{}
 	plan string
+	ci   *checkinSummary
 	cr   *creditsSummary
 	errs []string
 }
 
-// cachedAccountDetails fetches plan/credits concurrently (upstream
-// round-trip dominates; 2 serial calls ≈ 2× latency). On any individual
+// cachedAccountDetails fetches plan/checkin/credits concurrently (upstream
+// round-trip dominates; 3 serial calls ≈ 3× latency). On any individual
 // failure the previous cached value is kept (stale-while-error) so a
 // transient upstream 500 does not blank the panel row.
-func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan string, cr *creditsSummary, errs []string) {
+func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan string, ci *checkinSummary, cr *creditsSummary, errs []string) {
 	var prev *accountCacheEntry
 	if v, ok := accountCache.Load(authID); ok {
 		prev = v.(*accountCacheEntry)
 		if !force && time.Since(prev.fetched) < accountCacheTTL {
-			return prev.plan, prev.credits, nil
+			return prev.plan, prev.checkin, prev.credits, nil
 		}
 	}
 
@@ -54,13 +56,13 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 		<-other.done
 		if v, ok := accountCache.Load(authID); ok {
 			if e, ok2 := v.(*accountCacheEntry); ok2 {
-				return e.plan, e.credits, other.errs
+				return e.plan, e.checkin, e.credits, other.errs
 			}
 		}
-		return other.plan, other.cr, other.errs
+		return other.plan, other.ci, other.cr, other.errs
 	}
 	defer func() {
-		call.plan, call.cr, call.errs = plan, cr, errs
+		call.plan, call.ci, call.cr, call.errs = plan, ci, cr, errs
 		close(call.done)
 		accountDetailFlight.Delete(authID)
 	}()
@@ -75,8 +77,16 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 		errList = append(errList, msg)
 		errMu.Unlock()
 	}
-	wg.Add(2)
+	wg.Add(3)
 	go func() { defer wg.Done(); plan = fetchPaymentType(sa) }()
+	go func() {
+		defer wg.Done()
+		if c, err := fetchCheckinStatus(sa); err == nil {
+			ci = c
+		} else {
+			addErr("checkin: " + err.Error())
+		}
+	}()
 	go func() {
 		defer wg.Done()
 		if r, err := fetchUserResource(sa); err == nil {
@@ -87,6 +97,9 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 	}()
 	wg.Wait()
 	if prev != nil {
+		if ci == nil {
+			ci = prev.checkin
+		}
 		if cr == nil {
 			cr = prev.credits
 		}
@@ -98,9 +111,9 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 	if cr != nil {
 		cr.FetchedAt = now.UTC().Format(time.RFC3339)
 	}
-	accountCache.Store(authID, &accountCacheEntry{credits: cr, plan: plan, fetched: now})
+	accountCache.Store(authID, &accountCacheEntry{checkin: ci, credits: cr, plan: plan, fetched: now})
 	pruneAccountCacheSoftCap(accountCacheSoftCap)
-	return plan, cr, errList
+	return plan, ci, cr, errList
 }
 
 // accountCacheSoftCap limits concurrent cache entries (auth churn / index thrash).

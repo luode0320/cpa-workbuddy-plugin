@@ -444,7 +444,7 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 		// previous Load→Store sequence here had a check-then-act window
 		// where a concurrent dashboard cachedAccountDetails write could
 		// overwrite our merge with newer plan/checkin values).
-		_, cr2, _ := cachedAccountDetails(authID, sa, true)
+		_, _, cr2, _ := cachedAccountDetails(authID, sa, true)
 		cr = cr2
 		if cr == nil {
 			return lifecycleNone, nil

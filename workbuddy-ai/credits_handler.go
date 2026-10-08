@@ -127,6 +127,22 @@ func errString(err error) string {
 	return err.Error()
 }
 
+// handleCheckinConfig toggles auto check-in at runtime; the value is not
+// persisted and config_yaml decides again on restart.
+func handleCheckinConfig(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	_ = json.Unmarshal(req.Body, &body)
+	checkinAutoMu.Lock()
+	if body.Enabled != nil {
+		checkinAuto = *body.Enabled
+	}
+	cur := checkinAuto
+	checkinAutoMu.Unlock()
+	return map[string]any{"checkin_auto": cur, "persistent": false}
+}
+
 func handleClaimTrial(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
