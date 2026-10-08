@@ -66,7 +66,7 @@ import (
 
 const (
 	providerName  = "workbuddy-token-usage"
-	pluginLogoURL = "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/TokenTracker.png"
+	pluginLogoURL = "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/TokenTracker.png"
 )
 
 var (
@@ -171,7 +171,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.2.3"
+var version = "0.2.4"
 
 func trackerRegistration() registration {
 	return registration{

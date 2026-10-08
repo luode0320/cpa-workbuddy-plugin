@@ -8,11 +8,11 @@ import (
 const (
 	defaultDashboardPageSize = 100
 	maxDashboardPageSize     = 500
-	defaultTimeRangeMode     = "custom"
+	defaultTimeRangeMode     = "last_1_hour"
 )
 
 var dashboardTimeRangeModes = map[string]struct{}{
-	"custom": {}, "last_5_hours": {}, "last_7_days": {}, "last_30_days": {}, "current_month": {},
+	"custom": {}, "last_1_hour": {}, "last_5_hours": {}, "last_7_days": {}, "last_30_days": {}, "current_month": {},
 }
 
 type DashboardPreferences struct {

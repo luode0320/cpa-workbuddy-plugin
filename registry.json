@@ -152,6 +152,7 @@
       "version": "0.2.3",
       "author": "luode (statistics core ported from AITNR/cap-token-usage-tracker)",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
+      "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/TokenTracker.png",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin",
       "install": {
         "type": "direct",
