@@ -41,6 +41,7 @@
 
 ## 变更记录
 
+- 2026-10-09: workbuddy-ai-provider 0.1.8 发布完成——国际版签到改造（面板「领取专家加油包」失效入口替换为每日签到 + 自动签到开关 + 批量签到，前端对齐 CN 面板口径）；发布链 583bb05 → b4e3a3e（8 资产）→ 45f6ce5（registry）；CI run 37836464993 全 57 jobs success；生产 plugin-store 热重载 active_version=0.1.8 retired_version=0.1.7，落盘 .so sha256 baf416d3… 与本地 zip 一致；生产 /checkin 按契约透传上游结果（code=10001 签到活动未开启），四路对照 + CN 域反证 + banner 12302 判定上游活动离线（GAP-001 环境性阻断，禁止伪造成功）
 - 2026-10-09: workbuddy-token-usage 0.2.4 发布完成——移除面板 SSE 短连接轮询与 15s 定时轮询，改手动刷新 + 默认最近 1 小时；补插件图标（assets/icons/TokenTracker.png）。发布链 aab549c → 37de5e4（8 资产）→ cd8b642（registry）→ 63a9879（prune 0.2.3）；CI run 37812435637 全 57 jobs success；生产 plugin-store install 热重载 active_version=0.2.4 retired_version=0.2.3，落盘 .so sha256 8ce19240… 与本地 zip 一致；生产面板 /usage 200（EventSource=0 / setInterval=0 / last_1_hour×7）
 - 2026-10-07: cursor-provider 0.1.0 发布完成——发布链 44d2bb4 → a17c2aa（8 资产）→ 92f569c（registry 回填），CI run 37636155616 全 57 jobs success，生产 plugin-store install 热重载成功，端到端验收通过（token 导入、去重、流式/非流式推理、export 接口）；高级模型上游 resource_exhausted 为 Cursor 服务端账号配额限制
 - 2026-10-07: 新增「发布后清理」规则（AGENTS.md/CLAUDE.md 发布小节 + 发布 skill Step 13.5）与项目 skill `project-cpa-workbuddy-plugin-release-asset-prune-rules` + `scripts/prune-release-assets.py`；`release-assets` 3.75 GB → 0.13 GB

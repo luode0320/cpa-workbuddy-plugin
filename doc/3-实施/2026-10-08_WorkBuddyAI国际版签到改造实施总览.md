@@ -7,9 +7,9 @@ source_ids: [REQ-WBAI-CHECKIN-20261008]
 status: accepted
 version: v1.1
 complexity: L3
-current_slice: CYCLE-03 版本文档收口与发布部署验收（进行中）
+current_slice: CYCLE-03 发布部署验收完成（部署链全 PASS；真实签到受上游活动离线阻断，登记 GAP-001）
 baseline_commit: 1db57fc
-updated_at: 2026-10-09 03:56:00
+updated_at: 2026-10-09 04:50:00
 reader_level: business_general
 writing_style: plain_chinese
 appendix_policy: preserve_existing_or_one_terminal_appendix
@@ -18,7 +18,7 @@ style_regression: required_after_tests
 
 # WorkBuddy AI 国际版签到改造实施总览
 
-结论：把 workbuddy-ai 面板上已失效的「领取专家加油包」替换为国际版每日签到（状态查询 + 领取积分），后端按国际版真实端点直调、前端对齐 CN 面板交互口径；影响：使用 WorkBuddy AI 国际版账号的运维用户在面板上恢复每日领取积分的能力；范围：workbuddy-ai 插件后端签到链路、管理路由、面板前端、测试与 0.1.8 发布部署；非范围：不改动 CN 插件与宿主核心、不实现「聊天消息触发签到」（日志实证无效）、不物理删除既有试用领取后端路由；变化：面板出现「签到/已签到」按钮、「全部签到」按钮与「自动签到」开关，每日 00/04/08/12/16/20 点自动签到；完成标准：本地隔离构建与面板回归全绿、0.1.8 发布并生产热重载、真实账号签到链路验收通过；术语说明：无；验证状态：客户端侧侦察已闭环，后端数据链路与控制面调度已实现并通过本地隔离构建、失败哨兵确证与风格回归，面板签到改造已通过 vm 回归（含旧版反证）与风格回归，版本文档收口与发布部署验收待执行。
+结论：把 workbuddy-ai 面板上已失效的「领取专家加油包」替换为国际版每日签到（状态查询 + 领取积分），后端按国际版真实端点直调、前端对齐 CN 面板交互口径；影响：使用 WorkBuddy AI 国际版账号的运维用户在面板上恢复每日领取积分的能力；范围：workbuddy-ai 插件后端签到链路、管理路由、面板前端、测试与 0.1.8 发布部署；非范围：不改动 CN 插件与宿主核心、不实现「聊天消息触发签到」（日志实证无效）、不物理删除既有试用领取后端路由；变化：面板出现「签到/已签到」按钮、「全部签到」按钮与「自动签到」开关，每日 00/04/08/12/16/20 点自动签到；完成标准：本地隔离构建与面板回归全绿、0.1.8 发布并生产热重载、真实账号签到链路验收通过；术语说明：无；验证状态：客户端侧侦察已闭环，后端数据链路与控制面调度已实现并通过本地隔离构建、失败哨兵确证与风格回归，面板签到改造已通过 vm 回归（含旧版反证）与风格回归，版本已 bump 0.1.8 并完成文档收口，发布链与生产热重载验收全部通过（active_version=0.1.8，落盘 .so 与本地 zip sha256 一致），生产签到端点按契约透传上游真实结果；真实签到领取因上游国际版活动离线（active=false、banner 12302、code=10001）暂被环境阻断，已登记为环境性阻断记录，非代码缺陷。
 
 ## 当前计划最终方案简要说明
 
@@ -164,8 +164,8 @@ sequenceDiagram
 | REQ-001 / AC-001 | CYCLE-01 | TASK-001 | checkin.go 等 7 文件 | TEST-001 | STYLE-WBAI-CHECKIN-20261008 | EVIDENCE-001 | 已完成 |
 | REQ-002 / AC-002 | CYCLE-01 | TASK-002 | management.go、credits_handler.go、keepalive.go、checkin_test.go | TEST-002 | STYLE-WBAI-CHECKIN-20261008 | EVIDENCE-002 | 已完成 |
 | REQ-003 / AC-003 | CYCLE-02 | TASK-003 | panel.html + mjs | TEST-003 | STYLE-WBAI-CHECKIN-20261008 | EVIDENCE-003 | 已完成 |
-| REQ-004 / AC-004 | CYCLE-03 | TASK-004 | VERSION/main.go/6-review | TEST-004 | STYLE-WBAI-CHECKIN-20261008 | EVIDENCE-004 | 待开始 |
-| REQ-005 / AC-005 | CYCLE-03 | TASK-005 | registry.json 等 | TEST-005 | STYLE-WBAI-CHECKIN-20261008 | EVIDENCE-005 | 待开始 |
+| REQ-004 / AC-004 | CYCLE-03 | TASK-004 | VERSION/main.go/6-review | TEST-004 | STYLE-WBAI-CHECKIN-20261008 | EVIDENCE-004 | 已完成 |
+| REQ-005 / AC-005 | CYCLE-03 | TASK-005 | registry.json 等 | TEST-005 | STYLE-WBAI-CHECKIN-20261008 | EVIDENCE-005 | 已完成（部署验收通过；真实签到受上游活动离线阻断，GAP-001） |
 
 REQ / AC 定义：REQ-001 签到数据链路可解析国际版响应（AC-001 shim 全绿 + 单测断言）；REQ-002 管理接口可手动/自动签到（AC-002 路由与开关断言）；REQ-003 面板交互对齐 CN（AC-003 vm 回归通过）；REQ-004 版本与文档一致（AC-004 版本一致 + 6-review PASS）；REQ-005 发布与生产验收（AC-005 远端 ALL PASS + 热重载 + 验收）。
 
@@ -196,7 +196,7 @@ REQ / AC 定义：REQ-001 签到数据链路可解析国际版响应（AC-001 sh
 
 | ID | 风险/阻断 | 触发证据 | 当前措施 | 恢复路径 | 禁止动作 |
 | --- | --- | --- | --- | --- | --- |
-| GAP-001 | 国际版签到资格/风控需生产实测 | 生产返回 403/风控拒绝 | 先无 token 直调；区分业务码与风控拒绝 | 评估 Windows 端 token 透传（选项 B） | 伪造成功结论 |
+| GAP-001 | 真实签到领取被上游活动离线阻断（环境性） | 全 11 账号 active=false；banner code=12302 activity is offline；daily-checkin code=10001；CN 域同端点 active=true（反证） | 已排除客户端标识因素（T0-T3 请求头对照零差异、设备令牌无效）；插件 0.1.8 功能就绪，自动签到 00/04/08/12/16/20 待活动开启自动生效 | 上游活动开启后由自动签到或面板手动签到直接复验 | 伪造成功结论 |
 | GAP-002 | 面板 JS 运行时缺陷（踩坑 51） | vm 回归 ReferenceError | 三件套验证：vm 全量执行 + 定义/使用 grep 成对 + 关键表达式分支断言 | 修复后重跑 | 仅 node --check 就发布 |
 | GAP-003 | 并行会话工作树污染 | git status 混入他会话改动 | 显式列文件 add + staged 反向确认 | 剥离重提 | git add 目录 |
 | GAP-004 | 调度器合并引入回归 | shim 失败或 keepalive 断言失败 | nextCheckinTime 合并断言 + 保留 shouldRunKeepaliveNow | 修复重跑 | 跳过测试 |
@@ -225,6 +225,7 @@ REQ / AC 定义：REQ-001 签到数据链路可解析国际版响应（AC-001 sh
 - 哨兵法：临时加必失败 Test -> shim 输出 FAIL -> 删哨兵重跑。
 - 清理与回滚：shim 目录逐删；发布失败按 ROLLBACK-001。
 - 面板回归主文档：`doc/5-tests/2026-10-09_033900_WorkBuddyAI国际版面板签到改造回归.md`（TEST-003 完整断言记录与旧版反证数据）。
+- 部署验收主文档：`doc/5-tests/2026-10-09_044707_WorkBuddyAI国际版签到部署验收.md`（TEST-005 发布链与 GAP-001 根因实验记录）。
 
 ## 追踪附录
 

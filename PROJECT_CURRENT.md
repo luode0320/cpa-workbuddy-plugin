@@ -8,9 +8,9 @@
 
 ## 项目概况
 
-- 状态：活跃维护中。已成功发布并部署 WorkBuddy AI 国际版 **0.1.6**、WorkBuddy 国内版 **0.15.2** 与新增第六插件 cursor-provider **0.1.0**（Cursor 会话 Token 导入，发布 + 生产热重载 + 端到端验收完成）。
+- 状态：活跃维护中。已成功发布并部署 WorkBuddy AI 国际版 **0.1.8**（每日签到：面板入口替换失效加油包 + 自动签到开关 + 批量签到）、WorkBuddy 国内版 **0.15.2** 与新增第六插件 cursor-provider **0.1.0**（Cursor 会话 Token 导入，发布 + 生产热重载 + 端到端验收完成）。
 - 活动工作区：F:\cpa-plugin
-- 当前时间：2026-10-07 (GMT+8)
+- 当前时间：2026-10-09 (GMT+8)
 
 ## 活动会话进展摘要
 
@@ -57,18 +57,18 @@
 
 | 会话 ID | 标题 / 意图 | 状态 | 活跃时间 | 关键改动 / 影响 |
 |---|---|---|---|---|
+| `01a11b9b-eb7d-7830-afed-7c8dd64c6629` | WorkBuddy AI 国际版签到改造实施 | completed | 2026-10-09 05:46 | 面板「领取专家加油包」失效入口替换为国际版每日签到，新增自动签到开关与批量签到；0.1.8 发布部署验收通过，上游活动离线登记为 GAP-001 |
+| `01a11ba7-3193-7ab0-9618-11075ecaba63` | Token 用量面板性能与图标修复 | completed | 2026-10-09 03:06 | token-usage 0.2.4 移除面板 SSE 短连接轮询与 15s 定时轮询、改手动刷新并补插件图标；发布部署验收通过 |
 | `01a115b7-7f04-7b81-8e96-cb269a144fa4` | Cursor 插件移植与 Token 导入实施 | completed | 2026-10-07 23:41 | 新增第六个插件 cursor-provider 0.1.0，支持会话 Token 导入账号；全链路发布、生产热重载与端到端验收均通过 |
 | `01a11624-7389-7fe2-ac2b-82eb433267bd` | release-assets 3.75 GB 清理旧发布缓存 | completed | 2026-10-07 19:34 | release-assets 从 3.75 GB 清理至 0.13 GB；发布后清理规则固化为项目 skill 与 prune 脚本 |
 | `01a110f3-1891-72c1-914e-7600d0e8b6df` | WorkBuddy AI 彻底清空写死模型与 0.1.3 全链路发布部署 | completed | 2026-10-07 03:20 | workbuddy-ai 彻底剔除硬编码模型，完全动态拉取；0.1.3 发布并生产部署热重载验证通过 |
-| `01a10add-b83c-7500-bc4c-2c92ff9393ca` | 移植 Gemini Provider 并接入 Token 用量统一统计 | completed | 2026-10-05 19:30 | 移植 gemini-provider 0.1.1，引入 Google 图标，打通 NDJSON feed，CI 全平台流水线 |
-| `01a0f678-72a0-7900-9c19-bf43949e829f` | 修复三插件筛选标签计数未随积分回填重算缺陷 | completed | 2026-10-01 18:30 | workbuddy 0.15.1 / traework 0.2.1 / qoderwork 0.9.21 派生筛选标签计数重绘修复 |
 <!-- END RECENT PROJECT SESSIONS -->
 <!-- BEGIN TASK PLAN PROJECTION -->
 ```json
 {
   "version": 4,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "2026-10-08T19:57:24.500230Z",
+  "registry_updated_at": "2026-10-08T20:50:04.091751Z",
   "projections": [
     {
       "projection_id": "SESSION/30608b3616fa2311bfb720a2776c09ac96b2738601ec3752b03a252c810cdb70",
@@ -184,11 +184,11 @@
       "session_id": "01a11b9b-eb7d-7830-afed-7c8dd64c6629",
       "projection_origin": "synthesized",
       "synthesis_mode": "exact",
-      "state": "active",
+      "state": "inactive",
       "plan_key": "IMPL-WBAI-CHECKIN-20261008",
       "source_document": "doc/3-实施/2026-10-08_WorkBuddyAI国际版签到改造实施总览.md",
       "plan_fingerprint": "6cd82fd431385b7bf05b43a41d7600cfc93bd4126cc463516ef891fb986687b5",
-      "updated_at": "2026-10-09T03:58:00.000000Z",
+      "updated_at": "2026-10-08T20:50:04.091579Z",
       "steps": [
         {
           "id": "TASK-001",
@@ -208,12 +208,12 @@
         {
           "id": "TASK-004",
           "step": "[TASK-004] 文档与版本收口：bump 0.1.8、6-review",
-          "status": "in_progress"
+          "status": "completed"
         },
         {
           "id": "TASK-005",
           "step": "[TASK-005] 发布与生产部署验收",
-          "status": "pending"
+          "status": "completed"
         }
       ]
     }

@@ -4,6 +4,8 @@
 
 ## 事件
 
+- 2026-10-09：workbuddy-ai-provider **0.1.8** 发布部署（国际版每日签到替换失效加油包）——面板把已失效的「领取专家加油包」入口替换为国际版每日签到（状态查询 + 领取积分），新增自动签到开关（00/04/08/12/16/20 六时段）与批量签到；发布链 583bb05→b4e3a3e（8 资产 7/7 sha256 OK）→45f6ce5（registry）；CI run 37836464993 全 57 jobs success；生产热重载 active_version=0.1.8 retired_version=0.1.7、落盘 .so sha256 baf416d3…c49a 与本地 zip 一致；生产 /checkin 按契约透传上游结果（code=10001 签到活动未开启，未伪造成功），四路请求头对照 T0-T3 零差异 + 全 11 账号 active=false + CN 域反证（CN active=true）+ banner 12302 判定为上游活动离线，登记 GAP-001 环境性阻断。
+
 - 2026-10-09：workbuddy-token-usage **0.2.4** 发布部署——移除面板 SSE 短连接轮询（每 2s EventSource 重连）与 15s 定时轮询，改打开时单次加载 + 手动刷新，默认时间范围改「最近 1 小时」；补图标 assets/icons/TokenTracker.png。发布链 aab549c→37de5e4（8 资产 7/7 OK）→cd8b642（registry）→63a9879（prune 0.2.3）；CI run 37812435637 全 57 jobs success；远端 0.2.4 资产 200 + sha256 一致、0.2.3 已 404；生产热重载 active_version=0.2.4 retired=0.2.3、落盘 .so sha256 8ce19240… 与本地 zip 一致；生产面板 /usage 200（EventSource=0/setInterval=0/last_1_hour×7）。
 
 - 2026-10-07：cursor-provider **0.1.0** 发布部署与端到端验收——发布闭环：commit 44d2bb4（162 文件）推送后派发 CI run 37636155616，全 57 jobs success；下载 8 资产（7 平台 zip + checksums）SHA256 校验 ALL OK（commit a17c2aa）；publish-assets 回填 registry（commit 92f569c）；远端 raw 7 资产 size+sha256 ALL PASS；生产 plugin-store install 0.1.0，落盘 .so sha256 bae19b38 与本地 zip 100% 一致，容器日志 plugin loaded + plugin registered 热重载成功，plugin-store 状态 installed/registered/enabled/effective_enabled 全 true。生产端到端验收：真实 token 导入成功（auth_index 9c0e4081ebf23fa7 → cursor-6c2463e563a13c02.json，面板可见 246 模型），重复导入正确去重；推理验收 cursor/default 非流式 3 次 + 流式（1..5 完整 + finish_reason:stop + [DONE]）+ 多轮对话全部成功；export 接口 200。高级模型（gpt-5.3-codex / composer-2.5 / claude-4-sonnet / gemini-3.x 等）统一返回上游 resource_exhausted（429，约 280ms 快速拒绝），判定为 Cursor 服务端对该账号订阅的配额限制，插件按真实 429 语义透传，非移植缺陷。发布后清理：release-assets prune dry-run 确认保留集完整、无待删；本地缓存 .workbuddy/release-assets 已删除。
@@ -42,8 +44,6 @@
 
 - 2026-09-02：traework-provider **0.1.30 三缺陷修复代码级完成 local 全绿（未发布）**：用户「不是号有问题, 就是我们的插件有问题」否决账号归因（纠偏见 [[traework-prod-account-225774-dead-203343-refresh-mismatch]]）。生产取证（21:26-21:30 stream 2331-2350，0.1.29）失败链=死号 225774 async 401 open error 不核算不驱逐绑定（session 亲和每请求重绑）→ 健康号 203343 被窗口性节流判伪后无同号重试 → pool exhausted；2351 反证 203343 同号 30s 后恢复 18696 tokens。修复：**FIX-A** 伪完成仅当 `PickNextAuth` 无其它候选才对当前账号同号退避重试 1 次（sync+async 收敛一致，`pseudoRetryBudget=1`，不耗跨账号 Budget，有候选仍 A→B 保留既有回归）；**FIX-B** async 401 open error 补 `reconcileAfterExecutorError`+`evictSessionBindingsForAuth`（对照 sync 路径既有核算）；**FIX-C** `isPseudoCompletion` content+reasoning 双计健康度（任一达 600 健康 / content0+reasoning>0 reasoning-only 永不判伪 / 双短才需长输入门槛）。验证：新增 test/traework/executor_same_auth_retry_test.go（async+sync 单号池伪→同号重试→成功 + resetAccountFailover 清零），负向哨兵+定向 Fatal 探针双重证明真实编译执行；既有 5 伪完成回归 + `TestIsPseudoCompletion` reasoning-only 豁免全绿；cgo-shim build/vet/test 全绿、gofmt 干净、改动限 stream.go+executor.go+新测试文件（pump gate reasoning 流式放行属独立优化已回退避免越界）。**未提交未发布**（生产仍 0.1.29；下一步 CYCLE-03 发布 0.1.30 → CYCLE-04 生产真实短请求验收：死号 401 不再拖垮池、伪完成同号退避可恢复、1664/1942/1945 类挂死不复现）。
 
-- 2026-09-02：traework-provider **0.1.29 纠偏——「208-298s 太长」是超长单请求非真实用法，用户真实形态=很多 ~10s 请求；0.1.29 未被用户真实流量验证**（生产日志取证）：用户质疑 208/292/298s 单次推理不可能。生产实测 0.1.29 上 10+ 个正常规模 qwen3.8-max 请求（普通问答 18s；3 连发 10/13/15s；同 session 连续 6 个 3-5s）全部 `attempt=1` 完整 done，无 degrade/pool exhausted/error，其中 2 次上游瞬时 `access denied`（stream_id 2230/2241，HTTP 200 业务错误）→ 同请求自动换号成功（2231/2243），账号级故障换号健康。全量日志 grep degrade/timed out/direct fallback **零命中**——0.1.29 生产从未降级，90s read 超时从未误杀健康流（2139/2146/2154/2201 全部 attempt=1 走桥 done，718/957/867/380 chunks，桥 read 每次 <90s 返回，数据持续到达）。**此前「90s 误杀健康慢首包流+降级」推断不成立**。用户真实痛点在 0.1.27/0.1.28 时代（9/1 23:54-9/2 02:02，公网 183.239.175.194 + token-usage 面板密集测试）：①伪完成池耗尽 1607/1609/1869（双账号 pseudo→`pool exhausted`→HTTP 200 错误分片）；②桥挂死 499——1664（00:29 `/v1/responses` 4m0s）、1942/1945（01:58/02:00 `/v1/chat/completions` 1m40s/1m59s）scheduled 后无后续。0.1.29 部署（02:54）后到 20:42 **用户零真实流量**（02:57-03:09 的 2139/2146/2154 与 0.1.28 的 1850-1857 都是 agent 自发的超长/长请求，非用户）。结论：0.1.29 read 修复尚未经用户真实请求验证；0.1.30 应让用户真实短请求形态验证 read 挂死（1664/1942/1945 类）是否复现，而非继续用超长单请求测耗时。
-
 
 ## 计数锚点区
 
@@ -52,6 +52,11 @@
 ```yaml
 version: 1
 anchors:
+- title: 'workbuddy-ai-provider **0.1.8** 发布部署'
+  usage_count: 0
+  usage_days: 0
+  last_used_at: null
+  absorbed_to: null
 - title: 'workbuddy-token-usage **0.2.4** 发布部署'
   usage_count: 0
   usage_days: 0
@@ -143,11 +148,6 @@ anchors:
   last_used_at: null
   absorbed_to: null
 - title: 'traework-provider **0.1.30 三缺陷'
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
-  absorbed_to: null
-- title: 'traework-provider **0.1.29 纠偏—'
   usage_count: 0
   usage_days: 0
   last_used_at: null

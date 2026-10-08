@@ -5,9 +5,9 @@ doc_id: "STYLE-WBAI-CHECKIN-20261008"
 doc_type: "style_regression"
 source_ids: ["REQ-WBAI-CHECKIN-20261008"]
 status: "accepted"
-version: "v1.2"
-current_slice: "TASK-003"
-updated_at: "2026-10-09 03:52:00"
+version: "v1.3"
+current_slice: "TASK-003 + TASK-004/005 交付残留自查"
+updated_at: "2026-10-09 05:05:00"
 reader_level: business_general
 writing_style: plain_chinese
 appendix_policy: preserve_existing_or_one_terminal_appendix
@@ -15,7 +15,7 @@ appendix_policy: preserve_existing_or_one_terminal_appendix
 
 # 6-review 风格回归：WorkBuddy AI 国际版签到改造（数据面 + 控制面 + 面板）
 
-结论：本轮把 WorkBuddy AI 国际版签到改造（数据面、控制面与面板三层）完成风格回归，格式、命名、注释、结构、端点契约、测试资产归位与前端写法全部通过；影响：后续维护者可以按国际版口径理解签到状态解析、领取调用、缓存合并、控制面调度与面板交互链路；范围：三个任务的 workbuddy-ai 后端文件、面板文件与回归脚本，外加 1 份实施文档；非范围：业务正确性、需求覆盖、统计口径与发布放行；变化：记录三轮检查流水线、真实测试前置证据与结论；完成标准：STYLE 为 PASS 且格式门禁全部通过；术语说明：风格回归是对代码写法和位置的检查，cgo-shim 是在无 C 工具链的 Windows 上以 CGO_ENABLED=0 复现插件 build/vet/test 的本地验证脚本；验证状态：三轮真实测试与格式门禁均已通过。
+结论：本轮把 WorkBuddy AI 国际版签到改造（数据面、控制面、面板三层，以及配套文档与发布落盘产物）完成风格回归与交付残留自查，格式、命名、注释、结构、端点契约、测试资产归位、前端写法与 6 维残留检查全部通过；影响：后续维护者可以按国际版口径理解签到状态解析、领取调用、缓存合并、控制面调度与面板交互链路；范围：五个任务的 workbuddy-ai 后端文件、面板文件、回归脚本、实施与测试文档；非范围：业务正确性、需求覆盖、统计口径与发布放行；变化：记录三轮检查流水线、交付残留自查、真实测试前置证据与结论；完成标准：STYLE 为 PASS 且格式门禁全部通过；术语说明：风格回归是对代码写法和位置的检查，cgo-shim 是在无 C 工具链的 Windows 上以 CGO_ENABLED=0 复现插件 build/vet/test 的本地验证脚本；验证状态：三轮真实测试、格式门禁与 6 维残留自查均已通过。
 
 ## 文档信息
 
@@ -75,6 +75,21 @@ appendix_policy: preserve_existing_or_one_terminal_appendix
 - 历史遗留说明：`policy.go` 的 `iota` 与 `cache.go` 函数内 `var` 块均为 HEAD 既有写法（blame 479e0be，2026-10-06），非本轮引入，按手术式改动不顺手修复。
 - 图片资产决策：N/A + 原因：本风格回归记录不需要图片资产 + 证据：格式与归位结论由命令证据覆盖。
 
+## 交付残留自查（TASK-004 / TASK-005，6 维）
+
+以磁盘真实变更集为输入（`git status --porcelain` / `git diff --name-only`，2026-10-09 05:00 采集），按 `skill-execution-compliance-gate-rules/references/delivery-residue-self-check.md` 逐维自查。
+
+| 维度 | 结论 | 证据 |
+| --- | --- | --- |
+| 1 需求覆盖对账 | PASS | REQ-004/AC-004（版本与文档一致）：`workbuddy-ai/VERSION`=0.1.8、`workbuddy-ai/main.go:290` `var version = "0.1.8"`、`registry.json:363` `"version": "0.1.8"` 三处一致，落点回指实施总览 REQ-004 行；REQ-005/AC-005（发布与生产验收）：部署验收文档 `doc/5-tests/2026-10-09_044707_…` + 实施总览 REQ-005 行 + GAP-001 行；无未覆盖条目 |
+| 2 影响面/消费方对账 | PASS | `workbuddy-ai-provider-0.1.7` 路径引用全仓扫描（排除 release-assets 自身）：0 命中；registry.json 中 `0.1.7` 字面 grep 仅 1 处命中属 `"size": 5002187` 的子串假阳性（非版本引用）；0.1.7 目录删除后保留集 7 项与 registry 逐插件 `id`+`version` 完全一致 |
+| 3 残留物清扫 | PASS | 本会话临时文件已三处清零：本机 WSL `/tmp/wbai_*`、Windows Temp `wbai_*`、生产服务器 `/tmp/wbai_*`（含真实令牌/账号 JSON 已删）；仓库内 `git status` 无 wbai/tmp/scratch 类残留（`NO_TEMP_IN_GIT`）；`.workbuddy/tmp/` 内 5 文件均为 8-23 至 10-08 他轮遗留且被 `.gitignore` 忽略，非本轮产生；WSL 侧无遗留 wbai/shim/checkin 进程 |
+| 4 文档与引用一致性 | PASS | 部署验收文档被实施总览 §228 引用；本 6-review 被实施总览 §233 与面板回归文档 §25 引用；实施总览尾部新增部署验收文档索引（上轮补），无一删文件残留引用、无新建文件零引用 |
+| 5 口径一致性 | PASS | 版本口径 0.1.8 跨 VERSION/main.go/registry/部署验收文档四载体一致；热重载日志 `active_version=0.1.8 retired_version=0.1.7` 与文档一致；6-review v1.3 与新增章节编号口径一致 |
+| 6 验证有效性反审 | PASS | 产物指纹为独立判据：本会话再次从本地 zip 解包复算 .so sha256 = `baf416d3…c49a`（7984864 字节），与部署验收文档记录及生产落盘指纹一致；热重载日志本会话从生产容器重新读取复验；GAP-001 判定依赖四路对照实验（T0-T3 + CN 域反证）而非单一证据，禁止伪造成功结论的口径已落实 |
+
+残留清单：无未处置发现项；GAP-001（上游活动离线）为已登记环境性阻断，非残留。
+
 ## 执行附录
 
 - 编码与换行核对：逐文件检查 BOM、CRLF/LF 计数与 UTF-8 合法性；`lifecycle.go` 以 `--ignore-cr-at-eol` 复核，无行尾伪变更。
@@ -86,5 +101,5 @@ appendix_policy: preserve_existing_or_one_terminal_appendix
 
 ## 追踪附录
 
- - 稳定 ID：`TASK-001`、`TASK-002`、`TASK-003`、`TEST-001`、`TEST-002`、`TEST-003`、`EVIDENCE-001` 至 `EVIDENCE-009`。
+- 稳定 ID：`TASK-001` 至 `TASK-005`、`TEST-001` 至 `TEST-005`、`EVIDENCE-001` 至 `EVIDENCE-009`（TASK-004/005 证据见部署验收文档 `TEST-WBAI-CHECKIN-DEPLOY-20261009`）。
 - 来源：`REQ-WBAI-CHECKIN-20261008`；实施总览 `doc/3-实施/2026-10-08_WorkBuddyAI国际版签到改造实施总览.md`。

@@ -32,7 +32,8 @@
 - 来源: `traework/executor.go`、`traework/host_bridge.go`、`traework/host_bridge_decode_test.go`
 - 适用范围: 本仓库 Go 生产代码和测试代码的本轮改动位点
 - 更新时间: 2026-08-30
-- 状态: 启用
+- 状态: 已沉淀
+- 已沉淀为 skill: comment-rules（通用注释规则，跨项目生效）
 
 ## 变更记录
 
@@ -54,8 +55,8 @@ anchors:
     last_used_at: 2026-09-01
     absorbed_to: null
   - title: 修改函数使用中文元信息和就近步骤编号
-    usage_count: 2
-    usage_days: 2
-    last_used_at: 2026-10-01
-    absorbed_to: null
+    usage_count: 3
+    usage_days: 3
+    last_used_at: 2026-10-09
+    absorbed_to: comment-rules
 ```
