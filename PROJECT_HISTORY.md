@@ -4,6 +4,8 @@
 
 ## 事件
 
+- 2026-10-09：workbuddy-token-usage **0.2.4** 发布部署——移除面板 SSE 短连接轮询（每 2s EventSource 重连）与 15s 定时轮询，改打开时单次加载 + 手动刷新，默认时间范围改「最近 1 小时」；补图标 assets/icons/TokenTracker.png。发布链 aab549c→37de5e4（8 资产 7/7 OK）→cd8b642（registry）→63a9879（prune 0.2.3）；CI run 37812435637 全 57 jobs success；远端 0.2.4 资产 200 + sha256 一致、0.2.3 已 404；生产热重载 active_version=0.2.4 retired=0.2.3、落盘 .so sha256 8ce19240… 与本地 zip 一致；生产面板 /usage 200（EventSource=0/setInterval=0/last_1_hour×7）。
+
 - 2026-10-07：cursor-provider **0.1.0** 发布部署与端到端验收——发布闭环：commit 44d2bb4（162 文件）推送后派发 CI run 37636155616，全 57 jobs success；下载 8 资产（7 平台 zip + checksums）SHA256 校验 ALL OK（commit a17c2aa）；publish-assets 回填 registry（commit 92f569c）；远端 raw 7 资产 size+sha256 ALL PASS；生产 plugin-store install 0.1.0，落盘 .so sha256 bae19b38 与本地 zip 100% 一致，容器日志 plugin loaded + plugin registered 热重载成功，plugin-store 状态 installed/registered/enabled/effective_enabled 全 true。生产端到端验收：真实 token 导入成功（auth_index 9c0e4081ebf23fa7 → cursor-6c2463e563a13c02.json，面板可见 246 模型），重复导入正确去重；推理验收 cursor/default 非流式 3 次 + 流式（1..5 完整 + finish_reason:stop + [DONE]）+ 多轮对话全部成功；export 接口 200。高级模型（gpt-5.3-codex / composer-2.5 / claude-4-sonnet / gemini-3.x 等）统一返回上游 resource_exhausted（429，约 280ms 快速拒绝），判定为 Cursor 服务端对该账号订阅的配额限制，插件按真实 429 语义透传，非移植缺陷。发布后清理：release-assets prune dry-run 确认保留集完整、无待删；本地缓存 .workbuddy/release-assets 已删除。
 
 - 2026-10-07：发布后清理规则固化与 release-assets 瘦身——把「每次发布后清理不需要的垃圾」吸收为项目规则与 skill：新增项目 skill project-cpa-workbuddy-plugin-release-asset-prune-rules（保留集=registry 每插件当前版本目录）+ 通用脚本 scripts/prune-release-assets.py（--dry-run/--apply，受跟踪目录 git rm、空目录 rmdir）；AGENTS.md/CLAUDE.md「仓库与发布」小节新增「发布后清理」条；发布 skill 增 Step 13.5。实操：release-assets 从 3.75 GB（191 版本目录）清理到 0.13 GB（保留 registry 当前 6 个版本目录：workbuddy-provider-0.15.3 / qoderwork-provider-0.9.22 / traework-provider-0.2.2 / workbuddy-ai-provider-0.1.7 / workbuddy-token-usage-0.2.3 / gemini-provider-0.1.1），删 185 个历史版本目录 / 1469 文件，提交 095f4a4 推送 origin/main；远端抽查当前版本 raw 200、旧版本 404。
@@ -42,8 +44,6 @@
 
 - 2026-09-02：traework-provider **0.1.29 纠偏——「208-298s 太长」是超长单请求非真实用法，用户真实形态=很多 ~10s 请求；0.1.29 未被用户真实流量验证**（生产日志取证）：用户质疑 208/292/298s 单次推理不可能。生产实测 0.1.29 上 10+ 个正常规模 qwen3.8-max 请求（普通问答 18s；3 连发 10/13/15s；同 session 连续 6 个 3-5s）全部 `attempt=1` 完整 done，无 degrade/pool exhausted/error，其中 2 次上游瞬时 `access denied`（stream_id 2230/2241，HTTP 200 业务错误）→ 同请求自动换号成功（2231/2243），账号级故障换号健康。全量日志 grep degrade/timed out/direct fallback **零命中**——0.1.29 生产从未降级，90s read 超时从未误杀健康流（2139/2146/2154/2201 全部 attempt=1 走桥 done，718/957/867/380 chunks，桥 read 每次 <90s 返回，数据持续到达）。**此前「90s 误杀健康慢首包流+降级」推断不成立**。用户真实痛点在 0.1.27/0.1.28 时代（9/1 23:54-9/2 02:02，公网 183.239.175.194 + token-usage 面板密集测试）：①伪完成池耗尽 1607/1609/1869（双账号 pseudo→`pool exhausted`→HTTP 200 错误分片）；②桥挂死 499——1664（00:29 `/v1/responses` 4m0s）、1942/1945（01:58/02:00 `/v1/chat/completions` 1m40s/1m59s）scheduled 后无后续。0.1.29 部署（02:54）后到 20:42 **用户零真实流量**（02:57-03:09 的 2139/2146/2154 与 0.1.28 的 1850-1857 都是 agent 自发的超长/长请求，非用户）。结论：0.1.29 read 修复尚未经用户真实请求验证；0.1.30 应让用户真实短请求形态验证 read 挂死（1664/1942/1945 类）是否复现，而非继续用超长单请求测耗时。
 
-- 2026-09-02：traework-provider **0.1.29 发布部署 + 生产流式长推理验收 PASS**（异步流式宿主流桥 read 阶段超时降级直连）：用户报 0.1.28 "完全不行"，生产直连复现 qwen3.8-max「分析项目」——插件直接客户端 `hostHTTPDoStreamDirect` 完整流式（327/264 事件），宿主桥 read 阶段在生产无限阻塞（stream_id=1945 scheduled 后 2 分钟零日志 → gin 499）。根因：`hostCall(MethodHostHTTPStreamRead)` 同步 cgo 无超时，阻塞在 host 侧无缓冲 chunk channel；`sharedHTTPClient` 120s 整体超时还会截断长流。修复：host_bridge.go 加 `hostBridgeReadTimeout=90s`（goroutine+select 竞速）超时经 `hostStreamDirectFn` seam 降级插件直连 live 实时流（覆盖 0.1.28 只做的 open 阶段）；新增 `streamHTTPClient()` 无整体超时（长流不被 120s 截断）；`hostHTTPStream` 增 req/bodyBytes 保存降级重开所需。新增 host_bridge_read_timeout_test.go 三用例（桥 read 挂起→降级直连读完整内存 SSE / 健康读不过滤 / 无 req 降级报错），哨兵先 FAIL 后删除证明进编译。cgo-shim 全绿 + 6-review `STYLE: PASS`。发布链 7424cd7(fix)→99f6177(assets 8)→706b85d(registry)；CI success；raw 远端 7 资产 ALL PASS；生产 plugin-store install 0.1.29 + 落盘 sha256 与本地 zip .so 一致 + hot reloaded active=0.1.29 retired=0.1.28。生产验证：3 次流式 qwen3.8-max **agent 自发的超长请求**全部完整——stream_id 2139（账号 e1987432，208.6s，718 chunks）、2146（账号 19ca85be，292.5s，957 chunks）、2154（账号 e1987432，298.4s，867 chunks）均 `attempt=1` 完整 done，正文含 END_NONCE 结尾，无 error/length、无 pseudo retry / pool exhausted / degrade（健康路径直接走桥，降级未触发）。**注意：非用户真实流量，用户真实形态是短请求 ~10s，0.1.29 尚未被用户验证（见顶部纠偏事件）。**
-
 
 ## 计数锚点区
 
@@ -52,6 +52,11 @@
 ```yaml
 version: 1
 anchors:
+- title: 'workbuddy-token-usage **0.2.4** 发布部署'
+  usage_count: 0
+  usage_days: 0
+  last_used_at: null
+  absorbed_to: null
 - title: 'cursor-provider **0.1.0** 发布部署与端到端验收'
   usage_count: 0
   usage_days: 0
@@ -143,11 +148,6 @@ anchors:
   last_used_at: null
   absorbed_to: null
 - title: 'traework-provider **0.1.29 纠偏—'
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
-  absorbed_to: null
-- title: 'traework-provider **0.1.29 发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null
