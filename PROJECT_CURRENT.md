@@ -8,11 +8,20 @@
 
 ## 项目概况
 
-- 状态：活跃维护中。已成功发布并部署 WorkBuddy AI 国际版 **0.1.8**（每日签到：面板入口替换失效加油包 + 自动签到开关 + 批量签到）、WorkBuddy 国内版 **0.15.2** 与新增第六插件 cursor-provider **0.1.0**（Cursor 会话 Token 导入，发布 + 生产热重载 + 端到端验收完成）。
+- 状态：活跃维护中。最新发布并部署 workbuddy-provider **0.15.4** / workbuddy-ai-provider **0.1.9** / traework-provider **0.2.3**（三插件面板「测试」按钮改为弹出模型选择窗口按指定模型测试，发布 + 生产热重载 + 行为验收完成）；同仓已发布 WorkBuddy AI 国际版 **0.1.8**（每日签到）、workbuddy-token-usage **0.2.4**（面板性能）、cursor-provider **0.1.0**（Cursor 会话 Token 导入）。
 - 活动工作区：F:\cpa-plugin
 - 当前时间：2026-10-09 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 当前会话（2026-10-09）：**三插件测试按钮改为弹出模型选择窗口按指定模型测试（workbuddy 0.15.4 / workbuddy-ai 0.1.9 / traework 0.2.3）**。
+  - 用户诉求：三插件面板卡片「测试」按钮原本随机挑一个模型直接测，改为点击后弹出该账号支持的模型小窗口，点选指定模型再测。
+  - 后端：三插件 models.go 新增 authModelsForIndex + handleModelsQuery；active_ping.go 的 handleTestActiveWithAuth(sa, authIndex, model) 支持指定模型（model 为空保持随机，兼容旧面板）；management.go 新增只读 GET /models?auth_index= 路由。
+  - 前端：三插件 panel.html 新增测试弹窗（openTestModal / loadTestModels / runTestModel），testActive 改为先弹窗选模型；无模型时提示「暂无可用模型」并允许关闭。
+  - 本地验证：cgo-shim 三插件 build/vet/test 全绿 + 必失败哨兵确证真实进编译；三面板 Node vm 回归各 17 项 PASS + 旧版反证 FAIL；6-review STYLE: PASS。
+  - 发布闭环：commit ce6b4e2（32 文件）→ CI 三 run success（37940758486 / 37940778484 / 37940786472，head=ce6b4e2）→ 资产 commit fe5742d（24 文件，三目录 7/7 sha256 OK）→ registry 回填 commit 207e22c → prune 旧版 commit ada831f；远端 49/49 当前资产 200、旧版（0.15.3 / 0.1.8 / 0.2.2）404。
+  - 生产部署：三插件 plugin-store install 全部 installed；落盘 .so sha256 与本地 zip 完全一致（workbuddy 0.15.4 9c3b85b6… / workbuddy-ai 0.1.9 dd77aab4… / traework 0.2.3 2d671e16…）；热重载 active_version 命中目标版本；panel / accounts 三插件全 200。
+  - 生产行为验收：/models 三插件返回真实模型（17 / 27 / 大量）；缺 auth_index 返回 auth_index is required；/test-active 指定 deepseek-v4.1-flash → traework 成功（1.625s，回显该 model），workbuddy 因额度 429 但错误文案确认使用指定模型。
 
 - 当前会话（2026-10-07）：**固化「发布后清理」规则 + release-assets 瘦身**。
   - 用户要求：把「每次发布后都需要清理不需要的垃圾」吸收到项目 skill 与规则中。

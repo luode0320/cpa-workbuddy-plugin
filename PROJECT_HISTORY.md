@@ -4,6 +4,8 @@
 
 ## 事件
 
+- 2026-10-09：workbuddy-provider **0.15.4** / workbuddy-ai-provider **0.1.9** / traework-provider **0.2.3** 发布部署（三插件测试按钮改为弹出模型选择窗口按指定模型测试）——用户诉求：面板卡片「测试」按钮原为随机挑模型直接测，改为点击后弹出该账号支持的模型小窗口、点选指定模型再测。后端：三插件 models.go 新增 authModelsForIndex + handleModelsQuery，management.go 新增只读 GET /models?auth_index= 路由，active_ping.go 的 handleTestActiveWithAuth(sa, authIndex, model) 支持指定模型（model 空则保持随机，兼容旧面板）；前端：三插件 panel.html 新增测试弹窗（openTestModal / loadTestModels / runTestModel），无模型时提示「暂无可用模型」并允许关闭。本地：cgo-shim 三插件 build/vet/test 全绿 + 必失败哨兵确证真实进编译；三面板 Node vm 回归各 17 项 PASS + 旧版反证 FAIL；6-review STYLE: PASS。发布链 ce6b4e2（32 文件）→ CI 三 run success（37940758486 / 37940778484 / 37940786472，head=ce6b4e2）→ fe5742d（24 资产，三目录 7/7 sha256 OK）→ 207e22c（registry 回填）→ ada831f（prune 旧版 0.15.3 / 0.1.8 / 0.2.2）；远端 49/49 当前资产 200、被删旧版 404。生产：三插件 plugin-store install 全部 installed，落盘 .so sha256 与本地 zip 完全一致（workbuddy 0.15.4 9c3b85b6… / workbuddy-ai 0.1.9 dd77aab4… / traework 0.2.3 2d671e16…），热重载 active_version 命中目标版本，panel / accounts 三插件全 200；行为验收 /models 三插件返回真实模型（17 / 27 / 大量）、缺 auth_index 返回 auth_index is required、/test-active 指定 deepseek-v4.1-flash 在 traework 成功（1.625s，回显该 model），workbuddy 因额度 429 但错误文案确认使用指定模型。
+
 - 2026-10-09：workbuddy-ai-provider **0.1.8** 发布部署（国际版每日签到替换失效加油包）——面板把已失效的「领取专家加油包」入口替换为国际版每日签到（状态查询 + 领取积分），新增自动签到开关（00/04/08/12/16/20 六时段）与批量签到；发布链 583bb05→b4e3a3e（8 资产 7/7 sha256 OK）→45f6ce5（registry）；CI run 37836464993 全 57 jobs success；生产热重载 active_version=0.1.8 retired_version=0.1.7、落盘 .so sha256 baf416d3…c49a 与本地 zip 一致；生产 /checkin 按契约透传上游结果（code=10001 签到活动未开启，未伪造成功），四路请求头对照 T0-T3 零差异 + 全 11 账号 active=false + CN 域反证（CN active=true）+ banner 12302 判定为上游活动离线，登记 GAP-001 环境性阻断。
 
 - 2026-10-09：workbuddy-token-usage **0.2.4** 发布部署——移除面板 SSE 短连接轮询（每 2s EventSource 重连）与 15s 定时轮询，改打开时单次加载 + 手动刷新，默认时间范围改「最近 1 小时」；补图标 assets/icons/TokenTracker.png。发布链 aab549c→37de5e4（8 资产 7/7 OK）→cd8b642（registry）→63a9879（prune 0.2.3）；CI run 37812435637 全 57 jobs success；远端 0.2.4 资产 200 + sha256 一致、0.2.3 已 404；生产热重载 active_version=0.2.4 retired=0.2.3、落盘 .so sha256 8ce19240… 与本地 zip 一致；生产面板 /usage 200（EventSource=0/setInterval=0/last_1_hour×7）。
@@ -42,8 +44,6 @@
 
 - 2026-09-04：traework-provider **0.1.38 发布部署**（浏览器授权登录：免 IDE 完整 OAuth 导入）：逆向 TRAE SOLO CN 0.1.62 main.js 确认浏览器授权码+PKCE(S256) 流程；`browserlogin.go` 三路由（start: PKCE 对+EC P-256 设备密钥+随机指纹+origin 校验 / callback: 换 token→取用户→去重入库→回跳页 / result: 读后即焚）+ 面板按钮与回跳轮询。发布链 b5f105c→babd598(assets 7 平台)→ea57fee(registry)；CI run 33788701204 success；生产 install 落盘哈希一致 + hot reloaded active=0.1.38 + 流式回归健康。生产复验暴露三缺陷由 0.1.39 承接。
 
-- 2026-09-02：traework-provider **0.1.30 三缺陷修复代码级完成 local 全绿（未发布）**：用户「不是号有问题, 就是我们的插件有问题」否决账号归因（纠偏见 [[traework-prod-account-225774-dead-203343-refresh-mismatch]]）。生产取证（21:26-21:30 stream 2331-2350，0.1.29）失败链=死号 225774 async 401 open error 不核算不驱逐绑定（session 亲和每请求重绑）→ 健康号 203343 被窗口性节流判伪后无同号重试 → pool exhausted；2351 反证 203343 同号 30s 后恢复 18696 tokens。修复：**FIX-A** 伪完成仅当 `PickNextAuth` 无其它候选才对当前账号同号退避重试 1 次（sync+async 收敛一致，`pseudoRetryBudget=1`，不耗跨账号 Budget，有候选仍 A→B 保留既有回归）；**FIX-B** async 401 open error 补 `reconcileAfterExecutorError`+`evictSessionBindingsForAuth`（对照 sync 路径既有核算）；**FIX-C** `isPseudoCompletion` content+reasoning 双计健康度（任一达 600 健康 / content0+reasoning>0 reasoning-only 永不判伪 / 双短才需长输入门槛）。验证：新增 test/traework/executor_same_auth_retry_test.go（async+sync 单号池伪→同号重试→成功 + resetAccountFailover 清零），负向哨兵+定向 Fatal 探针双重证明真实编译执行；既有 5 伪完成回归 + `TestIsPseudoCompletion` reasoning-only 豁免全绿；cgo-shim build/vet/test 全绿、gofmt 干净、改动限 stream.go+executor.go+新测试文件（pump gate reasoning 流式放行属独立优化已回退避免越界）。**未提交未发布**（生产仍 0.1.29；下一步 CYCLE-03 发布 0.1.30 → CYCLE-04 生产真实短请求验收：死号 401 不再拖垮池、伪完成同号退避可恢复、1664/1942/1945 类挂死不复现）。
-
 
 ## 计数锚点区
 
@@ -52,15 +52,20 @@
 ```yaml
 version: 1
 anchors:
+- title: 'workbuddy-provider **0.15.4** / workbuddy-ai-provider'
+  usage_count: 0
+  usage_days: 0
+  last_used_at: null
+  absorbed_to: null
 - title: 'workbuddy-ai-provider **0.1.8** 发布部署'
   usage_count: 0
   usage_days: 0
   last_used_at: null
   absorbed_to: null
 - title: 'workbuddy-token-usage **0.2.4** 发布部署'
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
+  usage_count: 1
+  usage_days: 1
+  last_used_at: 2026-10-09
   absorbed_to: null
 - title: 'cursor-provider **0.1.0** 发布部署与端到端验收'
   usage_count: 0
@@ -68,9 +73,9 @@ anchors:
   last_used_at: null
   absorbed_to: null
 - title: '发布后清理规则固化与 release-assets'
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
+  usage_count: 1
+  usage_days: 1
+  last_used_at: 2026-10-09
   absorbed_to: null
 - title: 'cursor-provider **0.1.0** 移植与 Token 导入'
   usage_count: 0
@@ -143,11 +148,6 @@ anchors:
   last_used_at: null
   absorbed_to: null
 - title: 'traework-provider **0.1.38 发布部'
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
-  absorbed_to: null
-- title: 'traework-provider **0.1.30 三缺陷'
   usage_count: 0
   usage_days: 0
   last_used_at: null
