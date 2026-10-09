@@ -113,7 +113,7 @@ func TestHandleTestActiveTrae(t *testing.T) {
 		return nil
 	}
 
-	resOk := handleTestActiveWithAuth(sa, "test-index")
+	resOk := handleTestActiveWithAuth(sa, "test-index", "")
 	if resOk["ok"] != true || calledModel == "" {
 		t.Fatalf("expected active ping test ok, got %v", resOk)
 	}
@@ -122,8 +122,38 @@ func TestHandleTestActiveTrae(t *testing.T) {
 	sendActivePingTraeFn = func(sa *traeAuth, chosenModel string) error {
 		return errors.New("upstream rate limited")
 	}
-	resErr := handleTestActiveWithAuth(sa, "test-index")
+	resErr := handleTestActiveWithAuth(sa, "test-index", "")
 	if resErr["error"] == nil || !strings.Contains(fmt.Sprint(resErr["error"]), "upstream rate limited") {
 		t.Fatalf("expected rate limit error, got %v", resErr)
+	}
+}
+
+// TestHandleTestActiveWithAuthSpecifiedModel 验证「测试」弹窗点选模型后的
+// 指定模型透传，以及未指定时回退随机模型的向后兼容行为。
+func TestHandleTestActiveWithAuthSpecifiedModel(t *testing.T) {
+	origPingFn := sendActivePingTraeFn
+	defer func() { sendActivePingTraeFn = origPingFn }()
+
+	sa := &traeAuth{UserID: "trae-user-spec"}
+	var calledModel string
+	sendActivePingTraeFn = func(sa *traeAuth, chosenModel string) error {
+		calledModel = chosenModel
+		return nil
+	}
+
+	// 1. 指定模型必须原样透传给上游发送函数并回显在结果里
+	resSpec := handleTestActiveWithAuth(sa, "test-index", "gemini-2.5-pro")
+	if resSpec["ok"] != true || calledModel != "gemini-2.5-pro" {
+		t.Fatalf("expected specified model passthrough, got res=%v called=%q", resSpec, calledModel)
+	}
+	if resSpec["model"] != "gemini-2.5-pro" {
+		t.Fatalf("expected echoed model gemini-2.5-pro, got %v", resSpec["model"])
+	}
+
+	// 2. 模型为空时回退随机模型（缓存清空 → 兜底默认值），兼容旧面板
+	storeTraeDynamicModels(nil)
+	resAuto := handleTestActiveWithAuth(sa, "test-index", "")
+	if resAuto["ok"] != true || calledModel != "claude-3-5-sonnet" {
+		t.Fatalf("expected fallback random model, got res=%v called=%q", resAuto, calledModel)
 	}
 }

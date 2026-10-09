@@ -156,6 +156,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/delete", Description: "Delete one WorkBuddy account and its physical auth file (body: {auth_index})."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
+			{Method: http.MethodGet, Path: base + "/models", Description: "List models available for one account (auth_index query), for the panel test picker."},
 			{Method: http.MethodPost, Path: base + "/test-active", Description: "Send an active ping chat inference request for one account (body: {auth_index})."},
 		},
 		Resources: []resourceRoute{
@@ -213,6 +214,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleDeleteAuth(req)))
 	case req.Method == http.MethodPost && path == base+"/test-active":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleTestActive(req)))
+	case req.Method == http.MethodGet && path == base+"/models":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelsQuery(req)))
 	case req.Method == http.MethodPost && path == base+"/keepalive":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveNow(req)))
 	case req.Method == http.MethodGet && path == base+"/keepalive/status":

@@ -171,6 +171,7 @@ func triggerActivePing(authIndex, authID string, sa *traeAuth) error {
 func handleTestActive(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
+		Model     string `json:"model"`
 	}
 	_ = json.Unmarshal(req.Body, &body)
 	authIndex := strings.TrimSpace(body.AuthIndex)
@@ -181,15 +182,20 @@ func handleTestActive(req pluginapi.ManagementRequest) map[string]any {
 	if err != nil {
 		return map[string]any{"error": fmt.Sprintf("获取凭据失败: %v", err)}
 	}
-	return handleTestActiveWithAuth(sa, authIndex)
+	return handleTestActiveWithAuth(sa, authIndex, strings.TrimSpace(body.Model))
 }
 
-func handleTestActiveWithAuth(sa *traeAuth, authIndex string) map[string]any {
+// handleTestActiveWithAuth 对指定账号发起一次手动活跃推理。
+// model 非空时使用调用方指定的模型；为空时回退到随机模型，兼容旧面板。
+func handleTestActiveWithAuth(sa *traeAuth, authIndex, model string) map[string]any {
 	if sa == nil {
 		return map[string]any{"error": "账号凭据为空"}
 	}
 	start := time.Now()
-	chosenModel := pickRandomTraeModel(sa)
+	chosenModel := strings.TrimSpace(model)
+	if chosenModel == "" {
+		chosenModel = pickRandomTraeModel(sa)
+	}
 	if err := sendActivePingTraeFn(sa, chosenModel); err != nil {
 		return map[string]any{
 			"error": fmt.Sprintf("活跃测试失败 (模型: %s): %v", chosenModel, err),

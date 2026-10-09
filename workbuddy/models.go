@@ -703,3 +703,60 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }
+
+// authModelsForIndex 返回指定账号当前可用的模型列表，供面板「测试」弹窗选择。
+//
+// 复用账号级动态发现链路：优先未过期缓存，未命中时用该账号凭据实时拉取；
+// 末尾追加随机兜底模型，保证上游瞬时失败时弹窗仍有一个可测选项。
+//
+// [参数] authIndex：宿主账号索引。
+// [返回] 去重后的模型 ID 列表；账号凭据不可用时返回 nil。
+// 最近修改时间 2026-10-09（新增测试按钮指定模型选择支持）
+func authModelsForIndex(authIndex string) []string {
+	sa, err := hostAuthGet(authIndex)
+	if err != nil || sa == nil {
+		return nil
+	}
+	models := dynamicModelsFromCacheOrAuth()
+	if len(models) == 0 && strings.TrimSpace(sa.Auth.AccessToken) != "" {
+		if dyn, ferr := callModelsAPI(sa.Auth.AccessToken); ferr == nil && len(dyn) > 0 {
+			storeDynamicModels(dyn)
+			models = dyn
+		}
+	}
+	seen := make(map[string]struct{}, len(models)+1)
+	out := make([]string, 0, len(models)+1)
+	for _, m := range models {
+		id := strings.TrimSpace(m.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	if fallback := pickRandomWorkbuddyModel(sa); fallback != "" {
+		if _, ok := seen[fallback]; !ok {
+			out = append(out, fallback)
+		}
+	}
+	return out
+}
+
+// handleModelsQuery 返回指定账号当前可用模型列表，供面板「测试」弹窗选择。
+//
+// [参数] req：管理请求，query 参数 auth_index 指定账号。
+// [返回] {models:[...]}；缺少 auth_index 时返回 {error}。
+// 最近修改时间 2026-10-09（新增测试按钮指定模型选择支持）
+func handleModelsQuery(req pluginapi.ManagementRequest) map[string]any {
+	authIndex := ""
+	if vals := req.Query["auth_index"]; len(vals) > 0 {
+		authIndex = strings.TrimSpace(vals[0])
+	}
+	if authIndex == "" {
+		return map[string]any{"error": "auth_index is required"}
+	}
+	return map[string]any{"models": authModelsForIndex(authIndex)}
+}

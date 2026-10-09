@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.15.4
+
+### Feat - 「测试」按钮支持选择指定模型
+
+- 变更要点:
+  1. 面板卡片「测试」按钮改为弹出模型小窗口：点击后按账号拉取可用模型列表，点选指定模型即按该模型发起一次活跃测试。
+  2. 新增只读路由 GET /models?auth_index=：优先读动态模型缓存，缺失时回退实时拉取，末尾兜底追加随机模型，去空去重后返回 {"models":[...]}。
+  3. POST /test-active 新增可选 model 字段：非空用指定模型，为空保持随机模型（兼容旧面板与定时 watchdog）。
+  4. 新增面板回归脚本 test/workbuddy/panel_test_model_repro.mjs（Node vm + DOM 桩，4 场景）。
+- 涉及文件: workbuddy/panel.html、workbuddy/models.go、workbuddy/active_ping.go、workbuddy/management.go、workbuddy/active_ping_test.go、workbuddy/management_test.go、workbuddy/main.go、workbuddy/VERSION、workbuddy/CHANGELOG.md、test/workbuddy/panel_test_model_repro.mjs
+
 ## 0.15.3
 
 ### Feat - 生命周期自动停用默认关闭
