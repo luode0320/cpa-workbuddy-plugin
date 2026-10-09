@@ -33,6 +33,15 @@
     2. 哨兵失败拦截反证：qoder_ai_endpoints_test.go 临时插入 SENTINEL_FAILURE 证实真实进入编译测试，恢复后复测全绿；
     3. 跨插件防破坏验证：qoderwork、workbuddy-ai、token-usage-tracker 跑 cgo-shim-build 全绿；
     4. 6-review：STYLE: PASS，实施总览已归档落盘。
+  - 发布闭环与生产热部署（2026-10-10）：
+    1. 代码提交：commit 30dfe9b（71 文件）推送到 main；
+    2. CI 流水线：run 37966644012（head=30dfe9b）全 65 jobs success（含 8 插件测试与 7 平台构建矩阵）；
+    3. Release 资产：下载 8 资产（7 zip + checksums）校验 ALL OK，commit a2e5252 推送 main；
+    4. 注册表回填：publish-assets.py 同步 7 平台 artifacts sha256 与 size，commit d124fa0 推送 main；
+    5. 远端验证：raw.githubusercontent.com 7 平台资产 size 与 sha256 ALL PASS；
+    6. 生产热重载部署：plugin-store install qoder-ai-provider 0.1.0 成功 installed；生产落盘 .so sha256（6363aacc8a72cf304a450e6cc1430a0b5f716615906e764eb95f443278c411a7）与本地 zip 100% 精确一致；
+    7. 生产接口验收：/v0/management/plugins/qoder-ai-provider/accounts 200，/v0/resource/plugins/qoder-ai-provider/panel 200，日志确认挂载热重载生效；
+    8. 发布后清理：prune-release-assets dry-run 确认 8 插件版本保留集完整，无历史冗余资产。
 
 - 当前会话（2026-10-09）：**三插件测试按钮改为弹出模型选择窗口按指定模型测试（workbuddy 0.15.4 / workbuddy-ai 0.1.9 / traework 0.2.3）**。
   - 用户诉求：三插件面板卡片「测试」按钮原本随机挑一个模型直接测，改为点击后弹出该账号支持的模型小窗口，点选指定模型再测。
