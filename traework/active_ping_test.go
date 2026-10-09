@@ -157,3 +157,107 @@ func TestHandleTestActiveWithAuthSpecifiedModel(t *testing.T) {
 		t.Fatalf("expected fallback random model, got res=%v called=%q", resAuto, calledModel)
 	}
 }
+
+// TestPickRandomTraeModels 验证多模型随机挑选的上限、去重与 fallback 行为。
+func TestPickRandomTraeModels(t *testing.T) {
+	storeTraeDynamicModels(nil)
+	saEmpty := &traeAuth{}
+	resFallback := pickRandomTraeModels(saEmpty, 5)
+	if len(resFallback) != 1 || resFallback[0] != "claude-3-5-sonnet" {
+		t.Fatalf("expected fallback model, got %v", resFallback)
+	}
+
+	fakeModels := []pluginapi.ModelInfo{
+		{ID: "m1"}, {ID: "m2"}, {ID: "m3"}, {ID: "m4"}, {ID: "m5"}, {ID: "m6"}, {ID: "m1"},
+	}
+	storeTraeDynamicModels(fakeModels)
+	defer storeTraeDynamicModels(nil)
+
+	res5 := pickRandomTraeModels(saEmpty, 5)
+	if len(res5) != 5 {
+		t.Fatalf("expected 5 models, got %d (%v)", len(res5), res5)
+	}
+	seen := make(map[string]bool)
+	for _, m := range res5 {
+		if seen[m] {
+			t.Fatalf("unexpected duplicate model %s in %v", m, res5)
+		}
+		seen[m] = true
+	}
+
+	res2 := pickRandomTraeModels(saEmpty, 2)
+	if len(res2) != 2 {
+		t.Fatalf("expected 2 models, got %d (%v)", len(res2), res2)
+	}
+}
+
+// TestDoActivePingMultiModelAnySuccess 验证多模型轮测中任意一个成功即判定健康且立即终止后续测试。
+func TestDoActivePingMultiModelAnySuccess(t *testing.T) {
+	resetActivePingTimes()
+	defer resetActivePingTimes()
+
+	fakeModels := []pluginapi.ModelInfo{
+		{ID: "fail-1"}, {ID: "fail-2"}, {ID: "succ-3"}, {ID: "fail-4"}, {ID: "fail-5"},
+	}
+	storeTraeDynamicModels(fakeModels)
+	defer storeTraeDynamicModels(nil)
+
+	origPingFn := sendActivePingTraeFn
+	defer func() { sendActivePingTraeFn = origPingFn }()
+
+	var attempted []string
+	sendActivePingTraeFn = func(sa *traeAuth, chosenModel string) error {
+		attempted = append(attempted, chosenModel)
+		if chosenModel == "succ-3" {
+			return nil
+		}
+		return errors.New("upstream failed for " + chosenModel)
+	}
+
+	sa := &traeAuth{UserID: "trae-user-any-succ"}
+	err := doActivePing("idx-succ", "trae-user-any-succ", sa)
+	if err != nil {
+		t.Fatalf("expected any-success to return nil, got %v", err)
+	}
+
+	foundSucc := false
+	for _, m := range attempted {
+		if m == "succ-3" {
+			foundSucc = true
+			break
+		}
+	}
+	if !foundSucc {
+		t.Fatalf("expected succ-3 to be attempted, got attempts: %v", attempted)
+	}
+}
+
+// TestDoActivePingMultiModelAllFail 验证所有候选模型均失败时返回错误。
+func TestDoActivePingMultiModelAllFail(t *testing.T) {
+	resetActivePingTimes()
+	defer resetActivePingTimes()
+
+	fakeModels := []pluginapi.ModelInfo{
+		{ID: "fail-1"}, {ID: "fail-2"},
+	}
+	storeTraeDynamicModels(fakeModels)
+	defer storeTraeDynamicModels(nil)
+
+	origPingFn := sendActivePingTraeFn
+	defer func() { sendActivePingTraeFn = origPingFn }()
+
+	attemptCount := 0
+	sendActivePingTraeFn = func(sa *traeAuth, chosenModel string) error {
+		attemptCount++
+		return errors.New("all models down")
+	}
+
+	sa := &traeAuth{UserID: "trae-user-all-fail"}
+	err := doActivePing("idx-fail", "trae-user-all-fail", sa)
+	if err == nil {
+		t.Fatalf("expected error when all models fail")
+	}
+	if attemptCount != 2 {
+		t.Fatalf("expected 2 attempts for 2 available models, got %d", attemptCount)
+	}
+}

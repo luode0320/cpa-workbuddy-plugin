@@ -1,6 +1,19 @@
 # TraeWork Plugin Changelog
 
 
+## 0.2.4
+
+### Feat - 自动探活支持随机 5 模型轮测与 20s 超时
+
+- 变更要点:
+  1. 定时活跃探活改为随机挑选最多 5 个模型依次测试，单次请求超时从 10s 放宽至 20s，叠加 30s 整轮预算熔断。
+  2. 探活成功判定改为 any-success：任意一个模型成功即判定账号健康并立即终止后续测试，只有全部候选模型均失败才判定为探活失败。
+  3. 大幅降低因单模型瞬时故障或下线导致的正常账号被误打「测试」标签并被调度硬排除的误杀率。
+  4. 面板手动「测试」按钮保持指定模型或随机兜底行为不变。
+  5. 修复 TraeWork 签到协议对齐官方 Trae 客户端：请求体增加 {"req_source": 2}，请求头补齐客户端设备指纹（x-device-brand、x-device-type、x-os-version、x-app-version、x-app-id）并移除网页端 Origin/Referer，解决被服务端风控判定为未知/网页端导致的 9074（当前参与用户太多，请稍后再试）拦截。
+- 涉及文件: traework/active_ping.go、traework/active_ping_test.go、traework/checkin.go、traework/checkin_headers_test.go、traework/main.go、traework/VERSION、traework/CHANGELOG.md
+
+
 ## 0.2.3
 
 ### Feat - 「测试」按钮支持选择指定模型

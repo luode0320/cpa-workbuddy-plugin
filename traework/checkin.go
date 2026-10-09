@@ -42,23 +42,44 @@ func deviceIDFor(baseDeviceID, userID string) string {
 	}
 }
 
-// checkinUserAgent mimics the Trae Work web client. Requests leaving the
-// host bridge carry Go's default "Go-http-client/1.1" UA, which Trae's
-// activity WAF throttles aggressively (observed 2026-08-30: 16 consecutive
-// 9074 "当前参与用户太多" rejections over 20 minutes on the claim endpoint
-// while same-parameter probes with a browser UA succeeded instantly; the
-// points endpoint is unaffected). Sending the UA the real check-in page
-// uses avoids that penalty box.
+// checkinUserAgent mimics the Trae client HTTP User-Agent.
 const checkinUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
+// checkinClaimRequest 是向 /trae/api/v2/ug/checkin_credits/claim 提交的请求体。
+// 官方 Trae 客户端（TRAE SOLO CN / Solo-Lite）通过 req_source: 2 标明来源于 IDE 客户端。
+// 若未携带 req_source（如空 JSON {}），服务端会按未知/网页渠道风控，触发 9074（当前参与用户太多）拦截。
+type checkinClaimRequest struct {
+	ReqSource int `json:"req_source"`
+}
+
+// checkinAuthHeaders 构造签到与额度查询请求头，对齐官方 Trae 客户端设备指纹头。
+// 客户端发起请求不包含网页端 Origin/Referer，避免被识别为网页活动请求并拦截。
 func checkinAuthHeaders(a *traeAuth, deviceID string) http.Header {
+	cfg := loadedConfig()
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
-	h.Set("Authorization", "Cloud-IDE-JWT "+a.Token)
-	h.Set("x-device-id", deviceID)
+	if a != nil && a.Token != "" {
+		h.Set("Authorization", "Cloud-IDE-JWT "+a.Token)
+	}
+	if deviceID != "" {
+		h.Set("x-device-id", deviceID)
+	}
+	if cfg.AppID != "" {
+		h.Set("x-app-id", cfg.AppID)
+	}
+	if cfg.DeviceModel != "" {
+		h.Set("x-device-brand", cfg.DeviceModel)
+	}
+	if cfg.OSName != "" {
+		h.Set("x-device-type", cfg.OSName)
+	}
+	if cfg.OSVersion != "" {
+		h.Set("x-os-version", cfg.OSVersion)
+	}
+	if v := ideVersion(); v != "" {
+		h.Set("x-app-version", v)
+	}
 	h.Set("User-Agent", checkinUserAgent)
-	h.Set("Origin", "https://work.trae.cn")
-	h.Set("Referer", "https://work.trae.cn/")
 	return h
 }
 
@@ -85,9 +106,10 @@ func checkinAccount(a *traeAuth) checkinResult {
 	}
 	host := a.checkinHost()
 	deviceID := deviceIDFor(a.DeviceID, a.UserID)
+	claimPayload, _ := json.Marshal(checkinClaimRequest{ReqSource: 2})
 	// One deferred retry absorbs Trae's transient peak-hour throttle window.
 	for attempt := 0; ; attempt++ {
-		req, err := http.NewRequest(http.MethodPost, host+claimPath, bytes.NewReader([]byte("{}")))
+		req, err := http.NewRequest(http.MethodPost, host+claimPath, bytes.NewReader(claimPayload))
 		if err != nil {
 			return checkinResult{OK: false, Message: err.Error()}
 		}
