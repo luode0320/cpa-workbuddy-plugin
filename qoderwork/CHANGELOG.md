@@ -1,5 +1,17 @@
 # QoderWork Plugin Changelog
 
+## 0.9.23
+
+### Feat - 面板新增「测试」按钮（先选模型再测试）
+
+- 变更要点:
+  1. 账号卡片新增「测试」按钮：点击弹出模型小窗口，`GET /models?auth_index=` 拉取该账号可用模型列表，点选指定模型后再发起一次真实推理测试。
+  2. 新增只读管理路由 `GET /plugins/qoderwork-provider/models`（不进 `mutatingManagementPath`）。
+  3. 新增 `POST /plugins/qoderwork-provider/test-active`，body `{auth_index, model?}`；`model` 为空时回退随机模型，兼容旧面板。
+  4. 测试失败时弹窗内就地展示错误，不阻断面板其它操作。
+- 说明: qoderwork 不做定时自动探活（watchdog），本能力仅承载面板手动测试链路，与 workbuddy 的自动探活口径区分。
+- 涉及文件: qoderwork/active_ping.go、qoderwork/models.go、qoderwork/management.go、qoderwork/panel.html、qoderwork/active_ping_test.go、qoderwork/management_test.go、qoderwork/VERSION、qoderwork/main.go
+
 ## 0.9.22
 
 ### Feat - 生命周期自动停用默认关闭

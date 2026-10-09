@@ -130,6 +130,8 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/claim-pro", Description: "Claim one-time Pro upgrade pack for one account (auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
 			{Method: http.MethodPost, Path: base + "/delete", Description: "Delete one QoderWork account and its physical auth file (body: {auth_index})."},
+			{Method: http.MethodPost, Path: base + "/test-active", Description: "Run one manual active inference test for an account (body: {auth_index, model?})."},
+			{Method: http.MethodGet, Path: base + "/models", Description: "List the models available to one account for the panel test picker (query: auth_index)."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "QoderWork", Description: "QoderWork dashboard: credits, check-in, plan, import."},
@@ -189,6 +191,10 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveStatus()))
 	case req.Method == http.MethodPost && path == base+"/delete":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleDeleteAuth(req)))
+	case req.Method == http.MethodPost && path == base+"/test-active":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleTestActive(req)))
+	case req.Method == http.MethodGet && path == base+"/models":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelsQuery(req)))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }
