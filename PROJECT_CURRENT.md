@@ -14,6 +14,26 @@
 
 ## 活动会话进展摘要
 
+- 当前会话（2026-10-10）：**独立国际版 Qoder AI 插件全套代码实现、验证全绿与生态接入（qoder-ai-provider 0.1.0）**。
+  - 用户诉求：对标 workbuddy-ai-provider 独立国际版架构，构建独立的 Qoder AI 国际版插件，支持国际站（qoder.com）每日签到给 100 积分功能与多账号管理。
+  - 调研与端点实测（2026-10-10）：
+    1. 域名与网关确认：qoder.ai 308 重定向至 https://qoder.com；国际站 OpenAPI 统一基地址为 https://openapi.qoder.sh；
+    2. 关键业务端点在线实测：/sash/api/v1/me/daily-check-in/status 与 /claim、/api/v2/quota/usage、/api/v2/user/plan、/api/v1/deviceToken/* 均通过 curl 真实响应证实路由 100% 存活；
+    3. 推理与模型同网关：openapi.qoder.sh 同步挂载 /algo/api/v2/model/list 与 /algo/api/v2/service/pro/sse/agent_chat_generation，完全复用 COSY 签名 + QoderEncoding + SSE 转发链路。
+  - 代码实现（qoder-ai/）：
+    1. 独立工程骨架：插件 ID `qoder-ai-provider`，名称 `Qoder AI`，凭据文件规范 `qoderai-<uid>.json`（单账号兜底 `qoderai.json`），独立存储目录 `qoderai_accounts`；
+    2. 核心功能闭环：OAuth 设备授权流（PKCE + nonce + 官方 Client ID）、PAT 导入、Token 自动保活；每日签到（每次 100 积分）+ 4 小时后台定时轮询 + 单账号并发防重锁 + 批量签到；动态模型拉取与静态 fallback；指定模型探活测试（authModelsForIndex + handleTestActiveWithAuth）；
+    3. 专属管理控制台：定制 qoder-ai/panel.html，管理路径挂载在 /v0/management/plugins/qoder-ai-provider，两段内嵌 script 通过 Node 语法验证；
+  - 生态基础设施集成：
+    1. 用量归一化：token-usage-tracker/usage_stats/auth_identity.go 增加 Qoder AI 供应商映射；
+    2. CI/CD 流水线：.github/workflows/build.yml 增加 qoder-ai-provider-v* 触发器、dispatch 选项及 7 平台构建矩阵；
+    3. 插件注册表：registry.json 登记 qoder-ai-provider 0.1.0 元数据并通过 validate-registry.py 校验；
+  - 验证与门禁全绿：
+    1. cgo-shim-build.py qoder-ai：build / vet / test 全绿；
+    2. 哨兵失败拦截反证：qoder_ai_endpoints_test.go 临时插入 SENTINEL_FAILURE 证实真实进入编译测试，恢复后复测全绿；
+    3. 跨插件防破坏验证：qoderwork、workbuddy-ai、token-usage-tracker 跑 cgo-shim-build 全绿；
+    4. 6-review：STYLE: PASS，实施总览已归档落盘。
+
 - 当前会话（2026-10-09）：**三插件测试按钮改为弹出模型选择窗口按指定模型测试（workbuddy 0.15.4 / workbuddy-ai 0.1.9 / traework 0.2.3）**。
   - 用户诉求：三插件面板卡片「测试」按钮原本随机挑一个模型直接测，改为点击后弹出该账号支持的模型小窗口，点选指定模型再测。
   - 后端：三插件 models.go 新增 authModelsForIndex + handleModelsQuery；active_ping.go 的 handleTestActiveWithAuth(sa, authIndex, model) 支持指定模型（model 为空保持随机，兼容旧面板）；management.go 新增只读 GET /models?auth_index= 路由。

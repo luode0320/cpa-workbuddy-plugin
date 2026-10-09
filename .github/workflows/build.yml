@@ -31,13 +31,14 @@ on:
       - "gemini-provider-v*"
       - "workbuddy-ai-provider-v*"
       - "cursor-provider-v*"
+      - "qoder-ai-provider-v*"
   workflow_dispatch:
     inputs:
       plugin:
         description: "Plugin to release"
         required: true
         type: choice
-        options: [workbuddy-provider, qoderwork-provider, workbuddy-token-usage, traework-provider, gemini-provider, workbuddy-ai-provider, cursor-provider]
+        options: [workbuddy-provider, qoderwork-provider, workbuddy-token-usage, traework-provider, gemini-provider, workbuddy-ai-provider, cursor-provider, qoder-ai-provider]
       version:
         description: "Version without v (empty = plugin's VERSION file)"
         required: false
@@ -61,6 +62,7 @@ jobs:
           - dir: gemini
           - dir: workbuddy-ai
           - dir: cursor
+          - dir: qoder-ai
     defaults:
       run:
         working-directory: ${{ matrix.dir }}
@@ -303,6 +305,37 @@ jobs:
             goarch: amd64
             runner: windows-2025
             ext: dll
+          # qoder-ai-provider native (sources in qoder-ai/)
+          - id: qoder-ai-provider
+            src: qoder-ai
+            goos: linux
+            goarch: amd64
+            runner: ubuntu-24.04
+            ext: so
+          - id: qoder-ai-provider
+            src: qoder-ai
+            goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+            ext: so
+          - id: qoder-ai-provider
+            src: qoder-ai
+            goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+            ext: dylib
+          - id: qoder-ai-provider
+            src: qoder-ai
+            goos: darwin
+            goarch: arm64
+            runner: macos-15
+            ext: dylib
+          - id: qoder-ai-provider
+            src: qoder-ai
+            goos: windows
+            goarch: amd64
+            runner: windows-2025
+            ext: dll
     defaults:
       run:
         shell: bash
@@ -458,6 +491,14 @@ jobs:
             src: cursor
             target: freebsd-amd64
             ext: so
+          - id: qoder-ai-provider
+            src: qoder-ai
+            target: windows-arm64
+            ext: dll
+          - id: qoder-ai-provider
+            src: qoder-ai
+            target: freebsd-amd64
+            ext: so
     defaults:
       run:
         shell: bash
@@ -578,7 +619,8 @@ jobs:
         startsWith(github.ref, 'refs/tags/traework-provider-v') ||
         startsWith(github.ref, 'refs/tags/gemini-provider-v') ||
         startsWith(github.ref, 'refs/tags/workbuddy-ai-provider-v') ||
-        startsWith(github.ref, 'refs/tags/cursor-provider-v')
+        startsWith(github.ref, 'refs/tags/cursor-provider-v') ||
+        startsWith(github.ref, 'refs/tags/qoder-ai-provider-v')
     needs:
       - build
       - build-cross
@@ -689,6 +731,7 @@ jobs:
             gemini-provider)       DISPLAY="Gemini Provider" ;;
             workbuddy-ai-provider) DISPLAY="WorkBuddy AI" ;;
             cursor-provider)       DISPLAY="Cursor Provider" ;;
+            qoder-ai-provider)     DISPLAY="Qoder AI" ;;
           esac
           TITLE="${DISPLAY:-$PLUGIN} v${VERSION}"
           if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then

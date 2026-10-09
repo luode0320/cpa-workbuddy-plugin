@@ -24,6 +24,10 @@ func displayAuthProvider(value string) string {
 		return "WorkBuddy AI"
 	case "workbuddy", "workbuddy-provider":
 		return "WorkBuddy"
+	case "qoderwork", "qoderwork-provider":
+		return "QoderWork"
+	case "qoder-ai", "qoder-ai-provider":
+		return "Qoder AI"
 	default:
 		return value
 	}

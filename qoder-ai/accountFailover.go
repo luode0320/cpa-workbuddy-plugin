@@ -1,0 +1,353 @@
+// accountFailover.go implements per-account fixed cooldown for routing.
+//
+// When an upstream account fails (HTTP 429 / 402 / 5xx or a transport-level
+// error), the account enters a temporary cooldown window. While cooling down,
+// every new request routed by the scheduler skips that account, so sessions
+// fail over to a healthy account instead of piling more failures onto the
+// same exhausted one.
+//
+// The cooldown is a FIXED 15 seconds on every failure — no exponential
+// backoff. The consecutive-failure counter is still tracked for panel
+// display only; it no longer freezes accounts (the anomaly pool was
+// removed on 2026-09-08) and no longer lengthens the cooldown:
+// each failure cools the account for exactly failoverCooldown.
+//
+// A successful request resets the counter and lifts the cooldown immediately.
+// Cooldown state is in-memory only: no auth files, no DB writes; a process
+// restart clears everything. The mechanism can be disabled wholesale via
+// plugin config `account_failover: false`.
+package main
+
+import (
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+)
+
+// failoverCooldown is the fixed cooldown applied after any account failure.
+// No exponential backoff: every failure cools the account for exactly this
+// long, regardless of the consecutive-failure count.
+const failoverCooldown = 15 * time.Second
+
+// failoverPruneInterval bounds how often stale (zero-count) failover states
+// are swept from memory. Aligned with the session-binding pruner.
+const failoverPruneInterval = 5 * time.Minute
+
+var (
+	// failoverEnabled gates the whole mechanism. Default true; set false via
+	// plugin config account_failover: false to restore pre-failover behavior.
+	failoverEnabled   = true
+	failoverEnabledMu sync.RWMutex
+
+	// failoverMu guards failoverStates.
+	failoverMu     sync.Mutex
+	failoverStates = make(map[string]*authFailoverState)
+)
+
+// authFailoverState tracks consecutive failures for one account.
+type authFailoverState struct {
+	count         int       // consecutive failures; reset to 0 on success
+	cooldownUntil time.Time // zero means not cooling down
+}
+
+func init() {
+	go func() {
+		ticker := time.NewTicker(failoverPruneInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			pruneFailoverStates()
+		}
+	}()
+}
+
+// failoverActive reports whether the failover mechanism is enabled.
+func failoverActive() bool {
+	failoverEnabledMu.RLock()
+	defer failoverEnabledMu.RUnlock()
+	return failoverEnabled
+}
+
+// setFailoverEnabled toggles the whole mechanism (config / tests).
+func setFailoverEnabled(on bool) {
+	failoverEnabledMu.Lock()
+	failoverEnabled = on
+	failoverEnabledMu.Unlock()
+}
+
+// failoverCooldownFor returns the cooldown duration for a failure. The
+// window is fixed at failoverCooldown regardless of the consecutive-failure
+// count; count <= 0 yields zero. count is still tracked separately (in
+// recordAccountFailure) for panel display only.
+func failoverCooldownFor(count int) time.Duration {
+	if count <= 0 {
+		return 0
+	}
+	return failoverCooldown
+}
+
+// isAccountFailure reports whether an upstream response counts as an account
+// failure for failover purposes. Transport-level failures (status 0), 5xx,
+// rate limiting (429 / body markers), hard credit errors and account-level
+// 4xx (401/403/404/405 — wrong token, missing permission, endpoint or
+// method not available for THIS account) all count. Business 4xx (400) is
+// excluded: it reflects the request, not the account.
+func isAccountFailure(status int, body string) bool {
+	if status == 0 || status >= 500 {
+		return true
+	}
+	if isSoftRateLimit(status, body) || isHardCreditError(status, body) {
+		return true
+	}
+	return isAccountLevel4xx(status)
+}
+
+// isAccountLevel4xx reports whether a 4xx status reflects an account-level
+// problem (the credential/endpoint on this account is wrong) rather than a
+// request-level problem. 401/403/404/405 mean the upstream rejected access
+// for THIS account: token expired, no permission, route missing, or method
+// not allowed. Retrying with a different account has a real chance of
+// succeeding. 400 is intentionally excluded — it almost always means the
+// request body was malformed by us and would fail identically on every
+// other account.
+//
+// 429 (Too Many Requests / soft rate limit) is INCLUDED here as of v0.9.1:
+// the upstream soft rate limit is usually per-account or per-tenant, so
+// rotating to the next candidate (filtered by cooldown) is the
+// cheapest way to recover inside a single request. The cross-request
+// cooldown still applies in parallel via isAccountFailure /
+// recordAccountFailure — i.e. a 429-triggered same-request rotation also
+// lifts the failed account's fixed cooldown so subsequent requests route
+// away from it. When the upstream limit is genuinely global (shared
+// IP/region quota across every qoderwork account), same-request rotation
+// burns the budget without progress; pickNextAuth still has to surface an
+// ok=false signal once the pool is exhausted.
+func isAccountLevel4xx(status int) bool {
+	switch status {
+	case http.StatusUnauthorized,    // 401
+		http.StatusForbidden,        // 403
+		http.StatusNotFound,         // 404
+		http.StatusMethodNotAllowed, // 405
+		http.StatusTooManyRequests:  // 429 — v0.9.1: same-request rotation
+		return true
+	}
+	return false
+}
+
+// shouldRotateOnUpstreamErr is the unified same-request rotation gate shared
+// by the execute loop and the stream paths. HTTP 200 means the transport
+// succeeded, but the SSE body may still carry a business-level failure (an
+// OpenAI-convention error frame); those are classified through
+// isAccountFailure (credit / rate-limit markers). Any other status keeps the
+// account-level 4xx heuristic. （同步自 workbuddy：200 SSE 业务错误换号，
+// 2026-09-06）
+func shouldRotateOnUpstreamErr(status int, errBody string) bool {
+	if status == http.StatusOK {
+		return isAccountFailure(status, errBody)
+	}
+	return isAccountLevel4xx(status)
+}
+
+// normalizeFailoverKey canonicalizes an auth identifier across various representations:
+// trims spaces, strips .json suffix, and removes provider prefixes.
+func normalizeFailoverKey(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.TrimSuffix(s, ".json")
+	for _, p := range []string{"workbuddy-", "qoderai-", "traework-"} {
+		s = strings.TrimPrefix(s, p)
+	}
+	return s
+}
+
+// coolDownAccount sets only the fixed cooldown window for an account,
+// without touching the consecutive-failure counter.
+// Used by the transient-throttle (soft) failure path: those failures
+// self-heal when the upstream gateway recovers, so counting them would
+// quarantine healthy accounts during a gateway blip.
+func coolDownAccount(authID string) bool {
+	failoverMu.Lock()
+	defer failoverMu.Unlock()
+	until := time.Now().Add(failoverCooldown)
+	setCooldownRecordLocked(authID, until, 0, false)
+	return true
+}
+
+func setCooldownRecordLocked(authID string, until time.Time, count int, bumpCount bool) {
+	keys := []string{authID}
+	if norm := normalizeFailoverKey(authID); norm != "" && norm != authID {
+		keys = append(keys, norm)
+	}
+	for _, k := range keys {
+		st := failoverStates[k]
+		if st == nil {
+			st = &authFailoverState{}
+			failoverStates[k] = st
+		}
+		if bumpCount {
+			st.count++
+		} else if count > 0 {
+			st.count = count
+		}
+		st.cooldownUntil = until
+	}
+}
+
+// recordAccountFailure increments the consecutive-failure counter for the
+// account and extends its cooldown window by the fixed failoverCooldown.
+// Returns true when the failure was counted (i.e. isAccountFailure).
+// Callers are expected to key on the same auth.ID the scheduler uses.
+//
+// Transient-throttle failures (429 without credit markers, soft rate-limit
+// wording, upstream zero-byte stream — see isTransientThrottle) take the
+// SOFT path: cooldown only, never a counter bump. Hard
+// failures (credit / 401/403/404/405 / 5xx / transport) keep the original
+// semantics below.
+//
+// The consecutive-failure counter no longer freezes accounts: the anomaly
+// pool was removed on 2026-09-08, so a hard failure now only cools the
+// account for the fixed window and every other effect is panel-visible
+// state (success_count / failed_count on the physical auth file).
+func recordAccountFailure(authID string, status int, body string) bool {
+	if !failoverActive() {
+		return false
+	}
+	if !isAccountFailure(status, body) && !isTransientThrottle(status, body) {
+		return false
+	}
+	if isTransientThrottle(status, body) {
+		return coolDownAccount(authID)
+	}
+	now := time.Now()
+	failoverMu.Lock()
+	defer failoverMu.Unlock()
+	st := failoverStates[authID]
+	curCount := 0
+	if st != nil {
+		curCount = st.count
+	} else if norm := normalizeFailoverKey(authID); norm != "" {
+		if stNorm := failoverStates[norm]; stNorm != nil {
+			curCount = stNorm.count
+		}
+	}
+	newCount := curCount + 1
+	until := now.Add(failoverCooldownFor(newCount))
+	setCooldownRecordLocked(authID, until, newCount, false)
+	return true
+}
+
+// isAccountCoolingDown reports whether the account is currently inside its
+// cooldown window and should be skipped by routing.
+// It supports both exact key match and normalized-key alias resolution.
+func isAccountCoolingDown(authID string) bool {
+	if !failoverActive() {
+		return false
+	}
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return false
+	}
+	failoverMu.Lock()
+	defer failoverMu.Unlock()
+	now := time.Now()
+	if st := failoverStates[authID]; st != nil && now.Before(st.cooldownUntil) {
+		return true
+	}
+	target := normalizeFailoverKey(authID)
+	if target == "" {
+		return false
+	}
+	if st := failoverStates[target]; st != nil && now.Before(st.cooldownUntil) {
+		return true
+	}
+	for k, st := range failoverStates {
+		if st == nil || !now.Before(st.cooldownUntil) {
+			continue
+		}
+		normK := normalizeFailoverKey(k)
+		if normK == target || strings.Contains(normK, target) || strings.Contains(target, normK) {
+			return true
+		}
+	}
+	return false
+}
+
+// resetAccountFailover clears the failure counter and cooldown after a
+// successful request. Call it on every upstream success.
+func resetAccountFailover(authID string) {
+	if !failoverActive() {
+		return
+	}
+	failoverMu.Lock()
+	defer failoverMu.Unlock()
+	keys := []string{authID}
+	if norm := normalizeFailoverKey(authID); norm != "" && norm != authID {
+		keys = append(keys, norm)
+	}
+	for _, k := range keys {
+		if st := failoverStates[k]; st != nil {
+			st.count = 0
+			st.cooldownUntil = time.Time{}
+		}
+	}
+}
+
+// pruneFailoverStates removes zero-count states (successfully reset, no
+// longer cooling down). Failed-but-not-cooling-down states are kept: their
+// counter persists until a success resets it.
+func pruneFailoverStates() {
+	failoverMu.Lock()
+	defer failoverMu.Unlock()
+	for k, st := range failoverStates {
+		if st.count == 0 {
+			delete(failoverStates, k)
+		}
+	}
+}
+
+// failoverStateSnapshot returns a copy of the account's failover state.
+// Used by tests and by the dashboard (panel.go) to surface the consecutive
+// failure count + cooldown window in the account cards.
+func failoverStateSnapshot(authID string) (count int, cooldownUntil time.Time, ok bool) {
+	failoverMu.Lock()
+	defer failoverMu.Unlock()
+	st, ok := failoverStates[authID]
+	if !ok {
+		return 0, time.Time{}, false
+	}
+	return st.count, st.cooldownUntil, true
+}
+
+// clearFailoverStates wipes all failover state. Test helper; never called in
+// production paths.
+func clearFailoverStates() {
+	failoverMu.Lock()
+	failoverStates = make(map[string]*authFailoverState)
+	failoverMu.Unlock()
+}
+
+// clearFailoverStateForAuth removes failover state for a single account key.
+// Called when an account is deleted so its cooldown/counter don't leak into a
+// future auth that reuses the same auth.ID (or keep a dead entry in memory).
+// （同步自 workbuddy 0.14.7 账号删除功能）
+func clearFailoverStateForAuth(authID string) {
+	if authID == "" {
+		return
+	}
+	failoverMu.Lock()
+	delete(failoverStates, authID)
+	failoverMu.Unlock()
+}
+
+// setFailoverCooldownUntil overrides the cooldown deadline for an account.
+// Test helper (lets tests simulate cooldown expiry); never called in
+// production paths.
+func setFailoverCooldownUntil(authID string, until time.Time) {
+	failoverMu.Lock()
+	defer failoverMu.Unlock()
+	st := failoverStates[authID]
+	if st == nil {
+		st = &authFailoverState{}
+		failoverStates[authID] = st
+	}
+	st.cooldownUntil = until
+}

@@ -1,0 +1,1202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qoder AI 面板</title>
+<style>
+/* Theme tokens aligned with CPA management panel (key-policy / themes.scss):
+   default :root = light (paper); data-theme=white | dark; embedded iframe syncs parent. */
+:root{
+  --bg:#faf9f5;--card:#ffffff;--border:#e3e1db;--fg:#2d2a26;--mut:#6d6760;
+  --acc:#4c8dff;--on-acc:#ffffff;--ok:#10b981;--warn:#e0aa14;--err:#c65746;
+  --surface:#f0eee8;--surface-muted:#e9e6df;--btn-sec:#eef1f6;--btn-sec-hover:#e4e8ef;
+  --input-bg:#ffffff;--code-bg:#f3f4f6;--code-fg:#374151;--placeholder:rgba(109,103,96,.55);
+  --ok-soft:rgba(16,185,129,.10);--ok-border:rgba(16,185,129,.30);
+  --warn-soft:rgba(224,170,20,.12);--warn-border:rgba(224,170,20,.32);
+  --err-soft:rgba(198,87,70,.10);--err-border:rgba(198,87,70,.30);
+  --mut-soft:rgba(109,103,96,.12);--mut-border:rgba(109,103,96,.28);
+  --scrim:rgba(45,42,38,.35);--toast-shadow:0 10px 28px rgba(0,0,0,.12),0 0 0 1px rgba(0,0,0,.04);
+  --modal-shadow:0 24px 56px rgba(0,0,0,.18),0 0 0 1px rgba(0,0,0,.04);
+  --acc-ring:rgba(76,141,255,.18);--radius-md:12px;--radius-lg:16px;
+  color-scheme:light
+}
+:root[data-theme="white"]{
+  --bg:#f5f5f5;--card:#ffffff;--border:#e6e6e6;--fg:#1f1f1f;--mut:#707070;
+  --surface:#fafafa;--surface-muted:#efefef;--btn-sec:#f0f0f0;--btn-sec-hover:#e8e8e8;
+  --input-bg:#ffffff;--code-bg:#f3f4f6;--code-fg:#374151;--placeholder:rgba(112,112,112,.55);
+  --scrim:rgba(0,0,0,.32);--toast-shadow:0 10px 28px rgba(0,0,0,.10),0 0 0 1px rgba(0,0,0,.04);
+  --modal-shadow:0 24px 56px rgba(0,0,0,.16),0 0 0 1px rgba(0,0,0,.04);
+  color-scheme:light
+}
+:root[data-theme="dark"]{
+  --bg:#1e1d1b;--card:#26241f;--border:#3a3833;--fg:#ede9e3;--mut:#9a948c;
+  --acc:#4c8dff;--on-acc:#ffffff;--ok:#34d399;--warn:#f0c050;--err:#e07a6a;
+  --surface:#2f2d28;--surface-muted:#35332e;--btn-sec:#35332e;--btn-sec-hover:#3f3c36;
+  --input-bg:#1e1d1b;--code-bg:#35332e;--code-fg:#d6d1c9;--placeholder:rgba(154,148,140,.55);
+  --ok-soft:rgba(52,211,153,.12);--ok-border:rgba(52,211,153,.38);
+  --warn-soft:rgba(240,192,80,.14);--warn-border:rgba(240,192,80,.38);
+  --err-soft:rgba(224,122,106,.12);--err-border:rgba(224,122,106,.38);
+  --mut-soft:rgba(154,148,140,.16);--mut-border:rgba(154,148,140,.32);
+  --scrim:rgba(0,0,0,.55);--toast-shadow:0 10px 28px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.03);
+  --modal-shadow:0 24px 56px rgba(0,0,0,.45),0 0 0 1px rgba(255,255,255,.04);
+  --acc-ring:rgba(76,141,255,.28);
+  color-scheme:dark
+}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1100px;margin:0 auto;padding:24px 16px}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);font-size:13px;margin-bottom:20px}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+.bar .search{max-width:210px;flex:0 1 210px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--fg);font-size:13px;outline:none}
+.bar .search:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
+.bar .search::placeholder{color:var(--placeholder)}
+.bar .sort-btn{font-size:13px;white-space:nowrap}
+.bar .sort-btn.active{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
+button{background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
+button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background:var(--btn-sec-hover)}button:disabled{opacity:.5;cursor:default}
+.toggle{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-bottom:80px}
+.card,.summary{background:var(--card);border:1px solid var(--border);border-radius:12px}
+.card{padding:16px}
+.card.selected{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc-ring)}
+/* 刷新三态：卡片轮廓高亮 + 状态小字 */
+.card .refresh-state{font-size:11px;color:var(--mut);display:inline-flex;align-items:center;gap:4px;margin-bottom:6px}
+.card .refresh-state.err{color:var(--err)}
+.card .refresh-state .spin{border-color:var(--mut);border-top-color:transparent}
+.card[data-refresh-state="running"]{outline:1px dashed var(--acc)}
+.card[data-refresh-state="done"]{outline:1px solid var(--ok)}
+.card[data-refresh-state="failed"]{outline:1px solid var(--err)}
+.card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center}
+.uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:12px}
+.badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
+.badge.exhausted{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
+.badge.preserve{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-style:italic}
+.badge.stat{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-weight:500}
+.badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
+.badge.pro{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
+.badge.cn{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
+.badge.global{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
+.badge.disabled{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
+.filter-bar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.ftag{background:var(--surface);border:1px solid var(--border);color:var(--mut);border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600}
+.ftag.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}
+.ftag .cnt{font-size:10px;opacity:.75;margin-left:4px}
+/* 用量汇总与账号卡共用 --card，避免夜间两套底色 */
+.summary{padding:16px;margin-bottom:14px}
+.summary-hd{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.summary-title{font-weight:700;font-size:14px}
+.summary-meta{color:var(--mut);font-size:12px}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:10px}
+/* 内嵌指标格：与账号卡内部表面一致（--surface），不用更深的 surface-muted */
+.summary-item{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.summary-item .k{color:var(--mut);font-size:11px;margin-bottom:4px}
+.summary-item .v{font-size:18px;font-weight:700}
+/* 剩余(不可用)：灰色 + 删除线，与剩余(可用)视觉区分（同步自 workbuddy 0.14.4） */
+.summary-item .v.muted{color:var(--mut);font-weight:600;text-decoration:line-through;text-decoration-color:var(--mut-border);text-decoration-thickness:1px}
+.summary-item .v.ok{color:var(--ok)}
+.summary-item .v.warn{color:var(--warn)}
+.summary-item .v.err{color:var(--err)}
+.summary .pb{margin-top:4px}
+.row{display:flex;justify-content:space-between;padding:5px 0;border-top:1px dashed var(--border)}
+.row:first-of-type{border-top:0}.k{color:var(--mut)}.v{font-weight:600}
+.v.ok{color:var(--ok)}.v.warn{color:var(--warn)}.v.err{color:var(--err)}
+.pkgs{margin-top:10px;font-size:12px;color:var(--mut)}
+.pkgs .p{display:flex;justify-content:space-between;padding:4px 0;border-top:1px solid var(--border)}
+.pb{margin-top:10px}
+.pb-label{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin-bottom:6px}
+.pb-primary{display:flex;flex:1 1 220px;min-width:0;flex-wrap:wrap}
+.pb-segment + .pb-segment::before{content:" · ";white-space:pre}
+.pb-used{flex:0 0 auto;white-space:nowrap}
+.pb-track{height:8px;background:var(--surface-muted);border-radius:99px;overflow:hidden}
+.pb-bar{height:100%;background:var(--ok);border-radius:99px;transition:width .6s ease}
+.pb-meta{font-size:11px;color:var(--mut);margin-top:6px}
+.actions{margin-top:12px;display:flex;gap:8px}
+.field-input{flex:1;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--fg)}
+/* 右上角滑入通知栈 */
+.toasts{position:fixed;top:16px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:9999;max-width:360px}
+.toast{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--acc);border-radius:var(--radius-md);padding:14px 18px;font-size:13px;box-shadow:var(--toast-shadow);transform:translateX(120%);opacity:0;transition:transform .3s cubic-bezier(.2,.9,.3,1.1),opacity .25s;cursor:pointer;word-break:break-all}
+.toast.show{transform:translateX(0);opacity:1}
+.toast.ok{border-left-color:var(--ok);background:var(--ok-soft)}
+.toast.warn{border-left-color:var(--warn);background:var(--warn-soft)}
+.toast.err{border-left-color:var(--err);background:var(--err-soft)}
+button.done{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border);cursor:default;opacity:1}
+button.done:disabled{opacity:1}
+.toast .t{font-weight:600;margin-bottom:3px}
+.toast .d{color:var(--mut);font-size:12px;line-height:1.45}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--on-acc);border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
+button .spin{border-color:var(--on-acc);border-top-color:transparent}
+.loading{color:var(--mut);text-align:center;padding:40px}
+.modal-mask{position:fixed;inset:0;background:var(--scrim);display:none;align-items:center;justify-content:center;z-index:9000;padding:16px;backdrop-filter:blur(2px)}
+.modal-mask.show{display:flex}
+.modal{background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-lg);width:min(560px,100%);max-height:min(90vh,640px);display:flex;flex-direction:column;box-shadow:var(--modal-shadow)}
+.modal-hd{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border)}
+.modal-hd h2{font-size:15px;margin:0;color:var(--fg);font-weight:600}
+.modal-x{background:transparent;color:var(--mut);padding:4px 10px;font-size:18px;line-height:1}
+.modal-x:hover{color:var(--fg);background:var(--surface-muted)}
+.modal-bd{padding:16px;overflow:auto}
+.modal-bd .hint{color:var(--mut);font-size:12px;margin:0 0 10px;line-height:1.5}
+.modal-bd .hint code{background:var(--code-bg);color:var(--code-fg);padding:1px 5px;border-radius:4px;font-size:11px}
+.modal-bd textarea{width:100%;min-height:160px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--fg);font:12px/1.45 ui-monospace,monospace;resize:vertical;outline:none}
+.modal-bd textarea:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
+.modal-bd textarea::placeholder{color:var(--placeholder)}
+.modal-ft{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border);background:var(--surface);border-radius:0 0 var(--radius-lg) var(--radius-lg)}
+.modal-ft button.sec{background:var(--btn-sec);color:var(--fg)}
+.modal-ft button.sec:hover{background:var(--btn-sec-hover)}
+/* 危险操作按钮 + 账号卡删除入口（同步自 workbuddy 0.14.7） */
+button.danger{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
+button.danger:hover{background:var(--err);color:#fff}
+.card-del{background:transparent;color:var(--mut);border:0;padding:2px 7px;font-size:16px;line-height:1;border-radius:6px;cursor:pointer;flex:none}
+.card-del:hover{background:var(--err-soft);color:var(--err)}
+</style>
+<script>
+/* Early theme sync (before body paint): mirror CPA parent data-theme when
+   embedded; standalone falls back to prefers-color-scheme. Same semantics as
+   cpa-plugin-key-policy themeSync (DOM data-theme is source of truth). */
+(function(){
+  var ATTR="data-theme";
+  function embedded(){try{return window.self!==window.top}catch(e){return false}}
+  function apply(t){
+    var el=document.documentElement;
+    if(t==="white"||t==="dark")el.setAttribute(ATTR,t);
+    else el.removeAttribute(ATTR);
+  }
+  function parentTheme(){
+    if(!embedded())return null;
+    try{
+      var raw=window.parent.document.documentElement.getAttribute(ATTR);
+      if(raw==="white"||raw==="dark")return raw;
+      return "light";
+    }catch(e){return null}
+  }
+  function systemTheme(){
+    try{return window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}catch(e){return "light"}
+  }
+  function sync(){apply(parentTheme()||systemTheme())}
+  sync();
+  window.__wbThemeSync=function(){
+    sync();
+    if(!embedded()){
+      try{
+        var mq=window.matchMedia("(prefers-color-scheme: dark)");
+        var on=function(){sync()};
+        if(mq.addEventListener)mq.addEventListener("change",on);
+        else if(mq.addListener)mq.addListener(on);
+      }catch(e){}
+      return;
+    }
+    try{
+      var parentEl=window.parent.document.documentElement;
+      new MutationObserver(sync).observe(parentEl,{attributes:true,attributeFilter:[ATTR]});
+      window.addEventListener("storage",function(e){if(e.key==="cli-proxy-theme")sync()});
+    }catch(e){}
+  };
+})();
+</script>
+</head>
+<body>
+<div class="wrap">
+  <h1>Qoder AI 账号面板</h1>
+  <div class="sub">积分余额 · CN 每日签到（09:00/21:00）· 耗尽自动关</div>
+  <div id="authBox" class="card" style="display:none;margin-bottom:16px">
+    <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
+    <div style="display:flex;gap:8px">
+      <input id="keyInput" type="password" placeholder="management key" class="field-input">
+      <button onclick="saveKey()">连接</button>
+    </div>
+  </div>
+  <div class="bar">
+    <button class="sec" id="importBtn" onclick="openImportModal()">导入 Qoder AI 凭证</button>
+    <button class="sec" id="exportBtn" onclick="exportAuth(this)" title="导出全部账号凭据为 JSON 备份，可通过导入恢复">导出备份</button>
+    <button class="sec" onclick="checkinAll(this)">全部签到</button>
+    <input id="searchInput" class="search" type="search" placeholder="搜索昵称 / UID" oninput="onSearchChange(this.value)" autocomplete="off">
+    <button class="sec sort-btn" id="sortBtn" onclick="toggleSort(this)" title="按可用积分切换升序/降序">积分 ↕</button>
+
+    <label class="toggle" title="仅 CN 账号 09:00 / 21:00"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到(CN)</label>
+    <span class="toggle" id="svtime"></span>
+  </div>
+  <div class="filter-bar" id="filterBar">
+    <button type="button" class="ftag active" data-region="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
+    <button type="button" class="ftag" data-region="available" onclick="filterRegion('available',this)" title="未禁用 · 未耗尽，可用积分能正常路由">可用 <span class="cnt" id="cntAvailable">0</span></button>
+    <button type="button" class="ftag" data-region="cn" onclick="filterRegion('cn',this)">CN <span class="cnt" id="cntCn">0</span></button>
+    
+    <button type="button" class="ftag" data-region="exhausted" onclick="filterRegion('exhausted',this)">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
+    <button type="button" class="ftag" data-region="preserve" onclick="filterRegion('preserve',this)">保号 <span class="cnt" id="cntPreserve">0</span></button>
+  </div>
+  <div class="summary card" id="summaryBox" style="display:none"></div>
+  <div id="grid" class="grid"><div class="loading">加载中…</div></div>
+</div>
+<div class="modal-mask" id="importModal" onclick="onImportMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
+    <div class="modal-hd">
+      <h2 id="importModalTitle">导入 Qoder AI 凭证</h2>
+      <button type="button" class="modal-x" onclick="closeImportModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint">到 <a href="https://qoder.com/settings/personal-access-tokens" target="_blank" rel="noopener">qoder.com → 设置 → Personal Access Tokens</a> 创建一个 PAT（pt- 开头），粘贴到下方。插件会自动换取 jobToken 并保存为 <code>qoderai-&lt;uid&gt;.json</code>。</p>
+      <input id="importPAT" type="password" placeholder="pt-xxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off" style="width:100%;padding:8px 10px;font-family:ui-monospace,monospace;font-size:13px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);"/>
+      <p class="hint" style="margin-top:8px;opacity:0.7">PAT 长期有效（可在创建时设置过期时间）。插件存储 PAT 用于 jrt- 过期后自动续期，无需重新导入。</p>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+        <p class="hint" style="margin-bottom:8px"><b>从备份恢复</b>：粘贴「导出备份」生成的 JSON 文件内容（支持完整备份文件、凭据数组或单个凭据），逐个恢复，不经过上游换 token。</p>
+        <textarea id="importCredText" placeholder='{"version":1,"plugin":"qoder-ai-provider","accounts":[...]} 或单个凭据 JSON' style="width:100%;height:84px;resize:vertical;padding:8px 10px;font-family:ui-monospace,monospace;font-size:12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);box-sizing:border-box"></textarea>
+        <div style="margin-top:8px;display:flex;align-items:center;gap:10px">
+          <button type="button" class="sec" id="importCredBtn" onclick="importCred(this)">恢复凭据</button>
+          <span class="hint" id="importCredProgress" style="opacity:0.7"></span>
+        </div>
+      </div>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="closeImportModal()">取消</button>
+      <button type="button" onclick="importAuth(this)">导入并保存</button>
+    </div>
+  </div>
+</div>
+<div class="modal-mask" id="deleteModal" onclick="onDeleteMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="deleteModalTitle">
+    <div class="modal-hd">
+      <h2 id="deleteModalTitle">删除账号</h2>
+      <button type="button" class="modal-x" onclick="closeDeleteModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint" id="deleteModalHint">确定要删除该账号吗？</p>
+      <p class="hint" style="color:var(--err)">此操作会永久删除该账号及其认证文件，且不可恢复。</p>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="closeDeleteModal()">取消</button>
+      <button type="button" class="danger" id="deleteConfirmBtn" onclick="confirmDeleteAuth()">删除</button>
+    </div>
+  </div>
+</div>
+<div class="toasts" id="toasts"></div>
+<script>
+const API = "/v0/management/plugins/qoder-ai-provider";
+
+/* ---------- management key acquisition (3 fallbacks, zero config) ----------
+   1) CPA main panel localStorage "cli-proxy-auth" (XOR+base64, same-origin
+      iframe embed) — same approach as cpa-plugin-key-policy.
+   2) ?key= URL param (cleaned from history after read, kept in sessionStorage).
+   3) Manual input (sessionStorage only, never persisted).
+*/
+const ENC_PREFIX = "enc::v1::";
+const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
+const PANEL_STORE = "cli-proxy-auth";
+const SS_KEY = "qoderai-mgmt-key";
+
+function _enc(t){return new TextEncoder().encode(t)}
+function _dec(b){return new TextDecoder().decode(b)}
+function _keyBytes(){try{return _enc(SECRET_SALT+"|"+window.location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
+function _xor(d,k){const r=new Uint8Array(d.length);for(let i=0;i<d.length;i++)r[i]=d[i]^k[i%k.length];return r}
+function _b64e(b){let s="";for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s)}
+function _b64d(s){const bin=atob(s);const b=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b}
+function deobfuscate(p){if(!p||!p.startsWith(ENC_PREFIX))return p;try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes()))}catch(e){return p}}
+function isEmbedded(){try{return window.self!==window.top}catch(e){return false}}
+
+function readPanelKey(){
+  if(!isEmbedded())return null;
+  let raw;try{raw=localStorage.getItem(PANEL_STORE)}catch(e){return null}
+  if(!raw)return null;
+  try{
+    const parsed=JSON.parse(deobfuscate(raw));
+    const st=(parsed&&parsed.state)||parsed||{};
+    return typeof st.managementKey==="string"&&st.managementKey?st.managementKey:null;
+  }catch(e){return null}
+}
+function readUrlKey(){
+  const m=new URLSearchParams(window.location.search).get("key");
+  if(m){history.replaceState(null,"",window.location.pathname)}
+  return m;
+}
+function getKey(){
+  return sessionStorage.getItem(SS_KEY)||readPanelKey()||readUrlKey();
+}
+function saveKey(){
+  const v=document.getElementById("keyInput").value.trim();
+  if(!v)return;
+  sessionStorage.setItem(SS_KEY,v);
+  document.getElementById("authBox").style.display="none";
+  enterPanel();
+}
+function showAuth(){document.getElementById("authBox").style.display="block";const i=document.getElementById("keyInput");i&&i.focus()}
+function authHeaders(k){return k?{"Authorization":"Bearer "+k}:{}}
+/* --------------------------------------------------------------------------- */
+
+function toast(title, kind="ok", detail=""){
+  const box=document.getElementById("toasts");
+  const el=document.createElement("div");
+  el.className="toast "+kind;
+  el.innerHTML='<div class="t"></div>'+(detail?'<div class="d"></div>':'');
+  el.querySelector(".t").textContent=title;
+  if(detail)el.querySelector(".d").textContent=detail;
+  box.appendChild(el);
+  requestAnimationFrame(()=>requestAnimationFrame(()=>el.classList.add("show")));
+  const kill=()=>{el.classList.remove("show");setTimeout(()=>el.remove(),300)};
+  el.onclick=kill;
+  setTimeout(kill, kind==="err"?6000:4000);
+  while(box.children.length>5)box.firstChild.remove();
+}
+function busy(btn, on){
+  if(!btn)return;
+  if(on){btn.dataset.orig=btn.innerHTML;btn.disabled=true;btn.innerHTML='<span class="spin"></span>处理中…'}
+  else{btn.disabled=false;if(btn.dataset.orig)btn.innerHTML=btn.dataset.orig}
+}
+// Immediate UI: mark a check-in button as done so user doesn't see "签到" flash
+// while load() re-fetches (which can take seconds).
+function markCheckinDone(btn){
+  if(!btn)return;
+  btn.disabled=true;
+  btn.className="done";
+  btn.innerHTML="已签到";
+  btn.dataset.orig="已签到";
+}
+function fmtRemain(c){if(!c)return "-";const t=(c.total_remain||0)+(c.total_used||0);return c.total_remain+" 余 / "+t+" 总"}
+function esc(s){return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function progressHTML(c, a){
+  // total uses size when known; remain = spendable, used = cycle spend.
+  // Check-in adds packs → size/remain go UP (grant). Chat spend → used goes UP, remain DOWN.
+  const statSegments=[];
+  if(a&&(Number(a.success)>0||Number(a.failed)>0)){
+    statSegments.push(`<span class="pb-segment">成功 ${Number(a.success)||0}</span>`,`<span class="pb-segment">失败 ${Number(a.failed)||0}</span>`);
+  }
+  if(a&&Number(a.fail_count)>0){
+    statSegments.push(`<span class="pb-segment">连败 ${Number(a.fail_count)}</span>`);
+    if(a.cooling){
+      statSegments.push(`<span class="pb-segment cooling-text" data-cool-until="${Number(a.cool_until)||0}" data-cool-count="${Number(a.fail_count)||0}">冷却 ${Math.max(0,(Number(a.cool_until)||0)-Math.floor(Date.now()/1000))}s</span>`);
+    }
+  }
+  const statHTML=statSegments.join('');
+  const primaryHTML=`<span class="pb-primary"><span class="pb-segment">可用积分</span>${statHTML}</span>`;
+  if(!c||(!(c.total_remain||0)&&!(c.total_used||0)&&!(c.total_size||0)))return `<div class="pb"><div class="pb-label">${primaryHTML}<span class="pb-used"><span class="spin"></span>加载中…</span></div><div class="pb-track"><div class="pb-bar" style="width:0%"></div></div></div>`;
+  const remain=c.total_remain||0, used=c.total_used||0;
+  const size=c.total_size||(remain+used);
+  const total=size>0?size:(remain+used);
+  const pct=total>0?Math.round(used/total*100):0;
+  let color='var(--ok)'; if(pct>60)color='var(--warn)'; if(pct>85)color='var(--err)';
+  const when=c.fetched_at?` · 快照 ${esc(String(c.fetched_at).replace('T',' ').replace('Z',' UTC'))}`:'';
+  return `<div class="pb"><div class="pb-label"><span class="pb-primary"><span class="pb-segment">可用 ${remain}</span>${statHTML}</span><span class="pb-used">已用 ${used} · ${pct}%</span></div><div class="pb-track"><div class="pb-bar" style="width:${pct}%;background:${color}"></div></div><div class="pb-meta">剩余 ${remain} · 已用 ${used} · 额度池 ${total}${c.pack_count?` · ${c.pack_count} 个包`:''}${when}</div></div>`;
+}
+function bindCardActions(root){
+  (root||document).querySelectorAll("[data-action]").forEach(btn=>{
+    if(btn._bound) return;
+    btn._bound=true;
+    btn.addEventListener("click", ev=>{
+      const act=ev.currentTarget.dataset.action;
+      const idx=ev.currentTarget.dataset.authIndex;
+      if(act==="checkin") checkin(idx, ev.currentTarget);
+      else if(act==="select") selectAuth(idx, ev.currentTarget);
+      else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
+      else if(act==="claim-pro") claimPro(idx, ev.currentTarget);
+      else if(act==="delete") openDeleteModal(idx);
+    });
+  });
+}
+function refreshStateText(a){
+  const s=a._refreshState||"";
+  if(s==="pending") return '排队中…';
+  if(s==="running") return '<span class="spin"></span>刷新中…';
+  if(s==="failed") return '⚠️ 刷新失败';
+  return '';
+}
+function refreshStateHTML(a){
+  const t=refreshStateText(a);
+  return t?`<div class="refresh-state${a._refreshState==="failed"?" err":""}">${t}</div>`:"";
+}
+function card(a){
+  const plan=(a.plan||"unknown").toLowerCase();
+  const ci=a.checkin||{}, cr=a.credits;
+  const exhausted=!!a.exhausted||(!!cr&&(cr.total_remain||0)===0&&((cr.total_used||0)>0||(cr.total_size||0)>0||(cr.packages&&cr.packages.length)));
+  const region=a.region||"cn";
+  
+  const disabled=!!a.disabled;
+  const selected=!!a.selected;
+  const regionBadge=`<span class="badge cn">CN</span>`;
+  // CN: 签到 button + 领取Pro button
+  // active=false means the upstream check-in activity is not enabled for
+  // this account (e.g. Community plan). Show disabled button with '?'.
+  let actionHTML;
+  const checked=ci.today_checked_in;
+  const ciActive=ci.active!==false; // absent=true (default active)
+  const btnClass=checked?"done":(ciActive?"sec":"done");
+  const btnText=checked?"已签到":(ciActive?"签到":"不可签");
+  const btnDisabled=(checked||!ciActive)?" disabled=\"disabled\"":"";
+  actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`+
+    `<button class="sec" data-action="claim-pro" data-auth-index="${esc(a.auth_index)}" title="领取Pro升级包">领取Pro</button>`;
+  const selectBtn=selected
+    ? `<button class="done" disabled="disabled">使用中</button>`
+    : (disabled?``:`<button class="sec" data-action="select" data-auth-index="${esc(a.auth_index)}">选用</button>`);
+  const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
+  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(a.preserve?`<span class="badge preserve" title="watchdog 检测到积分不足，账号暂停路由以保留积分别耗尽">保号</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${esc(plan)}">${esc(a.plan||"-")}</span>`;
+  const display=(a.nickname||a.label||a.name||"").replace(/^qoderai-?/i,"");
+  const nick=display||("u"+(a.uid||"").slice(-8));
+  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-preserve="${a.preserve?"1":"0"}" data-refresh-state="${a._refreshState||""}" data-nickname="${esc(display)}" data-uid="${esc(a.uid||"")}" data-name="${esc(a.name||"")}">
+  <h2>${esc(nick)} <span style="display:flex;gap:6px;align-items:center">${badges}<button type="button" class="card-del" data-action="delete" data-auth-index="${esc(a.auth_index)}" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>
+  <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
+  ${refreshStateHTML(a)}
+  ${progressHTML(cr,a)}
+  ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
+  <div class="actions">${selectBtn}${refreshBtn}${actionHTML}</div>
+  </div>`;
+}
+// 冷却倒计时：每秒刷新积分首行中的冷却剩余秒数。
+// 纯前端展示，不触发整卡重绘；后端 /accounts 刷新时自带最新冷却态。
+setInterval(()=>{
+  const now=Math.floor(Date.now()/1000);
+  document.querySelectorAll("[data-cool-until]").forEach(el=>{
+    const until=Number(el.dataset.coolUntil)||0;
+    if(until<=0||until<=now){ el.remove(); return; }
+    el.textContent=`冷却 ${until-now}s`;
+  });
+},1000);
+let currentFilter="all";
+let lastAccounts=[];
+let activeAuthId="";
+let authFailCount=0;
+let authFailUntil=0;
+let pollTimer=null;
+function updateOneCard(a){
+  const el=document.querySelector(`#grid .card[data-auth="${CSS.escape(a.auth_index)}"]`);
+  if(!el) return;
+  // Build new card HTML and replace.
+  const tmp=document.createElement('div');
+  tmp.innerHTML=card(a);
+  if(tmp.firstChild){
+    const newCard=tmp.firstChild;
+    el.replaceWith(newCard);
+    bindCardActions(newCard);
+  }
+  filterRegion(currentFilter, null);
+  // Update summary + re-check selection when all done.
+  const all=lastAccounts||[];
+  if(all.every(x=>x.credits||x.error||x.disabled)){
+    renderSummary(all);
+    // After all lazy credits loaded, the backend cache now has fresh exhausted
+    // flags. Re-fetch /accounts (light, cache-only) so ensureDefaultActiveAuth
+    // can pick the correct card — first load may have selected an account that
+    // turned out to be exhausted.
+    api("/accounts").then(d=>{
+      if(!d||d.error) return;
+      const fresh=d.accounts||[];
+      activeAuthId=d.active_auth||activeAuthId;
+      // Merge fresh selected/exhausted into lastAccounts and re-render.
+      (fresh||[]).forEach(fa=>{
+        const idx=all.findIndex(x=>x.auth_index===fa.auth_index);
+        if(idx>=0){
+          all[idx].selected=!!fa.selected;
+          all[idx].exhausted=!!fa.exhausted;
+        }
+      });
+      const g=document.getElementById("grid");
+      if(g){
+        g.innerHTML=sortedAccounts(accountsForFilter(all)).map(card).join("");
+        bindCardActions(g);
+      }
+      filterRegion(currentFilter, null);
+    }).catch(()=>{});
+  }
+}
+function filterRegion(region, btn){
+  currentFilter=region||"all";
+  document.querySelectorAll(".ftag").forEach(b=>b.classList.remove("active"));
+  if(btn) btn.classList.add("active");
+  else{
+    document.querySelectorAll(".ftag").forEach(b=>{
+      if(b.dataset.region===currentFilter) b.classList.add("active");
+    });
+  }
+  document.querySelectorAll("#grid .card").forEach(c=>{
+    const r=c.dataset.region||"cn";
+    let show=true;
+    if(currentFilter==="all") show=true;
+    else if(currentFilter==="available") show=!(c.dataset.disabled==="1"||c.dataset.preserve==="1"||c.querySelector(".badge.exhausted")!=null);
+    else if(currentFilter==="exhausted") show=c.querySelector(".badge.exhausted")!=null;
+    else if(currentFilter==="preserve") show=c.dataset.preserve==="1";
+    else show=r===currentFilter;
+    if(show&&currentSearch){
+      const hay=((c.dataset.nickname||"")+" "+(c.dataset.name||"")+" "+(c.dataset.uid||"")).toLowerCase();
+      show=hay.indexOf(currentSearch)>=0;
+    }
+    c.style.display=show?"":"none";
+  });
+  renderSummary(lastAccounts);
+}
+function updateFilterCounts(accounts){
+  let cn=0, ex=0, prs=0, avail=0;
+  (accounts||[]).forEach(a=>{
+    cn++;
+    if(a.exhausted||(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length)))) ex++;
+    if(a.preserve) prs++;
+    const c=creditOf(a);
+    const isExhausted=!!a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0));
+    if(!(a.disabled||a.preserve||isExhausted)) avail++;
+  });
+  const elAll=document.getElementById("cntAll");
+  const elCn=document.getElementById("cntCn");
+  const elEx=document.getElementById("cntExhausted");
+  const elPrs=document.getElementById("cntPreserve");
+  const elAvail=document.getElementById("cntAvailable");
+  if(elAll) elAll.textContent=String((accounts||[]).length);
+  if(elCn) elCn.textContent=String(cn);
+  if(elEx) elEx.textContent=String(ex);
+  if(elPrs) elPrs.textContent=String(prs);
+  if(elAvail) elAvail.textContent=String(avail);
+}
+function accountsForFilter(accounts){
+  const list=accounts||[];
+  if(currentFilter==="all") return list;
+  if(currentFilter==="available"){
+    // 可用 = 不属于保号池 / 已禁用 / 已耗尽（同步自 workbuddy 0.14.4）
+    return list.filter(a=>{
+      const c=creditOf(a);
+      const isExhausted=!!a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0));
+      return !(a.disabled||a.preserve||isExhausted);
+    });
+  }
+  if(currentFilter==="exhausted"){
+    return list.filter(a=>a.exhausted||(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length))));
+  }
+  if(currentFilter==="preserve"){
+    return list.filter(a=>!!a.preserve);
+  }
+  return list.filter(a=>(a.region||"cn")===currentFilter);
+}
+function creditOf(a){
+  const cr=a&&a.credits;
+  if(!cr) return {remain:0, used:0, size:0, known:false};
+  const remain=Number(cr.total_remain)||0;
+  const used=Number(cr.total_used)||0;
+  const size=Number(cr.total_size)||0;
+  // known if we have any usage signal, size, or packages
+  const known=remain>0||used>0||size>0||(Array.isArray(cr.packages)&&cr.packages.length>0);
+  return {remain, used, size, known};
+}
+/* ---------- toolbar search + sort (client-side) ----------
+   Search: case-insensitive substring (模糊匹配) over nickname / file name /
+   uid. Sort: cycles none → 积分升序 → 积分降序 → none by credits.total_remain
+   (unknown credits count as -1, i.e. "least"). Synced from workbuddy 0.14.20.
+*/
+let currentSearch="";   // trimmed, lowercase
+let currentSort="none"; // "none" | "asc" | "desc"
+const SORT_LABELS={none:"积分 ↕", asc:"积分 ↑", desc:"积分 ↓"};
+const SORT_NEXT={none:"asc", asc:"desc", desc:"none"};
+const SORT_TITLE={
+  none:"按可用积分排序（点击切升序：剩余少→多）",
+  asc:"当前：积分升序（剩余少→多），点击切降序",
+  desc:"当前：积分降序（剩余多→少），点击关闭排序"
+};
+function onSearchChange(q){
+  currentSearch=(q==null?"":String(q)).trim().toLowerCase();
+  filterRegion(currentFilter, null);
+}
+function toggleSort(btn){
+  currentSort=SORT_NEXT[currentSort]||"asc";
+  if(btn){
+    btn.textContent=SORT_LABELS[currentSort];
+    btn.title=SORT_TITLE[currentSort];
+    btn.classList.toggle("active", currentSort!=="none");
+  }
+  renderGrid();
+}
+// Sort by available credits (total_remain). Unknown credits → -1 so they land
+// at the "least" end (top in asc, bottom in desc).
+function sortedAccounts(accounts){
+  const list=accounts||[];
+  if(currentSort==="none") return list;
+  const dir=currentSort==="asc"?1:-1;
+  return [...list].sort((x,y)=>{
+    const xr=x&&x.credits?Number(x.credits.total_remain||0):-1;
+    const yr=y&&y.credits?Number(y.credits.total_remain||0):-1;
+    return dir*(xr-yr);
+  });
+}
+// Full re-render honoring sort order + region/search visibility. Used by the
+// sort toggle and whenever a card's credits update while sort is active.
+function renderGrid(){
+  const g=document.getElementById("grid");
+  if(!g||!lastAccounts.length) return;
+  g.innerHTML=sortedAccounts(lastAccounts).map(card).join("");
+  bindCardActions(g);
+  filterRegion(currentFilter, null);
+}
+function renderSummary(accounts){
+  const box=document.getElementById("summaryBox");
+  if(!box) return;
+  const all=accounts||[];
+  // 标签计数与汇总卡一起刷新，避免派生计数停在首屏旧值。
+  updateFilterCounts(all);
+  if(!all.length){
+    box.style.display="none";
+    box.innerHTML="";
+    return;
+  }
+  const scoped=accountsForFilter(all);
+  // 5 卡片口径：剩余(可用) / 剩余(不可用) / 已用(消耗) / 额度池 / 消耗占比
+  // 「剩余(可用)/已用/额度池/占比」按可用账号统计；「剩余(不可用)」独立统计不可用账号。
+  // 不可用 = 保号池 / 已禁用 / 已耗尽（同步自 workbuddy 0.14.4）
+  let remainAvail=0, remainUnavail=0, used=0, size=0, knownN=0, disabledN=0, exhaustedN=0, preserveN=0, unavailN=0;
+  let cnRemain=0, cnUsed=0;
+  scoped.forEach(a=>{
+    const c=creditOf(a);
+    const isExhausted=!!a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0));
+    const isUnavailable=!!a.disabled||!!a.preserve||isExhausted;
+    if(c.known){
+      if(isUnavailable){ remainUnavail+=c.remain; unavailN++; }
+      else { remainAvail+=c.remain; used+=c.used; size+=c.size; knownN++; }
+    }
+    if(a.disabled) disabledN++;
+    if(isExhausted) exhaustedN++;
+    if(a.preserve) preserveN++;
+  });
+  let allRemain=0, allUsed=0, allSize=0;
+  all.forEach(a=>{
+    const c=creditOf(a);
+    if(!c.known) return;
+    allRemain+=c.remain; allUsed+=c.used; allSize+=c.size;
+    cnRemain+=c.remain; cnUsed+=c.used;
+  });
+  const total=size>0?size:(remainAvail+used);
+  const pct=total>0?Math.round(used/total*100):0;
+  let barColor="var(--ok)"; if(pct>60)barColor="var(--warn)"; if(pct>85)barColor="var(--err)";
+  // 标题文案：「可用」过滤时直接用"可用账号"；其他用通用「全部账号」
+  const scopeLabel=currentFilter==="all"?"全部账号":(currentFilter==="available"?"可用账号":(currentFilter==="cn"?"CN 账号":(currentFilter==="exhausted"?"耗尽账号":(currentFilter==="preserve"?"保号账号":"全部账号"))));
+  const allTotal=allSize>0?allSize:(allRemain+allUsed);
+  box.style.display="block";
+  box.innerHTML=`
+    <div class="summary-hd">
+      <div class="summary-title">用量汇总 · ${esc(scopeLabel)}</div>
+      <div class="summary-meta">${scoped.length} 个账号 · 可用 ${knownN} · 不可用 ${unavailN} · 禁用 ${disabledN} · 耗尽 ${exhaustedN} · 保号 ${preserveN}</div>
+    </div>
+    <div class="summary-grid">
+      <div class="summary-item"><div class="k">剩余(可用)</div><div class="v ok">${remainAvail}</div></div>
+      <div class="summary-item"><div class="k">剩余(不可用)</div><div class="v muted">${remainUnavail}</div></div>
+      <div class="summary-item"><div class="k">已用(消耗)</div><div class="v ${pct>85?"err":(pct>60?"warn":"")}">${used}</div></div>
+      <div class="summary-item"><div class="k">额度池</div><div class="v">${total||"-"}</div></div>
+      <div class="summary-item"><div class="k">消耗占比</div><div class="v ${pct>85?"err":(pct>60?"warn":"ok")}">${total?pct+"%":"-"}</div></div>
+    </div>
+    <div class="pb">
+      <div class="pb-label"><span>消耗进度（已用/额度池）</span><span>${total?pct+"%":"-"}</span></div>
+      <div class="pb-track"><div class="pb-bar" style="width:${total?pct:0}%;background:${barColor}"></div></div>
+      <div class="pb-meta">可用 ${remainAvail} · 已用 ${used} · 池 ${total||0}（签到加包会抬高池和可用，不等于没消耗）</div>
+    </div>
+    ${currentFilter==="all"?`
+    <div class="pb-meta" style="margin-top:10px">CN 可用 ${cnRemain} / 已用 ${cnUsed}</div>
+    `:`
+    <div class="pb-meta" style="margin-top:10px">全部账号池：可用 ${allRemain} · 已用 ${allUsed} · 池 ${allTotal||0}</div>
+    `}
+  `;
+}
+async function api(path, opts={}){
+  const k=getKey();
+  if(!k){
+    showAuth();
+    throw new Error("需要管理密钥");
+  }
+  if(Date.now()<authFailUntil){
+    throw new Error("认证多次失败，请稍后重试（防 IP 封禁）");
+  }
+  const r=await fetch(API+path,{...opts,credentials:'omit',headers:{...(opts.headers||{}),...authHeaders(k)}});
+  if(r.status===401){
+    authFailCount++;
+    sessionStorage.removeItem(SS_KEY);
+    showAuth();
+    if(authFailCount>=3){
+      authFailUntil=Date.now()+60000;
+      authFailCount=0;
+      throw new Error("认证多次失败，请检查管理密钥后 60s 再试");
+    }
+    throw new Error("management key 无效或缺失");
+  }
+  if(r.status===403){
+    authFailCount++;
+    let body="";
+    try{body=await r.text()}catch(_){}
+    if(/IP banned|too many failed/i.test(body)){
+      // Prefer upstream wait window (e.g. "Try again in 27m10s") when present.
+      let waitMs=60000;
+      const m=body.match(/(\d+)\s*m(?:in(?:ute)?s?)?\s*(\d+)\s*s/i)||body.match(/(\d+)\s*m/i);
+      if(m){
+        const mins=parseInt(m[1],10)||0;
+        const secs=m[2]?parseInt(m[2],10):0;
+        waitMs=Math.min(Math.max((mins*60+secs)*1000, 30000), 30*60*1000);
+      }
+      authFailUntil=Date.now()+waitMs;
+      throw new Error(body.trim()||"IP 被封禁，请稍后再试");
+    }
+    if(authFailCount>=3){
+      authFailUntil=Date.now()+60000;
+      authFailCount=0;
+    }
+    throw new Error(body.trim()||"禁止访问 (403)");
+  }
+  authFailCount=0;
+  // 空 body / 非 JSON / 坏 JSON 一律转结构化 error，不让 r.json() 把浏览器
+  // 原生 SyntaxError（Unexpected end of JSON input）抛给调用方——那类报错
+  // 无法定位。404+空 body 通常为 API 前缀与插件注册 id 不一致或插件未加载；
+  // 200+空 body 曾对应插件 fused / identity stale（宿主拦截）。
+  let body="";
+  try{body=await r.text()}catch(_){}
+  if(!body){
+    return {error:"空响应 (HTTP "+r.status+" "+(r.statusText||"")+")，多为路由不存在或插件未加载"};
+  }
+  const ct=(r.headers.get("content-type")||"").toLowerCase();
+  if(ct.indexOf("application/json")<0){
+    return {error:"非 JSON 响应 (HTTP "+r.status+"): "+body.slice(0,200)};
+  }
+  try{return JSON.parse(body)}catch(_e){
+    return {error:"JSON 解析失败 (HTTP "+r.status+"): "+body.slice(0,200)};
+  }
+}
+async function load(force, btn){
+  const g=document.getElementById("grid");
+  if(!getKey()){
+    showAuth();
+    g.innerHTML='<div class="loading">请先填写 management key</div>';
+    return;
+  }
+  // 刷新入口：loading 态 + 右上角 toast（顶部"刷新数据"按钮已移除，
+  // force 路径由操作后的 load(true) 与单卡刷新触发）。
+  if(force){
+    busy(btn, true);
+  }
+  try{
+    // force：POST /refresh 已改为异步节流，立即返回 {started,queued}，
+    // 前端轮询 /refresh/status 渐进更新每张卡片，不再同步阻塞等全量。
+    if(force){
+      const d=await api("/refresh", {method:"POST"});
+      if(d&&d.error){ toast("刷新失败","err",d.error); return; }
+      const queued=Number(d.queued||0);
+      toast("已开始后台刷新","ok",queued+" 个账号 · 每账号约 1s");
+      (lastAccounts||[]).forEach(a=>{ a._refreshState="pending"; });
+      if(lastAccounts && lastAccounts.length){
+        g.innerHTML=accountsForFilter(lastAccounts).map(card).join("");
+        bindCardActions(g);
+        filterRegion(currentFilter, null);
+      }
+      pollRefreshStatus();
+      return;
+    }
+    const d=await api("/accounts");
+    const at=document.getElementById("autoToggle"); if(at) at.checked=!!d.checkin_auto;
+    const st=document.getElementById("svtime"); if(st) st.textContent=d.server_time?("服务器时间 "+d.server_time):"";
+    if(d.error){
+      g.innerHTML='<div class="loading">'+esc(d.error)+"</div>";
+      return;
+    }
+    const accounts=d.accounts||[];
+    lastAccounts=accounts;
+    activeAuthId=d.active_auth||"";
+    if(!accounts.length){
+      g.innerHTML='<div class="loading">暂无 Qoder AI 账号</div>';
+      renderSummary([]);
+      return;
+    }
+    g.innerHTML=sortedAccounts(accounts).map(card).join("");
+    bindCardActions(g);
+    filterRegion(currentFilter, null);
+    renderSummary(accounts);
+    // 打开面板仅读缓存，不再自动全量并发拉上游；
+    // 无 credits 的卡片显示"加载中…"占位，点顶部"刷新数据"触发异步节流刷新。
+  }catch(e){
+    if(force) toast("刷新失败","err",e.message||String(e));
+    // 强制刷新失败时保留旧卡片，只 toast；首次加载仍写错误到 grid。
+    if(!force || !g.querySelector(".card")){
+      g.innerHTML='<div class="loading">'+esc(e.message||String(e))+"</div>";
+    }
+  }finally{
+    if(force) busy(btn, false);
+  }
+}
+function stopPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null; } }
+// 每 2s 轮询 /refresh/status，按账号状态渐进更新卡片；batch 结束后停止。
+async function pollRefreshStatus(){
+  stopPolling();
+  pollTimer=setInterval(async ()=>{
+    try{
+      const d=await api("/refresh/status");
+      (d.per_account||[]).forEach(st=>{
+        if(!st.auth_index) return;
+        const a=(lastAccounts||[]).find(x=>x.auth_index===st.auth_index);
+        if(!a || a._refreshState===st.status) return;
+        a._refreshState=st.status;
+        if(st.status==="done"||st.status==="failed"){
+          if(st.status==="failed"){
+            a.error=st.error||a.error||"刷新失败";
+            updateOneCard(a);
+          }else{
+            api(`/credits?auth_index=${encodeURIComponent(st.auth_index)}`).then(d2=>{
+              const acct=(d2.accounts||[])[0]||d2;
+              if(acct&&acct.credits){ a.credits=acct.credits; a.exhausted=acct.exhausted; }
+              if(acct&&acct.plan) a.plan=acct.plan;
+              if(acct&&acct.error) a.error=acct.error;
+              updateOneCard(a);
+            }).catch(()=>{ a.error="积分查询失败"; updateOneCard(a); });
+          }
+        }else{
+          // pending/running：仅更新状态小字，不重拉数据。
+          const el=document.querySelector(`#grid .card[data-auth="${CSS.escape(a.auth_index)}"]`);
+          if(el){
+            el.dataset.refreshState=st.status;
+            const rs=el.querySelector(".refresh-state");
+            if(rs) rs.innerHTML=refreshStateText(a);
+          }
+        }
+      });
+      if(!d.running){
+        stopPolling();
+        if((d.done||0)||(d.failed||0)){
+          toast("后台刷新完成","ok",(d.done||0)+" 成功"+(d.failed?" / "+(d.failed)+" 失败":""));
+        }
+      }
+    }catch(e){}
+  },2000);
+}
+function checkinResultToast(res, who){
+  const name=res.nickname||who||"账号";
+  if(res.error){toast(name+"：签到失败","err",res.error);return}
+  if(res.reason==="global"||(/国际版|不支持/.test(String(res.message||"")))){
+    toast(name+"：国际版无需签到","warn",res.message||"请用领取专家加油包");return;
+  }
+  if(res.reason==="already"||(res.skipped&&/already|已签|今日/.test(String(res.message||"")))){
+    toast(name+"：今日已签到","ok",res.message||"");return;
+  }
+  if(res.success){toast(name+"：签到成功","ok","+"+(res.credit??res.daily_credit??"")+" 积分 · 连续 "+(res.streak_days??"?")+" 天");return}
+  toast(name+"："+(res.message||"未知结果"),"warn");
+}
+function isCheckinDoneResult(res){
+  if(!res||res.error) return false;
+  if(res.reason==="global") return false;
+  if(res.success) return true;
+  const msg=String(res.message||"");
+  // already checked in today (backend) — treat as done, not failure
+  if(/already|已签|今日/.test(msg) && !/国际版|不支持/.test(msg)) return true;
+  return false;
+}
+async function checkin(idx, btn){
+  busy(btn,true);
+  try{
+    const d=await api("/checkin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx})});
+    const res=(d.results||[])[0]||{};
+    checkinResultToast(res);
+    if(isCheckinDoneResult(res)){
+      // Instant UI — do NOT busy(false) which restores "签到" before load finishes
+      markCheckinDone(btn);
+      // Optimistic local state so partial re-renders stay correct
+      const a=(lastAccounts||[]).find(x=>x.auth_index===idx);
+      if(a){
+        a.checkin=Object.assign({}, a.checkin||{}, {today_checked_in:true});
+      }
+    }else{
+      busy(btn,false);
+    }
+    // Await reload so card matches server; cache was cleared on backend for this account
+    // Use force=true so credits are re-fetched from upstream (not stale cache).
+    await load(true);
+  }catch(e){
+    toast("签到请求失败","err",e.message);
+    busy(btn,false);
+  }
+}
+async function claimPro(idx, btn){
+  busy(btn,true);
+  try{
+    const d=await api("/claim-pro",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx})});
+    const name=d.nickname||"账号";
+    if(d.error){toast(name+"：领取失败","err",d.error);busy(btn,false);return}
+    if(d.success){toast(name+"：领取成功","ok","Pro 升级包已领取"+(d.credits?(" · 积分 "+(d.credits.total_remain||0)):""))}
+    else{toast(name+"："+(d.message||"不可领取"),"warn")}
+    busy(btn,false);
+    await load(true);
+  }catch(e){
+    toast("领取请求失败","err",e.message);
+    busy(btn,false);
+  }
+}
+async function selectAuth(idx, btn){
+  busy(btn,true);
+  try{
+    const d=await api("/select",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx})});
+    if(d.error){
+      toast("选用失败","err",d.error);
+      busy(btn,false);
+      return;
+    }
+    activeAuthId=d.active_auth||idx;
+    const who=d.nickname||idx;
+    const region="CN";
+    toast("已选用","ok",who+" · "+region);
+    // Re-render from local state for instant feedback, then soft reload
+    (lastAccounts||[]).forEach(a=>{a.selected=(a.auth_index===activeAuthId);});
+    const g=document.getElementById("grid");
+    if(g){
+      g.innerHTML=accountsForFilter(lastAccounts).map(card).join("");
+      bindCardActions(g);
+    }
+    filterRegion(currentFilter, null);
+  }catch(e){
+    toast("选用失败","err",e.message||String(e));
+  }finally{
+    busy(btn,false);
+  }
+}
+async function refreshCredits(idx, btn){
+  busy(btn,true);
+  try{
+    const d=await api(`/credits?auth_index=${encodeURIComponent(idx)}`);
+    const acct=(d.accounts||[])[0]||d;
+    if(d.error||acct&&acct.error){
+      toast("刷新失败","err",d.error||(acct&&acct.error)||"未知错误");
+      busy(btn,false);
+      return;
+    }
+    // Update local state and re-render this card.
+    const a=(lastAccounts||[]).find(x=>x.auth_index===idx);
+    if(a){
+      if(acct.credits) a.credits=acct.credits;
+      if(acct.exhausted!=null) a.exhausted=acct.exhausted;
+      if(acct.plan) a.plan=acct.plan;
+      if(acct.error) a.error=acct.error; else a.error="";
+      updateOneCard(a);
+    }
+    const remain=acct&&acct.credits?acct.credits.total_remain:"?";
+    const who=acct&&acct.nickname?acct.nickname:idx;
+    toast("积分已刷新","ok",who+" · 剩余 "+remain);
+  }catch(e){
+    toast("刷新失败","err",e.message||String(e));
+  }finally{
+    busy(btn,false);
+  }
+}
+async function checkinAll(btn){
+  busy(btn,true);
+  try{
+    // Backend prefilters: already-checked skipped; only CN-need-checkin run.
+    const d=await api("/checkin",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    const rs=d.results||[];
+    const s=d.summary||{};
+    const ok=Number(s.success??rs.filter(x=>x.success&&x.reason!=="already"&&!x.skipped).length)||0;
+    const already=Number(s.already??rs.filter(x=>isCheckinDoneResult(x)&&(x.reason==="already"||x.skipped||!x.success)).length)||0;
+    const fail=Number(s.fail??rs.filter(x=>x.error).length)||0;
+    const skippedCN=Number(s.skipped_cn||0);
+    const eligible=Number(s.eligible??(ok+fail))||0;
+    const detailParts=[];
+    
+    if(already) detailParts.push("今日已签 "+already);
+    if(eligible) detailParts.push("待签 "+eligible);
+    const detail=detailParts.join(" · ");
+    if(d.error){toast("批量签到失败","err",d.error)}
+    else if(fail){
+      const errDetail=rs.filter(x=>x.error).map(x=>(x.nickname||"")+": "+x.error).join("；");
+      toast("批量签到："+ok+" 成功 / "+fail+" 失败"+(already?" / "+already+" 已签":""),"err",errDetail||detail);
+    }else if(ok){
+      toast("批量签到："+ok+" 成功"+(already?" / "+already+" 今日已签":""),"ok",detail);
+    }else if(already||skippedCN){
+      toast("无需签到","ok",detail||"CN 今日已签");
+    }else if(!rs.length && !eligible){
+      toast("没有需要签到的 CN 账号","warn",detail||"");
+    }else{
+      toast("没有需要签到的账号","warn",detail);
+    }
+    // Mark CN check-in buttons done immediately when any success/already
+    if(ok||already){
+      document.querySelectorAll("#grid .card").forEach(c=>{
+        if((c.dataset.region||"cn")==="cn"){
+          const b=c.querySelector('[data-action="checkin"]');
+          if(b && /签到|处理中/.test(b.textContent||"")) markCheckinDone(b);
+        }
+      });
+    }
+    await load(true);
+  }catch(e){toast("批量签到失败","err",e.message)}
+  // load() re-renders grid; only restore toolbar button
+  busy(btn,false);
+}
+
+
+async function toggleAuto(on){
+  try{const d=await api("/checkin/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});toast("自动签到已"+(d.checkin_auto?"开启 ✅":"关闭 ⏸"),"ok")}catch(e){toast("设置失败","err",e.message)}
+}
+function openImportModal(){
+  const m=document.getElementById("importModal");
+  m.classList.add("show");
+  const ta=document.getElementById("importPAT");
+  if(ta) setTimeout(()=>ta.focus(),50);
+}
+function closeImportModal(){
+  document.getElementById("importModal").classList.remove("show");
+}
+function onImportMaskClick(e){
+  if(e.target===document.getElementById("importModal")) closeImportModal();
+}
+async function importAuth(btn){
+  const pat=(document.getElementById("importPAT").value||"").trim();
+  if(!pat){toast("请粘贴 PAT（pt- 开头）","warn");return}
+  if(!pat.startsWith("pt-")){toast("PAT 必须以 pt- 开头","warn");return}
+  busy(btn,true);
+  try{
+    const d=await api("/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pat})});
+    if(d.success){
+      toast("导入成功","ok",(d.nickname||d.uid||"")+ " → "+(d.file||d.name||""));
+      document.getElementById("importPAT").value="";
+      closeImportModal();
+      load(false);
+    }else toast("导入失败","err",d.error||"unknown");
+  }catch(e){toast("导入请求失败","err",e.message)}
+  busy(btn,false);
+}
+/* ---------- credential export (one-click backup) ----------
+   GET /export returns {version, exported_at, count, accounts:[...]} where each
+   account carries the raw physical credential JSON. The frontend downloads it
+   as qoderai-credentials-YYYY-MM-DD.json; the same file can be restored via
+   the import modal's 备份恢复 (expandCredentials splits it back per account).
+*/
+async function exportAuth(btn){
+  busy(btn,true);
+  try{
+    const d=await api("/export");
+    if(d&&d.error){toast("导出失败","err",d.error);return}
+    const accounts=d&&d.accounts||[];
+    if(!accounts.length){toast("没有可导出的账号","warn");return}
+    const stamp=new Date().toISOString().slice(0,10);
+    const fname="qoderai-credentials-"+stamp+".json";
+    const blob=new Blob([JSON.stringify(d,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    a.download=fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    const bad=accounts.filter(x=>x.load_error||x.parse_error).length;
+    toast("已导出 "+accounts.length+" 个账号","ok",bad?(fname+" · "+bad+" 个不完整"):fname);
+  }catch(e){
+    toast("导出失败","err",e.message||String(e));
+  }finally{
+    busy(btn,false);
+  }
+}
+/* ---------- backup restore (expand + per-credential import) ----------
+   The import modal's 备份恢复 accepts the export wrapper (accounts[].credential),
+   a bare JSON array, or a single nested/flat credential; all normalize into
+   individual credential objects posted one-by-one to /import-cred so progress
+   and failures are per account.
+*/
+function expandCredentials(text){
+  let obj;
+  try{obj=JSON.parse(text)}catch(_){return null}
+  if(!obj||typeof obj!=="object") return null;
+  const out=[];
+  const push=(c)=>{if(c&&typeof c==="object"&&!Array.isArray(c))out.push(c)};
+  if(Array.isArray(obj)){
+    obj.forEach(push);
+  }else if(Array.isArray(obj.accounts)){
+    // Export wrapper: each entry holds the raw credential under .credential
+    obj.accounts.forEach(a=>{
+      if(a&&a.credential&&typeof a.credential==="object") out.push(a.credential);
+      else push(a);
+    });
+  }else{
+    push(obj);
+  }
+  return out;
+}
+async function importCred(btn){
+  const raw=(document.getElementById("importCredText").value||"").trim();
+  if(!raw){toast("请先粘贴备份 JSON","warn");return}
+  const items=expandCredentials(raw);
+  if(!items||!items.length){toast("无法解析备份 JSON","err","需要导出备份文件、凭据数组或单个凭据对象");return}
+  busy(btn,true);
+  const prog=document.getElementById("importCredProgress");
+  let ok=0, fail=0;
+  try{
+    for(let i=0;i<items.length;i++){
+      if(prog) prog.textContent="恢复中 "+(i+1)+"/"+items.length+" …";
+      try{
+        const d=await api("/import-cred",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cred:items[i]})});
+        if(d&&d.success) ok++;
+        else{ fail++; toast("第 "+(i+1)+" 个恢复失败","err",(d&&d.error)||"unknown"); }
+      }catch(e){ fail++; toast("第 "+(i+1)+" 个恢复失败","err",e.message||String(e)); }
+    }
+    if(prog) prog.textContent="";
+    if(ok){ toast("恢复完成","ok",ok+" 成功"+(fail?" / "+fail+" 失败":"")); document.getElementById("importCredText").value=""; closeImportModal(); load(false); }
+    else toast("恢复失败","err","0 成功 / "+fail+" 失败，请检查备份内容");
+  }finally{
+    if(prog) prog.textContent="";
+    busy(btn,false);
+  }
+}
+/* ---------- account deletion (二次确认，同步自 workbuddy 0.14.7) ----------
+   卡片右上角 × 打开确认框；取消不发送任何请求；确认后 POST /delete
+   并刷新列表。删除失败时保留卡片，仅 toast 错误。
+*/
+let pendingDeleteAuthIndex="";
+function openDeleteModal(idx){
+  const a=(lastAccounts||[]).find(x=>x.auth_index===idx);
+  const who=a?(a.nickname||a.label||a.name||a.uid||idx):idx;
+  pendingDeleteAuthIndex=idx;
+  // 防御性复位：无论上次是否正常复位，弹窗打开时确认按钮必须可用
+  busy(document.getElementById("deleteConfirmBtn"),false);
+  document.getElementById("deleteModalHint").innerHTML='确定要删除账号 <b>'+esc(who)+'</b> 吗？';
+  document.getElementById("deleteModal").classList.add("show");
+}
+function closeDeleteModal(){
+  pendingDeleteAuthIndex="";
+  document.getElementById("deleteModal").classList.remove("show");
+}
+function onDeleteMaskClick(e){
+  if(e.target===document.getElementById("deleteModal")) closeDeleteModal();
+}
+async function confirmDeleteAuth(){
+  const idx=pendingDeleteAuthIndex;
+  if(!idx) return;
+  const btn=document.getElementById("deleteConfirmBtn");
+  busy(btn,true);
+  try{
+    const d=await api("/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx})});
+    if(d.error){
+      toast("删除失败","err",d.error);
+      busy(btn,false);
+      return;
+    }
+    const who=d.nickname||idx;
+    toast("已删除账号","ok",who);
+    // 成功路径同样必须复位按钮：弹窗 DOM 是复用的，残留的处理中状态会阻塞下一次删除
+    busy(btn,false);
+    closeDeleteModal();
+    // 先从本地态移除，再软刷新以和服务端保持一致。
+    lastAccounts=(lastAccounts||[]).filter(x=>x.auth_index!==idx);
+    await load();
+  }catch(e){
+    toast("删除失败","err",e.message||String(e));
+    busy(btn,false);
+  }
+}
+// 进入页面统一入口：先渲染缓存数据，再自动触发一次后台异步刷新
+// （同步自 workbuddy 0.14.9：去按钮 + 进入自动触发，前端无感知）。
+async function enterPanel(){
+  await load();
+  startBackgroundRefresh();
+}
+// 进入页面自动触发一次后台异步刷新（1s/账号，幂等，前端无感知）。
+// 页面已先渲染缓存数据；随后轮询 /refresh/status 逐账号局部刷新。
+// 若已有一轮刷新在跑（幂等），后端忽略本次请求，仍继续轮询展示进度。
+async function startBackgroundRefresh(){
+  try{
+    const d=await api("/refresh", {method:"POST"});
+    if(d.error) return; // 静默：后台刷新失败不打扰用户
+  }catch(e){ return; }
+  pollRefreshStatus();
+}
+document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
+document.addEventListener("keydown",e=>{
+  if(e.key=="Escape"&&document.getElementById("importModal").classList.contains("show")) closeImportModal();
+  if(e.key=="Escape"&&document.getElementById("deleteModal").classList.contains("show")) closeDeleteModal();
+});
+/* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
+if(window.__wbThemeSync)window.__wbThemeSync();
+if(getKey()){
+  enterPanel();
+}else{
+  showAuth();
+}
+</script>
+</body>
+</html>

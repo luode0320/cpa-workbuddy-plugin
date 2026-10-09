@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Publish helper: sync release-assets/<plugin>-<version>/ + registry.json.
 
 Usage:
@@ -84,29 +84,34 @@ def main() -> int:
             break
 
     reg = pathlib.Path("registry.json")
-    data = json.loads(reg.read_text())
+    data = json.loads(reg.read_text(encoding="utf-8"))
     entry = next((p for p in data.get("plugins", []) if p.get("id") == plugin), None)
     if entry is None:
         raise SystemExit(f"plugin {plugin} not found in registry.json")
 
     entry["version"] = version
-    arts = entry.get("install", {}).get("artifacts")
+    if "install" not in entry or not isinstance(entry["install"], dict):
+        entry["install"] = {"type": "direct"}
+    entry["install"]["type"] = "direct"
+    arts = entry["install"].get("artifacts")
     if not isinstance(arts, list):
-        raise SystemExit("install.artifacts missing")
+        arts = []
+        entry["install"]["artifacts"] = arts
     seen = set()
     for t in PLATFORMS:
         z = out / f"{plugin}_{version}_{t}.zip"
         goos, goarch = t.split("_", 1)
         art = next((a for a in arts if a.get("goos") == goos and a.get("goarch") == goarch), None)
         if art is None:
-            raise SystemExit(f"no artifact slot for {t}")
+            art = {"goos": goos, "goarch": goarch, "url": "", "sha256": "", "size": 0}
+            arts.append(art)
         art["url"] = f"{RAW_BASE}/{plugin}-{version}/{z.name}"
         art["sha256"] = sha256_of(z)
         art["size"] = z.stat().st_size
         seen.add(t)
     # drop artifact slots for platforms not in our set (keeps registry honest)
     arts[:] = [a for a in arts if f"{a.get('goos')}_{a.get('goarch')}" in seen]
-    reg.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    reg.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     print(f"updated {plugin} -> {version}: {len(arts)} artifacts, sha256+size synced")
     return 0
