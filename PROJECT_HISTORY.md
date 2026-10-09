@@ -4,6 +4,8 @@
 
 ## 事件
 
+- 2026-10-10：qoderwork-provider **0.9.23** 发布部署（面板「测试」按钮改为弹出模型选择窗口按指定模型测试）——用户诉求：qoderwork 与三插件对齐，卡片「测试」不再随机挑模型，改为点击后弹出该账号支持的模型小窗口、点选指定模型再测。后端：qoderwork/models.go 新增 authModelsForIndex + handleModelsQuery（cachedDynamicModels → callModelsAPI，AccessToken 非空前置判断），management.go 新增只读 GET /models?auth_index= 路由（未进 mutatingManagementPath），active_ping.go 的 handleTestActiveWithAuth(sa, authIndex, model) 支持指定模型（model 空保持随机兼容旧面板），兜底模型 auto；前端 panel.html 新增测试弹窗（openTestModal / closeTestModal / onTestMaskClick / loadTestModels / runTestModel）并补 .model-list/.model-item 等 7 条 CSS。本地：cgo-shim build/vet/test 全绿 + 必失败哨兵确证真实进编译；Node vm 回归 17 项 PASS + 旧版反证 FAIL（TypeError openTestModal is not a function）；6-review STYLE: PASS。发布链 7df7f9a（13 文件）→ CI run 37964833825 success（head=7df7f9a）→ 7f18e2a（8 资产，7/7 sha256 OK）→ registry 0.9.23 回填（随 30dfe9b 一并推送，7 artifacts sha256+size 与 checksums 全等）；远端 raw 7/7 200 且 size 一致。生产：plugin-store install 0.9.23 installed，落盘 .so sha256 bb55d2df…3977 与本地 zip 内 .so 完全一致；热重载 active_version=0.9.23 retired_version=0.9.22；行为验收 GET /models?auth_index= 返回 {"models":["auto"]}、POST /test-active 指定 model=auto 成功（421ms，回显该 model）、无 model 走兼容随机路径同样成功（622ms）、panel/accounts 均 200、面板资源含 testModal/openTestModal/loadTestModels/runTestModel/data-action="test" 全部命中。**重要踩坑**：期间遇到生产自定义源被别的会话半成品条目（qoder-ai-provider `direct` + 空 artifacts）整体校验失败，导致该源全部插件 install 报 plugin_not_found；根因是宿主 ParseRegistry 对单源 registry 原子校验、任一条目非法即整源不入列，待对端补齐 artifacts 后源自动恢复，无需重启宿主。发布后清理：prune dry-run 确认 8 插件保留集完整、待删 0。
+
 - 2026-10-09：workbuddy-provider **0.15.4** / workbuddy-ai-provider **0.1.9** / traework-provider **0.2.3** 发布部署（三插件测试按钮改为弹出模型选择窗口按指定模型测试）——用户诉求：面板卡片「测试」按钮原为随机挑模型直接测，改为点击后弹出该账号支持的模型小窗口、点选指定模型再测。后端：三插件 models.go 新增 authModelsForIndex + handleModelsQuery，management.go 新增只读 GET /models?auth_index= 路由，active_ping.go 的 handleTestActiveWithAuth(sa, authIndex, model) 支持指定模型（model 空则保持随机，兼容旧面板）；前端：三插件 panel.html 新增测试弹窗（openTestModal / loadTestModels / runTestModel），无模型时提示「暂无可用模型」并允许关闭。本地：cgo-shim 三插件 build/vet/test 全绿 + 必失败哨兵确证真实进编译；三面板 Node vm 回归各 17 项 PASS + 旧版反证 FAIL；6-review STYLE: PASS。发布链 ce6b4e2（32 文件）→ CI 三 run success（37940758486 / 37940778484 / 37940786472，head=ce6b4e2）→ fe5742d（24 资产，三目录 7/7 sha256 OK）→ 207e22c（registry 回填）→ ada831f（prune 旧版 0.15.3 / 0.1.8 / 0.2.2）；远端 49/49 当前资产 200、被删旧版 404。生产：三插件 plugin-store install 全部 installed，落盘 .so sha256 与本地 zip 完全一致（workbuddy 0.15.4 9c3b85b6… / workbuddy-ai 0.1.9 dd77aab4… / traework 0.2.3 2d671e16…），热重载 active_version 命中目标版本，panel / accounts 三插件全 200；行为验收 /models 三插件返回真实模型（17 / 27 / 大量）、缺 auth_index 返回 auth_index is required、/test-active 指定 deepseek-v4.1-flash 在 traework 成功（1.625s，回显该 model），workbuddy 因额度 429 但错误文案确认使用指定模型。
 
 - 2026-10-09：workbuddy-ai-provider **0.1.8** 发布部署（国际版每日签到替换失效加油包）——面板把已失效的「领取专家加油包」入口替换为国际版每日签到（状态查询 + 领取积分），新增自动签到开关（00/04/08/12/16/20 六时段）与批量签到；发布链 583bb05→b4e3a3e（8 资产 7/7 sha256 OK）→45f6ce5（registry）；CI run 37836464993 全 57 jobs success；生产热重载 active_version=0.1.8 retired_version=0.1.7、落盘 .so sha256 baf416d3…c49a 与本地 zip 一致；生产 /checkin 按契约透传上游结果（code=10001 签到活动未开启，未伪造成功），四路请求头对照 T0-T3 零差异 + 全 11 账号 active=false + CN 域反证（CN active=true）+ banner 12302 判定为上游活动离线，登记 GAP-001 环境性阻断。
@@ -42,8 +44,6 @@
 
 - 2026-09-04：traework-provider **0.1.39 发布部署**（浏览器授权登录三缺陷修复）：生产端到端验证 0.1.38 暴露三缺陷——宿主 management JSON 响应强制 htmlsanitize（`&`→`&amp;` 授权页参数解析必挂→面板 replaceAll 兜底）；callback 注册在 management 前缀被宿主 management key 中间件拦截（含 GET）→ 移入 Resources 免鉴权 resource 前缀；授权 URL 缺 OAuth state（回传无法匹配会话）→ `q.Set("state", state)`。发布链 bf6ba87(fix 7 文件)，cgo-shim 全绿 + 新增 2 契约测试。
 
-- 2026-09-04：traework-provider **0.1.38 发布部署**（浏览器授权登录：免 IDE 完整 OAuth 导入）：逆向 TRAE SOLO CN 0.1.62 main.js 确认浏览器授权码+PKCE(S256) 流程；`browserlogin.go` 三路由（start: PKCE 对+EC P-256 设备密钥+随机指纹+origin 校验 / callback: 换 token→取用户→去重入库→回跳页 / result: 读后即焚）+ 面板按钮与回跳轮询。发布链 b5f105c→babd598(assets 7 平台)→ea57fee(registry)；CI run 33788701204 success；生产 install 落盘哈希一致 + hot reloaded active=0.1.38 + 流式回归健康。生产复验暴露三缺陷由 0.1.39 承接。
-
 
 ## 计数锚点区
 
@@ -52,10 +52,15 @@
 ```yaml
 version: 1
 anchors:
-- title: 'workbuddy-provider **0.15.4** / workbuddy-ai-provider'
+- title: 'qoderwork-provider **0.9.23** 发布部署'
   usage_count: 0
   usage_days: 0
   last_used_at: null
+  absorbed_to: null
+- title: 'workbuddy-provider **0.15.4** / workbuddy-ai-provider'
+  usage_count: 1
+  usage_days: 1
+  last_used_at: 2026-10-10
   absorbed_to: null
 - title: 'workbuddy-ai-provider **0.1.8** 发布部署'
   usage_count: 0
@@ -147,10 +152,4 @@ anchors:
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: 'traework-provider **0.1.38 发布部'
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
-  absorbed_to: null
-
 ```

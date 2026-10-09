@@ -8,11 +8,21 @@
 
 ## 项目概况
 
-- 状态：活跃维护中。最新发布并部署 workbuddy-provider **0.15.4** / workbuddy-ai-provider **0.1.9** / traework-provider **0.2.3**（三插件面板「测试」按钮改为弹出模型选择窗口按指定模型测试，发布 + 生产热重载 + 行为验收完成）；同仓已发布 WorkBuddy AI 国际版 **0.1.8**（每日签到）、workbuddy-token-usage **0.2.4**（面板性能）、cursor-provider **0.1.0**（Cursor 会话 Token 导入）。
+- 状态：活跃维护中。最新发布并部署 qoderwork-provider **0.9.23** / workbuddy-provider **0.15.4** / workbuddy-ai-provider **0.1.9** / traework-provider **0.2.4**（四插件面板「测试」按钮均为「弹出模型选择窗口 → 点选指定模型测试」，发布 + 生产热重载 + 行为验收完成）；同仓已发布 workbuddy-token-usage **0.2.4**（面板性能）、cursor-provider **0.1.0**（Cursor 会话 Token 导入）、gemini-provider **0.1.1**、qoder-ai-provider **0.1.0**（Qoder AI 国际版，每日签到 +100 积分）。
 - 活动工作区：F:\cpa-plugin
-- 当前时间：2026-10-09 (GMT+8)
+- 当前时间：2026-10-10 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 当前会话（2026-10-10）：**qoderwork-provider 测试按钮改造为「先选模型再测试」，并发布部署 0.9.23**。
+  - 用户诉求：qoderwork-provider 的测试也改造一下（对齐 workbuddy / workbuddy-ai / traework 三插件），改造完成提交并发布部署。
+  - 后端：qoderwork/models.go 新增 authModelsForIndex(authIndex) + handleModelsQuery(req)（cachedDynamicModels → callModelsAPI，AccessToken 非空前置判断）；management.go 新增只读 GET /models?auth_index= 路由（未进 mutatingManagementPath）与 /test-active 分支；active_ping.go 新增 pickRandomQoderModels / pickRandomQoderModel / sendActivePingQoder / handleTestActive / handleTestActiveWithAuth(sa, authIndex, model)，指定模型时透传、为空时随机（兼容旧面板），兜底模型 "auto"。
+  - 前端：qoderwork/panel.html 新增测试弹窗 testModal + 6 个 JS 函数（pendingTestAuthIndex / openTestModal / closeTestModal / onTestMaskClick / loadTestModels / runTestModel）、卡片按钮 data-action="test"、7 条 CSS（.import-result / .r-* / .model-list / .model-item），Escape 处理补 testModal。
+  - 本地验证：cgo-shim build/vet/test 全绿（ok 7.249s）+ 必失败哨兵确证真实进编译（sentinel expects a fake model, got "auto"）；Node vm 面板回归 17 项 PASS + 旧版反证 5 项 FAIL（TypeError: ctx.openTestModal is not a function）；6-review STYLE: PASS。
+  - 发布闭环：commit 7df7f9a（13 文件，+1115 行）→ push main → CI run 37964833825 success（head=7df7f9a）→ 资产 commit 7f18e2a（8 文件，7/7 sha256 OK）→ registry 0.9.23 回填（随 30dfe9b 推送，7 artifacts sha256+size 与 checksums 全等）→ 远端 raw 7/7 200 且 size 一致；validate-registry.py 8 插件 schema_version=2 通过。
+  - 生产部署与验收：plugin-store install 0.9.23 → installed；落盘 .so sha256 bb55d2df…3977 与本地 release zip 内 .so 完全一致；热重载 active_version=0.9.23 retired_version=0.9.22；行为验收 GET /models?auth_index= 返回 {"models":["auto"]}、POST /test-active 指定 model=auto 成功（421ms，回显该 model）、无 model 兼容随机路径成功（622ms）、无 auth_index 返回 auth_index is required、panel / accounts 200、面板资源含 testModal / openTestModal / loadTestModels / runTestModel / data-action="test" 全命中。
+  - **本轮关键踩坑（共享源原子性）**：部署期间生产自定义源被另一并行会话的半成品条目（qoder-ai-provider，`type: direct` + 空 artifacts）整体校验失败，`source_errors: plugins[7]: direct install requires at least one artifact`，导致该源下**全部**自定义插件 install 返回 plugin_not_found；根因是宿主 ParseRegistry 对「单源一份 registry」原子校验，任一条目非法即整源不入列。待对端补齐 artifacts 后源自动恢复，无需重启宿主、无需重发本插件 registry。已沉淀知识库《插件商店源级 registry 校验原子失败会让整源插件集体 plugin_not_found》。
+  - 发布后清理：prune-release-assets dry-run 确认 8 插件保留集完整（含 qoderwork-provider-0.9.23），待删 0。
 
 - 当前会话（2026-10-10）：**独立国际版 Qoder AI 插件全套代码实现、验证全绿与生态接入（qoder-ai-provider 0.1.0）**。
   - 用户诉求：对标 workbuddy-ai-provider 独立国际版架构，构建独立的 Qoder AI 国际版插件，支持国际站（qoder.com）每日签到给 100 积分功能与多账号管理。
