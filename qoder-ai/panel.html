@@ -148,6 +148,18 @@ button.danger{background:var(--err-soft);color:var(--err);border:1px solid var(-
 button.danger:hover{background:var(--err);color:#fff}
 .card-del{background:transparent;color:var(--mut);border:0;padding:2px 7px;font-size:16px;line-height:1;border-radius:6px;cursor:pointer;flex:none}
 .card-del:hover{background:var(--err-soft);color:var(--err)}
+.import-result{margin-top:12px;border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:12px;max-height:160px;overflow:auto;display:none}
+.import-result.show{display:block}
+.import-result .r-hd{font-weight:600;margin-bottom:6px}
+.import-result .r-hd.ok{color:var(--ok)}.import-result .r-hd.err{color:var(--err)}
+.import-result .r-item{display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-top:1px dashed var(--border)}
+.import-result .r-item:first-of-type{border-top:0}
+.import-result .r-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.import-result .r-err{color:var(--err);flex:none;max-width:55%;text-align:right;word-break:break-all}
+.model-list{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto;border:1px dashed var(--border);border-radius:8px;padding:6px}
+.model-item{display:block;width:100%;text-align:left;background:var(--btn-sec);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:13px;font-family:ui-monospace,monospace;cursor:pointer;word-break:break-all}
+.model-item:hover{background:var(--btn-sec-hover);border-color:var(--acc)}
+.model-item:disabled{opacity:.5;cursor:default}
 </style>
 <script>
 /* Early theme sync (before body paint): mirror CPA parent data-theme when
@@ -264,6 +276,22 @@ button.danger:hover{background:var(--err);color:#fff}
     <div class="modal-ft">
       <button type="button" class="sec" onclick="closeDeleteModal()">取消</button>
       <button type="button" class="danger" id="deleteConfirmBtn" onclick="confirmDeleteAuth()">删除</button>
+    </div>
+  </div>
+</div>
+<div class="modal-mask" id="testModal" onclick="onTestMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="testModalTitle">
+    <div class="modal-hd">
+      <h2 id="testModalTitle">测试模型</h2>
+      <button type="button" class="modal-x" onclick="closeTestModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint" id="testModalHint">选择要测试的模型</p>
+      <div class="model-list" id="testModelList"><div class="loading">加载模型中…</div></div>
+      <div class="import-result" id="testResult"></div>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="closeTestModal()">关闭</button>
     </div>
   </div>
 </div>
@@ -386,6 +414,7 @@ function bindCardActions(root){
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
       else if(act==="claim-pro") claimPro(idx, ev.currentTarget);
       else if(act==="delete") openDeleteModal(idx);
+      else if(act==="test") openTestModal(idx);
     });
   });
 }
@@ -433,7 +462,7 @@ function card(a){
   ${refreshStateHTML(a)}
   ${progressHTML(cr,a)}
   ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
-  <div class="actions">${selectBtn}${refreshBtn}${actionHTML}</div>
+  <div class="actions">${selectBtn}${refreshBtn}${actionHTML}<button class="sec" data-action="test" data-auth-index="${esc(a.auth_index)}" title="测试账号活跃并发送一次推理请求">测试</button></div>
   </div>`;
 }
 // 冷却倒计时：每秒刷新积分首行中的冷却剩余秒数。
@@ -936,6 +965,83 @@ async function selectAuth(idx, btn){
     busy(btn,false);
   }
 }
+/* ---------- 测试模型弹窗逻辑 ----------
+   点卡片「测试」→ openTestModal(idx) → GET /models?auth_index=idx
+   → 渲染各模型按钮 → 用户点选任意模型
+   → POST /test-active {auth_index, model} 发起一次真实推理，结果就地展示。 */
+let pendingTestAuthIndex="";
+function openTestModal(idx){
+  pendingTestAuthIndex=idx;
+  const a=(lastAccounts||[]).find(x=>x.auth_index===idx);
+  const who=a?(a.nickname||a.label||a.name||a.uid||idx):idx;
+  const hint=document.getElementById("testModalHint");
+  if(hint)hint.innerHTML='选择要测试的模型：<b>'+esc(who)+'</b>';
+  const res=document.getElementById("testResult");
+  if(res){res.classList.remove("show");res.innerHTML="";}
+  const list=document.getElementById("testModelList");
+  if(list)list.innerHTML='<div class="loading">加载模型中…</div>';
+  document.getElementById("testModal").classList.add("show");
+  loadTestModels(idx);
+}
+function closeTestModal(){
+  pendingTestAuthIndex="";
+  document.getElementById("testModal").classList.remove("show");
+}
+function onTestMaskClick(e){
+  if(e.target===document.getElementById("testModal")) closeTestModal();
+}
+async function loadTestModels(idx){
+  const list=document.getElementById("testModelList");
+  if(!list)return;
+  try{
+    const d=await api("/models?auth_index="+encodeURIComponent(idx));
+    // 用户可能已关闭弹窗或切换了账号，丢弃过期响应避免错投。
+    if(pendingTestAuthIndex!==idx)return;
+    if(d&&d.error){
+      list.innerHTML='<div class="hint" style="color:var(--err)">'+esc(d.error)+'</div>';
+      return;
+    }
+    const models=(d&&Array.isArray(d.models))?d.models.filter(m=>String(m||"").trim()):[];
+    if(!models.length){
+      list.innerHTML='<div class="hint">暂无可用模型</div>';
+      return;
+    }
+    list.innerHTML=models.map(m=>'<button type="button" class="model-item" data-model="'+esc(m)+'" onclick="runTestModel(this)" data-auth-index="'+esc(idx)+'">'+esc(m)+'</button>').join("");
+  }catch(e){
+    list.innerHTML='<div class="hint" style="color:var(--err)">'+esc(e.message||String(e))+'</div>';
+  }
+}
+async function runTestModel(btn){
+  const idx=pendingTestAuthIndex;
+  const model=btn&&btn.dataset?btn.dataset.model:"";
+  if(!idx||!model)return;
+  const list=document.getElementById("testModelList");
+  const buttons=list?list.querySelectorAll("button.model-item"):[];
+  if(buttons)buttons.forEach(b=>{b.disabled=true;});
+  const res=document.getElementById("testResult");
+  if(res){res.className="import-result show";res.innerHTML='<div class="r-hd">测试中…</div>';}
+  try{
+    const d=await api("/test-active", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({auth_index: idx, model: model})
+    });
+    const ok=!(d&&d.error);
+    if(res){
+      res.className="import-result show";
+      res.innerHTML='<div class="r-hd '+(ok?"ok":"err")+'">'+(ok?"测试成功":"测试失败")+'</div>'+
+        '<div class="r-item"><span class="r-name">'+esc(model)+'</span><span class="'+(ok?"":"r-err")+'">'+esc(ok?(d.message||"活跃成功"):(d.error||"未知错误"))+'</span></div>';
+    }
+    if(ok)toast("活跃测试成功","ok",d.message||("模型: "+model));
+    else toast("测试失败","err",d.error);
+  }catch(e){
+    if(res){res.className="import-result show";res.innerHTML='<div class="r-hd err">测试失败</div><div class="r-item"><span class="r-name">'+esc(model)+'</span><span class="r-err">'+esc(e.message||String(e))+'</span></div>';}
+    toast("测试失败","err",e.message||String(e));
+  }finally{
+    if(buttons)buttons.forEach(b=>{b.disabled=false;});
+  }
+}
+
 async function refreshCredits(idx, btn){
   busy(btn,true);
   try{
@@ -1189,6 +1295,7 @@ document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="E
 document.addEventListener("keydown",e=>{
   if(e.key=="Escape"&&document.getElementById("importModal").classList.contains("show")) closeImportModal();
   if(e.key=="Escape"&&document.getElementById("deleteModal").classList.contains("show")) closeDeleteModal();
+  if(e.key=="Escape"&&document.getElementById("testModal").classList.contains("show")) closeTestModal();
 });
 /* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
 if(window.__wbThemeSync)window.__wbThemeSync();

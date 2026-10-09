@@ -1,5 +1,15 @@
 # Qoder AI Plugin Changelog
 
+## 0.1.1
+
+### Feat - 官方客户端模型对齐、管理面板测试按钮与高清图标补齐
+
+- 核心要点:
+  1. 模型对齐与动态获取：依据本地 Qoder 官方客户端配置，精准映射 12 个核心模型（Cantus、Qwen3.8-Max、Qwen3.8-Flash、Qwen3.7-Max、Qwen3.7-Plus、GLM-5.3、GLM-5.3-Flash、Kimi-K3、Kimi-K2.8-Preview、DeepSeek-V4-Pro、DeepSeek-Flash、MiniMax-M3）及 cmodel/qmodel_38max 等上游代号，上下文统一至 1,000,000，并在动态获取失败时平滑兜底。
+  2. 测试按钮与定时探活：管理面板卡片补齐「测试」按钮与指定模型测试模态弹窗，支持手动点选模型实时推理测试；后台打通基于 refresh_runner 的多模型自动定时探活（30分钟节流、30秒熔断）。
+  3. 图标补齐：提取 Qoder 官方 1024×1024 高清图标至 assets/icons/QoderAI.png，修正 main.go 中包含空格且 404 的 pluginLogoURL，同步更新 registry.json。
+- 涉及文件: qoder-ai/models.go、qoder-ai/body.go、qoder-ai/active_ping.go、qoder-ai/active_ping_test.go、qoder-ai/refresh_runner.go、qoder-ai/panel.html、qoder-ai/main.go、qoder-ai/VERSION、assets/icons/QoderAI.png、registry.json
+
 ## 0.1.0
 
 ### Feat - Qoder AI 国际版独立插件首发

@@ -131,3 +131,80 @@ func TestHandleTestActiveWithAuthSpecifiedModel(t *testing.T) {
 		t.Fatalf("expected fallback random model, got res=%v called=%q", resAuto, calledModel)
 	}
 }
+
+
+// TestDoActivePingMultiModelAnySuccess 验证多模型轮测中任意一个成功即判定健康且立即终止后续测试。
+func TestDoActivePingMultiModelAnySuccess(t *testing.T) {
+	resetActivePingTimes()
+	defer resetActivePingTimes()
+
+	fakeModels := []pluginapi.ModelInfo{
+		{ID: "fail-1"}, {ID: "fail-2"}, {ID: "succ-3"}, {ID: "fail-4"}, {ID: "fail-5"},
+	}
+	storeDynamicModels(fakeModels)
+	defer storeDynamicModels(nil)
+
+	origPingFn := sendActivePingQoderFn
+	defer func() { sendActivePingQoderFn = origPingFn }()
+
+	var attempted []string
+	sendActivePingQoderFn = func(sa *storedAuth, chosenModel string) error {
+		attempted = append(attempted, chosenModel)
+		if chosenModel == "succ-3" {
+			return nil
+		}
+		return errors.New("upstream failed for " + chosenModel)
+	}
+
+	sa := &storedAuth{Account: storedAccount{UID: "qw-user-any-succ"}}
+	err := doActivePing("idx-succ", "qw-user-any-succ", sa)
+	if err != nil {
+		t.Fatalf("expected any-success to return nil, got %v", err)
+	}
+
+	foundSucc := false
+	for _, m := range attempted {
+		if m == "succ-3" {
+			foundSucc = true
+			break
+		}
+	}
+	if !foundSucc {
+		t.Fatalf("expected succ-3 to be attempted, got attempts: %v", attempted)
+	}
+
+	// 再次调用应该被 30 分钟节流直接命中
+	if shouldActivePing("qw-user-any-succ") {
+		t.Fatalf("expected throttle to trigger after successful active ping")
+	}
+}
+
+// TestDoActivePingMultiModelAllFail 验证所有候选模型均失败时返回错误。
+func TestDoActivePingMultiModelAllFail(t *testing.T) {
+	resetActivePingTimes()
+	defer resetActivePingTimes()
+
+	fakeModels := []pluginapi.ModelInfo{
+		{ID: "fail-1"}, {ID: "fail-2"},
+	}
+	storeDynamicModels(fakeModels)
+	defer storeDynamicModels(nil)
+
+	origPingFn := sendActivePingQoderFn
+	defer func() { sendActivePingQoderFn = origPingFn }()
+
+	attemptCount := 0
+	sendActivePingQoderFn = func(sa *storedAuth, chosenModel string) error {
+		attemptCount++
+		return errors.New("all models down")
+	}
+
+	sa := &storedAuth{Account: storedAccount{UID: "qw-user-all-fail"}}
+	err := doActivePing("idx-fail", "qw-user-all-fail", sa)
+	if err == nil {
+		t.Fatalf("expected error when all models fail")
+	}
+	if attemptCount != 2 {
+		t.Fatalf("expected 2 attempts for 2 available models, got %d", attemptCount)
+	}
+}

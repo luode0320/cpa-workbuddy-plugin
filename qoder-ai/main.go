@@ -75,7 +75,7 @@ import (
 const (
 	providerName  = "qoder-ai-provider"
 	authFileName  = "qoderai.json"
-	pluginLogoURL = "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/Qoder AI.png"
+	pluginLogoURL = "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/QoderAI.png"
 	// Qoder AI Global: OpenAPI for auth/billing, gateway for COSY-signed inference.
 	// See /root/qoderwork/KNOWLEDGE.md §1-§5.
 	upstreamBase = "https://openapi.qoder.sh"
@@ -338,7 +338,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.1.0"
+var version = "0.1.1"
 
 func wbRegistration() registration {
 	return registration{
