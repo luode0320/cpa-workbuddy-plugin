@@ -8,11 +8,29 @@
 
 ## 项目概况
 
-- 状态：活跃维护中。最新发布并部署 qoderwork-provider **0.9.23** / workbuddy-provider **0.15.4** / workbuddy-ai-provider **0.1.9** / traework-provider **0.2.4**（四插件面板「测试」按钮均为「弹出模型选择窗口 → 点选指定模型测试」，发布 + 生产热重载 + 行为验收完成）；同仓已发布 workbuddy-token-usage **0.2.4**（面板性能）、cursor-provider **0.1.0**（Cursor 会话 Token 导入）、gemini-provider **0.1.1**、qoder-ai-provider **0.1.0**（Qoder AI 国际版，每日签到 +100 积分）。
+- 状态：活跃维护中。最新发布版本：qoder-ai-provider **0.1.1**（官方客户端模型对齐、面板测试按钮、自动定时探活与高清图标补齐）/ qoderwork-provider **0.9.23** / workbuddy-provider **0.15.4** / workbuddy-ai-provider **0.1.9** / traework-provider **0.2.4** / workbuddy-token-usage **0.2.4** / cursor-provider **0.1.0** / gemini-provider **0.1.1**。最新发布并部署 qoderwork-provider **0.9.23** / workbuddy-provider **0.15.4** / workbuddy-ai-provider **0.1.9** / traework-provider **0.2.4**（四插件面板「测试」按钮均为「弹出模型选择窗口 → 点选指定模型测试」，发布 + 生产热重载 + 行为验收完成）；同仓已发布 workbuddy-token-usage **0.2.4**（面板性能）、cursor-provider **0.1.0**（Cursor 会话 Token 导入）、gemini-provider **0.1.1**、qoder-ai-provider **0.1.0**（Qoder AI 国际版，每日签到 +100 积分）。
 - 活动工作区：F:\cpa-plugin
 - 当前时间：2026-10-10 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 当前会话（2026-10-10）：**Qoder AI 国际版官方客户端模型对齐、管理面板测试按钮与定时探活、高清图标补齐及 0.1.1 正式发布部署**：
+  - 用户反馈与诉求：
+    1. 插件模型名称与 Qoder 官方客户端不一致，需核实是否缺少动态获取与真实模型映射；
+    2. 缺少管理面板「测试」按钮与指定模型测试能力（对齐 WorkBuddy 的手动点选测试与后台自动定时探活）；
+    3. 缺少官方图标（原外部 URL 带空格且 404）。
+    4. 指令：“发布 继续”。
+  - 核心实施要点：
+    1. **模型对齐与动态获取**：从本地 Qoder 官方权威配置（`D:\Qoder\resources\dynamic-text\qoder.json`）中核实 12 个真实模型与上游 key 映射（Cantus ↔ cmodel, Qwen3.8-Max ↔ qmodel_38max, Qwen3.8-Flash ↔ qfmodel, Qwen3.7-Max ↔ qmodel_latest, Qwen3.7-Plus ↔ qmodel, GLM-5.3 ↔ gmodel, GLM-5.3-Flash ↔ gfmodel, Kimi-K3 ↔ kmodel_latest, Kimi-K2.8-Preview ↔ kmodel, DeepSeek-V4-Pro ↔ dmodel, DeepSeek-Flash ↔ dfmodel, MiniMax-M3 ↔ mmodel），上下文基线统一至 1,000,000；在 `body.go` 中实现全量大小写不敏感映射；在 `models.go` 中实现 `defaultModelAliasMap` 与 `authModelsForIndex` 动态获取失败时的优雅兜底。
+    2. **测试按钮与自动定时探活**：在 `panel.html` 中补齐卡片「测试」按钮（`data-action="test"`）与模态框 `testModal`，支持手动点选模型实时推理测试；在 `active_ping.go` 与 `refresh_runner.go` 中打通多模型随机自动定时探活（带 30 分钟节流、30 秒熔断与最多 5 个模型轮测）。
+    3. **官方高清图标补齐**：从官方应用提取 1024×1024 PNG 至 `assets/icons/QoderAI.png`，更新 `main.go` 的 `pluginLogoURL` 与 `registry.json`，解决 404。
+  - 完整闭环发布验证：
+    1. 本地 `python scripts/cgo-shim-build.py qoder-ai` 编译、vet 与测试全部通过（all green）。
+    2. 严格隔离工作树中无关文件，显式提交 `qoder-ai/` 源码、高清图标并推送至 main（commit 7d7aa20）。
+    3. 触发 GitHub Actions 发布流水线（run 37975839198），轮询等待 65 个 jobs 全绿构建完成。
+    4. 下载 8 个 release 资产并校验 sha256 全部通过，运行 `publish-assets.py qoder-ai-provider 0.1.1` 更新 `registry.json`，清理历史版本资产并推送（commit 57eff44）。
+    5. 远端验证 raw URL 全部 200 OK（图标与 7 平台安装包）。
+    6. 生产环境（45.207.222.65）调用 plugin-store 安装 0.1.1 成功，热重载日志确认 `active ping success`；调用 `/models` 成功返回 12+1 个模型列表；调用 `/test-active` 对真实账号测试 `auto`、`Qwen3.8-Max`、`Cantus`、`DeepSeek-V4-Pro`、`GLM-5.3`、`Kimi-K3`、`MiniMax-M3` 均返回 `ok: true` 活跃成功！
 
 - 当前会话（2026-10-10）：**qoderwork-provider 测试按钮改造为「先选模型再测试」，并发布部署 0.9.23**。
   - 用户诉求：qoderwork-provider 的测试也改造一下（对齐 workbuddy / workbuddy-ai / traework 三插件），改造完成提交并发布部署。
