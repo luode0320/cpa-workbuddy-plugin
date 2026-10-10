@@ -67,7 +67,7 @@ import (
 const abiVersion uint32 = 1
 
 // version 由构建期通过 -ldflags "-X main.version=..." 注入；默认值仅用于本地。
-var version = "0.1.1"
+var version = "0.1.2"
 
 // hostAPI is captured at init and used for host RPC callbacks (stream emit/close
 // and host.auth.* used by the Management API).

@@ -245,11 +245,14 @@
         </div>
         <div class="load-action"><button id="load" class="primary" type="button" data-i18n="loadStatus">加载状态</button></div>
       </div>
+      <div id="summaryBox" style="display:none;margin-bottom:var(--space-3);padding:var(--space-2) var(--space-4);border-radius:var(--radius-sm);background:var(--surface-muted);border:1px solid var(--border);font-size:var(--font-xs);color:var(--muted);align-items:center;justify-content:space-between"></div>
       <div class="bar">
         <button id="importBtn" class="secondary" type="button" data-i18n="importCredential">导入 Token</button>
         <button id="exportBtn" class="secondary" type="button" data-i18n="exportCredential">导出凭证</button>
         <button id="enableAllBtn" class="secondary" type="button" data-i18n="enableAll">全部启用</button>
         <button id="disableAllBtn" class="secondary" type="button" data-i18n="disableAllAccounts">全部禁用</button>
+        <div style="flex:1"></div>
+        <input id="searchInput" type="search" placeholder="搜索账号 / 标识 / 邮箱..." data-i18n-placeholder="searchPlaceholder" style="min-width:200px;padding:var(--space-2) var(--space-3);font-size:var(--font-xs);border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text)">
       </div>
       <div id="notice" class="notice" role="status" aria-live="polite"></div>
     </section>
@@ -263,7 +266,14 @@
       </div>
       <div class="modal-bd">
         <p class="hint" data-i18n="importHint">粘贴 Cursor 会话 Token（形如 user_&lt;id&gt;::&lt;jwt&gt; 或 WorkosCursorSessionToken=...），一行一个。</p>
-        <textarea id="importRaw" rows="6" data-i18n-placeholder="importPlaceholder" placeholder="粘贴 Cursor 会话 Token"></textarea>
+        <textarea id="importRaw" rows="4" data-i18n-placeholder="importPlaceholder" placeholder="粘贴 Cursor 会话 Token"></textarea>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+          <p class="hint" data-i18n="importBackupHint"><b>从备份恢复</b>：粘贴「导出凭证」生成的完整 JSON 备份（单账号或多账号备份）。</p>
+          <textarea id="importBackupRaw" rows="4" data-i18n-placeholder="importBackupPlaceholder" placeholder='{"version":1,"plugin":"cursor-provider","accounts":[...]}'></textarea>
+          <div style="margin-top:8px">
+            <button type="button" class="secondary" id="importBackupBtn" onclick="importBackupAuth(this)" data-i18n="restoreBackup">恢复凭据</button>
+          </div>
+        </div>
       </div>
       <div class="modal-ft">
         <button type="button" class="secondary" onclick="closeImportModal()" data-i18n="cancel">取消</button>
@@ -461,6 +471,70 @@
           buttons.forEach(b => { b.disabled = false; });
         }
       }
+      let currentSearchQuery = "";
+      function onSearchInput(val) {
+        currentSearchQuery = String(val || "").trim().toLowerCase();
+        renderAccounts();
+      }
+      function renderSummary(accountsList) {
+        const box = document.getElementById("summaryBox");
+        if (!box) return;
+        if (!accountsList || !accountsList.length) {
+          box.style.display = "none";
+          return;
+        }
+        const total = accountsList.length;
+        let active = 0;
+        let disabled = 0;
+        const modelSet = new Set();
+        for (const a of accountsList) {
+          const st = normalizedStatus(a.status);
+          if (st === "disabled" || st === "inactive") disabled++;
+          else active++;
+          if (Array.isArray(a.models)) {
+            for (const m of a.models) {
+              if (m && m.id && !m.disabled) modelSet.add(m.id);
+            }
+          }
+        }
+        box.style.display = "flex";
+        box.innerHTML = "<span>" + translate("summaryTotal", { count: total }) + " · " +
+          "<span style=\"color:var(--success)\">" + translate("summaryActive", { count: active }) + "</span>" +
+          (disabled > 0 ? " · <span style=\"color:var(--danger)\">" + translate("summaryDisabled", { count: disabled }) + "</span>" : "") +
+          " · <span>" + translate("summaryModels", { count: modelSet.size }) + "</span></span>";
+      }
+
+      async function importBackupAuth(btn) {
+        const area = document.getElementById("importBackupRaw");
+        if (!area) return;
+        const val = area.value.trim();
+        if (!val) {
+          showToast(translate("missingPayload"), "请输入备份 JSON", "error");
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const resp = await api(importPath, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename: "backup.json", content: val })
+          });
+          if (resp && resp.error) {
+            showToast("恢复失败", resp.error, "error");
+            return;
+          }
+          showToast("恢复成功", (resp && resp.message) ? resp.message : "凭据已恢复", "success");
+          area.value = "";
+          closeImportModal();
+          await loadStatus();
+        } catch (e) {
+          showToast("恢复失败", e instanceof Error ? e.message : String(e), "error");
+        } finally {
+          btn.disabled = false;
+        }
+      }
+      window.importBackupAuth = importBackupAuth;
+
       window.openTestModal = openTestModal;
       window.closeTestModal = closeTestModal;
       window.onTestMaskClick = onTestMaskClick;
@@ -562,6 +636,15 @@
           deleteConfirm: "删除",
           testActive: "测试",
           testModalTitle: "测试模型",
+          searchPlaceholder: "搜索账号 / 标识 / 邮箱...",
+          importBackupHint: "从备份恢复：粘贴「导出凭证」生成的完整 JSON 备份（支持单账号或多账号备份）。",
+          importBackupPlaceholder: "{\"version\":1,\"plugin\":\"cursor-provider\",\"accounts\":[...]}",
+          restoreBackup: "恢复凭据",
+          noMatch: "没有匹配搜索条件的账号",
+          summaryTotal: "共 {count} 个账号",
+          summaryActive: "{count} 个活跃",
+          summaryDisabled: "{count} 个已禁用",
+          summaryModels: "{count} 个可用模型",
           selectTestModel: "选择要测试的模型",
           loadingModels: "加载模型中…",
           testing: "测试中…",
@@ -660,6 +743,15 @@
           deleteConfirm: "Delete",
           testActive: "Test",
           testModalTitle: "Test Model",
+          searchPlaceholder: "Search account / label / email...",
+          importBackupHint: "Restore from backup: paste the full exported JSON backup (single or multiple accounts).",
+          importBackupPlaceholder: "{\"version\":1,\"plugin\":\"cursor-provider\",\"accounts\":[...]}",
+          restoreBackup: "Restore Backup",
+          noMatch: "No accounts match the search",
+          summaryTotal: "{count} accounts total",
+          summaryActive: "{count} active",
+          summaryDisabled: "{count} disabled",
+          summaryModels: "{count} models available",
           selectTestModel: "Select model to test",
           loadingModels: "Loading models…",
           testing: "Testing…",
@@ -1151,6 +1243,7 @@
       function renderAccounts() {
         accounts.replaceChildren();
         if (loadedAccounts === null) return;
+        renderSummary(loadedAccounts);
         if (!loadedAccounts.length) {
           const empty = document.createElement("section");
           empty.className = "panel empty";
@@ -1158,7 +1251,21 @@
           accounts.append(empty);
           return;
         }
-        accounts.append(...loadedAccounts.map(renderAccount));
+        let list = loadedAccounts;
+        if (currentSearchQuery) {
+          list = loadedAccounts.filter(a => {
+            const str = ((a.label || "") + " " + (a.name || "") + " " + (a.auth_index || "") + " " + (a.status || "")).toLowerCase();
+            return str.includes(currentSearchQuery);
+          });
+        }
+        if (!list.length) {
+          const empty = document.createElement("section");
+          empty.className = "panel empty";
+          empty.textContent = translate("noMatch");
+          accounts.append(empty);
+          return;
+        }
+        accounts.append(...list.map(renderAccount));
       }
 
       async function loadStatus() {
@@ -1178,6 +1285,10 @@
         }
       }
 
+      const searchInput = document.getElementById("searchInput");
+      if (searchInput) {
+        searchInput.addEventListener("input", (e) => onSearchInput(e.target.value));
+      }
       languageSelect.addEventListener("change", () => applyLanguage(languageSelect.value, true));
       loadButton.addEventListener("click", () => saveKey());
       keyInput.addEventListener("keydown", (event) => {

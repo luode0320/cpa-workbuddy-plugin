@@ -72,6 +72,11 @@ func (handler *Handler) importCredential(ctx context.Context, body []byte) (mana
 	if strings.TrimSpace(content) == "" {
 		return managementError(http.StatusBadRequest, "body {filename, content} required"), nil
 	}
+	// 优先检测是否为从导出文件恢复的 JSON 备份（单账号或多账号备份）
+	if resp, handled, _ := handler.importBackupJSON(ctx, content); handled {
+		return resp, nil
+	}
+
 	seed, err := parseCursorTokenImport(content)
 	if err != nil {
 		return managementError(http.StatusBadRequest, "invalid Cursor token: "+err.Error()), nil
@@ -154,4 +159,134 @@ func cursorCredentialLabel(credentials cursorauth.Credentials) string {
 		return accountID
 	}
 	return providerName
+}
+
+// importBackupJSON 尝试从 JSON 备份（完整导出的备份对象、单个凭据或凭据数组）恢复账号凭据。
+// [参数] ctx: 上下文；content: 粘贴的 JSON 字符串。
+// [返回] 若内容为合法 JSON 凭据则返回导入响应与 true；若非备份 JSON 则返回 false 由后续流程按 Token 处理。
+// 最近修改时间 2026-10-11（对齐 workbuddy 从备份 JSON 恢复账号能力）
+func (handler *Handler) importBackupJSON(ctx context.Context, content string) (managementResponse, bool, error) {
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+		return managementResponse{}, false, nil
+	}
+
+	type backupEntry struct {
+		Name       string          `json:"name"`
+		AuthIndex  string          `json:"auth_index"`
+		Credential json.RawMessage `json:"credential"`
+		JSON       json.RawMessage `json:"json"`
+	}
+
+	var candidates []backupEntry
+
+	// 1. 尝试解析完整导出对象 {"version":1, "accounts":[...]}
+	var backupDoc struct {
+		Accounts []backupEntry `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &backupDoc); err == nil && len(backupDoc.Accounts) > 0 {
+		candidates = backupDoc.Accounts
+	} else {
+		// 2. 尝试解析数组 [{...}, {...}]
+		var arrayDoc []backupEntry
+		if err := json.Unmarshal([]byte(trimmed), &arrayDoc); err == nil && len(arrayDoc) > 0 {
+			candidates = arrayDoc
+		} else {
+			// 3. 尝试解析单个对象
+			var single backupEntry
+			if err := json.Unmarshal([]byte(trimmed), &single); err == nil && (len(single.Credential) > 0 || len(single.JSON) > 0) {
+				candidates = []backupEntry{single}
+			} else {
+				// 尝试把顶层自身当作凭据
+				var cred cursorauth.Credentials
+				if err := json.Unmarshal([]byte(trimmed), &cred); err == nil && cred.AccessToken != "" && cred.RefreshToken != "" {
+					candidates = []backupEntry{{Credential: json.RawMessage(trimmed)}}
+				}
+			}
+		}
+	}
+
+	if len(candidates) == 0 {
+		return managementResponse{}, false, nil
+	}
+
+	restoredCount := 0
+	duplicateCount := 0
+	var lastErr error
+
+	for _, c := range candidates {
+		rawCred := c.Credential
+		if len(rawCred) == 0 {
+			rawCred = c.JSON
+		}
+		if len(rawCred) == 0 {
+			continue
+		}
+		cred, err := cursorauth.ParseCredentials(rawCred)
+		if err != nil {
+			var loose struct {
+				AccessToken  string `json:"access_token"`
+				RefreshToken string `json:"refresh_token"`
+				AccountID    string `json:"account_id"`
+				Email        string `json:"email"`
+			}
+			if looseErr := json.Unmarshal(rawCred, &loose); looseErr == nil && loose.AccessToken != "" && loose.RefreshToken != "" {
+				cred = cursorauth.Credentials{
+					AccessToken:  loose.AccessToken,
+					RefreshToken: loose.RefreshToken,
+					AccountID:    loose.AccountID,
+					Email:        loose.Email,
+					Type:         cursorauth.ProviderType,
+				}
+			} else {
+				lastErr = err
+				continue
+			}
+		}
+
+		if cred.Type == "" {
+			cred.Type = cursorauth.ProviderType
+		}
+
+		if dup := handler.findDuplicateCredential(ctx, cred); dup != "" {
+			duplicateCount++
+			continue
+		}
+
+		name := c.Name
+		if strings.TrimSpace(name) == "" {
+			name = authFileNameFor(cred)
+		}
+		raw, err := buildCursorAuthFileJSON(cred, false, "restored from backup")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if _, err := handler.host.Call(ctx, "host.auth.save", map[string]any{
+			"name": name, "json": json.RawMessage(raw),
+		}); err != nil {
+			lastErr = err
+			continue
+		}
+		restoredCount++
+	}
+
+	if restoredCount == 0 && duplicateCount == 0 {
+		if lastErr != nil {
+			return managementResponse{}, false, lastErr
+		}
+		return managementResponse{}, false, nil
+	}
+
+	msg := fmt.Sprintf("成功恢复 %d 个账号凭据", restoredCount)
+	if duplicateCount > 0 {
+		msg += fmt.Sprintf("，跳过 %d 个重复账号", duplicateCount)
+	}
+	resp, jsonErr := managementJSON(http.StatusOK, map[string]any{
+		"ok":        true,
+		"restored":  restoredCount,
+		"duplicate": duplicateCount,
+		"message":   msg,
+	})
+	return resp, true, jsonErr
 }

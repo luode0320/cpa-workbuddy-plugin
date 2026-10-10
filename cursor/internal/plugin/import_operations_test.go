@@ -256,3 +256,38 @@ func Test_ToggleCredential_writes_disabled_flag_directly(t *testing.T) {
 	// 直写不得丢失凭据字段。
 	require.Equal(t, "access", stored["access_token"])
 }
+
+func Test_Handler_ImportCredential_restores_from_backup_json(t *testing.T) {
+	host := &importHost{}
+	handler := NewHandler(Dependencies{Host: host})
+
+	backupContent := `{
+		"version": 1,
+		"plugin": "cursor-provider",
+		"accounts": [
+			{
+				"name": "cursor-backup1.json",
+				"credential": {
+					"type": "cursor-provider",
+					"access_token": "backup-access",
+					"refresh_token": "backup-refresh",
+					"email": "backup@example.test"
+				}
+			}
+		]
+	}`
+
+	body, err := json.Marshal(map[string]any{
+		"filename": "backup.json",
+		"content":  backupContent,
+	})
+	require.NoError(t, err)
+
+	resp, err := handler.importCredential(context.Background(), body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Contains(t, string(resp.Body), `"ok":true`)
+	require.Contains(t, string(resp.Body), `"restored":1`)
+	require.Equal(t, "cursor-backup1.json", host.savedName)
+	require.Contains(t, string(host.savedJSON), "backup-access")
+}

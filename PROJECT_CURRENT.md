@@ -14,6 +14,23 @@
 
 ## 活动会话进展摘要
 
+- 当前会话（2026-10-11）：**Cursor Provider 0.1.2 对齐 WorkBuddy 核心能力（统一用量上报、JSON 备份恢复、面板搜索与概览统计）**：
+  - 用户反馈与目标：发现 Cursor 插件与 WorkBuddy 差距较大，要求同步 WorkBuddy 差距的功能，对 Cursor 插件进行系统改造。
+  - 核心实施与同步对齐：
+    1. **统一用量通道（Token Tracker 接入）**：新增 `cursor/internal/plugin/usage_feed.go`，在流式与非流式请求完成时异步追加 NDJSON 记录至 `<root>/data/token-usage-feed.ndjson`；在 `token-usage-tracker/usage_stats/auth_identity.go` 中注册 Cursor 供应商映射，打通统一大屏看板。
+    2. **备份 JSON 凭据恢复导入**：增强 `cursor/internal/plugin/import.go` 的 `importBackupJSON`，智能识别完整备份导出的 JSON（以及单/数组凭据），一键批量恢复账号，与导出功能形成闭环。
+    3. **面板体验全面升级**：在 `management.html` 顶部增加账号状态概览统计条（总数、活跃、禁用、可用模型），操作栏增加实时模糊搜索过滤输入框，导入弹窗新增从备份恢复独立区域。
+  - 验证与门禁全绿：`python scripts/cgo-shim-build.py cursor` 与 `token-usage-tracker` 全绿；必失败哨兵反证测试真实执行；`node test/cursor/panel_auto_entry_repro.mjs` 11 项断言全通过；`node --check` 语法检查全部通过；6-review 风格回归 `STYLE: PASS`。
+
+- 当前会话（2026-10-11）：**自动探活多模型轮测实施收口（v1.1 completed）与下一阶段兄弟插件路由能力同步推进**：
+  - 实施计划收口：正式更新《自动测试多模型依次探活改造实施总览》（`doc/3-实施/2026-10-09_233000_自动测试多模型依次探活改造_实施总览.md`）为完成态（`status: completed`，`version: v1.1`），TASK-001 至 TASK-005 全部勾选完成，对齐 `doc/6-review/2026-10-09_234800_自动测试多模型依次探活改造_6-review.md`（STYLE: PASS）。
+  - 核心能力巩固：workbuddy / workbuddy-ai / traework 具备最多 5 模型随机轮测、单次 20s 超时、整轮 30s 预算熔断、any-success 快速退出且清标，彻底阻断单模型偶发故障导致账号被调度器误杀硬排除。
+  - 下一阶段计划推进：跟进《兄弟插件同步 workbuddy 路由能力实施总览》（`doc/3-实施/2026-10-10_235000_兄弟插件同步workbuddy路由能力实施总览.md`），分批次实施：
+    - **批次 A（低风险）**：`traework` 对齐 `scheduler_mode: session` 默认值与描述（4 处改动）；
+    - **批次 B（纯测试）**：`workbuddy-ai` 移植与补齐完整路由回归单测资产；
+    - **批次 C（结构改造）**：`qoderwork` 迁移 watchdog 计数落盘驱动源、接入 `test_failed` 机制、彻底移除 `preserve` 保号池并补齐全灭 defer 与低积分优先排序；
+    - **批次 D（结构改造）**：`qoder-ai` 镜像批次 C 结构改造并补 `ensureDefaultActiveAuth` 低积分比较。
+
 - 当前会话（2026-10-11）：**Cursor Provider 0.1.1 补充官方高清图标、路由规范对齐、选模型测试探活与可用性完善**：
   - 用户反馈与目标：继续完善 Cursor 插件，补充图标等等，解决 Cursor 插件目前基本无法使用的问题。
   - 核心问题排查与解决：

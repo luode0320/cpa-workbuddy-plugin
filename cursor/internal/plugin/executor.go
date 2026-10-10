@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luode0320/cpa-workbuddy-plugin/cursor/internal/cursorapi"
 	"github.com/luode0320/cpa-workbuddy-plugin/cursor/internal/cursorauth"
 	"github.com/luode0320/cpa-workbuddy-plugin/cursor/internal/cursorproto"
 	"github.com/luode0320/cpa-workbuddy-plugin/cursor/internal/openai"
@@ -21,8 +22,21 @@ func (handler *Handler) execute(ctx context.Context, raw []byte) (any, error) {
 	}
 	turn := openai.NewTurn("cursor/" + chat.Model)
 	inputText := usageText(chat)
+	start := time.Now()
+	sess, _ := request.stableSessionIdentity()
+	sessionKey := sess.String()
 	defer func() {
-		handler.usage.recordTokens(request.AuthID, turn.EstimatedUsage(inputText))
+		usageEst := turn.EstimatedUsage(inputText)
+		handler.usage.recordTokens(request.AuthID, usageEst)
+		account := strings.TrimSpace(credentials.Email)
+		if account == "" {
+			account = strings.TrimSpace(credentials.AccountID)
+		}
+		if account == "" {
+			account = request.AuthID
+		}
+		durationMS := time.Since(start).Milliseconds()
+		recordCursorUsageFeed(chat.Model, account, usageEst.PromptTokens, usageEst.CompletionTokens, durationMS, err != nil, 200, sessionKey)
 	}()
 	if handler.cursor == nil {
 		return nil, errors.New("Cursor client is unavailable")
@@ -73,10 +87,25 @@ func (handler *Handler) runStream(parent context.Context, request executorReques
 	done := false
 	toolCallSeen := false
 	inputText := usageText(chat)
+	start := time.Now()
+	sess, _ := request.stableSessionIdentity()
+	sessionKey := sess.String()
+	var runErr error
 	defer func() {
-		handler.usage.recordTokens(request.AuthID, turn.EstimatedUsage(inputText))
+		usageEst := turn.EstimatedUsage(inputText)
+		handler.usage.recordTokens(request.AuthID, usageEst)
+		account := strings.TrimSpace(credentials.Email)
+		if account == "" {
+			account = strings.TrimSpace(credentials.AccountID)
+		}
+		if account == "" {
+			account = request.AuthID
+		}
+		durationMS := time.Since(start).Milliseconds()
+		recordCursorUsageFeed(chat.Model, account, usageEst.PromptTokens, usageEst.CompletionTokens, durationMS, runErr != nil, 200, sessionKey)
 	}()
-	result, runErr := handler.runCheckpointed(ctx, request, chat, credentials, func(event cursorproto.ServerEvent) error {
+	var result cursorapi.RunResult
+	result, runErr = handler.runCheckpointed(ctx, request, chat, credentials, func(event cursorproto.ServerEvent) error {
 		switch event.Kind {
 		case cursorproto.EventText:
 			chunk, err := turn.StreamChunk(event.Text)

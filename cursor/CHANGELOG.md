@@ -1,5 +1,17 @@
 # Cursor Provider Plugin Changelog
 
+## 0.1.2
+
+### Feat - 对齐 WorkBuddy 核心能力：统一用量上报、JSON 备份凭据恢复与面板体验增强
+
+- 变更要点:
+  1. 接入统一用量数据通道：新增 `usage_feed.go`，在流式与非流式请求完成时异步追加 NDJSON 至 `<root>/data/token-usage-feed.ndjson`；在 `token-usage-tracker` 补充 Cursor 供应商映射，打通与 TokenTracker 统一看板的用量监控与图表展示。
+  2. 支持 JSON 备份批量恢复：增强 `import.go`，支持从导出的完整备份 JSON 文件（或单个/数组凭据 JSON）一键恢复账号凭据，与导出功能形成闭环。
+  3. 面板体验全面增强：面板顶部新增账号概览统计栏（账号总数、活跃数、已禁用数、覆盖模型数），操作栏新增账号实时模糊搜索过滤输入框，导入弹窗新增「从备份恢复」独立区域与操作按钮。
+  4. 自动化测试闭环：新增 `usage_feed_test.go` 验证用量 NDJSON 生成与写入，在 `import_operations_test.go` 新增从备份 JSON 恢复账号凭据的完整测试断言，并通过必失败哨兵反证。
+- 验证: `python scripts/cgo-shim-build.py cursor` 与 `token-usage-tracker` 全部 build/vet/test 全绿；`node test/cursor/panel_auto_entry_repro.mjs` 全断言通过；内联两个 script 块 `node --check` 语法检查通过。
+- 涉及文件: cursor/internal/plugin/usage_feed.go、cursor/internal/plugin/usage_feed_test.go、cursor/internal/plugin/executor.go、cursor/internal/plugin/import.go、cursor/internal/plugin/import_operations_test.go、cursor/internal/plugin/assets/management.html、token-usage-tracker/usage_stats/auth_identity.go、cursor/CHANGELOG.md、cursor/VERSION、cursor/main.go
+
 ## 0.1.1
 
 ### Feat - 官方高清图标补齐、面板路由对齐、指定模型测试探活与可用性完善
