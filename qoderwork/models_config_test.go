@@ -216,3 +216,58 @@ func TestNoConfiguredModels_FallsBackToStatic(t *testing.T) {
 		t.Fatalf("fallback model count = %d, want %d", len(resp.Models), len(wbModels()))
 	}
 }
+
+
+// TestWBModels_AlignmentWithClient 验证静态兜底模型列表与 Qoder 客户端权威配置一致。
+func TestWBModels_AlignmentWithClient(t *testing.T) {
+	models := wbModels()
+	if len(models) == 0 {
+		t.Fatalf("wbModels must not be empty")
+	}
+	modelMap := make(map[string]pluginapi.ModelInfo, len(models))
+	for _, m := range models {
+		modelMap[m.ID] = m
+		if m.ContextLength != 1000000 {
+			t.Errorf("model %s context length = %d, want 1000000", m.ID, m.ContextLength)
+		}
+	}
+	expectedCore := []string{
+		"auto", "Cantus", "Qwen3.8-Max", "Qwen3.8-Flash", "Qwen3.7-Max", "Qwen3.7-Plus",
+		"GLM-5.3", "GLM-5.3-Flash", "Kimi-K3", "Kimi-K2.8-Preview", "DeepSeek-V4-Pro",
+		"DeepSeek-Flash", "MiniMax-M3",
+	}
+	for _, id := range expectedCore {
+		if _, ok := modelMap[id]; !ok {
+			t.Errorf("missing core model: %s", id)
+		}
+	}
+}
+
+// TestModelMapping_CpaToUpstreamAndAlias 验证客户端展示名到上游 key 的双向映射与大小写容错。
+func TestModelMapping_CpaToUpstreamAndAlias(t *testing.T) {
+	cases := map[string]string{
+		"Cantus":            "cmodel",
+		"cantus":            "cmodel",
+		"Qwen3.8-Max":       "qmodel_38max",
+		"qwen3.8-flash":     "qfmodel",
+		"Qwen3.7-Max":       "qmodel_latest",
+		"Qwen3.7-Plus":      "qmodel",
+		"GLM-5.3":           "gmodel",
+		"GLM-5.3-Flash":     "gfmodel",
+		"Kimi-K3":           "kmodel_latest",
+		"Kimi-K2.8-Preview": "kmodel",
+		"DeepSeek-V4-Pro":   "dmodel",
+		"DeepSeek-Flash":    "dfmodel",
+		"MiniMax-M3":        "mmodel",
+	}
+	for input, expectedUpstream := range cases {
+		mapped := cpaToUpstreamKey(input)
+		if mapped != expectedUpstream {
+			t.Errorf("cpaToUpstreamKey(%q) = %q, want %q", input, mapped, expectedUpstream)
+		}
+		resolved := resolveUpstreamModel(input, nil)
+		if resolved != expectedUpstream {
+			t.Errorf("resolveUpstreamModel(%q) = %q, want %q", input, resolved, expectedUpstream)
+		}
+	}
+}

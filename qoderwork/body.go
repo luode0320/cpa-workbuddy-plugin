@@ -6,6 +6,7 @@
 package main
 
 import (
+	"strings"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -20,26 +21,38 @@ var basepromptJSON []byte
 // cpaToUpstreamKey maps CPA-facing model names to upstream keys.
 // Unknown names pass through unchanged (server silently routes to auto).
 func cpaToUpstreamKey(cpaModel string) string {
-	switch cpaModel {
+	switch strings.ToLower(strings.TrimSpace(cpaModel)) {
 	case "qoder-auto", "auto":
 		return "auto"
-	case "qwen3.8-max-preview", "qwen3.8-max", "qmodel_preview":
-		return "qmodel_preview"
+	// Cantus
+	case "cantus", "cmodel":
+		return "cmodel"
+	// Qwen
+	case "qwen3.8-max", "qwen3.8-max-preview", "qmodel_38max", "qmodel_preview":
+		return "qmodel_38max"
+	case "qwen3.8-flash", "qwen3.6-flash", "qfmodel", "q36fmodel":
+		return "qfmodel"
 	case "qwen3.7-max", "qmodel_latest":
 		return "qmodel_latest"
 	case "qwen3.7-plus", "qmodel":
 		return "qmodel"
-	case "qwen3.6-flash", "q36fmodel":
-		return "q36fmodel"
+	// GLM
+	case "glm-5.3", "gmodel", "glm-5.2", "gm51model":
+		return "gmodel"
+	case "glm-5.3-flash", "gfmodel":
+		return "gfmodel"
+	// Kimi
+	case "kimi-k3", "kmodel_latest":
+		return "kmodel_latest"
+	case "kimi-k2.8-preview", "kimi-k2.7-code", "kmodel":
+		return "kmodel"
+	// DeepSeek
 	case "deepseek-v4-pro", "dmodel":
 		return "dmodel"
-	case "deepseek-v4-flash", "dfmodel":
+	case "deepseek-flash", "deepseek-v4-flash", "dfmodel":
 		return "dfmodel"
-	case "glm-5.2", "gm51model":
-		return "gm51model"
-	case "kimi-k2.7-code", "kmodel":
-		return "kmodel"
-	case "minimax-m2.7", "mmodel":
+	// MiniMax
+	case "minimax-m3", "mmodel", "minimax-m2.7":
 		return "mmodel"
 	}
 	return cpaModel

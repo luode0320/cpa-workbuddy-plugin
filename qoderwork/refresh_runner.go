@@ -25,6 +25,7 @@
 package main
 
 import (
+	"log"
 	"errors"
 	"strings"
 	"sync"
@@ -301,6 +302,9 @@ func doFetchOne(authIndex, authID string) error {
 		if strings.Contains(e, "credits:") {
 			return errors.New(e)
 		}
+	}
+	if pingErr := triggerActivePing(authIndex, authID, sa); pingErr != nil {
+		log.Printf("[qoderwork] active ping account %s warning: %v", authID, pingErr)
 	}
 	return nil
 }

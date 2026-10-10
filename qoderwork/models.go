@@ -5,6 +5,7 @@
 package main
 
 import (
+	"log"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,16 +23,35 @@ import (
 // /algo/api/v2/model/list replaces this at runtime when an account is present.
 func wbModels() []pluginapi.ModelInfo {
 	return []pluginapi.ModelInfo{
-		{ID: "auto", Name: "Auto", ContextLength: 180000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "qmodel_preview", Name: "Qwen3.8-Max-Preview", ContextLength: 180000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "qmodel_latest", Name: "Qwen3.7-Max", ContextLength: 180000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "qmodel", Name: "Qwen3.7-Plus", ContextLength: 180000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "q36fmodel", Name: "Qwen3.6-Flash", ContextLength: 180000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "dmodel", Name: "DeepSeek-V4-Pro", ContextLength: 180000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "dfmodel", Name: "DeepSeek-V4-Flash", ContextLength: 180000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "gm51model", Name: "GLM-5.2", ContextLength: 180000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "kmodel", Name: "Kimi-K2.7-Code", ContextLength: 180000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "mmodel", Name: "MiniMax-M2.7", ContextLength: 180000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "auto", Name: "Auto", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "Cantus", Name: "Cantus", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "Qwen3.8-Max", Name: "Qwen3.8-Max", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "Qwen3.8-Flash", Name: "Qwen3.8-Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "Qwen3.7-Max", Name: "Qwen3.7-Max", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "Qwen3.7-Plus", Name: "Qwen3.7-Plus", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "GLM-5.3", Name: "GLM-5.3", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "GLM-5.3-Flash", Name: "GLM-5.3-Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "Kimi-K3", Name: "Kimi-K3", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "Kimi-K2.8-Preview", Name: "Kimi-K2.8-Preview", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "DeepSeek-V4-Pro", Name: "DeepSeek-V4-Pro", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "DeepSeek-Flash", Name: "DeepSeek-Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "MiniMax-M3", Name: "MiniMax-M3", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		// 上游内部代号与历史兼容项
+		{ID: "cmodel", Name: "Cantus", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "qmodel_38max", Name: "Qwen3.8-Max", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "qmodel_preview", Name: "Qwen3.8-Max-Preview", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "qfmodel", Name: "Qwen3.8-Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "q36fmodel", Name: "Qwen3.6-Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "qmodel_latest", Name: "Qwen3.7-Max", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "qmodel", Name: "Qwen3.7-Plus", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gmodel", Name: "GLM-5.3", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gm51model", Name: "GLM-5.2", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "gfmodel", Name: "GLM-5.3-Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "kmodel_latest", Name: "Kimi-K3", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "kmodel", Name: "Kimi-K2.8-Preview", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "dmodel", Name: "DeepSeek-V4-Pro", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "dfmodel", Name: "DeepSeek-Flash", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "mmodel", Name: "MiniMax-M3", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 	}
 }
 
@@ -308,6 +328,7 @@ func callModelsAPI(sa *storedAuth) ([]pluginapi.ModelInfo, error) {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[qoderwork] callModelsAPI: upstream status %d, body: %s", resp.StatusCode, truncateRedacted(string(resp.Body), 200))
 		return nil, fmt.Errorf("models API status %d", resp.StatusCode)
 	}
 	// Response is plain JSON: {"chat":[{key,display_name,...}], "developer":[...], ...}
@@ -353,6 +374,7 @@ func callModelsAPI(sa *storedAuth) ([]pluginapi.ModelInfo, error) {
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no enabled chat models")
 	}
+	log.Printf("[qoderwork] callModelsAPI: dynamic discovery ok: %d models", len(out))
 	return out, nil
 }
 
@@ -381,6 +403,39 @@ func cacheModelAliases(host pluginapi.HostConfigSummary) {
 	modelAliasCache.Unlock()
 }
 
+// defaultModelAliasMap provides canonical mapping from client-facing model
+// names to upstream Qoder gateway model keys.
+var defaultModelAliasMap = map[string]string{
+	// Cantus
+	"cantus": "cmodel",
+	// Qwen 3.8
+	"qwen3.8-max":         "qmodel_38max",
+	"qwen3.8-max-preview": "qmodel_38max",
+	"qmodel_preview":      "qmodel_38max",
+	"qwen3.8-flash":       "qfmodel",
+	"qwen3.6-flash":       "qfmodel",
+	"q36fmodel":           "qfmodel",
+	// Qwen 3.7
+	"qwen3.7-max":  "qmodel_latest",
+	"qwen3.7-plus": "qmodel",
+	// GLM 5.3
+	"glm-5.3":       "gmodel",
+	"glm-5.2":       "gmodel",
+	"gm51model":     "gmodel",
+	"glm-5.3-flash": "gfmodel",
+	// Kimi
+	"kimi-k3":           "kmodel_latest",
+	"kimi-k2.8-preview": "kmodel",
+	"kimi-k2.7-code":    "kmodel",
+	// DeepSeek
+	"deepseek-v4-pro":   "dmodel",
+	"deepseek-flash":    "dfmodel",
+	"deepseek-v4-flash": "dfmodel",
+	// MiniMax
+	"minimax-m3":   "mmodel",
+	"minimax-m2.7": "mmodel",
+}
+
 // resolveUpstreamModel maps an aliased requested model back to the real
 // upstream model ID. Returns the input unchanged when nothing matches.
 func resolveUpstreamModel(model string, attributes map[string]string) string {
@@ -397,6 +452,9 @@ func resolveUpstreamModel(model string, attributes map[string]string) string {
 	modelAliasCache.RUnlock()
 	if ok {
 		return name
+	}
+	if canonical, ok := defaultModelAliasMap[key]; ok {
+		return canonical
 	}
 	return m
 }
@@ -550,7 +608,12 @@ func authModelsForIndex(authIndex string) []string {
 		if dyn, ferr := callModelsAPI(sa); ferr == nil && len(dyn) > 0 {
 			storeDynamicModels(dyn)
 			models = dyn
+		} else if ferr != nil {
+			log.Printf("[qoderwork] authModelsForIndex: dynamic discovery failed (%v), falling back to static list", ferr)
 		}
+	}
+	if len(models) == 0 {
+		models = resolveModels(nil, getConfiguredModels(), wbModels())
 	}
 	seen := make(map[string]struct{}, len(models)+1)
 	out := make([]string, 0, len(models)+1)

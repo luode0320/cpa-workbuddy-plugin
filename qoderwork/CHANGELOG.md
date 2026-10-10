@@ -1,5 +1,20 @@
 # QoderWork Plugin Changelog
 
+## 0.9.24
+
+### Fix - 修复国内版模型获取与官方客户端模型对齐、补齐自动定时探活
+
+- 变更要点:
+  1. 修复国内版 Qoder 模型列表与官方客户端对齐：
+     - 对齐官方 12 个真实模型名称（Cantus、Qwen3.8-Max、Qwen3.8-Flash、Qwen3.7-Max、Qwen3.7-Plus、GLM-5.3、GLM-5.3-Flash、Kimi-K3、Kimi-K2.8-Preview、DeepSeek-V4-Pro、DeepSeek-Flash、MiniMax-M3）与 1,000,000 上下文窗口。
+     - 保留所有历史内部代号（cmodel, qmodel_38max, qfmodel 等）双向兼容。
+  2. 修复动态发现失败时的静态模型兜底：
+     - authModelsForIndex 在动态拉取失败时平滑回退到权威静态模型列表，彻底根除只返回 ["auto"] 导致测试弹窗无法选模型的缺陷。
+     - body.go 的 cpaToUpstreamKey 与 models.go 的 defaultModelAliasMap 支持大小写不敏感匹配与完整双向别名解析。
+  3. 补齐后台自动定时探活能力：
+     - 在 refresh_runner.go 刷新账号时触发多模型随机轮测（最多 5 个模型），具备 30 分钟账号节流与 30 秒整轮熔断保护。
+- 涉及文件: qoderwork/models.go、qoderwork/body.go、qoderwork/active_ping.go、qoderwork/refresh_runner.go、qoderwork/active_ping_test.go、qoderwork/models_config_test.go、qoderwork/VERSION、qoderwork/main.go
+
 ## 0.9.23
 
 ### Feat - 面板新增「测试」按钮（先选模型再测试）
