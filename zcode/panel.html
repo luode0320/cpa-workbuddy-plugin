@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZCode Provider 管理控制台</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --primary: #238636;
+      --primary-hover: #2ea043;
+      --blue: #58a6ff;
+      --danger: #f85149;
+      --warning: #d29922;
+      --card-border: #30363d;
+    }
+    [data-theme="light"] {
+      --bg: #f6f8fa;
+      --card-bg: #ffffff;
+      --border: #d0d7de;
+      --text: #24292f;
+      --text-muted: #57606a;
+      --primary: #1f883d;
+      --primary-hover: #1a7f37;
+      --blue: #0969da;
+      --danger: #cf222e;
+      --warning: #9a6700;
+      --card-border: #d0d7de;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 24px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .title-area {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .title-area h1 {
+      font-size: 22px;
+      font-weight: 600;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      font-size: 12px;
+      border-radius: 12px;
+      font-weight: 500;
+    }
+    .badge-success { background: rgba(46, 160, 67, 0.2); color: #3fb950; }
+    .badge-danger { background: rgba(248, 81, 73, 0.2); color: var(--danger); }
+    .badge-warning { background: rgba(210, 153, 34, 0.2); color: var(--warning); }
+    .btn-group {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    button {
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--card-bg);
+      color: var(--text);
+      transition: all 0.2s;
+    }
+    button:hover {
+      border-color: var(--text-muted);
+    }
+    button.btn-primary {
+      background: var(--primary);
+      color: #fff;
+      border-color: transparent;
+    }
+    button.btn-primary:hover {
+      background: var(--primary-hover);
+    }
+    button.btn-danger {
+      color: var(--danger);
+    }
+    button.btn-danger:hover {
+      background: rgba(248, 81, 73, 0.1);
+      border-color: var(--danger);
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .metric-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .metric-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+    .metric-val {
+      font-size: 24px;
+      font-weight: 600;
+    }
+    .accounts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
+    }
+    .acc-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .acc-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .acc-title {
+      font-size: 15px;
+      font-weight: 600;
+      word-break: break-all;
+    }
+    .acc-key {
+      font-family: monospace;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+    .acc-models {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 8px;
+    }
+    .model-tag {
+      background: rgba(88, 166, 255, 0.15);
+      color: var(--blue);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+    }
+    .acc-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+      margin-top: auto;
+    }
+    .acc-actions {
+      display: flex;
+      gap: 6px;
+    }
+    .modal-mask {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.6);
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    .modal-content {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      width: 90%;
+      max-width: 520px;
+      padding: 20px;
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    textarea {
+      width: 100%;
+      height: 160px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 10px;
+      font-family: monospace;
+      font-size: 13px;
+      resize: vertical;
+      margin-bottom: 16px;
+    }
+    .test-result-box {
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: 6px;
+      background: var(--bg);
+      font-size: 13px;
+      display: none;
+    }
+    .test-models-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 16px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .model-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .model-item:hover {
+      border-color: var(--blue);
+    }
+    .empty-tip {
+      text-align: center;
+      color: var(--text-muted);
+      padding: 48px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title-area">
+      <img src="https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/ZCode.png" style="width:28px;height:28px;border-radius:6px" alt="ZCode" onerror="this.style.display='none'">
+      <h1>ZCode Provider 控制台</h1>
+      <span class="badge badge-success">v0.1.0</span>
+    </div>
+    <div class="btn-group">
+      <button class="btn-primary" onclick="openImportModal()">+ 导入账号</button>
+      <button onclick="exportAccounts()">导出配置</button>
+      <button onclick="setAllStatus(false)">全部启用</button>
+      <button onclick="setAllStatus(true)">全部禁用</button>
+      <button onclick="toggleTheme()">🌓 切换主题</button>
+      <button onclick="loadAccounts()">🔄 刷新</button>
+    </div>
+  </div>
+
+  <div id="auth-bar" style="display:none;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:20px;align-items:center;gap:12px">
+    <span style="font-size:13px;color:var(--text-muted)">管理密钥 (Management Key):</span>
+    <input id="mgmt-key-input" type="password" placeholder="输入 CPA remote-management.secret-key" style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
+    <button class="btn-primary" onclick="saveManualKey()">保存并连接</button>
+  </div>
+
+  <div class="metrics">
+    <div class="metric-card">
+      <div class="metric-label">总账号数</div>
+      <div class="metric-val" id="metric-total">0</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">有效可用</div>
+      <div class="metric-val" id="metric-active" style="color:#3fb950">0</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">已禁用</div>
+      <div class="metric-val" id="metric-disabled" style="color:var(--text-muted)">0</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">冷却中</div>
+      <div class="metric-val" id="metric-cooling" style="color:var(--warning)">0</div>
+    </div>
+  </div>
+
+  <div id="accounts-container" class="accounts-grid">
+    <div class="empty-tip">加载中...</div>
+  </div>
+
+  <!-- 导入弹窗 -->
+  <div id="importModal" class="modal-mask">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>导入 ZCode API Key</h3>
+        <button onclick="closeImportModal()">✕</button>
+      </div>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px">
+        支持粘贴单行或多行 BigModel API Key。<br>
+        格式：每行 <code>API_KEY</code> 或 <code>API_KEY----账号备注</code>
+      </p>
+      <textarea id="import-input" placeholder="607c3xxxxxxxx.xxxxxxxx----我的账号1&#10;809c2xxxxxxxx.xxxxxxxx----我的账号2"></textarea>
+      <div style="display:flex;justify-content:flex-end;gap:8px">
+        <button onclick="closeImportModal()">取消</button>
+        <button class="btn-primary" onclick="submitImport()">确认导入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 选模型测试探活弹窗 -->
+  <div id="testModal" class="modal-mask">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>连通性与模型探活测试</h3>
+        <button onclick="closeTestModal()">✕</button>
+      </div>
+      <p style="font-size:13px;margin-bottom:12px">选择测试模型：</p>
+      <div id="test-models-container" class="test-models-list">
+        <div style="color:var(--text-muted);font-size:12px">加载模型列表中...</div>
+      </div>
+      <div id="test-result" class="test-result-box"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+        <button onclick="closeTestModal()">关闭</button>
+        <button id="btn-run-test" class="btn-primary" onclick="runTest()">发送探测请求</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = "/v0/management/plugins/zcode-provider";
+    const ENC_PREFIX = "enc::v1::";
+    const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
+    const PANEL_STORE = "cli-proxy-auth";
+    const SS_KEY = "zcode-mgmt-key";
+    let accountsData = [];
+    let currentTestAuthID = "";
+    let selectedTestModel = "GLM-5.3";
+
+    function _enc(t) { return new TextEncoder().encode(t); }
+    function _dec(b) { return new TextDecoder().decode(b); }
+    function _keyBytes() { try { return _enc(SECRET_SALT + "|" + window.location.host + "|" + navigator.userAgent); } catch (_) { return _enc(SECRET_SALT); } }
+    function _xor(d, k) { const r = new Uint8Array(d.length); for (let i = 0; i < d.length; i++) r[i] = d[i] ^ k[i % k.length]; return r; }
+    function _b64d(s) { const bin = atob(s); const b = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i); return b; }
+    function deobfuscate(p) { if (!p || !p.startsWith(ENC_PREFIX)) return p; try { return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)), _keyBytes())); } catch (_) { return p; } }
+    function isEmbedded() { try { return window.self !== window.top; } catch (_) { return false; } }
+    function readPanelKey() {
+      if (!isEmbedded()) return null;
+      try {
+        const raw = localStorage.getItem(PANEL_STORE);
+        if (!raw) return null;
+        const parsed = JSON.parse(deobfuscate(raw));
+        const state = (parsed && parsed.state) || parsed || {};
+        return typeof state.managementKey === "string" && state.managementKey ? state.managementKey : null;
+      } catch (_) { return null; }
+    }
+    function readUrlKey() {
+      const value = new URLSearchParams(window.location.search).get("key");
+      if (value) {
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("key");
+          history.replaceState(null, "", url.pathname + url.search + url.hash);
+        } catch (_) {}
+      }
+      return value;
+    }
+    function persistKey(value) {
+      if (!value) return value;
+      try { sessionStorage.setItem(SS_KEY, value); } catch (_) {}
+      return value;
+    }
+    function getKey() {
+      let stored = null;
+      try { stored = sessionStorage.getItem(SS_KEY); } catch (_) {}
+      return stored || persistKey(readPanelKey()) || persistKey(readUrlKey()) || "";
+    }
+    function saveManualKey() {
+      const val = document.getElementById("mgmt-key-input").value.trim();
+      if (val) {
+        persistKey(val);
+        document.getElementById("auth-bar").style.display = "none";
+        loadAccounts();
+      }
+    }
+
+    async function req(path, method = "GET", body = null) {
+      const headers = { "Content-Type": "application/json" };
+      const k = getKey();
+      if (k) headers["Authorization"] = "Bearer " + k;
+      const opts = { method, headers, cache: "no-store" };
+      if (body) opts.body = typeof body === "string" ? body : JSON.stringify(body);
+      const res = await fetch(API + path, opts);
+      if (res.status === 401 || res.status === 403) {
+        document.getElementById("auth-bar").style.display = "flex";
+        throw new Error("未授权 (401)，请输入管理密钥");
+      }
+      return res.json();
+    }
+
+    async function loadAccounts() {
+      try {
+        const data = await req("/accounts");
+        accountsData = data.accounts || [];
+        renderAccounts();
+      } catch (err) {
+        document.getElementById("accounts-container").innerHTML = `<div class="empty-tip" style="color:var(--danger)">加载失败: ${err.message}</div>`;
+      }
+    }
+
+    function renderAccounts() {
+      const c = document.getElementById("accounts-container");
+      if (accountsData.length === 0) {
+        c.innerHTML = '<div class="empty-tip">暂无账号，点击上方「+ 导入账号」添加。</div>';
+        updateMetrics(0, 0, 0, 0);
+        return;
+      }
+
+      let activeCount = 0;
+      let disabledCount = 0;
+      let coolingCount = 0;
+
+      c.innerHTML = accountsData.map(acc => {
+        let statusBadge = '<span class="badge badge-success">正常可用</span>';
+        if (acc.disabled) {
+          statusBadge = '<span class="badge badge-danger">已禁用</span>';
+          disabledCount++;
+        } else if (acc.cooling_down) {
+          statusBadge = '<span class="badge badge-warning">冷却中</span>';
+          coolingCount++;
+        } else if (acc.test_failed) {
+          statusBadge = '<span class="badge badge-danger">测试失败</span>';
+          coolingCount++;
+        } else {
+          activeCount++;
+        }
+
+        const models = (acc.models || ["GLM-5.3", "GLM-5.3-Flash"]).slice(0, 4);
+
+        return `
+          <div class="acc-card">
+            <div class="acc-header">
+              <div>
+                <div class="acc-title">${escapeHTML(acc.label || acc.auth_id)}</div>
+                <div class="acc-key">${acc.api_key_masked}</div>
+              </div>
+              <div>${statusBadge}</div>
+            </div>
+            <div class="acc-models">
+              ${models.map(m => `<span class="model-tag">${escapeHTML(m)}</span>`).join("")}
+            </div>
+            <div class="acc-footer">
+              <span style="font-size:11px;color:var(--text-muted)">${formatDate(acc.created_at)}</span>
+              <div class="acc-actions">
+                <button onclick="openTestModal('${acc.auth_id}')">测试</button>
+                <button onclick="toggleDisable('${acc.auth_id}', ${acc.disabled})">${acc.disabled ? '启用' : '禁用'}</button>
+                <button class="btn-danger" onclick="deleteAccount('${acc.auth_id}')">删除</button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      updateMetrics(accountsData.length, activeCount, disabledCount, coolingCount);
+    }
+
+    function updateMetrics(total, active, disabled, cooling) {
+      document.getElementById("metric-total").textContent = total;
+      document.getElementById("metric-active").textContent = active;
+      document.getElementById("metric-disabled").textContent = disabled;
+      document.getElementById("metric-cooling").textContent = cooling;
+    }
+
+    function openImportModal() {
+      document.getElementById("importModal").style.display = "flex";
+      document.getElementById("import-input").value = "";
+    }
+    function closeImportModal() {
+      document.getElementById("importModal").style.display = "none";
+    }
+
+    async function submitImport() {
+      const content = document.getElementById("import-input").value.trim();
+      if (!content) return alert("请输入要导入的内容");
+      try {
+        const res = await req("/import", "POST", { content });
+        alert(`导入完成！成功: ${res.imported}，跳过: ${res.skipped}`);
+        closeImportModal();
+        loadAccounts();
+      } catch (err) {
+        alert("导入失败: " + err.message);
+      }
+    }
+
+    async function exportAccounts() {
+      try {
+        const res = await req("/export", "POST");
+        const blob = new Blob([JSON.stringify(res, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `zcode-accounts-${new Date().toISOString().slice(0,10)}.json`;
+        a.click();
+      } catch (err) {
+        alert("导出失败: " + err.message);
+      }
+    }
+
+    async function toggleDisable(authID, curDisabled) {
+      const action = curDisabled ? "/enable" : "/disable";
+      await req(action, "POST", { auth_id: authID });
+      loadAccounts();
+    }
+
+    async function setAllStatus(disabled) {
+      const action = disabled ? "/disable-all" : "/enable-all";
+      if (!confirm(`确定要全部${disabled ? '禁用' : '启用'}吗？`)) return;
+      await req(action, "POST");
+      loadAccounts();
+    }
+
+    async function deleteAccount(authID) {
+      if (!confirm("确定要删除该账号吗？")) return;
+      await req("/delete", "POST", { auth_id: authID });
+      loadAccounts();
+    }
+
+    async function openTestModal(authID) {
+      currentTestAuthID = authID;
+      document.getElementById("testModal").style.display = "flex";
+      const resultBox = document.getElementById("test-result");
+      resultBox.style.display = "none";
+
+      const container = document.getElementById("test-models-container");
+      container.innerHTML = "加载模型中...";
+
+      try {
+        const res = await req(`/models?auth_index=${authID}`);
+        const models = res.models || ["GLM-5.3", "GLM-5.3-Flash"];
+        selectedTestModel = models[0];
+
+        container.innerHTML = models.map((m, i) => `
+          <label class="model-item">
+            <input type="radio" name="test-m" value="${m}" ${i === 0 ? "checked" : ""} onchange="selectedTestModel='${m}'">
+            <span>${escapeHTML(m)}</span>
+          </label>
+        `).join("");
+      } catch (e) {
+        container.innerHTML = `<div style="color:var(--danger)">加载模型失败</div>`;
+      }
+    }
+
+    function closeTestModal() {
+      document.getElementById("testModal").style.display = "none";
+    }
+
+    async function runTest() {
+      const btn = document.getElementById("btn-run-test");
+      const box = document.getElementById("test-result");
+      btn.disabled = true;
+      btn.textContent = "正在探测...";
+      box.style.display = "block";
+      box.innerHTML = "正在向上游发起 Anthropic 短请求测试...";
+      box.style.color = "var(--text)";
+
+      try {
+        const res = await req("/test-active", "POST", {
+          auth_index: currentTestAuthID,
+          model: selectedTestModel
+        });
+        if (res.ok) {
+          box.innerHTML = `<span style="color:#3fb950">✅ 探活成功！</span> 模型: <b>${res.model}</b>，延迟: <b>${res.latency_ms} ms</b>`;
+        } else {
+          box.innerHTML = `<span style="color:var(--danger)">❌ 探测失败:</span> ${escapeHTML(res.error || res.message)} (延迟: ${res.latency_ms} ms)`;
+        }
+      } catch (err) {
+        box.innerHTML = `<span style="color:var(--danger)">❌ 请求异常:</span> ${err.message}`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "发送探测请求";
+        loadAccounts();
+      }
+    }
+
+    function toggleTheme() {
+      const cur = document.documentElement.getAttribute("data-theme");
+      const next = cur === "light" ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", next);
+      localStorage.setItem("theme", next);
+    }
+
+    function escapeHTML(str) {
+      if (!str) return "";
+      return String(str).replace(/[&<>'"]/g, tag => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", "\"": "&quot;"
+      }[tag] || tag));
+    }
+
+    function formatDate(iso) {
+      if (!iso) return "";
+      return iso.replace("T", " ").slice(0, 19);
+    }
+
+    const savedTheme = localStorage.getItem("theme");
+    if (savedTheme) document.documentElement.setAttribute("data-theme", savedTheme);
+
+    loadAccounts();
+  </script>
+</body>
+</html>

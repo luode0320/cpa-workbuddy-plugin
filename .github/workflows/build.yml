@@ -32,13 +32,14 @@ on:
       - "workbuddy-ai-provider-v*"
       - "cursor-provider-v*"
       - "qoder-ai-provider-v*"
+      - "zcode-provider-v*"
   workflow_dispatch:
     inputs:
       plugin:
         description: "Plugin to release"
         required: true
         type: choice
-        options: [workbuddy-provider, qoderwork-provider, workbuddy-token-usage, traework-provider, gemini-provider, workbuddy-ai-provider, cursor-provider, qoder-ai-provider]
+        options: [workbuddy-provider, qoderwork-provider, workbuddy-token-usage, traework-provider, gemini-provider, workbuddy-ai-provider, cursor-provider, qoder-ai-provider, zcode-provider]
       version:
         description: "Version without v (empty = plugin's VERSION file)"
         required: false
@@ -63,6 +64,7 @@ jobs:
           - dir: workbuddy-ai
           - dir: cursor
           - dir: qoder-ai
+          - dir: zcode
     defaults:
       run:
         working-directory: ${{ matrix.dir }}
@@ -336,6 +338,37 @@ jobs:
             goarch: amd64
             runner: windows-2025
             ext: dll
+          # zcode-provider native (sources in zcode/)
+          - id: zcode-provider
+            src: zcode
+            goos: linux
+            goarch: amd64
+            runner: ubuntu-24.04
+            ext: so
+          - id: zcode-provider
+            src: zcode
+            goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+            ext: so
+          - id: zcode-provider
+            src: zcode
+            goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+            ext: dylib
+          - id: zcode-provider
+            src: zcode
+            goos: darwin
+            goarch: arm64
+            runner: macos-15
+            ext: dylib
+          - id: zcode-provider
+            src: zcode
+            goos: windows
+            goarch: amd64
+            runner: windows-2025
+            ext: dll
     defaults:
       run:
         shell: bash
@@ -499,6 +532,14 @@ jobs:
             src: qoder-ai
             target: freebsd-amd64
             ext: so
+          - id: zcode-provider
+            src: zcode
+            target: windows-arm64
+            ext: dll
+          - id: zcode-provider
+            src: zcode
+            target: freebsd-amd64
+            ext: so
     defaults:
       run:
         shell: bash
@@ -620,7 +661,8 @@ jobs:
         startsWith(github.ref, 'refs/tags/gemini-provider-v') ||
         startsWith(github.ref, 'refs/tags/workbuddy-ai-provider-v') ||
         startsWith(github.ref, 'refs/tags/cursor-provider-v') ||
-        startsWith(github.ref, 'refs/tags/qoder-ai-provider-v')
+        startsWith(github.ref, 'refs/tags/qoder-ai-provider-v') ||
+        startsWith(github.ref, 'refs/tags/zcode-provider-v')
     needs:
       - build
       - build-cross
@@ -649,6 +691,10 @@ jobs:
               P="workbuddy-ai-provider"; V="${GITHUB_REF_NAME#workbuddy-ai-provider-v}"
             elif [[ "${GITHUB_REF_NAME}" == cursor-provider-v* ]]; then
               P="cursor-provider"; V="${GITHUB_REF_NAME#cursor-provider-v}"
+            elif [[ "${GITHUB_REF_NAME}" == qoder-ai-provider-v* ]]; then
+              P="qoder-ai-provider"; V="${GITHUB_REF_NAME#qoder-ai-provider-v}"
+            elif [[ "${GITHUB_REF_NAME}" == zcode-provider-v* ]]; then
+              P="zcode-provider"; V="${GITHUB_REF_NAME#zcode-provider-v}"
           else
             P="workbuddy-token-usage"; V="${GITHUB_REF_NAME#workbuddy-token-usage-v}"
           fi

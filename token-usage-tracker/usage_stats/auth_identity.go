@@ -30,6 +30,8 @@ func displayAuthProvider(value string) string {
 		return "Qoder AI"
 	case "cursor", "cursor-provider":
 		return "Cursor"
+	case "zcode", "zcode-provider":
+		return "ZCode"
 	default:
 		return value
 	}
