@@ -164,6 +164,10 @@ func fetchPaymentType(sa *storedAuth) string {
 	return p.UserType
 }
 
+// performCheckinCall 调用每日签到 claim 接口。
+// [参数] sa: 目标账号的落盘认证信息。
+// [返回] 面板使用的 success 布尔语义响应 map；响应非法时返回错误。
+// 最近修改时间：2026-10-10；改动原因：去掉缺 success 字段时的默认成功归一化
 func performCheckinCall(sa *storedAuth) (map[string]any, error) {
 	req, err := http.NewRequest(http.MethodPost, upstreamBase+"/sash/api/v1/me/daily-check-in/claim", strings.NewReader("{}"))
 	if err != nil {
@@ -181,11 +185,9 @@ func performCheckinCall(sa *storedAuth) (map[string]any, error) {
 	if err := json.Unmarshal(resp.Body, &m); err != nil {
 		return nil, err
 	}
-	// Qoder AI checkin claim returns {"success":true, "rewardCredits":100,...}
-	// on success, or {"success":false,"error":"..."} on already-claimed.
-	// Normalise to the panel's expected shape (bool success).
-	if _, ok := m["success"]; !ok {
-		m["success"] = true
+	// 缺 success 布尔字段视为契约异常，返回失败，不得默认成功。
+	if _, ok := m["success"].(bool); !ok {
+		return map[string]any{"success": false, "message": "upstream response missing success flag"}, nil
 	}
 	return m, nil
 }

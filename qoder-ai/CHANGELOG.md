@@ -1,5 +1,19 @@
 # Qoder AI Plugin Changelog
 
+## 0.1.3
+
+### Fix - 修复宿主桥状态码解码错误导致签到假成功
+
+- 变更要点:
+  1. 根因修复：`hostHTTPDo` 用 `json:"status_code"` 解码宿主 `host.http.do` 响应，而宿主（v7.2.x）序列化 `pluginapi.HTTPResponse` 时未加 json tag，实际键名是 PascalCase `{"StatusCode":404,...}`；下划线标签既不匹配键名也不匹配大小写不敏感匹配，`StatusCode` 恒为 0，`if resp.StatusCode >= 400` 永不触发，所有 404/4xx/5xx 被当作 200 成功。抽出纯函数 `parseHostHTTPDoResult` 按真实线协议解码，并防御性兼容下划线变体。
+  2. 归一化收紧：`performCheckinCall` 在响应缺 `success` 布尔字段时返回失败（契约异常），不再默认成功。
+  3. 回归测试：新增 `host_bridge_test.go`（PascalCase 主用例、下划线兼容、非法载荷），修复前必失败（反证 `StatusCode = 0, want 200`）。
+- 涉及文件: qoder-ai/host_bridge.go、qoder-ai/billing.go、qoder-ai/host_bridge_test.go、qoder-ai/VERSION、qoder-ai/main.go
+
+### 已知问题（GAP-001）
+
+- 国际版 OpenAPI `openapi.qoder.sh` 无 `/sash/api/v1/me/daily-check-in/{status,claim}` 端点（404 `NotFound`）；官方桌面客户端无签到代码，奖励体系为 `campaigns`（三账号均 `claimable:false, campaigns:[]`）。修复解码后签到将如实返回失败，真实签到入口待产品确认。
+
 ## 0.1.2
 
 ### Fix - 修复多模态 content 数组导致真实推理请求 payload parse 503
