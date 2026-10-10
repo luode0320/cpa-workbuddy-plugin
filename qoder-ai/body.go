@@ -59,9 +59,68 @@ func cpaToUpstreamKey(cpaModel string) string {
 }
 
 // openAIMessage is one message in the OpenAI chat completion format.
+// Content 归一为字符串：纯文本请求原样接收，多模态部件数组由
+// UnmarshalJSON 提取文本后拼接，使下游 buildQoderBody 无需感知差异。
 type openAIMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+// openAIContentPart 是 OpenAI 多模态 content 数组中的一个部件。
+type openAIContentPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// UnmarshalJSON 兼容 OpenAI 的两种 content 形态：纯字符串与部件数组。
+// 上游 agent_chat_generation 的 messages 只接受文本 content，因此数组形态
+// 仅提取 text / input_text 部件的文本（图片等非文本部件无对应位置，按空处理）。
+// [参数] raw: 单条消息的原始 JSON。
+// [返回] 解析成功返回 nil；content 为非法形态时返回错误。
+// 最近修改时间 2026-10-10；改动原因：修复多模态 content 数组导致 payload parse 503
+func (m *openAIMessage) UnmarshalJSON(raw []byte) error {
+	var wire struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return err
+	}
+	text, err := decodeOpenAIContent(wire.Content)
+	if err != nil {
+		return err
+	}
+	m.Role = wire.Role
+	m.Content = text
+	return nil
+}
+
+// decodeOpenAIContent 把 OpenAI content 字段归一为文本。
+// [参数] raw: content 原始 JSON（字符串、部件数组，或 null / 缺省）。
+// [返回] 归一后的文本；既非字符串也非部件数组时返回错误。
+func decodeOpenAIContent(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil
+	}
+	// 1. 纯字符串形态（旧客户端与探活构造）优先
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text, nil
+	}
+	// 2. 多模态部件数组形态：只保留文本部件
+	var parts []openAIContentPart
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return "", fmt.Errorf("content must be a string or content parts array")
+	}
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part.Type == "text" || part.Type == "input_text" {
+			if part.Text != "" {
+				texts = append(texts, part.Text)
+			}
+		}
+	}
+	return strings.Join(texts, "\n"), nil
 }
 
 // openAIRequest is the CPA-facing chat completion request.
