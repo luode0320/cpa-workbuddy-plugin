@@ -7,7 +7,7 @@
   <title>Cursor 管理</title>
   <style>
     :root {
-      color-scheme: light dark;
+      color-scheme: light;
       --canvas: #f5f7fa;
       --surface: #ffffff;
       --surface-muted: #f0f3f7;
@@ -19,7 +19,6 @@
       --accent-contrast: #ffffff;
       --success: #18794e;
       --warning: #9a6700;
-      --warning-surface: #fff8db;
       --danger: #b42318;
       --focus: #1d4ed8;
       --shadow: 0 8px 24px rgba(23, 32, 42, .08);
@@ -49,24 +48,22 @@
       --focus-offset: 2px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --canvas: #0f141b;
-        --surface: #171e27;
-        --surface-muted: #202936;
-        --text: #edf2f7;
-        --muted: #a9b4c2;
-        --border: #344150;
-        --accent: #6ea8fe;
-        --accent-hover: #8abbff;
-        --accent-contrast: #08111f;
-        --success: #63d6a2;
-        --warning: #f5c451;
-        --warning-surface: #302813;
-        --danger: #ff8a80;
-        --focus: #93c5fd;
-        --shadow: 0 8px 24px rgba(0, 0, 0, .28);
-      }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --canvas: #0f141b;
+      --surface: #171e27;
+      --surface-muted: #202936;
+      --text: #edf2f7;
+      --muted: #a9b4c2;
+      --border: #344150;
+      --accent: #6ea8fe;
+      --accent-hover: #8abbff;
+      --accent-contrast: #08111f;
+      --success: #63d6a2;
+      --warning: #f5c451;
+      --danger: #ff8a80;
+      --focus: #93c5fd;
+      --shadow: 0 8px 24px rgba(0, 0, 0, .28);
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--canvas); color: var(--text); line-height: 1.55; }
@@ -83,7 +80,6 @@
     .language-field { display: grid; gap: var(--space-1); min-width: 132px; }
     .language-field label { color: var(--muted); font-size: var(--font-xs); }
     .panel { padding: var(--space-6); border: var(--border-width) solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
-    .warning { background: var(--warning-surface); border-color: color-mix(in srgb, var(--warning) 35%, var(--border)); }
     .credential-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: start; }
     .load-action { padding-top: var(--space-8); }
     .nowrap { white-space: nowrap; }
@@ -163,13 +159,73 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .card-del { min-height: auto; padding: 0 var(--space-2); color: var(--muted); background: transparent; font-size: var(--font-lg); }
     .card-del:hover { color: var(--danger); }
+    .header-title { display: flex; align-items: center; gap: var(--space-3); }
+    .header-logo { width: 36px; height: 36px; border-radius: var(--radius-sm); object-fit: contain; background: #000; display: block; }
+    .model-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: var(--space-2); margin-top: var(--space-3); max-height: 240px; overflow-y: auto; }
+    .model-item { font-family: ui-monospace, monospace; font-size: var(--font-xs); padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); cursor: pointer; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: all .15s ease; }
+    .model-item:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--surface-muted); }
+    .model-item:disabled { opacity: .5; cursor: not-allowed; }
+    .import-result { margin-top: var(--space-3); padding: var(--space-3); border-radius: var(--radius-sm); font-size: var(--font-xs); background: var(--surface-muted); border: 1px solid var(--border); display: none; }
+    .import-result.show { display: block; }
+    .r-hd { font-weight: 600; margin-bottom: var(--space-1); }
+    .r-hd.ok { color: var(--success); }
+    .r-hd.err { color: var(--danger); }
+    .r-item { display: flex; justify-content: space-between; gap: var(--space-2); word-break: break-all; }
+    .r-err { color: var(--danger); }
   </style>
+  <script>
+    /* 主题同步：嵌入主面板时镜像 data-theme，独立打开时跟随系统深浅色。 */
+    (() => {
+      const ATTR = "data-theme";
+      const embedded = () => { try { return window.self !== window.top; } catch (_) { return false; } };
+      const apply = (theme) => {
+        const el = document.documentElement;
+        if (theme === "white" || theme === "dark") el.setAttribute(ATTR, theme);
+        else el.removeAttribute(ATTR);
+      };
+      const parentTheme = () => {
+        if (!embedded()) return null;
+        try {
+          const raw = window.parent.document.documentElement.getAttribute(ATTR);
+          if (raw === "white" || raw === "dark") return raw;
+          return "light";
+        } catch (_) { return null; }
+      };
+      const systemTheme = () => {
+        try { return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"; } catch (_) { return "light"; }
+      };
+      const sync = () => apply(parentTheme() || systemTheme());
+      sync();
+      /* 启动主题 watcher：嵌入时观察父页主题变化，独立打开时监听系统深浅色切换。 */
+      window.__cursorThemeSync = () => {
+        sync();
+        if (!embedded()) {
+          try {
+            const mq = window.matchMedia("(prefers-color-scheme: dark)");
+            const onSystemChange = () => sync();
+            if (mq.addEventListener) mq.addEventListener("change", onSystemChange);
+            else if (mq.addListener) mq.addListener(onSystemChange);
+          } catch (_) { /* ignore */ }
+          return;
+        }
+        try {
+          const onParentChange = () => sync();
+          new MutationObserver(onParentChange).observe(window.parent.document.documentElement, { attributes: true, attributeFilter: [ATTR] });
+          const onStorageChange = (event) => { if (event.key === "cli-proxy-theme") sync(); };
+          window.addEventListener("storage", onStorageChange);
+        } catch (_) { /* ignore */ }
+      };
+    })();
+  </script>
 </head>
 <body>
   <main>
     <header class="header">
       <div class="header-row">
-        <h1 data-i18n="pageTitle">Cursor 管理</h1>
+        <div class="header-title">
+          <img class="header-logo" src="https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/Cursor.png" alt="Cursor Logo">
+          <h1 data-i18n="pageTitle">Cursor 管理</h1>
+        </div>
         <div class="language-field">
           <label for="language" data-i18n="languageLabel">语言</label>
           <select id="language">
@@ -180,16 +236,12 @@
       </div>
       <p class="muted"><span data-i18n="headerPrefix">由 Cursor 插件直接提供，不依赖</span> <span class="nowrap">CPA Manager Plus</span> <span data-i18n="headerJoin">或</span> <span class="nowrap">CLIProxyAPI</span> <span data-i18n="headerSuffix">前端改造。</span></p>
     </header>
-    <section class="panel warning" aria-labelledby="quota-title">
-      <h2 id="quota-title" data-i18n="quotaTitle">订阅额度说明</h2>
-      <p><span data-i18n="quotaBodyPrefix">Cursor 未公开稳定的 OAuth </span><span class="nowrap" data-i18n="quotaBodyTerm">订阅剩余额度接口</span><span data-i18n="quotaAccuracyPrefix">。这里不会伪造</span><span class="nowrap" data-i18n="quotaAccuracyTerm">百分比</span><span data-i18n="quotaUsagePrefix">；仅显示插件进程启动后的</span><span class="nowrap" data-i18n="quotaUsageTerm">本地估算用量</span><span data-i18n="quotaUsageJoin">与</span><span class="nowrap" data-i18n="quotaStatusTerm">请求状态</span><span data-i18n="quotaBodySuffixPrefix">。缓存 Token 未知时会明确显示</span><span class="nowrap" data-i18n="quotaUnknownTerm">“未知”</span><span class="nowrap" data-i18n="quotaBodySuffixSuffix">。</span></p>
-    </section>
     <section class="panel" aria-labelledby="credential-title">
-      <div class="credential-grid">
+      <div class="credential-grid" id="authBox" style="display:none">
         <div>
           <label id="credential-title" for="management-key"><span class="nowrap">CLIProxyAPI</span> <span data-i18n="managementKeyLabel">管理密钥</span></label>
           <input id="management-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="key-help">
-          <p id="key-help" class="muted" data-i18n="keyHelp">只保留在当前页面内存中，不写入浏览器存储。</p>
+          <p id="key-help" class="muted" data-i18n="keyHelp">未自动获取到管理密钥，请手动输入；密钥仅保留在当前标签页会话。</p>
         </div>
         <div class="load-action"><button id="load" class="primary" type="button" data-i18n="loadStatus">加载状态</button></div>
       </div>
@@ -232,6 +284,22 @@
       <div class="modal-ft">
         <button type="button" class="secondary" onclick="closeDeleteModal()" data-i18n="cancel">取消</button>
         <button type="button" class="primary" id="deleteConfirmBtn" onclick="confirmDeleteAuth(this)" data-i18n="deleteConfirm">删除</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal-mask" id="testModal" onclick="onTestMaskClick(event)">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="testModalTitle">
+      <div class="modal-hd">
+        <h2 id="testModalTitle" data-i18n="testModalTitle">测试模型</h2>
+        <button type="button" class="modal-x" onclick="closeTestModal()" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-bd">
+        <p class="hint" id="testModalHint">选择要测试的模型</p>
+        <div class="model-list" id="testModelList"><div class="muted">加载模型中…</div></div>
+        <div class="import-result" id="testResult"></div>
+      </div>
+      <div class="modal-ft">
+        <button type="button" class="secondary" onclick="closeTestModal()" data-i18n="close">关闭</button>
       </div>
     </div>
   </div>
@@ -300,6 +368,118 @@
         const key = getKey();
         return key ? { Authorization: "Bearer " + key } : {};
       }
+      // 显示管理密钥输入区（免密直入的降级路径）：恢复网格布局并聚焦输入框。
+      function escapeHtml(s) {
+        return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      }
+      let pendingTestAuthIndex = "";
+      function openTestModal(idx) {
+        pendingTestAuthIndex = idx;
+        const a = (loadedAccounts || []).find(x => x.auth_index === idx);
+        const who = a ? (a.label || a.name || idx) : idx;
+        const hint = document.getElementById("testModalHint");
+        if (hint) hint.innerHTML = translate("selectTestModel") + ": <b>" + escapeHtml(who) + "</b>";
+        const res = document.getElementById("testResult");
+        if (res) { res.className = "import-result"; res.innerHTML = ""; }
+        const list = document.getElementById("testModelList");
+        if (list) list.innerHTML = "<div class=\"muted\">" + translate("loadingModels") + "</div>";
+        const modal = document.getElementById("testModal");
+        if (modal) modal.classList.add("show");
+        loadTestModels(idx);
+      }
+      function closeTestModal() {
+        pendingTestAuthIndex = "";
+        const modal = document.getElementById("testModal");
+        if (modal) modal.classList.remove("show");
+      }
+      function onTestMaskClick(e) {
+        if (e.target === document.getElementById("testModal")) closeTestModal();
+      }
+      async function loadTestModels(idx) {
+        const list = document.getElementById("testModelList");
+        if (!list) return;
+        try {
+          const d = await api(API + "/models?auth_index=" + encodeURIComponent(idx));
+          if (pendingTestAuthIndex !== idx) return;
+          if (d && d.error) {
+            list.innerHTML = "<div style=\"color:var(--danger)\">" + escapeHtml(d.error) + "</div>";
+            return;
+          }
+          const models = (d && Array.isArray(d.models)) ? d.models.filter(m => String(m || "").trim()) : [];
+          if (!models.length) {
+            list.innerHTML = "<div>" + translate("noModelsAvailable") + "</div>";
+            return;
+          }
+          list.replaceChildren();
+          for (const m of models) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "model-item";
+            btn.textContent = m;
+            btn.dataset.model = m;
+            btn.addEventListener("click", () => runTestModel(btn, m));
+            list.append(btn);
+          }
+        } catch (e) {
+          list.innerHTML = "<div style=\"color:var(--danger)\">" + escapeHtml(e instanceof Error ? e.message : String(e)) + "</div>";
+        }
+      }
+      async function runTestModel(btn, model) {
+        const idx = pendingTestAuthIndex;
+        if (!idx || !model) return;
+        const list = document.getElementById("testModelList");
+        const buttons = list ? list.querySelectorAll("button.model-item") : [];
+        buttons.forEach(b => { b.disabled = true; });
+        const res = document.getElementById("testResult");
+        if (res) {
+          res.className = "import-result show";
+          res.innerHTML = "<div class=\"r-hd\">" + translate("testing") + "</div>";
+        }
+        try {
+          const d = await api(API + "/test-active", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ auth_index: idx, model: model })
+          });
+          const ok = Boolean(d && d.ok);
+          if (res) {
+            res.className = "import-result show";
+            res.innerHTML = "<div class=\"r-hd " + (ok ? "ok" : "err") + "\">" + (ok ? translate("testSuccess") : translate("testFailed")) + "</div>" +
+              "<div class=\"r-item\"><span class=\"nowrap\">" + escapeHtml(model) + "</span><span class=\"" + (ok ? "" : "r-err") + "\">" + escapeHtml(ok ? (d.message || "OK") : (d.error || "Error")) + "</span></div>";
+          }
+          if (ok) showToast(translate("testSuccess"), d.message || model, "success");
+          else showToast(translate("testFailed"), d.error || "Error", "error");
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (res) {
+            res.className = "import-result show";
+            res.innerHTML = "<div class=\"r-hd err\">" + translate("testFailed") + "</div>" +
+              "<div class=\"r-item\"><span class=\"nowrap\">" + escapeHtml(model) + "</span><span class=\"r-err\">" + escapeHtml(msg) + "</span></div>";
+          }
+          showToast(translate("testFailed"), msg, "error");
+        } finally {
+          buttons.forEach(b => { b.disabled = false; });
+        }
+      }
+      window.openTestModal = openTestModal;
+      window.closeTestModal = closeTestModal;
+      window.onTestMaskClick = onTestMaskClick;
+
+      function showAuth() {
+        authBox.style.display = "";
+        if (keyInput) keyInput.focus();
+      }
+      // 保存手动输入的管理密钥并进入面板：写入会话存储后隐藏输入区，随后加载状态。
+      function saveKey() {
+        const value = keyInput.value.trim();
+        if (!value) {
+          setNoticeKey("missingKey", {}, "error");
+          return;
+        }
+        persistKey(value);
+        authBox.style.display = "none";
+        loadStatus();
+      }
       const translations = {
         "zh-CN": {
           documentTitle: "Cursor 管理",
@@ -309,20 +489,8 @@
           headerPrefix: "由 Cursor 插件直接提供，不依赖",
           headerJoin: "或",
           headerSuffix: "前端改造。",
-          quotaTitle: "订阅额度说明",
-          quotaBodyPrefix: "Cursor 未公开稳定的 OAuth ",
-          quotaBodyTerm: "订阅剩余额度接口",
-          quotaAccuracyPrefix: "。这里不会伪造",
-          quotaAccuracyTerm: "百分比",
-          quotaUsagePrefix: "；仅显示插件进程启动后的",
-          quotaUsageTerm: "本地估算用量",
-          quotaUsageJoin: "与",
-          quotaStatusTerm: "请求状态",
-          quotaBodySuffixPrefix: "。缓\u2060存 Token 未\u2060知时会明确显\u2060示",
-          quotaUnknownTerm: "“未知”",
-          quotaBodySuffixSuffix: "。",
           managementKeyLabel: "管理密钥",
-          keyHelp: "留空时自动读取主面板或 URL 中的管理密钥；手动输入仅保存在当前标签页会话。",
+          keyHelp: "未自动获取到管理密钥，请手动输入；密钥仅保留在当前标签页会话。",
           loadStatus: "加载状态",
           missingKey: "请输入 CLIProxyAPI 管理密钥。",
           authenticationFailed: "管理密钥无效或无权访问。",
@@ -392,6 +560,15 @@
           deleteModalHint: "确定要删除该账号吗？",
           deleteModalWarn: "此操作会永久删除该账号及其认证文件，且不可恢复。",
           deleteConfirm: "删除",
+          testActive: "测试",
+          testModalTitle: "测试模型",
+          selectTestModel: "选择要测试的模型",
+          loadingModels: "加载模型中…",
+          testing: "测试中…",
+          testSuccess: "测试成功",
+          testFailed: "测试失败",
+          noModelsAvailable: "暂无可用模型",
+          close: "关闭",
           deleteSuccess: "账号已删除",
           deleteFailed: "删除失败",
           enableAccount: "启用",
@@ -410,20 +587,8 @@
           headerPrefix: "Served directly by the Cursor plugin. No frontend changes to",
           headerJoin: "or",
           headerSuffix: "are required.",
-          quotaTitle: "Subscription quota",
-          quotaBodyPrefix: "Cursor does not publish a stable OAuth API for ",
-          quotaBodyTerm: "remaining subscription quota",
-          quotaAccuracyPrefix: ". This page never invents ",
-          quotaAccuracyTerm: "a percentage",
-          quotaUsagePrefix: ". It shows only ",
-          quotaUsageTerm: "local estimated usage",
-          quotaUsageJoin: " and ",
-          quotaStatusTerm: "request status",
-          quotaBodySuffixPrefix: " since the plugin process started. Cached tokens are shown as ",
-          quotaUnknownTerm: "Unknown",
-          quotaBodySuffixSuffix: " when unavailable.",
           managementKeyLabel: "management key",
-          keyHelp: "Leave blank to auto-detect the key from the host panel or URL; manual input is kept for this tab session only.",
+          keyHelp: "No management key was detected automatically; enter it manually. It is kept for this tab session only.",
           loadStatus: "Load status",
           missingKey: "Enter the CLIProxyAPI management key.",
           authenticationFailed: "The management key is invalid or is not authorized.",
@@ -493,6 +658,15 @@
           deleteModalHint: "Delete this account?",
           deleteModalWarn: "This permanently deletes the account and its credential file and cannot be undone.",
           deleteConfirm: "Delete",
+          testActive: "Test",
+          testModalTitle: "Test Model",
+          selectTestModel: "Select model to test",
+          loadingModels: "Loading models…",
+          testing: "Testing…",
+          testSuccess: "Test Succeeded",
+          testFailed: "Test Failed",
+          noModelsAvailable: "No models available",
+          close: "Close",
           deleteSuccess: "Account deleted",
           deleteFailed: "Delete failed",
           enableAccount: "Enable",
@@ -507,6 +681,7 @@
       const metaDescription = document.querySelector('meta[name="description"]');
       const languageSelect = document.querySelector("#language");
       const keyInput = document.querySelector("#management-key");
+      const authBox = document.querySelector("#authBox");
       const loadButton = document.querySelector("#load");
       const notice = document.querySelector("#notice");
       const accounts = document.querySelector("#accounts");
@@ -750,11 +925,18 @@
 
       async function api(path, options = {}) {
         const key = getKey() || keyInput.value.trim();
-        if (!key) throw new Error(translate("missingKey"));
+        if (!key) {
+          showAuth();
+          throw new Error(translate("missingKey"));
+        }
         const headers = { Authorization: `Bearer ${key}`, ...(options.headers || {}) };
         const response = await fetch(path, { ...options, headers, cache: "no-store" });
         const payload = await response.json().catch(() => ({}));
-        if (response.status === 401 || response.status === 403) throw new Error(translate("authenticationFailed"));
+        // 密钥失效时重新显示输入区，允许用户修正密钥后重试。
+        if (response.status === 401 || response.status === 403) {
+          showAuth();
+          throw new Error(translate("authenticationFailed"));
+        }
         if (!response.ok) throw new Error((payload && payload.error) ? payload.error : translate("requestFailed", { status: response.status }));
         return payload;
       }
@@ -952,7 +1134,14 @@
         const disabled = ["disabled", "inactive"].includes(normalizedStatus(account.status));
         toggle.textContent = disabled ? translate("enableAccount") : translate("disableAccount");
         toggle.dataset.disable = disabled ? "false" : "true";
-        actions.append(save, disableAll, toggle);
+        const testBtn = document.createElement("button");
+        testBtn.type = "button";
+        testBtn.className = "secondary";
+        testBtn.dataset.action = "test";
+        testBtn.dataset.authIndex = account.auth_index;
+        testBtn.textContent = translate("testActive");
+        testBtn.addEventListener("click", () => openTestModal(account.auth_index));
+        actions.append(testBtn, save, disableAll, toggle);
         fieldset.append(legend, modelGrid);
         form.append(fieldset, accountNotice, actions);
         card.append(head, metrics, logicalHelp, hostMetrics, checkpointMetrics, form);
@@ -990,9 +1179,9 @@
       }
 
       languageSelect.addEventListener("change", () => applyLanguage(languageSelect.value, true));
-      loadButton.addEventListener("click", loadStatus);
+      loadButton.addEventListener("click", () => saveKey());
       keyInput.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") loadStatus();
+        if (event.key === "Enter") saveKey();
       });
       importButton.addEventListener("click", openImportModal);
       exportButton.addEventListener("click", () => exportAuth(exportButton));
@@ -1005,6 +1194,8 @@
           const action = trigger.dataset.action;
           if (action === "delete") {
             openDeleteModal(trigger.dataset.authIndex || "", "");
+          } else if (action === "test") {
+            openTestModal(trigger.dataset.authIndex || "");
           } else if (action === "toggle-account") {
             toggleAccount(trigger.dataset.authIndex || "", trigger.dataset.disable === "true", trigger);
           }
@@ -1012,6 +1203,14 @@
       }
       bindCardActions(accounts);
       applyLanguage(currentLanguage, false);
+      // 启动主题同步 watcher（嵌入父面板 MutationObserver + 独立时跟随系统主题）。
+      if (window.__cursorThemeSync) window.__cursorThemeSync();
+      // 免密直入：已有密钥时直接加载状态；无密钥才显示输入区。
+      if (getKey()) {
+        loadStatus();
+      } else {
+        showAuth();
+      }
     })();
   </script>
 </body>

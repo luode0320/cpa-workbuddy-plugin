@@ -19,9 +19,8 @@ const (
 	providerName  = "cursor-provider"
 	pluginAuthor  = "luode0320 (ported from yobo2u/omsub cursor-plugin)"
 	pluginRepoURL = "https://github.com/luode0320/cpa-workbuddy-plugin"
-	// Cursor 官方图标未随移植提供，留空以避免面板加载死链；如需品牌图标再补
-	// assets/icons/Cursor.png 并回填此常量。
-	pluginLogoURL = ""
+	// Cursor 官方品牌图标
+	pluginLogoURL = "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/Cursor.png"
 )
 
 // pluginVersion 是插件对外声明的版本，默认值可被 CI 注入的真实版本覆盖。
@@ -104,7 +103,7 @@ func (handler *Handler) dispatch(ctx context.Context, method string, request []b
 	case "auth.refresh":
 		return handler.refreshAuth(ctx, request)
 	case "model.static":
-		return modelResponse([]string{"auto"}, nil), nil
+		return modelResponse(defaultCursorModels, nil), nil
 	case "model.for_auth":
 		return handler.modelsForAuth(ctx, request)
 	case "executor.execute":

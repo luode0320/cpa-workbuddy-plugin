@@ -429,6 +429,7 @@
     {
       "id": "cursor-provider",
       "name": "Cursor Provider",
+      "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/Cursor.png",
       "description": "Cursor (cursor.sh) agent-service provider for CLIProxyAPI: import Cursor session tokens (user_<id>::<jwt> or WorkosCursorSessionToken), exchange them through the OAuth token endpoint, route chat-completions to the Connect-RPC agent service with checkpoint/session continuity, image input, tool loop, and a management panel for account import/export/delete, enable/disable and per-account model controls.",
       "author": "luode0320 (ported from yobo2u/omsub cursor-plugin)",
       "version": "0.1.0",

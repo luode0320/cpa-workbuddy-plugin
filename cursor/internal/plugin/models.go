@@ -9,6 +9,20 @@ import (
 	"github.com/luode0320/cpa-workbuddy-plugin/cursor/internal/cursorauth"
 )
 
+// defaultCursorModels 是 Cursor 官方主流支持的常用模型列表。
+// 当网络抖动或上游 GetUsableModels 暂时失败时作为稳定兜底，保障账号高可用。
+var defaultCursorModels = []string{
+	"auto",
+	"cursor-fast",
+	"composer-2.5",
+	"claude-3.5-sonnet",
+	"claude-3-5-sonnet",
+	"gpt-4o",
+	"gpt-4o-mini",
+	"gpt-5.3-codex",
+	"deepseek-v3",
+}
+
 type authModelRequest struct {
 	StorageJSON []byte `json:"StorageJSON"`
 }
@@ -17,6 +31,10 @@ type modelContextProvider interface {
 	ModelContextLengths(context.Context, string) (map[string]int64, error)
 }
 
+// modelsForAuth 获取指定认证凭据可用的模型列表。
+// [参数] ctx: 上下文；raw: 包含 StorageJSON 的模型请求字节切片。
+// [返回] 过滤禁用模型后的模型列表响应；上游失败时回退到默认常用模型，保障服务可用。
+// 最近修改时间 2026-10-11（增加上游模型拉取失败时的默认常用模型优雅降级）
 func (handler *Handler) modelsForAuth(ctx context.Context, raw []byte) (any, error) {
 	var request authModelRequest
 	if err := json.Unmarshal(raw, &request); err != nil {
@@ -26,9 +44,14 @@ func (handler *Handler) modelsForAuth(ctx context.Context, raw []byte) (any, err
 	if err != nil {
 		return nil, err
 	}
-	models, err := handler.cursor.DiscoverModels(ctx, credentials.AccessToken)
-	if err != nil {
-		return nil, err
+	// 1. 尝试从 Cursor 上游动态拉取可用模型
+	var models []string
+	if handler.cursor != nil {
+		models, _ = handler.cursor.DiscoverModels(ctx, credentials.AccessToken)
+	}
+	// 2. 上游失败或返回空时，优雅降级到默认常用模型
+	if len(models) == 0 {
+		models = append([]string(nil), defaultCursorModels...)
 	}
 	var contexts map[string]int64
 	if provider, ok := handler.cursor.(modelContextProvider); ok {

@@ -465,10 +465,21 @@ func Test_Handler_ManagementResource_serves_bilingual_shell_without_exposing_aut
 	require.Contains(t, string(response.Body), `unknown: "Unknown"`)
 	require.Contains(t, string(response.Body), `metric(translate("cachedTokens"), translate("unknown"))`)
 	require.Contains(t, string(response.Body), `checkpoint.ttft_average_ms == null ? translate("unknown")`)
-	require.Contains(t, string(response.Body), `<span class="nowrap" data-i18n="quotaUnknownTerm">“未知”</span>`)
-	require.Contains(t, string(response.Body), `quotaBodySuffixPrefix: "。缓\u2060存 Token 未\u2060知时会明确显\u2060示"`)
-	require.Contains(t, string(response.Body), `quotaUnknownTerm: "Unknown"`)
-	require.Contains(t, string(response.Body), `quotaBodySuffixSuffix: " when unavailable."`)
+	// 面板免密直入：密钥输入区默认隐藏；有密钥时启动直接加载状态，无密钥才显示输入区。
+	require.Contains(t, string(response.Body), `<div class="credential-grid" id="authBox" style="display:none">`)
+	require.Contains(t, string(response.Body), `function showAuth() {`)
+	require.Contains(t, string(response.Body), `function saveKey() {`)
+	require.Contains(t, string(response.Body), `authBox.style.display = "";`)
+	require.Contains(t, string(response.Body), `authBox.style.display = "none";`)
+	require.Contains(t, string(response.Body), `loadButton.addEventListener("click", () => saveKey());`)
+	require.Contains(t, string(response.Body), `if (event.key === "Enter") saveKey();`)
+	require.Contains(t, string(response.Body), `if (window.__cursorThemeSync) window.__cursorThemeSync();`)
+	require.Contains(t, string(response.Body), `if (getKey()) {`)
+	require.Contains(t, string(response.Body), `keyHelp: "未自动获取到管理密钥`)
+	require.Contains(t, string(response.Body), `keyHelp: "No management key was detected`)
+	require.NotContains(t, string(response.Body), `quotaTitle`)
+	require.NotContains(t, string(response.Body), `订阅额度说明`)
+	require.NotContains(t, string(response.Body), `panel warning`)
 	require.Contains(t, string(response.Body), `.nowrap { white-space: nowrap; }`)
 	require.Contains(t, string(response.Body), `--focus: #1d4ed8;`)
 	require.Contains(t, string(response.Body), `.models { max-height: none; overflow: visible; }`)
@@ -532,4 +543,101 @@ func (host *fakeHostCaller) Call(_ context.Context, method string, request any) 
 	default:
 		return nil, nil
 	}
+}
+
+func Test_Handler_Management_serves_panel_resource(t *testing.T) {
+	handler := NewHandler(Dependencies{})
+	req := managementRequest{
+		Method: "GET",
+		Path:   "/v0/resource/plugins/cursor-provider/panel",
+	}
+	rawReq, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	respAny, err := handler.handleManagement(context.Background(), rawReq)
+	require.NoError(t, err)
+	resp, ok := respAny.(managementResponse)
+	require.True(t, ok)
+	require.Equal(t, 200, resp.StatusCode)
+	require.Contains(t, string(resp.Body), "<!doctype html>")
+	require.Contains(t, string(resp.Body), "Cursor")
+}
+
+func Test_Handler_Management_accounts_route(t *testing.T) {
+	credentials, err := cursorauth.MarshalCredentials(cursorauth.Credentials{
+		AccessToken:  "secret-access",
+		RefreshToken: "secret-refresh",
+		Type:         "cursor-provider",
+		Email:        "user@example.test",
+	})
+	require.NoError(t, err)
+	host := &fakeHostCaller{credentialJSON: credentials}
+	handler := NewHandler(Dependencies{
+		Cursor: fakeModelCursorClient{models: []string{"auto"}},
+		Host:   host,
+	})
+
+	req := managementRequest{
+		Method: "GET",
+		Path:   "/plugins/cursor-provider/accounts",
+	}
+	rawReq, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	respAny, err := handler.handleManagement(context.Background(), rawReq)
+	require.NoError(t, err)
+	resp, ok := respAny.(managementResponse)
+	require.True(t, ok)
+	require.Equal(t, 200, resp.StatusCode)
+	require.Contains(t, string(resp.Body), "cursor-auth")
+}
+
+func Test_Handler_Management_models_and_test_active_routes(t *testing.T) {
+	credentials, err := cursorauth.MarshalCredentials(cursorauth.Credentials{
+		AccessToken:  "secret-access",
+		RefreshToken: "secret-refresh",
+		Type:         "cursor-provider",
+		Email:        "user@example.test",
+	})
+	require.NoError(t, err)
+	host := &fakeHostCaller{credentialJSON: credentials}
+	handler := NewHandler(Dependencies{
+		Cursor: fakeModelCursorClient{models: []string{"auto", "cursor-fast"}},
+		Host:   host,
+	})
+
+	// 1. 测试 /models 接口
+	reqModels := managementRequest{
+		Method: "GET",
+		Path:   "/plugins/cursor-provider/models?auth_index=cursor-auth",
+	}
+	rawReqModels, err := json.Marshal(reqModels)
+	require.NoError(t, err)
+	respAny, err := handler.handleManagement(context.Background(), rawReqModels)
+	require.NoError(t, err)
+	resp, ok := respAny.(managementResponse)
+	require.True(t, ok)
+	require.Equal(t, 200, resp.StatusCode)
+	require.Contains(t, string(resp.Body), "auto")
+
+	// 2. 测试 /test-active 接口
+	bodyTestActive, err := json.Marshal(map[string]string{
+		"auth_index": "cursor-auth",
+		"model":      "auto",
+	})
+	require.NoError(t, err)
+	reqActive := managementRequest{
+		Method: "POST",
+		Path:   "/plugins/cursor-provider/test-active",
+		Body:   bodyTestActive,
+	}
+	rawReqActive, err := json.Marshal(reqActive)
+	require.NoError(t, err)
+	respAnyActive, err := handler.handleManagement(context.Background(), rawReqActive)
+	require.NoError(t, err)
+	respActive, ok := respAnyActive.(managementResponse)
+	require.True(t, ok)
+	require.Equal(t, 200, respActive.StatusCode)
+	require.Contains(t, string(respActive.Body), `"ok":true`)
+	require.Contains(t, string(respActive.Body), `"model":"auto"`)
 }

@@ -14,6 +14,17 @@
 
 ## 活动会话进展摘要
 
+- 当前会话（2026-10-11）：**Cursor Provider 0.1.1 补充官方高清图标、路由规范对齐、选模型测试探活与可用性完善**：
+  - 用户反馈与目标：继续完善 Cursor 插件，补充图标等等，解决 Cursor 插件目前基本无法使用的问题。
+  - 核心问题排查与解决：
+    1. **图标缺失与破图**：补充官方高清图标至 `assets/icons/Cursor.png`（640×640 32-bit RGBA），并在 `cursor/internal/plugin/handler.go` 配置 `pluginLogoURL`、在 `registry.json` 中配置 `logo` 字段，并在面板 header 左侧增加品牌 Logo。
+    2. **面板路由 404 致无法打开**：CPA 宿主后台管理点击面板默认请求 `/v0/resource/plugins/cursor-provider/panel`，而原插件仅注册 `/status`；在资源路由中补充标准 `/panel` 并兼容 `/status` 别名。
+    3. **管理接口 `/accounts` 缺失**：增加 `GET /plugins/cursor-provider/accounts` 别名路由指向账号状态，对齐全仓库统一接口规范。
+    4. **缺少模型测试探活**：新增 `GET /models?auth_index=` 与 `POST /test-active` 路由，面板卡片新增「测试」按钮与 `testModal` 选模型测试弹窗，支持按指定模型测试连通性，并在 401 时自动刷新凭据重试。
+    5. **模型拉取优雅降级**：增加 `defaultCursorModels`（auto、cursor-fast、composer-2.5、claude-3.5-sonnet、gpt-4o 等），当上游 GetUsableModels 动态拉取失败时自动兜底，避免整个账号变成 unavailable 且模型为空。
+    6. **免密直入与主题同步**：支持同源父页/URL/会话存储三级密钥自动加载，移除冗余额度区块，嵌入时镜像父页 `data-theme`。
+  - 验证与门禁全绿：`python scripts/cgo-shim-build.py cursor` build/vet/test 全绿；必失败哨兵反证证实单测真实生效；`node test/cursor/panel_auto_entry_repro.mjs` 11 项断言全通过；`python scripts/validate-registry.py` 通过。
+
 - 当前会话（2026-10-10）：**修复 TraeWork 签到 9074 风控拦截与自动签到调度器，发布部署 `traework-provider 0.2.5` 并验证生产账号「用户04878311608」签到成功**：
   - 用户反馈与目标：修复 TraeWork 签到失败问题，并用生产「用户04878311608」账号测试修复签到。
   - 根因定位（生产真实对照实验证伪与收敛）：

@@ -28,6 +28,7 @@ func Test_Handler_Register_declares_cursor_auth_models_and_executor(t *testing.T
 	require.Contains(t, string(response.Result), `"request_lifecycle_plugin":true`)
 	require.Contains(t, string(response.Result), `"Version":"0.1.0"`)
 	require.Contains(t, string(response.Result), `"GitHubRepository":"https://github.com/luode0320/cpa-workbuddy-plugin"`)
+	require.Contains(t, string(response.Result), `"Logo":"https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/Cursor.png"`)
 }
 
 func Test_Handler_ManagementRegister_exposes_cursor_management_resource_and_authenticated_routes(t *testing.T) {
@@ -38,9 +39,13 @@ func Test_Handler_ManagementRegister_exposes_cursor_management_resource_and_auth
 	var response envelope
 	require.NoError(t, json.Unmarshal(raw, &response))
 	require.True(t, response.OK)
+	require.Contains(t, string(response.Result), `"Path":"/panel"`)
 	require.Contains(t, string(response.Result), `"Path":"/status"`)
 	require.Contains(t, string(response.Result), `"Menu":"Cursor"`)
-	require.Contains(t, string(response.Result), `Cursor status, usage, token import and model controls / Cursor 状态、用量、Token 导入与模型管理。`)
+	require.Contains(t, string(response.Result), `Cursor dashboard: status, usage, token import and model controls`)
 	require.Contains(t, string(response.Result), `"Path":"/plugins/cursor-provider/status"`)
+	require.Contains(t, string(response.Result), `"Path":"/plugins/cursor-provider/accounts"`)
+	require.Contains(t, string(response.Result), `"Path":"/plugins/cursor-provider/models"`)
+	require.Contains(t, string(response.Result), `"Path":"/plugins/cursor-provider/test-active"`)
 	require.Contains(t, string(response.Result), `"Path":"/plugins/cursor-provider/disabled-models"`)
 }

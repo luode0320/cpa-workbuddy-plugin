@@ -54,9 +54,11 @@ func Test_Handler_static_models_omit_unverified_token_limits(t *testing.T) {
 		}
 	}
 	require.NoError(t, json.Unmarshal(raw, &response))
-	require.Len(t, response.Result.Models, 1)
-	require.Nil(t, response.Result.Models[0].ContextLength)
-	require.Nil(t, response.Result.Models[0].MaxCompletionTokens)
+	require.Len(t, response.Result.Models, len(defaultCursorModels))
+	for _, m := range response.Result.Models {
+		require.Nil(t, m.ContextLength)
+		require.Nil(t, m.MaxCompletionTokens)
+	}
 }
 
 type fakeModelCursorClient struct {

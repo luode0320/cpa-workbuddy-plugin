@@ -26,7 +26,7 @@ Preserve the compact, neutral system-tool character of CLIProxyAPI's own plugin 
 
 ## 5. Primitives and states
 
-- `Panel`: default and warning variants.
+- `Panel`: default variant.
 - `Field`: label, password input, helper text, focus-visible state.
 - `Button`: primary, secondary, loading, disabled, focus-visible states.
 - `Metric`: label and monospace value.
@@ -37,7 +37,7 @@ Preserve the compact, neutral system-tool character of CLIProxyAPI's own plugin 
 
 ## 6. Interaction
 
-- The management key remains in page memory only and is never persisted.
+- The management key is auto-detected (host panel same-origin store, URL `?key=`, or manual input) and kept for the current tab session only; the input box stays hidden while a key is available.
 - “加载状态” fetches the authenticated plugin status endpoint.
 - “全部禁用 / Disable all” selects every available model for the current account but does not persist until the explicit save action.
 - “保存设置 / Save settings” submits only the selected account and model IDs.
@@ -62,7 +62,7 @@ Preserve the compact, neutral system-tool character of CLIProxyAPI's own plugin 
 - Cursor does not publish a stable OAuth subscription remaining-quota API. The page therefore displays an unavailable state and local estimated usage instead of a fabricated remainder.
 - CLIProxyAPI success and failure counters represent scheduler attempts, including retries and fallbacks. They are displayed as host attempts, never as user request totals.
 - Logical request outcomes and Token estimates are process-local and reset when the plugin process restarts. Request outcomes come from the host lifecycle completion callback; the plugin defensively deduplicates recent completion IDs in two independent 15-minute, 8 MiB Bloom windows. At the design load of up to one million completions per window, a two-window lookup has a theoretical false-positive probability below `6e-8`. A false positive skips one local terminal sample, leaving the previous latest outcome unchanged. Token estimates accumulate per plugin executor run.
-- The standalone page asks for the management key because plugin browser resources are intentionally unauthenticated by the host and cannot safely mutate state by themselves.
+- The page enters directly when a management key is detected; the input box is only shown as a fallback, because plugin browser resources are intentionally unauthenticated by the host and cannot safely mutate state by themselves.
 
 ## Reference
 
