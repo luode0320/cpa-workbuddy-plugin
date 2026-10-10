@@ -55,15 +55,17 @@ func TestValidateBrowserLoginOrigin(t *testing.T) {
 	}
 }
 
-// TestRandomDeviceIDShape verifies the 16-digit numeric device id shape.
+// TestRandomDeviceIDShape 验证随机设备标识符合 16 位纯数字、首位 1~3 且无连续尾零填充，防止生成尾零畸形或越界号段，无外部副作用。
+// 最近修改时间：2026-10-10 22:00:00；改动原因：增加首位 1~3 号段与非 0 末位断言。
 func TestRandomDeviceIDShape(t *testing.T) {
-	id := randomDeviceID()
-	if len(id) != 16 {
-		t.Fatalf("device id length = %d, want 16", len(id))
-	}
-	for _, r := range id {
-		if r < '0' || r > '9' {
-			t.Fatalf("device id %q contains non-digit", id)
+	// 1. 连续采样验证 50 个随机设备标识的长度、字符范围与号段边界
+	for i := 0; i < 50; i++ {
+		id := randomDeviceID()
+		if !isValidCheckinDeviceID(id) {
+			t.Fatalf("randomDeviceID() = %q violates client 16-digit shape", id)
+		}
+		if id[15] == '0' {
+			t.Fatalf("randomDeviceID() = %q ends with zero", id)
 		}
 	}
 }

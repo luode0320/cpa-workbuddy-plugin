@@ -10,22 +10,31 @@ import (
 	"testing"
 )
 
+// TestDeviceIDFor 验证签到设备标识派生恒为合规 16 位纯数字且具备同设备多账号去重隔离，防止出现连字符拼接或尾零畸形触发 9074 风控，无外部副作用。
+// 最近修改时间：2026-10-10 22:00:00；改动原因：对齐合规 16 位纯数字设备标识契约与存量尾零 ID 归一化测试。
 func TestDeviceIDFor(t *testing.T) {
-	cases := []struct {
-		base, uid, want string
-	}{
-		{"dev123", "u1", "dev123-u1"}, // full fingerprint + user
-		{"dev123", "", "dev123"},     // fingerprint only
-		{"", "u1", "u1"},             // empty base must NOT produce "-u1"
-		{"", "", ""},                 // nothing known
+	// 1. 空输入应返回空字符串
+	if got := deviceIDFor("", ""); got != "" {
+		t.Fatalf("deviceIDFor empty = %q, want empty", got)
 	}
-	for _, c := range cases {
-		if got := deviceIDFor(c.base, c.uid); got != c.want {
-			t.Errorf("deviceIDFor(%q,%q) = %q, want %q", c.base, c.uid, got, c.want)
-		}
+	// 2. 单一合规 16 位客户端设备号或用户号应原样复用
+	if got := deviceIDFor("3418807932843306", ""); got != "3418807932843306" {
+		t.Errorf("valid base only = %q, want 3418807932843306", got)
 	}
-	if got := deviceIDFor("", "2033439621254311"); strings.HasPrefix(got, "-") {
-		t.Errorf("leading-dash device id regressed: %q", got)
+	if got := deviceIDFor("", "2033439621254311"); got != "2033439621254311" {
+		t.Errorf("valid uid only = %q, want 2033439621254311", got)
+	}
+	// 3. 存量尾零畸形设备号与多账号组合应确定性派生为合规 16 位纯数字且互不冲突
+	targetGot := deviceIDFor("9670064000000000", "1114256688551036")
+	if !isValidCheckinDeviceID(targetGot) || strings.Contains(targetGot, "-") {
+		t.Fatalf("target account deviceIDFor = %q, want valid 16-digit id", targetGot)
+	}
+	if again := deviceIDFor("9670064000000000", "1114256688551036"); again != targetGot {
+		t.Errorf("deviceIDFor not deterministic: %q vs %q", targetGot, again)
+	}
+	otherGot := deviceIDFor("9670064000000000", "2433670276462265")
+	if !isValidCheckinDeviceID(otherGot) || otherGot == targetGot {
+		t.Errorf("same base different uid must yield distinct valid 16-digit ids: %q vs %q", targetGot, otherGot)
 	}
 }
 

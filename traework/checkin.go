@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -27,40 +28,84 @@ type checkinResult struct {
 	Already bool   `json:"already,omitempty"`
 }
 
-// deviceIDFor builds the per-account x-device-id. Trae dedupes check-in per
-// device per day; appending the userId makes different accounts look like
-// different devices (trae-check verified strategy). An empty base device
-// must NOT yield a leading-dash id ("-<uid>") — return the uid directly.
+// isValidCheckinDeviceID 校验设备标识是否符合客户端 16 位数字号段格式。
+// [参数] id: 待校验的设备标识字符串。
+// [返回] bool: 符合格式返回 true，否则返回 false。
+// 最近修改时间：2026-10-10 22:00:00；改动原因：新增客户端 16 位数字设备标识格式校验。
+func isValidCheckinDeviceID(id string) bool {
+	// 1. 校验固定 16 位长度、首位 1~3 号段与非连续尾零后缀
+	if len(id) != 16 || id[0] < '1' || id[0] > '3' || strings.HasSuffix(id, "0000") {
+		return false
+	}
+	// 2. 校验全量字符均为十进制数字
+	for i := 0; i < len(id); i++ {
+		if id[i] < '0' || id[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// deriveCheckinDeviceID 根据种子字符串确定性派生 16 位纯数字设备标识。
+// [参数] seed: 用于派生的账号与设备种子字符串。
+// [返回] string: 16 位纯数字设备标识。
+// 最近修改时间：2026-10-10 22:00:00；改动原因：新增账号级确定性 16 位数字设备标识派生。
+func deriveCheckinDeviceID(seed string) string {
+	// 1. 计算种子 SHA-256 摘要
+	sum := sha256.Sum256([]byte(seed))
+	var buf [16]byte
+	// 2. 映射首位为 1~3、中间位为 0~9、末位为 1~9 的 16 位数字
+	buf[0] = '1' + (sum[0] % 3)
+	for i := 1; i < 15; i++ {
+		buf[i] = '0' + (sum[i] % 10)
+	}
+	buf[15] = '1' + (sum[15] % 9)
+	return string(buf[:])
+}
+
+// deviceIDFor 生成单账号签到使用的 16 位纯数字 x-device-id。
+// [参数] baseDeviceID: 凭据中的原始设备标识；userID: 账号唯一标识。
+// [返回] string: 账号对应的 16 位纯数字设备标识，输入均为空时返回空串。
+// 最近修改时间：2026-10-10 22:00:00；改动原因：改为生成合规 16 位数字设备标识以消除拼接与尾零风控拦截。
 func deviceIDFor(baseDeviceID, userID string) string {
-	switch {
-	case baseDeviceID != "" && userID != "":
-		return baseDeviceID + "-" + userID
-	case baseDeviceID != "":
+	// 1. 清理输入空白并处理全空边界
+	baseDeviceID = strings.TrimSpace(baseDeviceID)
+	userID = strings.TrimSpace(userID)
+	if baseDeviceID == "" && userID == "" {
+		return ""
+	}
+	// 2. 仅提供合规基础设备号或合规用户号时直接复用
+	if userID == "" && isValidCheckinDeviceID(baseDeviceID) {
 		return baseDeviceID
-	default:
+	}
+	if baseDeviceID == "" && isValidCheckinDeviceID(userID) {
 		return userID
 	}
+	// 3. 其余场景按组合种子确定性派生 16 位纯数字设备标识
+	return deriveCheckinDeviceID(baseDeviceID + ":" + userID)
 }
 
 // checkinUserAgent mimics the Trae client HTTP User-Agent.
 const checkinUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-// checkinClaimRequest 是向 /trae/api/v2/ug/checkin_credits/claim 提交的请求体。
-// 官方 Trae 客户端（TRAE SOLO CN / Solo-Lite）通过 req_source: 2 标明来源于 IDE 客户端。
-// 若未携带 req_source（如空 JSON {}），服务端会按未知/网页渠道风控，触发 9074（当前参与用户太多）拦截。
+// checkinClaimRequest 定义每日签到领取接口的请求体结构。
 type checkinClaimRequest struct {
 	ReqSource int `json:"req_source"`
 }
 
-// checkinAuthHeaders 构造签到与额度查询请求头，对齐官方 Trae 客户端设备指纹头。
-// 客户端发起请求不包含网页端 Origin/Referer，避免被识别为网页活动请求并拦截。
+// checkinAuthHeaders 构造签到与额度查询请求头。
+// [参数] a: 已解析的 Trae 账号凭据；deviceID: 请求携带的设备标识。
+// [返回] http.Header: 签到与额度接口使用的 HTTP 请求头。
+// 最近修改时间：2026-10-10 22:00:00；改动原因：规范签到请求头构造与函数头元信息。
 func checkinAuthHeaders(a *traeAuth, deviceID string) http.Header {
+	// 1. 初始化基础请求头与认证凭据
 	cfg := loadedConfig()
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
 	if a != nil && a.Token != "" {
 		h.Set("Authorization", "Cloud-IDE-JWT "+a.Token)
 	}
+	// 2. 注入客户端设备指纹与应用版本头
 	if deviceID != "" {
 		h.Set("x-device-id", deviceID)
 	}
@@ -99,16 +144,26 @@ func isBusyThrottleMsg(msg string) bool {
 	return strings.Contains(msg, "太多") || strings.Contains(msg, "稍后再试")
 }
 
-// checkinAccount performs one claim for a parsed account.
+// checkinMaxAttempts 限制单次签到调用的最大尝试次数。
+const checkinMaxAttempts = 4
+
+// checkinAccount 执行单个账号的每日签到领取并在设备冲突或限流时轮换设备号重试。
+// [参数] a: 已解析的 Trae 账号凭据。
+// [返回] checkinResult: 签到执行结果。
+// 最近修改时间：2026-10-10 22:00:00；改动原因：遇到 9074 限流或设备拦截时自动切换新 16 位数字设备号重试。
 func checkinAccount(a *traeAuth) checkinResult {
+	// 1. 校验账号凭据有效性并准备初始请求参数
 	if a == nil || !a.hasToken() {
 		return checkinResult{OK: false, Message: "no credential"}
 	}
 	host := a.checkinHost()
 	deviceID := deviceIDFor(a.DeviceID, a.UserID)
 	claimPayload, _ := json.Marshal(checkinClaimRequest{ReqSource: 2})
-	// One deferred retry absorbs Trae's transient peak-hour throttle window.
-	for attempt := 0; ; attempt++ {
+	// 2. 发起签到请求并在 9074 限流或设备去重冲突时轮换设备号重试
+	for attempt := 0; attempt < checkinMaxAttempts; attempt++ {
+		if attempt > 0 {
+			deviceID = randomDeviceID()
+		}
 		req, err := http.NewRequest(http.MethodPost, host+claimPath, bytes.NewReader(claimPayload))
 		if err != nil {
 			return checkinResult{OK: false, Message: err.Error()}
@@ -137,14 +192,19 @@ func checkinAccount(a *traeAuth) checkinResult {
 			return checkinResult{OK: true, Message: "今日已签到", Already: true}
 		}
 		if DeviceBlocked(msg) {
+			if attempt+1 < checkinMaxAttempts {
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
 			return checkinResult{OK: false, Message: msg + "（设备级拦截，稍后重试）"}
 		}
-		if attempt == 0 && isBusyThrottleMsg(msg) {
-			time.Sleep(3 * time.Second)
+		if isBusyThrottleMsg(msg) && attempt+1 < checkinMaxAttempts {
+			time.Sleep(300 * time.Millisecond)
 			continue
 		}
 		return checkinResult{OK: false, Message: msg}
 	}
+	return checkinResult{OK: false, Message: "签到失败"}
 }
 
 // accountCredits queries the account's entitlement list and returns the full
@@ -277,29 +337,44 @@ func autoCheckinEnabled() bool {
 	return checkinAuto
 }
 
-// checkinTickInterval bounds how often the auto loop checks the wall clock.
-const checkinTickInterval = 1 * time.Minute
-
 // autoCheckinTimes are the local-time slots the loop targets (every 4 hours).
 var autoCheckinTimes = []int{0, 4, 8, 12, 16, 20}
 
-// autoCheckinLoop wakes every minute and runs a fleet check-in when the local
-// clock crosses one of the configured slots. The lastRun guard ensures each
-// slot fires exactly once per day per hour.
-func autoCheckinLoop() {
-	ticker := time.NewTicker(checkinTickInterval)
-	defer ticker.Stop()
-	lastRun := make(map[int]int) // hour -> day
-	for range ticker.C {
-		if !autoCheckinEnabled() {
-			continue
+// nextAutoCheckinTime returns the earliest scheduled check-in slot strictly
+// after now (local time). Slots already passed today roll over to tomorrow.
+// Mirrors workbuddy/checkin.go nextCheckinTime: scheduling is anchored to an
+// ABSOLUTE clock time so the timer can align to the exact slot instead of
+// polling a fragile "current minute == 0" window.
+//
+// [参数] now: 用于定位当前本地时间的参考时刻。
+// [返回] 严格晚于 now 的最近一个签到槽位绝对时间。
+// 最近修改时间：2026-10-10；改动原因：修复自动签到 ticker 相位错配导致永不触发。
+func nextAutoCheckinTime(now time.Time) time.Time {
+	var earliest time.Time
+	for _, h := range autoCheckinTimes {
+		t := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
+		if !t.After(now) {
+			t = t.Add(24 * time.Hour) // 槽位今天已过 → 顺延到明天
 		}
-		now := time.Now().Local()
-		for _, hour := range autoCheckinTimes {
-			if now.Hour() == hour && now.Minute() == 0 && lastRun[hour] != now.Day() {
-				lastRun[hour] = now.Day()
-				go runFleetCheckin("auto")
-			}
+		if earliest.IsZero() || t.Before(earliest) {
+			earliest = t
+		}
+	}
+	return earliest
+}
+
+// autoCheckinLoop 在到达每个签到槽位（本地时间 00/04/08/12/16/20 整点）时
+// 执行一次全量签到。使用「计算下一个槽位绝对时间 + time.Timer 对齐」的方式，
+// 保证到点触发与进程启动时刻无关——旧实现用 time.NewTicker 每 60 秒唤醒并
+// 要求 now.Minute()==0，ticker 相位由 init 时刻锚定，只有启动秒相位恰为 0
+// 时才命中，导致自动签到几乎永不触发（2026-10-10 生产实证）。
+func autoCheckinLoop() {
+	for {
+		next := nextAutoCheckinTime(time.Now().Local())
+		timer := time.NewTimer(time.Until(next))
+		<-timer.C
+		if autoCheckinEnabled() {
+			go runFleetCheckin("auto")
 		}
 	}
 }

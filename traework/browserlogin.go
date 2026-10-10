@@ -260,25 +260,24 @@ func randomTraceID() string {
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
 
-// randomDeviceID mints a numeric device id (client sample: 3418807932843306,
-// 16 digits).
+// randomDeviceID 生成符合客户端号段格式的 16 位纯数字设备标识。
+// [参数] 无。
+// [返回] string: 首位为 1~3、末位非 0 的 16 位十进制数字字符串。
+// 最近修改时间：2026-10-10 22:00:00；改动原因：改为按字节直接映射 16 位十进制数字，消除尾零填充与号段越界。
 func randomDeviceID() string {
-	s := randomHex(8)
-	// Keep digits only so the shape matches the native client.
-	var b strings.Builder
-	for _, r := range s {
-		if r >= '0' && r <= '9' {
-			b.WriteRune(r)
-		}
-		if b.Len() == 16 {
-			break
-		}
+	// 1. 读取 16 字节加密随机数并在异常时使用时间戳种子兜底
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return deriveCheckinDeviceID(fmt.Sprintf("fallback:%d", time.Now().UnixNano()))
 	}
-	out := b.String()
-	for len(out) < 16 {
-		out += "0"
+	// 2. 映射首位为 1~3、中间位为 0~9、末位为 1~9 的 16 位数字
+	var out [16]byte
+	out[0] = '1' + (raw[0] % 3)
+	for i := 1; i < 15; i++ {
+		out[i] = '0' + (raw[i] % 10)
 	}
-	return out
+	out[15] = '1' + (raw[15] % 9)
+	return string(out[:])
 }
 
 // pkcePair mints an RFC 7636 verifier + S256 challenge pair.

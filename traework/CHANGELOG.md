@@ -1,6 +1,17 @@
 # TraeWork Plugin Changelog
 
 
+## 0.2.5
+
+### Fix - 修复签到 x-device-id 拼接与尾零风控 9074 拦截并支持设备号轮换重试
+
+- 变更要点:
+  1. 修复 `deviceIDFor`：移除 `<baseDeviceID>-<userID>` 连字符拼接（该形态被上游 `/trae/api/v2/ug/checkin_credits/claim` 判定为非法设备标识并 100% 返回 9074「当前参与用户太多，请稍后再试」），改为按 `(baseDeviceID, userID)` SHA-256 确定性派生符合客户端号段的 16 位纯数字设备标识（首位 1~3、末位 1~9、无连续尾零），兼顾存量尾零畸形设备号归一化与同机多账号去重隔离。
+  2. 修复 `browserlogin.go` 的 `randomDeviceID`：改用 `crypto/rand` 直接映射 16 位十进制数字（首位 1~3、末位 1~9），消除 `randomHex(8)` 过滤非数字字符后末尾填充连续 `0` 及首位越界（6~9）导致的新授权账号签到 9074 风控拦截。
+  3. 增强 `checkinAccount` 重试：当首次签到遇到 9074 限流或 9095 设备级去重拦截时，自动切换为新生成的随机 16 位合规数字设备标识重试（最多 4 次尝试），避免复用同一被拦截设备号。
+- 涉及文件: traework/checkin.go、traework/browserlogin.go、traework/checkin_headers_test.go、traework/browserlogin_test.go、traework/main.go、traework/VERSION、traework/CHANGELOG.md、test/traework/checkin_device_rotation_test.go
+
+
 ## 0.2.4
 
 ### Feat - 自动探活支持随机 5 模型轮测与 20s 超时
