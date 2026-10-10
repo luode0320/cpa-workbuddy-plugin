@@ -61,6 +61,7 @@ type checkinSummary struct {
 	WeekCheckinDays int64    `json:"week_checkin_days"`
 	ActivityName    string   `json:"activity_name"`
 	Season          int64    `json:"season"`
+	CampaignID      string   `json:"campaign_id,omitempty"`
 	CheckinDates    []string `json:"checkin_dates,omitempty"`
 }
 

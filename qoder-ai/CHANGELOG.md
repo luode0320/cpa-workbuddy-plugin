@@ -1,5 +1,17 @@
 # Qoder AI Plugin Changelog
 
+## 0.1.4
+
+### Fix - 国际版签到改走 campaigns（活动）API，修复每日签到恒 404
+
+- 变更要点:
+  1. 根因：国际版签到原套用 CN（qoderwork）专有端点 `/sash/api/v1/me/daily-check-in/{status,claim}`，但国际站 `openapi.qoder.sh` 根本没有该端点（与随机 bogus 路径返回完全相同的 404 `NotFound`）；0.1.3 修好宿主桥状态码解码后，签到从「假成功」变为「诚实的 404」，暴露出该端点从未可用。真实每日 100 Credits 活动走 **campaigns（活动）API**。
+  2. 修复：新增 `endpointCampaigns` / `endpointCampaignClaim` 常量；新增 `campaignHeaders`（`Cosy-ClientType: 10` + `User-Agent: Qoder`，缺这两个头时 campaigns 列表被掩盖为 `showCampaign:false, campaigns:[]`）；`fetchCheckinStatus` 改为解析 campaigns 列表，用 `pickCheckinCampaign` 挑出窗口内 `CLAIM_BENEFIT` 的 CREDITS 活动；`performCheckinCall` 改为 POST `/sash/api/v1/me/campaigns/{campaignId}/claim`，按 `status=CLAIMED` 判定成功、`replayed=true` 归一为「今日已签到」。
+  3. 面板：签到成功提示改用 `reward_credits`；「无可领取活动」文案修正（原「国际版无需签到」已不符实际）。
+  4. 回归测试：`qoder_ai_endpoints_test.go` 更新端点契约，新增 `pickCheckinCampaign` 三用例（命中/窗口外/无活动），修复前必失败（反证 `active=false; want true`）。
+- 生产实测（2026-10-11）：三账号 `GET /sash/api/v1/me/campaigns` 均返回真实活动（`campaignKey=act-20261009-118`, `benefit=CREDITS/100/30天`）；`ua554edc3` 识别 `active=True, checked=True, credit=100`，`POST .../{campaignId}/claim` 返回 200 `status=CLAIMED`。
+- 涉及文件: qoder-ai/main.go、qoder-ai/billing.go、qoder-ai/checkin.go、qoder-ai/management.go、qoder-ai/panel.html、qoder-ai/qoder_ai_endpoints_test.go、qoder-ai/VERSION
+
 ## 0.1.3
 
 ### Fix - 修复宿主桥状态码解码错误导致签到假成功
@@ -10,9 +22,9 @@
   3. 回归测试：新增 `host_bridge_test.go`（PascalCase 主用例、下划线兼容、非法载荷），修复前必失败（反证 `StatusCode = 0, want 200`）。
 - 涉及文件: qoder-ai/host_bridge.go、qoder-ai/billing.go、qoder-ai/host_bridge_test.go、qoder-ai/VERSION、qoder-ai/main.go
 
-### 已知问题（GAP-001）
+### 已知问题（GAP-001，已在 0.1.4 解决）
 
-- 国际版 OpenAPI `openapi.qoder.sh` 无 `/sash/api/v1/me/daily-check-in/{status,claim}` 端点（404 `NotFound`）；官方桌面客户端无签到代码，奖励体系为 `campaigns`（三账号均 `claimable:false, campaigns:[]`）。修复解码后签到将如实返回失败，真实签到入口待产品确认。
+- 0.1.3 时观察到国际版 OpenAPI `openapi.qoder.sh` 无 `/sash/api/v1/me/daily-check-in/{status,claim}` 端点（404 `NotFound`）。**0.1.4 已确认**：国际版签到走 campaigns API，且需 `Cosy-ClientType:10` + `User-Agent:Qoder` 头；缺头时 campaigns 列表被掩盖为空。详见 0.1.4 条目。
 
 ## 0.1.2
 

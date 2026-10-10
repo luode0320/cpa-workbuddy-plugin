@@ -880,13 +880,13 @@ async function pollRefreshStatus(){
 function checkinResultToast(res, who){
   const name=res.nickname||who||"账号";
   if(res.error){toast(name+"：签到失败","err",res.error);return}
-  if(res.reason==="global"||(/国际版|不支持/.test(String(res.message||"")))){
-    toast(name+"：国际版无需签到","warn",res.message||"请用领取专家加油包");return;
+  if(res.reason==="global"||(/国际版|不支持|无可领取/.test(String(res.message||"")))){
+    toast(name+"：暂无可领取活动","warn",res.message||"当前账号无进行中的签到活动");return;
   }
   if(res.reason==="already"||(res.skipped&&/already|已签|今日/.test(String(res.message||"")))){
     toast(name+"：今日已签到","ok",res.message||"");return;
   }
-  if(res.success){toast(name+"：签到成功","ok","+"+(res.credit??res.daily_credit??"")+" 积分 · 连续 "+(res.streak_days??"?")+" 天");return}
+  if(res.success){toast(name+"：签到成功","ok","+"+(res.credit??res.daily_credit??res.reward_credits??"")+" 积分");return}
   toast(name+"："+(res.message||"未知结果"),"warn");
 }
 function isCheckinDoneResult(res){

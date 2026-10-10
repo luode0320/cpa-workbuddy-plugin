@@ -87,11 +87,17 @@ const (
 	endpointJobTokenRefresh  = upstreamBase + "/api/v1/jobToken/refresh"
 
 	// Business endpoints (jt- Bearer, no COSY).
-	endpointUserInfo      = upstreamBase + "/api/v1/userinfo"
-	endpointQuotaUsage    = upstreamBase + "/api/v2/quota/usage"
-	endpointUserPlan      = upstreamBase + "/api/v2/user/plan"
-	endpointCheckinStatus = upstreamBase + "/sash/api/v1/me/daily-check-in/status"
-	endpointCheckinClaim  = upstreamBase + "/sash/api/v1/me/daily-check-in/claim"
+	endpointUserInfo   = upstreamBase + "/api/v1/userinfo"
+	endpointQuotaUsage = upstreamBase + "/api/v2/quota/usage"
+	endpointUserPlan   = upstreamBase + "/api/v2/user/plan"
+
+	// International daily check-in is an "activity/campaign", NOT the CN-only
+	// /sash/api/v1/me/daily-check-in/{status,claim} endpoints — those return 404
+	// on openapi.qoder.sh. Status lists active campaigns; claim POSTs the
+	// CLAIM_BENEFIT campaign's campaignId. Both require the Cosy-ClientType /
+	// User-Agent headers (see campaignHeaders) or the list comes back empty.
+	endpointCampaigns     = upstreamBase + "/sash/api/v1/me/campaigns"
+	endpointCampaignClaim = upstreamBase + "/sash/api/v1/me/campaigns/" // + campaignId + "/claim"
 	endpointProUpgrade    = upstreamBase + "/sash/api/v1/me/pro-upgrade/claim"
 
 	// Inference endpoints (COSY-signed + QoderEncoding body).
@@ -338,7 +344,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.1.3"
+var version = "0.1.4"
 
 func wbRegistration() registration {
 	return registration{
