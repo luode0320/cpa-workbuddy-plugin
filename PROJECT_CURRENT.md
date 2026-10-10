@@ -162,7 +162,7 @@
 {
   "version": 4,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "2026-10-10T15:44:28.569143Z",
+  "registry_updated_at": "2026-10-10T17:18:39.284727Z",
   "projections": [
     {
       "projection_id": "SESSION/30608b3616fa2311bfb720a2776c09ac96b2738601ec3752b03a252c810cdb70",
@@ -316,11 +316,11 @@
       "session_id": "01a1219b-6aff-7fb2-822f-d9160626c22c",
       "projection_origin": "synthesized",
       "synthesis_mode": "exact",
-      "state": "active",
+      "state": "inactive",
       "plan_key": "IMPL-QODERWORK-CHECKIN-FALSE-SUCCESS-20261010",
       "source_document": "doc/3-实施/2026-10-10_QoderWork签到假成功修复实施总览.md",
       "plan_fingerprint": "7aab74187dac06f2d24f3b680a2913cfb6f68784eaf7f6a7f403d3a5d2607581",
-      "updated_at": "2026-10-10T15:44:15.510168Z",
+      "updated_at": "2026-10-11T00:30:00.000000Z",
       "steps": [
         {
           "id": "TASK-001",
@@ -350,12 +350,12 @@
         {
           "id": "TASK-006",
           "step": "[TASK-006] 发布链：commit、push、CI、assets、registry、远端验证",
-          "status": "in_progress"
+          "status": "completed"
         },
         {
           "id": "TASK-007",
           "step": "[TASK-007] 生产部署与账号 u09a5b6ab 行为验收",
-          "status": "pending"
+          "status": "completed"
         }
       ]
     }

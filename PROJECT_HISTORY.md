@@ -62,9 +62,9 @@ anchors:
   last_used_at: null
   absorbed_to: null
 - title: 'qoder-ai-provider **0.1.3** 修复宿主'
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
+  usage_count: 1
+  usage_days: 1
+  last_used_at: 2026-10-11
   absorbed_to: null
 - title: 'qoder-ai-provider **0.1.2** / qoderwork-provi'
   usage_count: 1
