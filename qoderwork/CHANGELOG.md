@@ -1,8 +1,18 @@
 # QoderWork Plugin Changelog
 
+## 0.9.25
+
+### Fix - 修复多模态 content 数组导致真实推理请求 payload parse 503
+
+- 变更要点:
+  1. 根因修复：openAIRequest 的 messages[].content 原声明为 string，客户端发送 OpenAI 多模态部件数组（[{"type":"text","text":"..."}]）时 json.Unmarshal 直接失败，executor 返回 "payload parse: json: cannot unmarshal array into Go struct field openAIMessage.messages.content of type string"，表现为推理请求 503；面板「测试」按钮走 sendActivePingQoder 直接构造结构体，绕过 JSON 解析，故测试通过而真实请求失败。
+  2. 兼容实现：为 openAIMessage 增加自定义 UnmarshalJSON，纯字符串形态原样接收，多模态部件数组提取 text / input_text 部件文本并按换行拼接，下游 buildQoderBody 无需感知差异；非文本部件（图片等）无对应上游位置，按空处理。
+  3. 回归测试：新增 body_test.go 覆盖部件数组解析、纯字符串兼容、多文本部件拼接与完整 buildQoderBody 链路，修复前必失败（已用真实报错反证）。
+- 涉及文件: qoderwork/body.go、qoderwork/body_test.go、qoderwork/VERSION、qoderwork/main.go
+
 ## 0.9.24
 
-### Fix - 修复国内版模型获取与官方客户端模型对齐、补齐自动定时探活、修复多模态 content 数组导致推理 503
+### Fix - 修复国内版模型获取与官方客户端模型对齐、补齐自动定时探活
 
 - 变更要点:
   1. 修复国内版 Qoder 模型列表与官方客户端对齐：

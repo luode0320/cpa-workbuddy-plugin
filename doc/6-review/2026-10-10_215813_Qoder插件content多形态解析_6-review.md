@@ -33,7 +33,7 @@ appendix_policy: preserve_existing_or_one_terminal_appendix
 - `qoderwork/body.go`（同源修复，逐字对齐 qoder-ai 口径）
 - `qoderwork/body_test.go`（新增 4 个测试）
 - `qoder-ai/VERSION`、`qoder-ai/main.go`（版本 0.1.2）、`qoder-ai/CHANGELOG.md`
-- `qoderwork/CHANGELOG.md`（修复并入未发布的 0.9.24）
+- `qoderwork/CHANGELOG.md`（修复随 0.9.25 发布；0.9.24 已被并行会话发布，不含本次修复）
 
 ## 真实测试前置证据
 
