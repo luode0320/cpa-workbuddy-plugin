@@ -8,9 +8,9 @@
 
 ## 项目概况
 
-- 状态：活跃维护中。最新发布版本：traework-provider **0.2.5**（修复签到 x-device-id 拼接与尾零风控 9074 拦截 + 自动签到调度器绝对时间对齐）/ qoder-ai-provider **0.1.2** / qoderwork-provider **0.9.25** / workbuddy-provider **0.15.4** / workbuddy-ai-provider **0.1.9** / workbuddy-token-usage **0.2.4** / cursor-provider **0.1.0** / gemini-provider **0.1.1**。
+- 状态：活跃维护中。最新发布版本：traework-provider **0.2.5**（修复签到 x-device-id 拼接与尾零风控 9074 拦截 + 自动签到调度器绝对时间对齐）/ qoder-ai-provider **0.1.3** / qoderwork-provider **0.9.26** / workbuddy-provider **0.15.4** / workbuddy-ai-provider **0.1.9** / workbuddy-token-usage **0.2.4** / cursor-provider **0.1.0** / gemini-provider **0.1.1**。
 - 活动工作区：F:\cpa-plugin
-- 当前时间：2026-10-10 (GMT+8)
+- 当前时间：2026-10-11 (GMT+8)
 
 ## 活动会话进展摘要
 
@@ -26,13 +26,21 @@
     3. 发布链路：commit `54f490a` → CI run `38059677609` 全部 64 jobs success → 下载 8 个 release 资产并校验 `ALL CHECKSUMS OK`（commit `6291b2a`）→ `publish-assets.py` 更新 `registry.json`（commit `2ffcdc9`）→ `prune-release-assets.py` 清理旧版 `0.2.4`（commit `74dfe92`）→ 远端 7 平台 raw URL 全部 200 OK 且 SHA-256 一致。
     4. 生产部署与账号签到验收：`plugin-store install traework-provider?version=0.2.5` 成功，落盘 `.so` SHA-256 `f24fe5f42cf6203cb8f69f68b6f1edfb1b1d9b56e7cc62221a24ddb5fbdbf4eb` 与本地 zip 100% 一致，热重载 `active_version=0.2.5 retired_version=0.2.4`；「用户04878311608」（`auth_index=76bc7754f3fd72b2`）签到成功（积分包从 2 个增至 3 个，剩余积分从 130 增至 230），单账号与全量 7 账号调用 `/checkin` 均返回 `ok: true`（`checked_in: 7, fail: 0`）。
 
-- 当前会话（2026-10-10）：**Qoder AI 国际版签到假成功根因修复（qoder-ai 0.1.3，本地已闭环，待发布）**：
+- 当前会话（2026-10-10）：**Qoder AI 国际版签到假成功根因修复（qoder-ai 0.1.3，已发布部署并生产验收）**：
   - 用户报错：生产账号 `u8e6a5348`（393 积分）与 `ua554edc3`（0 积分）签到显示「签到成功 +100」但积分不变。
   - 根因（缺陷 A，铁证）：`qoder-ai/host_bridge.go` 用 `json:"status_code"` 解码宿主 `host.http.do` 响应，而宿主 v7.2.x 序列化 `pluginapi.HTTPResponse` 未加 json tag，实际键名是 PascalCase `{"StatusCode":404,...}`；下划线标签既不匹配键名也不构成大小写不敏感匹配 → `StatusCode` 恒为 0 → `if resp.StatusCode >= 400` 永不触发 → 404 被当作 200 成功。`performCheckinCall` 再对缺 `success` 字段的响应做 `m["success"]=true` 盲归一化，最终对外「签到成功」。同源缺陷：`qoder-ai` 与 `qoderwork` 的 `host_bridge.go` 逐字节相同，qoderwork 待修；workbuddy 0.14.30（提交 1f26e0c）为先例。
   - 修复：移植 `parseHostHTTPDoResult`（PascalCase 优先、下划线防御性回退）；`performCheckinCall` 收紧为「缺 success 字段即返回失败」。新增 `qoder-ai/host_bridge_test.go` 三用例。
   - 本地验证：`python scripts/cgo-shim-build.py qoder-ai` build/vet/test 全绿；反证（临时改回 `status_code`）`TestParseHostHTTPDoResult_HostUntaggedPascalCase` 必失败（`StatusCode = 0, want 200`）；必失败哨兵证明测试真实进编译。
   - 产品事实（缺陷 B / GAP-001，本轮已生产实证）：国际版 `openapi.qoder.sh` 无 `/sash/api/v1/me/daily-check-in/{status,claim}` 端点——三账号（u8e6a5348/u0cb74401/ua554edc3）实测均 404 `NotFound`，而 `/api/v2/quota/usage` 200、`/sash/api/v1/me/campaigns` 200（均 `claimable:false, campaigns:[]`）；穷举 140 候选路径非 404 仅 `/sash/api/v1/me/campaigns`；**国际版 Web 前端（qoder.com v0.0.312，含全部 Next chunk）零签到代码**，**官方桌面客户端 `app.asar`（v0.4.3，归属国际站 openApiBaseUrl=openapi.qoder.sh）唯一奖励体系是 campaign（`campaignKey=client_launch_26`，走 `campaignUrl` 内嵌 web surface）**；对照国内版 `openapi.qoder.com.cn/sash/api/v1/me/daily-check-in/status` 实测 200（`campaignKey=cn_daily_check_in_legacy, rewardCredits=100`）证明这是产品线差异而非路径错误。**修好解码后签到必失败，真实签到入口待产品确认；禁止伪造成功。**
-  - 状态：本地修复与反证完成；生产复验已完成（三账号签到端点均 404，确认属产品级无端点，非插件可修）；发布与真实签到入口待用户确认缺陷 B 方向后执行。文档：`doc/4-bugs/2026-10-10_223000_QoderAI签到假成功.md`、`doc/3-实施/2026-10-10_QoderAI签到假成功修复实施总览.md`、`doc/6-review/2026-10-10_224000_QoderAI签到假成功修复_6-review.md`。
+  - 状态：本地修复与反证完成；**0.1.3 已发布部署并生产验收**——提交 `3fbe653`→assets `6bb57b5`→registry `746b1ef`→prune `d405ebd`；CI run 38062071659 success；生产 plugin-store install 0.1.3 落盘 `.so` sha256 `e7f7537d…a46e0` 与本地 zip 一致、日志 `plugin loaded/registered version=0.1.3`；行为验收三账号 `/checkin` 由「假成功」变为如实 `fail:1 + http 404 NotFound`（证明缺陷 A 已修，不再假成功）。真实签到入口待产品确认缺陷 B 方向后执行。文档：`doc/4-bugs/2026-10-10_223000_QoderAI签到假成功.md`、`doc/3-实施/2026-10-10_QoderAI签到假成功修复实施总览.md`、`doc/6-review/2026-10-10_224000_QoderAI签到假成功修复_6-review.md`。
+
+- 当前会话（2026-10-11）：**qoderwork-provider 0.9.26 修复宿主 HTTP 桥状态码解码错误（签到假成功根因，与 qoder-ai 0.1.3 同源）并发布部署**：
+  - 用户报错：生产 QoderWork 账号 `u09a5b6ab` 可签到但「签到好像有 bug，无法签到」——面板显示签到成功却拿不到积分（假成功）。
+  - 根因（与 qoder-ai 0.1.3 同源）：`qoderwork/host_bridge.go` 用 `json:"status_code"` 解码宿主 `host.http.do` 响应，而宿主 v7.2.x 序列化 `pluginapi.HTTPResponse` 无 json tag，线协议键名是 PascalCase `{"StatusCode":404,...}`；下划线标签既不精确匹配也不构成大小写不敏感匹配 → `StatusCode` 恒为 0 → `if resp.StatusCode >= 400` 永不触发 → 404/4xx/5xx 被当 200 成功；`performCheckinCall` 再对缺 `success` 字段的响应盲归一化 `m["success"]=true` → 对外「签到成功」但积分不变。
+  - 修复：移植 `parseHostHTTPDoResult`（PascalCase 优先 + 下划线防御性回退）；`performCheckinCall` 缺 `success` 布尔字段即返回 `success:false`。新增 `qoderwork/host_bridge_test.go` 回归。
+  - 本地验证：`python scripts/cgo-shim-build.py qoderwork` build/vet/test 全绿；反证（改回旧标签）`TestParseHostHTTPDoResult_HostUntaggedPascalCase` 必失败（`StatusCode = 0, want 200`）。
+  - 发布链：提交 `72ce2d0` → CI run `38064786540` 65/65 jobs success → assets `fb07a16`（8 资产）→ registry `712cfc6`（version 0.9.26）→ prune `c37fea5`（删除 0.9.25 旧资产）→ 文档 `20e6b01`；远端 7 平台 zip sha256 全等、0.9.25/0.9.24 资产 404。
+  - 生产部署与验收：`plugin-store install qoderwork-provider?version=0.9.26` 返回 `installed`（`restart_required:false`），落盘 `.so` sha256 `53a909b0e84bc70483db55ee94bfb928345eb3bdc0eacce4f60f396aa0fd29c1` 与本地 zip 内 `.so` 完全一致；日志 `plugin loaded/registered version=0.9.26`；`/panel`、`/accounts` 200；行为验收生产账号 `u09a5b6ab`（auth_index `6a155a864014ffd8`）调用 `/checkin` 返回 `success:false` + 真实上游 `http 409 AlreadyExists`（summary fail:1），由「假成功 success:true」变为如实透传上游真实状态，缺陷已修。文档：`doc/4-bugs/2026-10-10_233000_QoderWork签到假成功.md`、`doc/5-tests/2026-10-10_234000_QoderWork签到假成功修复回归.md`、`doc/3-实施/2026-10-10_QoderWork签到假成功修复实施总览.md`。
 
 - 当前会话（2026-10-10）：**Qoder AI 国际版官方客户端模型对齐、管理面板测试按钮与定时探活、高清图标补齐及 0.1.1 正式发布部署**：
   - 用户反馈与诉求：
@@ -154,7 +162,7 @@
 {
   "version": 4,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "2026-10-08T20:50:04.091751Z",
+  "registry_updated_at": "2026-10-10T15:44:28.569143Z",
   "projections": [
     {
       "projection_id": "SESSION/30608b3616fa2311bfb720a2776c09ac96b2738601ec3752b03a252c810cdb70",
@@ -300,6 +308,54 @@
           "id": "TASK-005",
           "step": "[TASK-005] 发布与生产部署验收",
           "status": "completed"
+        }
+      ]
+    },
+    {
+      "projection_id": "SESSION/5818ea886692422d8a462f2eb89e9b453f44422b609457bddc7ce1391942abe6",
+      "session_id": "01a1219b-6aff-7fb2-822f-d9160626c22c",
+      "projection_origin": "synthesized",
+      "synthesis_mode": "exact",
+      "state": "active",
+      "plan_key": "IMPL-QODERWORK-CHECKIN-FALSE-SUCCESS-20261010",
+      "source_document": "doc/3-实施/2026-10-10_QoderWork签到假成功修复实施总览.md",
+      "plan_fingerprint": "7aab74187dac06f2d24f3b680a2913cfb6f68784eaf7f6a7f403d3a5d2607581",
+      "updated_at": "2026-10-10T15:44:15.510168Z",
+      "steps": [
+        {
+          "id": "TASK-001",
+          "step": "[TASK-001] 取证与根因冻结：宿主桥状态码解码错误",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-002",
+          "step": "[TASK-002] 修复 host_bridge.go：抽出 parseHostHTTPDoResult",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-003",
+          "step": "[TASK-003] 收紧 billing.go：performCheckinCall 缺 success 字段返回失败",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-004",
+          "step": "[TASK-004] 新增 host_bridge_test.go 回归并完成反证与本地全绿",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-005",
+          "step": "[TASK-005] 版本与文档收口：bump 0.9.26、CHANGELOG、5-tests、6-review",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-006",
+          "step": "[TASK-006] 发布链：commit、push、CI、assets、registry、远端验证",
+          "status": "in_progress"
+        },
+        {
+          "id": "TASK-007",
+          "step": "[TASK-007] 生产部署与账号 u09a5b6ab 行为验收",
+          "status": "pending"
         }
       ]
     }

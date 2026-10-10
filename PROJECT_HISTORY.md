@@ -4,9 +4,11 @@
 
 ## 事件
 
+- 2026-10-11：qoderwork-provider **0.9.26 修复宿主 HTTP 桥状态码解码错误（签到假成功根因，与 qoder-ai 0.1.3 同源）并发布部署**——用户报错：生产 QoderWork 账号 `u09a5b6ab` 可签到但「签到好像有 bug，无法签到」，面板显示签到成功却拿不到积分（假成功）。根因：`qoderwork/host_bridge.go` 用 `json:"status_code"` 解码宿主 `host.http.do` 响应，而宿主 v7.2.x 序列化 `pluginapi.HTTPResponse` 无 json tag，线协议键名是 PascalCase `{"StatusCode":404,...}`；下划线标签既不精确匹配也不构成大小写不敏感匹配 → `StatusCode` 恒为 0 → `if resp.StatusCode >= 400` 永不触发 → 404/4xx/5xx 被当 200 成功；`performCheckinCall` 再对缺 `success` 字段的响应盲归一化 `m["success"]=true` → 对外「签到成功」但积分不变。修复：移植 `parseHostHTTPDoResult`（PascalCase 优先 + 下划线防御性回退）；`performCheckinCall` 缺 `success` 布尔字段即返回 `success:false`。本地 `cgo-shim-build.py qoderwork` 全绿 + 反证（改回旧标签必失败，`StatusCode = 0, want 200`）。发布链：`72ce2d0` → CI run `38064786540` 65/65 success → `fb07a16`（8 资产）→ `712cfc6`（registry 0.9.26）→ `c37fea5`（prune 0.9.25）→ `20e6b01`（文档）；远端 7 平台 zip sha256 全等、旧版资产 404。生产部署：`plugin-store install` 0.9.26 落盘 `.so` sha256 `53a909b0e84bc70483db55ee94bfb928345eb3bdc0eacce4f60f396aa0fd29c1` 与本地 zip 一致，日志 `plugin loaded/registered version=0.9.26`；行为验收生产账号 `u09a5b6ab`（`6a155a864014ffd8`）调用 `/checkin` 返回 `success:false` + 真实上游 `http 409 AlreadyExists`（summary fail:1），由「假成功」变为如实失败。
+
 - 2026-10-10：traework-provider **0.2.5 发布部署与签到失败双根因修复**（`x-device-id` 16 位数字风控 + 自动签到调度器相位对齐）——用户诉求：「修复 TraeWork 签到失败，用生产账号『用户04878311608』测试」。生产对照实验锁定两项根因：① `deviceIDFor` 拼接 `<baseDeviceID>-<userID>`（33 字符含 `-`）及旧版 `randomDeviceID()` 尾零填充/首位越界（如目标账号 `1114256688551036` 的 `deviceId=9670064000000000`）命中 `/trae/api/v2/ug/checkin_credits/claim` 设备指纹风控，100% 返回 9074「当前参与用户太多，请稍后再试」，且重试复用同一被拦截 ID；② `autoCheckinLoop` 原用 `time.NewTicker(1min)` + `now.Minute()==0` 相位错配导致自动签到漏触发。修复：`deviceIDFor` 改为按 `(baseDeviceID, userID)` SHA-256 确定性派生首位 1~3、末位 1~9 的 16 位纯数字设备号；`randomDeviceID` 改用 `crypto/rand` 直接映射 16 位数字；`checkinAccount` 遇 9074/9095 自动切换新 16 位设备号重试；`autoCheckinLoop` 改为 `nextAutoCheckinTime` + `time.NewTimer` 绝对时间对齐。本地 `cgo-shim-build.py traework` 全绿（含必失败哨兵）+ 6-review `STYLE: PASS`。发布链：`54f490a` → CI run `38059677609` 64 jobs success → `6291b2a`（8 资产 ALL CHECKSUMS OK）→ `2ffcdc9`（registry 0.2.5）→ `74dfe92`（prune 0.2.4）；远端 7 平台 raw URL 全 200。生产部署：`plugin-store install` 热重载 `active_version=0.2.5 retired_version=0.2.4`，落盘 `.so` SHA-256 `f24fe5f42cf6203cb8f69f68b6f1edfb1b1d9b56e7cc62221a24ddb5fbdbf4eb` 与本地一致；目标账号「用户04878311608」（`76bc7754f3fd72b2`）签到成功（积分包 2→3，剩余积分 130→230），单账号与全量 7 账号调用 `/checkin` 均返回 `ok: true`（`checked_in: 7, fail: 0`）。
 
-- 2026-10-10：qoder-ai-provider **0.1.3** 修复宿主 HTTP 桥状态码解码错误（签到假成功根因）——用户报错：生产账号 u8e6a5348（393 积分）与 ua554edc3（0 积分）签到显示「成功 +100」但积分不变。根因：`host_bridge.go` 用 `json:"status_code"` 解码宿主响应，宿主 v7.2.x 未加 tag 输出 PascalCase `{"StatusCode":404,...}`，`StatusCode` 恒为 0 → 404 被当成功；`performCheckinCall` 再盲归一化 `m["success"]=true`。修复：移植 workbuddy `parseHostHTTPDoResult`，收紧归一化。本地 `cgo-shim-build.py qoder-ai` 全绿 + 反证（改回旧标签必失败）。产品事实：国际版 openapi.qoder.sh 无签到端点（404），app.asar 无签到代码，奖励体系为 campaigns（均不可领），真实入口待产品确认（GAP-001）。
+- 2026-10-10：qoder-ai-provider **0.1.3** 修复宿主 HTTP 桥状态码解码错误（签到假成功根因）——用户报错：生产账号 u8e6a5348（393 积分）与 ua554edc3（0 积分）签到显示「成功 +100」但积分不变。根因：`host_bridge.go` 用 `json:"status_code"` 解码宿主响应，宿主 v7.2.x 未加 tag 输出 PascalCase `{"StatusCode":404,...}`，`StatusCode` 恒为 0 → 404 被当成功；`performCheckinCall` 再盲归一化 `m["success"]=true`。修复：移植 workbuddy `parseHostHTTPDoResult`，收紧归一化。本地 `cgo-shim-build.py qoder-ai` 全绿 + 反证（改回旧标签必失败）。产品事实：国际版 openapi.qoder.sh 无签到端点（404），app.asar 无签到代码，奖励体系为 campaigns（均不可领），**已发布部署并生产验收（2026-10-10）**：提交 `3fbe653`→assets `6bb57b5`→registry `746b1ef`→prune `d405ebd`；CI run 38062071659 success；远端 7/7 资产 sha256+size 全等、被删 0.1.2 资产 404；生产 plugin-store install 0.1.3 落盘 `.so` sha256 `e7f7537d…a46e0` 与本地 zip 一致、日志 `plugin loaded/registered version=0.1.3`；行为验收三账号 `/checkin` 由「假成功 success:true」变为如实 `fail:1 + http 404 NotFound`，缺陷 A 已修（不再假成功）。真实签到入口仍待产品确认（GAP-001）。
 
 - 2026-10-10：qoder-ai-provider **0.1.2** / qoderwork-provider **0.9.25** content 多形态解析根因修复（真实推理 503）——用户报错：生产调用 `qwen-3.8-flash` 返回 `503 auth_unavailable: ... last upstream error: payload parse: json: cannot unmarshal array into Go struct field ***.***.content of type string`，而面板「测试」按钮通过。根因：两插件 `body.go` 的 `openAIMessage.Content` 声明为强类型 `string`，客户端按 OpenAI 多模态规范发送部件数组 content（`[{"type":"text","text":"..."}]`）时 `json.Unmarshal` 直接失败 → `handleExecExecute`/`handleExecStream` 进入 `payload parse` 失败分支 → 对外 503；测试按钮走 `sendActivePingQoder` **直接构造结构体**（`Content: "hi"`）绕过 JSON 解析，故测试通过而真实请求必失败（两条路径不同）。修复：为 `openAIMessage` 增加自定义 `UnmarshalJSON`（`decodeOpenAIContent`），纯字符串原样接收、部件数组提取 `text`/`input_text` 拼接、null/缺省归一空串；`Content` 字段类型与下游签名零改动。对照：workbuddy/workbuddy-ai 走 `map[string]any` 泛型解析 + `rewriteContentField` 已显式处理两种形态，不受影响；traework/cursor 亦已支持数组。本地：两插件各新增 `body_test.go`（4 项），cgo-shim build/vet/test 全绿；**修复前必失败已分别回退修复块复跑反证**，报错文本与生产 `last upstream error` 一致。**本轮关键冲突**：首次提交 `65f554c` 时 qoderwork 版本定为 0.9.24，但并行会话已于 21:57:35（`cafc4cf`）发布 `qoderwork-provider-v0.9.24`（tag→`bc365e6`，**不含**本次修复）并回填 registry，故改发 **0.9.25**（`27d6c99`）避免复用已存在 tag；已取消撞 tag 的两个 queued run（38057923742/38057921816）。文档：Bug 主文档 `doc/4-bugs/2026-10-10_215813_Qoder插件多模态content数组致推理503.md`、测试主文档 `doc/5-tests/2026-10-10_215813_Qoder插件content多形态解析回归.md`、6-review `STYLE: PASS`。
 
@@ -42,7 +44,6 @@
 
 - 2026-09-05：traework-provider **0.1.44 发布部署**（GetUserInfo 401 回落回调 userInfo）：0.1.43 实测 exchange 已成功换到 token，但 GetUserInfo 报 401 "The user is not logged in"（cookie 会话鉴权路由，新 bearer token 不被认）。SOLO main.js 取证：客户端优先用回调 URL 的 userInfo JSON（r ?? await getUserInfo(...)），GetUserInfo 只是兜底。修复：parseBounceUserInfo 提取回调 userInfo 的 UserID/ScreenName，GetUserInfo 失败时回落。发布链 f38147d→4c924aa→a162f44；CI run 33902405197 success（16m+，两轮轮询窗口）；远端 ALL PASS；生产 install 首两次 CDN 滞后 version not found → 等 7 分钟第三次成功，落盘 sha256 60cb72ae 一致 + hot reloaded active=0.1.44。
 
-- 2026-09-05：traework-provider **0.1.43 发布部署**（浏览器授权登录 ExchangeToken 打错域修复）：0.1.42 实测 AuthCode 解析链已通但 exchange 报 invalid character '<'——www.trae.cn 是 SPA 域对 API 路径返回 HTML 首页，非 API 域；api.trae.cn / api.trae.com.cn 双域实测均为真 JSON API。修复：新增 browserLoginAuthHost=api.trae.cn（与生产凭据 host、签到 defaultAPIHost 同域），exchange/GetUserInfo 切域 + GetUserInfo 解析容错（ResponseMetadata.Error + camelCase result 回落）。发布链 faca5e9→737589a→a1c58eb；CI run 33900103965 success（14m30s）；远端 ALL PASS；生产 install 落盘 sha256 3d564208 一致 + 0.1.43 热重载；生产冒烟实锤：假 code submit 返回上游 JSON 错误（10101 无效参数），exchange 已打真 API 域，整链只差用户真实 AuthCode。
 ## 计数锚点区
 
 > 本区由 `memory-usage-tracking-rules` 收口闸门维护：HISTORY 仅窄读计入，会话启动不读不计；被裁剪事件的锚点随事件一起删除（不保留 retired）；本区计数仅作主题热度弱信号。锚点 key 用事件 `- YYYY-MM-DD：` 后的核心主题短语（约前 12 字符，可前缀匹配）。
@@ -50,7 +51,12 @@
 ```yaml
 version: 1
 anchors:
-- title: 'traework-provider **签到从未自动成功**根因定'
+- title: 'qoderwork-provider **0.9.26 修复宿主'
+  usage_count: 0
+  usage_days: 0
+  last_used_at: null
+  absorbed_to: null
+- title: 'traework-provider **0.2.5 发布部署与签到失败双根因修复**'
   usage_count: 0
   usage_days: 0
   last_used_at: null
@@ -141,11 +147,6 @@ anchors:
   last_used_at: 2026-09-27
   absorbed_to: null
 - title: 'traework-provider **0.1.44 发布部'
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
-  absorbed_to: null
-- title: 'traework-provider **0.1.43 发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null
