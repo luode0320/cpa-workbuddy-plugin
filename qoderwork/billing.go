@@ -184,8 +184,13 @@ func performCheckinCall(sa *storedAuth) (map[string]any, error) {
 	// QoderWork checkin claim returns {"success":true, "rewardCredits":100,...}
 	// on success, or {"success":false,"error":"..."} on already-claimed.
 	// Normalise to the panel's expected shape (bool success).
+	// 收紧：响应缺 success 布尔字段视为契约异常（上游返回了非签到结构的载荷），
+	// 不再盲归一化为成功，避免 404/4xx 被解码为 0 时伪造「签到成功」。
 	if _, ok := m["success"]; !ok {
-		m["success"] = true
+		return map[string]any{
+			"success": false,
+			"message": fmt.Sprintf("unexpected checkin response: %s", truncateRedacted(string(resp.Body), 200)),
+		}, nil
 	}
 	return m, nil
 }

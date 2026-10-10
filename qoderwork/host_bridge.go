@@ -150,16 +150,31 @@ func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 	if err != nil {
 		return hostHTTPDoDirect(req, bodyBytes)
 	}
+	return parseHostHTTPDoResult(result)
+}
+
+// parseHostHTTPDoResult 把 host.http.do RPC 的 Result 载荷解码为 hostHTTPResponse，
+// 同时兼容宿主未加 json tag 的 PascalCase 键与加 tag 后的下划线键。
+//
+// [参数] result：host.http.do 的 Result 原始 JSON 载荷。
+// [返回] 解码后的宿主响应；载荷非法时返回错误。
+// 最近修改时间：2026-10-10 新增, 修复宿主桥状态码恒为 0 导致签到假成功
+func parseHostHTTPDoResult(result json.RawMessage) (*hostHTTPResponse, error) {
 	var resp struct {
-		StatusCode int                 `json:"status_code"`
-		Headers    map[string][]string `json:"headers,omitempty"`
-		Body       []byte              `json:"body,omitempty"`
+		StatusCode      int                 // 宿主未加 tag 时的 PascalCase 键
+		StatusCodeSnake int                 `json:"status_code"` // 宿主加 tag 后的下划线键
+		Headers         map[string][]string `json:"headers,omitempty"`
+		Body            []byte              `json:"body,omitempty"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
 		return nil, fmt.Errorf("decode host.http.do response: %w", err)
 	}
+	sc := resp.StatusCode
+	if sc == 0 {
+		sc = resp.StatusCodeSnake
+	}
 	return &hostHTTPResponse{
-		StatusCode: resp.StatusCode,
+		StatusCode: sc,
 		Headers:    http.Header(resp.Headers),
 		Body:       resp.Body,
 	}, nil

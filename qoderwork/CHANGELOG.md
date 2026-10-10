@@ -1,5 +1,16 @@
 # QoderWork Plugin Changelog
 
+## 0.9.26
+
+### Fix - 修复宿主桥状态码解码导致签到假成功
+
+- 变更要点:
+  1. 根因：`host_bridge.go` 的 `hostHTTPDo` 用 `json:"status_code"` 解码宿主 `host.http.do` 返回载荷，而宿主（v7.2.x）序列化 `pluginapi.HTTPResponse` 时未加 json tag，线协议键名是 PascalCase `{"StatusCode":404,...}`；`status_code` 含下划线，与 `StatusCode` 既不精确相等也不构成大小写不敏感匹配，导致 `StatusCode` 恒为 0，`if resp.StatusCode >= 400` 永不触发，签到 GET/POST 的 404/4xx/5xx 被当作 200 成功（Linux 生产受影响，Windows 走直连分支不受影响）。
+  2. 修复：抽出纯函数 `parseHostHTTPDoResult`，同时兼容宿主未加 tag 的 PascalCase 键与未来可能的下划线键；`hostHTTPDo` 改为调用它。
+  3. 收紧 `performCheckinCall`：响应缺 `success` 布尔字段时返回 `success:false`（契约异常），不再盲归一化为成功。
+  4. 回归测试：新增 `host_bridge_test.go` 覆盖 PascalCase 主用例、下划线兼容与非法载荷，修复前必失败（已用反证验证）。
+- 涉及文件: qoderwork/host_bridge.go、qoderwork/billing.go、qoderwork/host_bridge_test.go、qoderwork/VERSION、qoderwork/main.go
+
 ## 0.9.25
 
 ### Fix - 修复多模态 content 数组导致真实推理请求 payload parse 503
