@@ -11,6 +11,14 @@
   3. 增强 `checkinAccount` 重试：当首次签到遇到 9074 限流或 9095 设备级去重拦截时，自动切换为新生成的随机 16 位合规数字设备标识重试（最多 4 次尝试），避免复用同一被拦截设备号。
 - 涉及文件: traework/checkin.go、traework/browserlogin.go、traework/checkin_headers_test.go、traework/browserlogin_test.go、traework/main.go、traework/VERSION、traework/CHANGELOG.md、test/traework/checkin_device_rotation_test.go
 
+### Fix - 修复自动签到调度器相位错配导致从未触发
+
+- 变更要点:
+  1. 修复 `autoCheckinLoop`：原实现用 `time.NewTicker(1 * time.Minute)` 每 60 秒唤醒并判断 `now.Hour()==槽位 && now.Minute()==0` 才触发；ticker 的秒相位由 `init()` 时刻锚定且恒定，仅当进程启动秒相位恰为 0（60 个相位中 1 个）时才命中整点的 `:00` 窗口，其余 98%+ 的启动下自动签到永不执行（2026-10-10 生产实证：手动签到成功，自动签到在整个生产日志历史中零次触发）。
+  2. 改为 `nextAutoCheckinTime(now)` 计算下一个签到槽位绝对时间（本地 00/04/08/12/16/20 整点，已过则顺延次日）+ `time.NewTimer(time.Until(next))` 精确对齐，到点触发与进程启动时刻无关，对齐 workbuddy 的 `nextCheckinTime` 正确调度模式。
+  3. 新增 `traework/checkin_schedule_test.go` 覆盖槽位对齐、跨日顺延、逐槽位覆盖、整点不自相等。
+- 涉及文件: traework/checkin.go、traework/checkin_schedule_test.go、traework/CHANGELOG.md
+
 
 ## 0.2.4
 
