@@ -4,9 +4,10 @@
 
 ## 事件
 
-- 2026-10-10：traework-provider **签到从未自动成功**根因定位与修复（调度器相位错配 + device-id 风控，代码待发布 0.2.5）——用户诉求：「修复 TraeWork 签到失败，用生产账号『用户04878311608』测试」。生产取证（只读）：目标账号 auth_index=76bc7754f3fd72b2（traework-1114256688551036.json，uid 1114256688551036）未禁用、积分正常（remain 230）；手动单账号签到 `POST /checkin {"auth_index":"76bc7754f3fd72b2"}` 返回 `{ok:true,message:"success",points:200}`，「全部签到」7 账号全绿；但**自动签到在整个生产日志历史中零次触发**。**决定性交叉证据**：workbuddy 与 traework 调度循环同容器同进程，workbuddy 每日 `00:00:00` 准点签到日志持续存在，traework 却零记录。根因一（本会话定位）：`traework/checkin.go` 的 `autoCheckinLoop` 用 `time.NewTicker(1min)` + `now.Minute()==0` 精确匹配，ticker 秒相位由 init 时刻锚定，只有启动秒相位恰为 0（60 相位中 1 个）才命中整点，98%+ 的启动下自动签到永不触发（本地缩放实证：ticker 边界匹配 3.5s 命中 0-1 次且相位漂移，timer 对齐稳定命中；对照 workbuddy 用 `nextCheckinTime`+`time.NewTimer` 绝对时间对齐、keepalive 用 1 小时窗口，均健壮）。修复：改为 `nextAutoCheckinTime(now)` + `time.NewTimer(time.Until(next))` 绝对对齐；新增 `traework/checkin_schedule_test.go`（槽位对齐/跨日顺延/逐槽位覆盖/整点不自相等），cgo-shim build/vet/test 全绿 + 必失败哨兵确证进编译（`SENTINEL_FAILURE ... got 2026-10-11 00:00:00 +0800 CST`）。根因二（并行会话修复）：`deviceIDFor` 拼接/尾零设备号（本账号 deviceId=9670064000000000）命中 Trae 风控 9074/设备去重，改为派生合规 16 位纯数字设备号 + 签到轮换重试（commit `54f490a`，v0.2.5）。**并行会话竞争**：本会话的调度器修复（工作树未提交）被并行会话 `git add traework/checkin.go` 一并收录进 `54f490a`，故该提交同时含两个根因修复；本会话随后提交调度器回归测试与文档（`846b63d`）。发布部署按用户要求暂缓（并行会话正在发布 qoder-ai/qoderwork）。文档：Bug 主文档 `doc/4-bugs/2026-10-10_230000_TraeWork签到失败.md`、实施总览 `doc/3-实施/2026-10-10_TraeWork签到失败修复实施总览.md`。
+- 2026-10-10：traework-provider **0.2.5 发布部署与签到失败双根因修复**（`x-device-id` 16 位数字风控 + 自动签到调度器相位对齐）——用户诉求：「修复 TraeWork 签到失败，用生产账号『用户04878311608』测试」。生产对照实验锁定两项根因：① `deviceIDFor` 拼接 `<baseDeviceID>-<userID>`（33 字符含 `-`）及旧版 `randomDeviceID()` 尾零填充/首位越界（如目标账号 `1114256688551036` 的 `deviceId=9670064000000000`）命中 `/trae/api/v2/ug/checkin_credits/claim` 设备指纹风控，100% 返回 9074「当前参与用户太多，请稍后再试」，且重试复用同一被拦截 ID；② `autoCheckinLoop` 原用 `time.NewTicker(1min)` + `now.Minute()==0` 相位错配导致自动签到漏触发。修复：`deviceIDFor` 改为按 `(baseDeviceID, userID)` SHA-256 确定性派生首位 1~3、末位 1~9 的 16 位纯数字设备号；`randomDeviceID` 改用 `crypto/rand` 直接映射 16 位数字；`checkinAccount` 遇 9074/9095 自动切换新 16 位设备号重试；`autoCheckinLoop` 改为 `nextAutoCheckinTime` + `time.NewTimer` 绝对时间对齐。本地 `cgo-shim-build.py traework` 全绿（含必失败哨兵）+ 6-review `STYLE: PASS`。发布链：`54f490a` → CI run `38059677609` 64 jobs success → `6291b2a`（8 资产 ALL CHECKSUMS OK）→ `2ffcdc9`（registry 0.2.5）→ `74dfe92`（prune 0.2.4）；远端 7 平台 raw URL 全 200。生产部署：`plugin-store install` 热重载 `active_version=0.2.5 retired_version=0.2.4`，落盘 `.so` SHA-256 `f24fe5f42cf6203cb8f69f68b6f1edfb1b1d9b56e7cc62221a24ddb5fbdbf4eb` 与本地一致；目标账号「用户04878311608」（`76bc7754f3fd72b2`）签到成功（积分包 2→3，剩余积分 130→230），单账号与全量 7 账号调用 `/checkin` 均返回 `ok: true`（`checked_in: 7, fail: 0`）。
 
 - 2026-10-10：qoder-ai-provider **0.1.3** 修复宿主 HTTP 桥状态码解码错误（签到假成功根因）——用户报错：生产账号 u8e6a5348（393 积分）与 ua554edc3（0 积分）签到显示「成功 +100」但积分不变。根因：`host_bridge.go` 用 `json:"status_code"` 解码宿主响应，宿主 v7.2.x 未加 tag 输出 PascalCase `{"StatusCode":404,...}`，`StatusCode` 恒为 0 → 404 被当成功；`performCheckinCall` 再盲归一化 `m["success"]=true`。修复：移植 workbuddy `parseHostHTTPDoResult`，收紧归一化。本地 `cgo-shim-build.py qoder-ai` 全绿 + 反证（改回旧标签必失败）。产品事实：国际版 openapi.qoder.sh 无签到端点（404），app.asar 无签到代码，奖励体系为 campaigns（均不可领），真实入口待产品确认（GAP-001）。
+
 - 2026-10-10：qoder-ai-provider **0.1.2** / qoderwork-provider **0.9.25** content 多形态解析根因修复（真实推理 503）——用户报错：生产调用 `qwen-3.8-flash` 返回 `503 auth_unavailable: ... last upstream error: payload parse: json: cannot unmarshal array into Go struct field ***.***.content of type string`，而面板「测试」按钮通过。根因：两插件 `body.go` 的 `openAIMessage.Content` 声明为强类型 `string`，客户端按 OpenAI 多模态规范发送部件数组 content（`[{"type":"text","text":"..."}]`）时 `json.Unmarshal` 直接失败 → `handleExecExecute`/`handleExecStream` 进入 `payload parse` 失败分支 → 对外 503；测试按钮走 `sendActivePingQoder` **直接构造结构体**（`Content: "hi"`）绕过 JSON 解析，故测试通过而真实请求必失败（两条路径不同）。修复：为 `openAIMessage` 增加自定义 `UnmarshalJSON`（`decodeOpenAIContent`），纯字符串原样接收、部件数组提取 `text`/`input_text` 拼接、null/缺省归一空串；`Content` 字段类型与下游签名零改动。对照：workbuddy/workbuddy-ai 走 `map[string]any` 泛型解析 + `rewriteContentField` 已显式处理两种形态，不受影响；traework/cursor 亦已支持数组。本地：两插件各新增 `body_test.go`（4 项），cgo-shim build/vet/test 全绿；**修复前必失败已分别回退修复块复跑反证**，报错文本与生产 `last upstream error` 一致。**本轮关键冲突**：首次提交 `65f554c` 时 qoderwork 版本定为 0.9.24，但并行会话已于 21:57:35（`cafc4cf`）发布 `qoderwork-provider-v0.9.24`（tag→`bc365e6`，**不含**本次修复）并回填 registry，故改发 **0.9.25**（`27d6c99`）避免复用已存在 tag；已取消撞 tag 的两个 queued run（38057923742/38057921816）。文档：Bug 主文档 `doc/4-bugs/2026-10-10_215813_Qoder插件多模态content数组致推理503.md`、测试主文档 `doc/5-tests/2026-10-10_215813_Qoder插件content多形态解析回归.md`、6-review `STYLE: PASS`。
 
 - 2026-10-10：qoderwork-provider **0.9.23** 发布部署（面板「测试」按钮改为弹出模型选择窗口按指定模型测试）——用户诉求：qoderwork 与三插件对齐，卡片「测试」不再随机挑模型，改为点击后弹出该账号支持的模型小窗口、点选指定模型再测。后端：qoderwork/models.go 新增 authModelsForIndex + handleModelsQuery（cachedDynamicModels → callModelsAPI，AccessToken 非空前置判断），management.go 新增只读 GET /models?auth_index= 路由（未进 mutatingManagementPath），active_ping.go 的 handleTestActiveWithAuth(sa, authIndex, model) 支持指定模型（model 空保持随机兼容旧面板），兜底模型 auto；前端 panel.html 新增测试弹窗（openTestModal / closeTestModal / onTestMaskClick / loadTestModels / runTestModel）并补 .model-list/.model-item 等 7 条 CSS。本地：cgo-shim build/vet/test 全绿 + 必失败哨兵确证真实进编译；Node vm 回归 17 项 PASS + 旧版反证 FAIL（TypeError openTestModal is not a function）；6-review STYLE: PASS。发布链 7df7f9a（13 文件）→ CI run 37964833825 success（head=7df7f9a）→ 7f18e2a（8 资产，7/7 sha256 OK）→ registry 0.9.23 回填（随 30dfe9b 一并推送，7 artifacts sha256+size 与 checksums 全等）；远端 raw 7/7 200 且 size 一致。生产：plugin-store install 0.9.23 installed，落盘 .so sha256 bb55d2df…3977 与本地 zip 内 .so 完全一致；热重载 active_version=0.9.23 retired_version=0.9.22；行为验收 GET /models?auth_index= 返回 {"models":["auto"]}、POST /test-active 指定 model=auto 成功（421ms，回显该 model）、无 model 走兼容随机路径同样成功（622ms）、panel/accounts 均 200、面板资源含 testModal/openTestModal/loadTestModels/runTestModel/data-action="test" 全部命中。**重要踩坑**：期间遇到生产自定义源被别的会话半成品条目（qoder-ai-provider `direct` + 空 artifacts）整体校验失败，导致该源全部插件 install 报 plugin_not_found；根因是宿主 ParseRegistry 对单源 registry 原子校验、任一条目非法即整源不入列，待对端补齐 artifacts 后源自动恢复，无需重启宿主。发布后清理：prune dry-run 确认 8 插件保留集完整、待删 0。
@@ -42,14 +43,6 @@
 - 2026-09-05：traework-provider **0.1.44 发布部署**（GetUserInfo 401 回落回调 userInfo）：0.1.43 实测 exchange 已成功换到 token，但 GetUserInfo 报 401 "The user is not logged in"（cookie 会话鉴权路由，新 bearer token 不被认）。SOLO main.js 取证：客户端优先用回调 URL 的 userInfo JSON（r ?? await getUserInfo(...)），GetUserInfo 只是兜底。修复：parseBounceUserInfo 提取回调 userInfo 的 UserID/ScreenName，GetUserInfo 失败时回落。发布链 f38147d→4c924aa→a162f44；CI run 33902405197 success（16m+，两轮轮询窗口）；远端 ALL PASS；生产 install 首两次 CDN 滞后 version not found → 等 7 分钟第三次成功，落盘 sha256 60cb72ae 一致 + hot reloaded active=0.1.44。
 
 - 2026-09-05：traework-provider **0.1.43 发布部署**（浏览器授权登录 ExchangeToken 打错域修复）：0.1.42 实测 AuthCode 解析链已通但 exchange 报 invalid character '<'——www.trae.cn 是 SPA 域对 API 路径返回 HTML 首页，非 API 域；api.trae.cn / api.trae.com.cn 双域实测均为真 JSON API。修复：新增 browserLoginAuthHost=api.trae.cn（与生产凭据 host、签到 defaultAPIHost 同域），exchange/GetUserInfo 切域 + GetUserInfo 解析容错（ResponseMetadata.Error + camelCase result 回落）。发布链 faca5e9→737589a→a1c58eb；CI run 33900103965 success（14m30s）；远端 ALL PASS；生产 install 落盘 sha256 3d564208 一致 + 0.1.43 热重载；生产冒烟实锤：假 code submit 返回上游 JSON 错误（10101 无效参数），exchange 已打真 API 域，整链只差用户真实 AuthCode。
-
-- 2026-09-05：traework-provider **0.1.42 发布部署**（浏览器授权登录适配 TRAE 授权页真实回调形状）：用户真机实测 0.1.40 实锤 TRAE 授权页跳转非标准 OAuth——不回传 code/state，授权码在 `authCodeInfo` JSON 参数里。修复：extractAuthCode（code 优先、authCodeInfo 回落）+ 会话定位链（start 返回 state → 面板带回 body.state → URL state → 最新 pending 兜底）+ callback/submit 双通道同构。发布链 98b81e0(fix)→a60038d(assets)→e0b1850(registry)；CI run 33897217089 success（12m10s）；远端 ALL PASS 零残留；生产 install 落盘 sha256 `c5150057` 一致 + loaded/registered 0.1.42 热重载 + 冒烟两条新语义生效。同窗口并行会话发布 0.1.41/0.14.20/0.9.7（删除按钮 busy 修复，0.1.41 顺带卷入本会话被带走的前端 browserLoginState 改动但无后端解析）。
-
-- 2026-09-04：traework-provider **0.1.40 发布部署**（浏览器授权回调白名单适配 + 面板引导式粘贴 submit）：五组对照定案 TRAE 授权页白名单判据（回环 host AND 路径恰好 /authorize，协议端口无关，resource 长路径全场景拒绝）→ start 改拼回环 `/authorize` + 新增 `POST /browser-login/submit`（body {url} 整段 parse，共享 settleBrowserLogin）+ 面板粘贴引导卡片；用户否决 py relay，定案与宿主手动粘贴通道同构的零依赖方案。发布链 c168bd1(fix 7 文件)→9e94b4a(assets)→fad7b56(registry)；CI run 33891007981 success（12m23s）；远端 raw ALL PASS 零残留；生产 install 落盘 sha256 `97b54b1f` 一致 + loaded/registered 0.1.40 热重载 + accounts/panel/submit 验证通过。剩用户人工登录实测。
-
-- 2026-09-04：traework-provider **0.1.39 发布部署**（浏览器授权登录三缺陷修复）：生产端到端验证 0.1.38 暴露三缺陷——宿主 management JSON 响应强制 htmlsanitize（`&`→`&amp;` 授权页参数解析必挂→面板 replaceAll 兜底）；callback 注册在 management 前缀被宿主 management key 中间件拦截（含 GET）→ 移入 Resources 免鉴权 resource 前缀；授权 URL 缺 OAuth state（回传无法匹配会话）→ `q.Set("state", state)`。发布链 bf6ba87(fix 7 文件)，cgo-shim 全绿 + 新增 2 契约测试。
-
-
 ## 计数锚点区
 
 > 本区由 `memory-usage-tracking-rules` 收口闸门维护：HISTORY 仅窄读计入，会话启动不读不计；被裁剪事件的锚点随事件一起删除（不保留 retired）；本区计数仅作主题热度弱信号。锚点 key 用事件 `- YYYY-MM-DD：` 后的核心主题短语（约前 12 字符，可前缀匹配）。
@@ -57,6 +50,21 @@
 ```yaml
 version: 1
 anchors:
+- title: 'traework-provider **签到从未自动成功**根因定'
+  usage_count: 0
+  usage_days: 0
+  last_used_at: null
+  absorbed_to: null
+- title: 'qoder-ai-provider **0.1.3** 修复宿主'
+  usage_count: 0
+  usage_days: 0
+  last_used_at: null
+  absorbed_to: null
+- title: 'qoder-ai-provider **0.1.2** / qoderwork-provi'
+  usage_count: 1
+  usage_days: 1
+  last_used_at: 2026-10-10
+  absorbed_to: null
 - title: 'qoderwork-provider **0.9.23** 发布部署'
   usage_count: 0
   usage_days: 0
@@ -127,7 +135,7 @@ anchors:
   usage_days: 0
   last_used_at: null
   absorbed_to: null
-- title: workbuddy 0.14.42 面板「创建」时间改用 J
+- title: 'workbuddy 0.14.42 面板「创建」时间改用 J'
   usage_count: 1
   usage_days: 1
   last_used_at: 2026-09-27
@@ -138,21 +146,6 @@ anchors:
   last_used_at: null
   absorbed_to: null
 - title: 'traework-provider **0.1.43 发布部'
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
-  absorbed_to: null
-- title: 'traework-provider **0.1.42 发布部'
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
-  absorbed_to: null
-- title: 'traework-provider **0.1.40 发布部'
-  usage_count: 0
-  usage_days: 0
-  last_used_at: null
-  absorbed_to: null
-- title: 'traework-provider **0.1.39 发布部'
   usage_count: 0
   usage_days: 0
   last_used_at: null

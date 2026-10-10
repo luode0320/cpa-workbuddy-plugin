@@ -8,11 +8,31 @@
 
 ## 项目概况
 
-- 状态：活跃维护中。最新发布版本：qoder-ai-provider **0.1.1**（官方客户端模型对齐、面板测试按钮、自动定时探活与高清图标补齐）/ qoderwork-provider **0.9.23** / workbuddy-provider **0.15.4** / workbuddy-ai-provider **0.1.9** / traework-provider **0.2.4** / workbuddy-token-usage **0.2.4** / cursor-provider **0.1.0** / gemini-provider **0.1.1**。最新发布并部署 qoderwork-provider **0.9.23** / workbuddy-provider **0.15.4** / workbuddy-ai-provider **0.1.9** / traework-provider **0.2.4**（四插件面板「测试」按钮均为「弹出模型选择窗口 → 点选指定模型测试」，发布 + 生产热重载 + 行为验收完成）；同仓已发布 workbuddy-token-usage **0.2.4**（面板性能）、cursor-provider **0.1.0**（Cursor 会话 Token 导入）、gemini-provider **0.1.1**、qoder-ai-provider **0.1.0**（Qoder AI 国际版，每日签到 +100 积分）。
+- 状态：活跃维护中。最新发布版本：traework-provider **0.2.5**（修复签到 x-device-id 拼接与尾零风控 9074 拦截 + 自动签到调度器绝对时间对齐）/ qoder-ai-provider **0.1.2** / qoderwork-provider **0.9.25** / workbuddy-provider **0.15.4** / workbuddy-ai-provider **0.1.9** / workbuddy-token-usage **0.2.4** / cursor-provider **0.1.0** / gemini-provider **0.1.1**。
 - 活动工作区：F:\cpa-plugin
 - 当前时间：2026-10-10 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 当前会话（2026-10-10）：**修复 TraeWork 签到 9074 风控拦截与自动签到调度器，发布部署 `traework-provider 0.2.5` 并验证生产账号「用户04878311608」签到成功**：
+  - 用户反馈与目标：修复 TraeWork 签到失败问题，并用生产「用户04878311608」账号测试修复签到。
+  - 根因定位（生产真实对照实验证伪与收敛）：
+    1. `deviceIDFor` 字符串拼接 `<baseDeviceID>-<userID>`（33 字符含 `-`）破坏了 SOLO 客户端 `x-device-id` 16 位纯数字契约，被 `/trae/api/v2/ug/checkin_credits/claim` 100% 拦截返回业务码 `9074`（`"当前参与用户太多，请稍后再试"`）。
+    2. `browserlogin.go` 的 `randomDeviceID()` 从 `randomHex(8)` 过滤十进制数字后末尾补 `'0'`，制造出末尾 3~10 个连续 `'0'` 且首位可能越界（`6`~`9`）的畸形 `deviceId`（如「用户04878311608」的 `9670064000000000`），即使不拼接 `-userID` 也同样触发 9074。
+    3. `checkinAccount` 在遇到 9074 或 9095（设备去重拦截）时未轮换 `x-device-id`，重试始终命中同一拦截；同时 `autoCheckinLoop` 已同步改为 `nextAutoCheckinTime` + `time.NewTimer` 绝对时间对齐。
+  - 修复与发布验收闭环（v0.2.5）：
+    1. `deviceIDFor` 改为按 `(baseDeviceID, userID)` SHA-256 确定性派生首位 `1`~`3`、末位 `1`~`9` 的 16 位纯数字设备标识；`randomDeviceID` 改用 `crypto/rand` 直接映射 16 位纯数字；`checkinAccount` 在 9074/9095 时自动切换新 16 位随机设备号重试（最多 4 次尝试）。
+    2. 本地 `python scripts/cgo-shim-build.py traework` 全绿（含必失败哨兵反证），`6-review` `STYLE: PASS`。
+    3. 发布链路：commit `54f490a` → CI run `38059677609` 全部 64 jobs success → 下载 8 个 release 资产并校验 `ALL CHECKSUMS OK`（commit `6291b2a`）→ `publish-assets.py` 更新 `registry.json`（commit `2ffcdc9`）→ `prune-release-assets.py` 清理旧版 `0.2.4`（commit `74dfe92`）→ 远端 7 平台 raw URL 全部 200 OK 且 SHA-256 一致。
+    4. 生产部署与账号签到验收：`plugin-store install traework-provider?version=0.2.5` 成功，落盘 `.so` SHA-256 `f24fe5f42cf6203cb8f69f68b6f1edfb1b1d9b56e7cc62221a24ddb5fbdbf4eb` 与本地 zip 100% 一致，热重载 `active_version=0.2.5 retired_version=0.2.4`；「用户04878311608」（`auth_index=76bc7754f3fd72b2`）签到成功（积分包从 2 个增至 3 个，剩余积分从 130 增至 230），单账号与全量 7 账号调用 `/checkin` 均返回 `ok: true`（`checked_in: 7, fail: 0`）。
+
+- 当前会话（2026-10-10）：**Qoder AI 国际版签到假成功根因修复（qoder-ai 0.1.3，本地已闭环，待发布）**：
+  - 用户报错：生产账号 `u8e6a5348`（393 积分）与 `ua554edc3`（0 积分）签到显示「签到成功 +100」但积分不变。
+  - 根因（缺陷 A，铁证）：`qoder-ai/host_bridge.go` 用 `json:"status_code"` 解码宿主 `host.http.do` 响应，而宿主 v7.2.x 序列化 `pluginapi.HTTPResponse` 未加 json tag，实际键名是 PascalCase `{"StatusCode":404,...}`；下划线标签既不匹配键名也不构成大小写不敏感匹配 → `StatusCode` 恒为 0 → `if resp.StatusCode >= 400` 永不触发 → 404 被当作 200 成功。`performCheckinCall` 再对缺 `success` 字段的响应做 `m["success"]=true` 盲归一化，最终对外「签到成功」。同源缺陷：`qoder-ai` 与 `qoderwork` 的 `host_bridge.go` 逐字节相同，qoderwork 待修；workbuddy 0.14.30（提交 1f26e0c）为先例。
+  - 修复：移植 `parseHostHTTPDoResult`（PascalCase 优先、下划线防御性回退）；`performCheckinCall` 收紧为「缺 success 字段即返回失败」。新增 `qoder-ai/host_bridge_test.go` 三用例。
+  - 本地验证：`python scripts/cgo-shim-build.py qoder-ai` build/vet/test 全绿；反证（临时改回 `status_code`）`TestParseHostHTTPDoResult_HostUntaggedPascalCase` 必失败（`StatusCode = 0, want 200`）；必失败哨兵证明测试真实进编译。
+  - 产品事实（缺陷 B / GAP-001，本轮已生产实证）：国际版 `openapi.qoder.sh` 无 `/sash/api/v1/me/daily-check-in/{status,claim}` 端点——三账号（u8e6a5348/u0cb74401/ua554edc3）实测均 404 `NotFound`，而 `/api/v2/quota/usage` 200、`/sash/api/v1/me/campaigns` 200（均 `claimable:false, campaigns:[]`）；穷举 140 候选路径非 404 仅 `/sash/api/v1/me/campaigns`；**国际版 Web 前端（qoder.com v0.0.312，含全部 Next chunk）零签到代码**，**官方桌面客户端 `app.asar`（v0.4.3，归属国际站 openApiBaseUrl=openapi.qoder.sh）唯一奖励体系是 campaign（`campaignKey=client_launch_26`，走 `campaignUrl` 内嵌 web surface）**；对照国内版 `openapi.qoder.com.cn/sash/api/v1/me/daily-check-in/status` 实测 200（`campaignKey=cn_daily_check_in_legacy, rewardCredits=100`）证明这是产品线差异而非路径错误。**修好解码后签到必失败，真实签到入口待产品确认；禁止伪造成功。**
+  - 状态：本地修复与反证完成；生产复验已完成（三账号签到端点均 404，确认属产品级无端点，非插件可修）；发布与真实签到入口待用户确认缺陷 B 方向后执行。文档：`doc/4-bugs/2026-10-10_223000_QoderAI签到假成功.md`、`doc/3-实施/2026-10-10_QoderAI签到假成功修复实施总览.md`、`doc/6-review/2026-10-10_224000_QoderAI签到假成功修复_6-review.md`。
 
 - 当前会话（2026-10-10）：**Qoder AI 国际版官方客户端模型对齐、管理面板测试按钮与定时探活、高清图标补齐及 0.1.1 正式发布部署**：
   - 用户反馈与诉求：
