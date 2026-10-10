@@ -217,7 +217,7 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	for r := range outCh {
 		results[r.idx] = r.out
 	}
-	successN, alreadyN, failN := 0, 0, 0
+	successN, alreadyN, failN, noActivityN := 0, 0, 0, 0
 	for _, r := range results {
 		if r["error"] != nil {
 			failN++
@@ -225,6 +225,11 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 		}
 		if r["skipped"] == true {
 			alreadyN++
+			continue
+		}
+		if r["reason"] == "global" {
+			// 无可领取活动（活动未开放/账号不适用）不是失败，单列。
+			noActivityN++
 			continue
 		}
 		if r["success"] == true {
@@ -236,11 +241,12 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	return map[string]any{
 		"results": results,
 		"summary": map[string]any{
-			"total":      len(targets),
-			"success":    successN,
-			"already":    alreadyN,
-			"fail":       failN,
-			"elapsed_ms": time.Since(t0).Milliseconds(),
+			"total":       len(targets),
+			"success":     successN,
+			"already":     alreadyN,
+			"no_activity": noActivityN,
+			"fail":        failN,
+			"elapsed_ms":  time.Since(t0).Milliseconds(),
 		},
 	}
 }

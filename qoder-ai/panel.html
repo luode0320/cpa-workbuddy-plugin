@@ -1080,12 +1080,14 @@ async function checkinAll(btn){
     const ok=Number(s.success??rs.filter(x=>x.success&&x.reason!=="already"&&!x.skipped).length)||0;
     const already=Number(s.already??rs.filter(x=>isCheckinDoneResult(x)&&(x.reason==="already"||x.skipped||!x.success)).length)||0;
     const fail=Number(s.fail??rs.filter(x=>x.error).length)||0;
+    const noActivity=Number(s.no_activity??rs.filter(x=>x.reason==="global").length)||0;
     const skippedCN=Number(s.skipped_cn||0);
     const eligible=Number(s.eligible??(ok+fail))||0;
     const detailParts=[];
     
     if(already) detailParts.push("今日已签 "+already);
     if(eligible) detailParts.push("待签 "+eligible);
+    if(noActivity) detailParts.push("无活动 "+noActivity);
     const detail=detailParts.join(" · ");
     if(d.error){toast("批量签到失败","err",d.error)}
     else if(fail){
@@ -1094,9 +1096,11 @@ async function checkinAll(btn){
     }else if(ok){
       toast("批量签到："+ok+" 成功"+(already?" / "+already+" 今日已签":""),"ok",detail);
     }else if(already||skippedCN){
-      toast("无需签到","ok",detail||"CN 今日已签");
+      toast("无需签到","ok",detail||"今日已签");
+    }else if(noActivity){
+      toast("当前无进行中的签到活动","warn",detail);
     }else if(!rs.length && !eligible){
-      toast("没有需要签到的 CN 账号","warn",detail||"");
+      toast("没有需要签到的账号","warn",detail||"");
     }else{
       toast("没有需要签到的账号","warn",detail);
     }

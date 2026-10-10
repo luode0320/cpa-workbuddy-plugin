@@ -1,5 +1,14 @@
 # Qoder AI Plugin Changelog
 
+## 0.1.5
+
+### Fix - 批量签到统计把「无活动」账号误计为失败
+
+- 变更要点:
+  1. `handleManualCheckin` 的 summary 新增 `no_activity` 计数：`reason=global`（当前无可领取活动）的账号不再计入 `fail`。0.1.4 修复后，无活动的国际账号会返回 `reason=global`，原统计把它们算作失败，面板批量签到会误报「N 失败」。
+  2. 面板 `checkinAll` 同步：使用 `no_activity` 单列，文案由「国际版无需签到」改为「当前无进行中的签到活动 / 无活动 N」。
+- 涉及文件: qoder-ai/checkin.go、qoder-ai/panel.html、qoder-ai/VERSION、qoder-ai/main.go
+
 ## 0.1.4
 
 ### Fix - 国际版签到改走 campaigns（活动）API，修复每日签到恒 404
