@@ -43,6 +43,10 @@ func TestMain_RegistrationAndCapabilities(t *testing.T) {
 	if reg.Metadata.Version != version {
 		t.Fatalf("expected version %s, got %s", version, reg.Metadata.Version)
 	}
+	// schema 6 起管理响应保持原始 JSON；旧协议会把 OAuth URL 的 & 转成 &amp;。
+	if reg.SchemaVersion < 6 {
+		t.Fatalf("OAuth management responses require schema >= 6 to preserve URL query parameters, got %d", reg.SchemaVersion)
+	}
 	if !reg.Capabilities.AuthProvider {
 		t.Fatalf("expected AuthProvider capability to be true for OAuth login")
 	}

@@ -2,6 +2,8 @@
 
 `zcode-provider` 是 CLIProxyAPI (CPA) 的企业级动态库插件，用于将 BigModel Coding Plan 的 Anthropic 协议接入 CPA，并全面对齐 `workbuddy-provider` 的多账号运维管理能力。
 
+插件要求 CPA 宿主支持 schema 6 的原始管理 JSON 响应契约（例如 v8.0.27）。旧版宿主需要先升级，否则无法加载此插件。该契约保留 OAuth 授权链接中的原始 `&` 分隔符；面板仍使用 `esc()` / `textContent` 安全显示账号与错误文本。
+
 ## 核心特性
 
 1. **ZCode 客户端指纹注入（Mimic）**：自动注入 ZCode 桌面客户端全量 Headers 指纹（`x-api-key`、`http-referer`、`User-Agent`、`x-zcode-app-version`、`x-zcode-agent`、`x-query-id`、`x-session-id`、`x-zcode-trace-id` 等）。

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -167,6 +168,8 @@ func TestManagement_ActivateStartAndPoll(t *testing.T) {
 		t.Fatalf("write target auth: %v", err)
 	}
 
+	// 使用完整且含百分号编码的授权链接，确保 JSON 往返不会改变分隔符或回调地址。
+	const authorizeURL = "https://chat.z.ai/api/oauth/authorize?client_id=test-client&redirect_uri=https%3A%2F%2Fzcode.z.ai%2Fapi%2Fv1%2Foauth%2Fcli%2Fcallback%2Fzai&state=state_test_123&response_type=code"
 	pollStatus := "pending"
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -177,7 +180,7 @@ func TestManagement_ActivateStartAndPoll(t *testing.T) {
 				"data": map[string]any{
 					"flow_id":       "flow_xyz",
 					"poll_token":    "poll_tok",
-					"authorize_url": "https://chat.z.ai/auth?state=state_test_123",
+					"authorize_url": authorizeURL,
 				},
 			})
 			return
@@ -238,6 +241,25 @@ func TestManagement_ActivateStartAndPoll(t *testing.T) {
 	state := gjson.GetBytes(httpResp.Body, "state").String()
 	if state != "state_test_123" {
 		t.Fatalf("expected state_test_123, got %s", state)
+	}
+	returnedURL := gjson.GetBytes(httpResp.Body, "authorize_url").String()
+	if returnedURL != authorizeURL {
+		t.Fatalf("authorize_url changed during management JSON round trip: %q", returnedURL)
+	}
+	parsedURL, err := url.Parse(returnedURL)
+	if err != nil {
+		t.Fatalf("parse authorize_url: %v", err)
+	}
+	query := parsedURL.Query()
+	for name, want := range map[string]string{
+		"client_id":     "test-client",
+		"redirect_uri":  "https://zcode.z.ai/api/v1/oauth/cli/callback/zai",
+		"state":         state,
+		"response_type": "code",
+	} {
+		if got := query.Get(name); got != want {
+			t.Fatalf("authorize_url query %s = %q, want %q", name, got, want)
+		}
 	}
 
 	// 3. 轮询 pending 态

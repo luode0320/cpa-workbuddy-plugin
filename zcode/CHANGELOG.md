@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- 使用 schema 6 的原始管理 JSON 响应契约，避免官方 OAuth 授权链接的 `&` 被宿主转成 `&amp;`，导致 `response_type`、`redirect_uri`、`state` 参数缺失；需要支持 schema 6 的 CPA 宿主。
+
 ## [0.1.18] - 2026-10-13
 
 ### Feat & Fix

@@ -63,6 +63,9 @@ const (
 	providerName      = "zcode-provider"
 	pluginDisplayName = "ZCode Provider"
 	pluginLogoURL     = "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/ZCode.png"
+	// schema 6 保留管理接口的原始 JSON，避免宿主把 OAuth URL 的 & 转成 &amp;。
+	// 固定依赖的 v7 SDK 仍声明 schema 3；面板自行通过 esc/textContent 安全显示文本。
+	pluginSchemaVersion uint32 = 6
 	// defaultBaseURL 对齐官方 zai-api 模板（zcode-builtin.json）：
 	// access.type=zhipu-coding-plan-api-key，api.baseUrl=https://api.z.ai/api/anthropic。
 	// OAuth 账号须先用 zai access_token 换取业务令牌，再以该地址发起模型请求。
@@ -237,7 +240,7 @@ type registrationCapability struct {
 
 func zcodeRegistration() registration {
 	return registration{
-		SchemaVersion: pluginabi.SchemaVersion,
+		SchemaVersion: pluginSchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             providerName,
 			Version:          version,
