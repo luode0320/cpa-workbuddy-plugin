@@ -313,11 +313,11 @@ func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 func callModelsAPI(sa *storedAuth) ([]pluginapi.ModelInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	// model/list needs no body but COSY still requires a body string for signing.
-	// An empty JSON object works (verified in reference_impl.py).
+	// The COSY signature covers the request body and the gateway recomputes it
+	// over the bytes actually received, so the body we sign MUST be the body we send.
 	encodedBody := qoderEncode([]byte("{}"))
 	rawURL := endpointModels // includes ?Encode=1
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, strings.NewReader(encodedBody))
 	if err != nil {
 		return nil, err
 	}
