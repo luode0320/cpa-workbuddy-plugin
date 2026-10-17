@@ -54,6 +54,7 @@ import "C"
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -451,6 +452,12 @@ func endpointModelsFor(sa *storedAuth) string {
 // 最近修改时间：2026-10-11 21:05:00 补使用端标识头，使上游记录 client 字段为 WorkBuddy
 func backendHeaders(req *http.Request, sa *storedAuth) {
 	commonHeaders(req)
+	// 为每次上游调用补齐会话追踪头，避免国际版返回 11128。
+	req.Header.Set("X-Conversation-ID", newConversationTraceID())
+	requestID := newConversationTraceID()
+	req.Header.Set("X-Conversation-Request-ID", requestID)
+	req.Header.Set("X-Conversation-Message-ID", newConversationTraceID())
+	req.Header.Set("X-Root-Request-ID", requestID)
 	if sa.Auth.AccessToken != "" {
 		req.Header.Set("Authorization", "Bearer "+sa.Auth.AccessToken)
 	} else {
@@ -474,6 +481,15 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 	req.Header.Set("X-Agent-Purpose", "conversation")
 	req.Header.Set("Origin", originReferer)
 	req.Header.Set("Referer", originReferer+"/")
+}
+
+// newConversationTraceID 生成独立的 UUID v4，不携带账号或凭据信息。
+func newConversationTraceID() string {
+	var id [16]byte
+	_, _ = rand.Read(id[:])
+	id[6] = (id[6] & 0x0f) | 0x40
+	id[8] = (id[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
 }
 
 func handleParseAuth(raw []byte) ([]byte, error) {
