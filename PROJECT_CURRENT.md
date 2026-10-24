@@ -23,7 +23,7 @@
 - 状态：活跃维护中。11 大插件全景（10 Provider + 1 用量统计）。**2026-10-22 下线 doubao-provider 与 notion-provider**（用户裁定移除），叠加此前的 Gemini 插件，两者源码与生产残留均已清空。本轮删除后抽验 workbuddy / coze / token-usage 三插件 cgo-shim build+vet 全绿；未做 11 插件全量回归。最新发布/就绪版本（本轮未发新版）：
   - `zcode-provider`: **0.1.31**（面板额度改为逐模型独立进度条（GLM-5.3 / GLM-5.3-Flash 各一条）并移除「过期」等冗余信息；0.1.30 面板额度改用 `billing/balance` 取真实已用/剩余 + 领取失败文案友好化；0.1.29 修复面板无感验证 captcha 配置缺陷；0.1.28 面板内无感验证领取 Start Plan + OAuth 默认中国区）
   - `cursor-provider`: **0.1.6**（修复 Query 参数反序列化丢失导致真实发现模型被屏蔽、建立点号模型别名归一化根治上游 not_found、测试弹窗支持实时搜索过滤与秒开交互）
-  - `qoderwork-provider`: **0.9.44**（0.9.44 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502` + 冷却落盘失败可观测与内存兜底；0.9.40 重建上游 messages 时保留工具调用结构修复 agent 多轮往返工具结果失配对；0.9.38 签到节奏恢复每 4 小时六槽 + 移除冗余门控；0.9.37 tools 对齐修复；0.9.35 max_tokens 统一 32768 最低输出底线；0.9.34 上游 110 日调用上限 24 小时持久化冷却 + 路由/换号排除 + 面板解冷）
+  - `qoderwork-provider`: **0.10.1**（0.10.1 模型清单改为全场景并集 + 以上游 `display_name` 为准 + 补齐改名后的请求回译 + 静态兜底对齐可用集合；0.10.0 账号故障改写盘禁用 + 每 10 分钟只探失败模型；0.9.44 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502`；0.9.40 重建上游 messages 保留工具调用结构；0.9.49 模型对外 ID 改用官方展示名并补齐执行链回译；0.9.48 模型清单按账号分片 + 额度优先）
   - `qoder-ai-provider`: **0.1.24**（0.1.24 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502`；0.1.20 重建上游 messages 时保留工具调用结构修复 agent 多轮往返工具结果失配对；0.1.18 签到节奏恢复每 4 小时六槽 + 移除冗余门控；0.1.17 tools 对齐修复；0.1.15 max_tokens 统一 32768 最低输出底线；0.1.14 上游 110 日调用上限 24 小时持久化冷却 + 补齐 /clear-cooldown 路由注册）
   - `traework-provider`: **0.2.13**（面板签到时刻文案漂移修正为 00/04/08/12/16/20；0.2.12 定时探活降频至 4 小时 + 失败也刷新节流时间戳；0.2.11 max_tokens 32768 底线 + payload 层同步，探活改全量模型按序测试）
   - `workbuddy-provider`: **0.20.0**（0.20.0 新增连续使用轮换：单账号连续承流满 60 分钟让位、冷却 60 分钟，默认开启，含全冷放开一半防抽干；0.19.0 重新接入成长中心 7 段，修复旧版「任务永远完不成」的两个根因：从未调用 `buddy/first` 领养 + 完全没有 `POST /v2/report` 行为上报；0.18.2 面板单卡刷新补写积分快照；0.18.1 积分三档分级 + 每小时串行扫描 + 低于 100 硬禁用；0.18.0 下线 Global 耗尽自动删号 + 低额红线可配置；0.16.5 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502`）
@@ -34,6 +34,18 @@
 - 当前时间：2026-10-17 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 当前会话（2026-10-25）：**qoderwork 0.10.1 修复模型清单漏模型（多场景并集 + 上游 display_name 权威），已发生产并验收**：
+  - 用户报障（附截图）：对比官方客户端默认模型列表，生产的 qoderwork 模型表少了 `Kimi-K3.1-Pro` 与 `MiniMax-M3.1-Flash`，要求检查模型获取逻辑。
+  - **根因两层**：① `callModelsAPI` 只读响应里的 `chat` 场景，而上游按场景切分（11 个场景，各场景模型集合不同：本机客户端目录样本 chat 15 / qwork 13 且不含 mmodel / experts 5）；② 对外模型名取自硬编码表 `internalKeyDisplayNames`，上游 `display_name` 字段虽被解析却从未使用——上游改名不改内部代号（实测 `kmodel_latest`→`Kimi-K3.1-Pro`、`mmodel`→`MiniMax-M3.1-Flash`），表名因此永久滞后。
+  - **第三层风险（本次一并堵住）**：只改命名不改回译，客户端按新名请求会被透传给上游并**静默落到 `auto`**（HTTP 200、无报错、参数与计费全错）。新增运行时映射 `upstreamModelNames` 登记「官方名→内部代号」，`cpaToUpstreamKey` / `resolveUpstreamModel` 优先查它（先到先得，后到的旧清单不覆盖新名）。
+  - **实现**：`exposeModelIDs` 主条目改用上游 `display_name`（硬编码表降为兜底）；`callModelsAPI` 抽出纯函数 `parseModelsResponse` 遍历全部场景取并集（有序、按代号去重、脏场景跳过）；`wbModels()` 移除 `cmodel`（已下线）与 `qmodel_latest`/`qmodel`/`q37fmodel`/`gm51model`（Free 档 `enable=false`），与生产可用集合对齐（代号映射保留，上游恢复即可用）。
+  - **验证**：新增 `models_scene_union_test.go`（12 用例）；**4 项变异全部 KILLED**（主条目忽略 display_name / 退回只读 chat / 移除上游名回译 / 静态表加回已下线模型）；cgo-shim build+vet+test 全绿；gofmt 干净。
+  - **真实上游验收**：用生产 spool 凭据直连 `gateway.qoder.com.cn` 跑真实 `callModelsAPI` → `10 models in 11 scenes`，`DisplayName` 确认是 `Kimi-K3.1-Pro` / `MiniMax-M3.1-Flash`，20 条对外 ID 全部回译通过。
+  - **发布链**：`5f3cc57`(fix, 8 文件) → CI `40111458460` success → 6/6 assets sha256 OK + 产物 `0.10.1`×2 / `0.10.0`×0 且含 `models in` 新日志串 → `937d1d1`(registry) → 远端 6/6 一致且无旧版本残留。
+  - **生产部署（热重载零重启）**：`hot reloaded active_version=0.10.1 retired_version=0.10.0`，`restart_required:false`。生产 `/models?auth_index=` 返回 20 条含两个新名；全局 `/v1/models` 已可见 `Kimi-K3.1-Pro` / `MiniMax-M3.1-Flash`（`owned_by=qoderwork-provider`）。
+  - **回译生产实证**：`test-active` 用新名请求，上游排队响应回带 `"modelKey":"mmodel"` / `"modelKey":"qfmodel"` / `"modelKey":"dfmodel"`，证明新名已正确回译成内部代号。当时上游整体排队（`isQueued`），属已知容量状态非账号故障。
+  - **未闭环**：`qoder-ai` 存在完全相同的「只读 chat 场景 + display_name 未使用」代码，本轮未改（按插件独立发版，需单独一轮）。文档：`qoderwork/CHANGELOG.md` 0.10.1。
 
 - 当前会话（2026-10-24）：**coze 每日登录积分自动领取（0.5.5）+ 历史账号补注册宿主（0.5.6），均已发生产并验收**：
   - 用户诉求：「扣子插件不能每日签到领积分，看看有什么办法」→ 裁定方案 A（插件内置），并要求「把号都导入到生产」→ 明确为「启用插件让 9 个号回归路由」。
@@ -116,68 +128,14 @@
   - **遗留待办（仍未闭合）**：① token-usage-tracker 把管理密钥当 `source` 打印到日志（`source=Ld@588588`），属凭据回显违规，需在该插件侧修复；② coze 的 `min_routable_credits` 未写入生产配置，走默认 100。
   - 文档：`coze/CHANGELOG.md` 0.5.4 章节；路由口径同步见 `PROJECT_MEMORY.md`。
 
-- 当前会话（2026-10-20）：**coze 0.5.3：修复「生图全部失败但积分被烧光」**：
-  - 用户报障（附 new-api 日志 + CPA 用量面板截图）：`coze/doubao-seedream-5-0-260128` 请求几乎全部 502/403 失败，账号 7840 积分却耗尽。
-  - **根因（收尾时序错配）**：WS 的 `event_final` 帧 6–9 秒就到达，正文只有 `[图片](computer:///...)` 占位符（非空），真实图片附件要晚十几秒到几分钟才落库 `message/list` 的 `files`。旧逻辑只在「正文为空」时兜底轮询 → 生图路径不轮询、不报错 → 空 images → `buildImagesResponse` 报「上游未返回任何图片」。**上游已出图并扣额度**。
-  - **放大链（额度成倍烧）**：该错误无状态码 → 兜底 502 → 宿主判账号故障、冷却并换号；new-api `AutomaticRetryStatusCodes` 含 502 且 `RetryTimes=5` → 同一笔额度反复烧。两层重试同时叠加。
-  - **修复**：① `runConversation` 收口统一调 `awaitImages`（不用 `waitForReply` 的分支，因为它有三个成功返回分支，分支内处理必漏路径）；② `pollImagesUntilAvailable` 1 秒间隔、**4 分钟**上限（生产实测成功生图端到端 24s~3m6s，90 秒会误判成功为失败）；③ 只在附件非空时 `accept`（去重键 `turn|seq|phase`，先 accept 空附件会把后续带附件同帧判重丢弃）；④ 取不到时返回 `imagesUnavailableError`（**400**）——命中宿主请求级白名单（400/409/413/422）不冷却不换号，且不在 new-api 自动重试区间，两层重试同时止住；⑤ `wantImages` 标记区分生图/对话，文本路径不为等附件变慢。
-  - **超时链路核实**：nginx `proxy_read_timeout 600s` > 4 分钟上限；宿主无额外插件 RPC 超时；生产有 3m6s 成功实测。
-  - **验证**：cgo-shim build+vet+test 全绿；新增 6 用例（晚到附件、第 3 轮才出现、取不到须 400、对话路径不长等、错误状态码、穿过真实入口的端到端）；**5 项变异反证全 FAIL**（禁用等附件 / 状态码退化 / 只查一次 / 工厂指向对话执行器 / `awaitImages` 直接放行）。其中「工厂指向对话执行器」首轮**存活**——所有用例都直接构造执行器、无一条穿过 `handleImagesExecute`，是「纯函数单测通过 ≠ 调用点被覆盖」的典型形态，补端到端用例 + 生产侧注入点后才捕获。
-  - **发布链**：提交 `5535ec3` → CI run `39464339820` 首轮 darwin/arm64 job 排队超时被取消（其余 19 job 全 success）→ `rerun-failed-jobs` 重跑。
-  - 文档：`coze/CHANGELOG.md` 0.5.3 章节。
-
-- 当前会话（2026-10-20）：**coze 0.5.2 发布生产：新增积分路由红线（默认 100 分）**：
-  - 用户需求：「低积分跳过路由，但 coze 积分消耗速度不同，改成 100」。**方案裁定**：宿主 `schedulerRecord()` 只返回排序后第一个 scheduler 插件（全局单例，在任者 copilot-provider），coze 抢槽会顶掉 workbuddy 调度内核，且插件 auth 的 `priority` 不被读取 ⇒ 放弃声明 Scheduler，改**执行入口闸门**。
-  - **实现**：`coze/policy.go`（红线 100 + 缓存判定 + 403 `creditsBelowRedlineError`）、`coze/credit_loop.go`（后台刷新 300s、并发 4、发布 `creditPoolSnapshot`）、两个执行入口在 `parseStoredAuth` 后加闸门、面板 `low_credits` 徽标；配置项 `min_routable_credits`（`*int64`，缺省保持 100、显式 0 关闭）。闸门**只读内存快照**，禁止在请求路径调 `host.auth.list`（由 `TestVerifyAccountCreditsUsesMemorySnapshotOnly` 守护）。
-  - **验证**：cgo-shim 全绿；新增 12 用例；8 项变异全部精确 FAIL（其中「删快照发布」与「未知积分当 0」首轮存活，补强用例后捕获）。**发布链**：`b46969c` + registry `b07d209` → CI `39452488433` success → 6/6 assets OK → 生产热重载 `active_version=0.5.2`（零重启）→ `.so` sha256 `1b13157e…3663e` 与 zip 一致。
-  - **生产验收（request_id 86564019）**：5 个号中 4 个 0 分、1 个 437 分；0 分号 2–10ms 内 403 拦截零上游消耗，换健康号后连续 3 次 200；面板 `low_credits` 正确标出 4 个 0 分号。
-  - 文档：`coze/CHANGELOG.md` 0.5.2 章节。
-
-- 当前会话（2026-10-19）：**coze 0.4.6 发布生产：64KB 内容超限不再拖垮账号池**：`message/chat` 的 content 有 65535 字节硬上限，越界返回 `1000003 数据库错误`（无状态码）→ 宿主按 5xx 判账号级故障、依次冷却两号 → 单次超长请求放大成整池 503。修复：两个入口按 UTF-8 字节预检返回 **413** 请求级错误；`envelopeError` 补 `HTTPStatus`/`Retryable` 与 `requestFaultEnvelope`，宿主识别为请求级故障即跳过冷却与换号。验证 6 用例 + 3 次变异精确捕获；生产实测 70016 字节请求 **0.03s 返回 413**（修复前 5.8s/500）。**踩坑**：生产生效配置是容器内 `/CLIProxyAPI/config.yaml`（明文 secret-key），不是 MySQL spool 那份（bcrypt 哈希，用它认证必 401）。
-- 当前会话（2026-10-19）：**定时任务并发治理三连（均未发布生产）**：① 6 插件 4h 槽位改走 `next*FireTime(now)` + `schedulerJitterMax=5m` 可注入抖动；traework `checkinRetryLoop` 原无界 goroutine → 收敛为 `runCheckinRetryRound()` + 并发 4；② 六个 watchdog 首轮加抖动（插在 `waitHostReadyForWatchdog` 之后，等待不可被 tick 打断，否则重新同刻对齐）；③ 只读复查发现唯一无上限扇出是 coze `/accounts`（建议补 `sem=4`，未修）。验证：全插件 cgo-shim 全绿、三处变异精确捕获。
-- 当前会话（2026-10-19）：**账号故障冷却基数 30s → 60s（未发布生产）**：
-  - 用户需求：「统一的 30s 冷却递增改成 60s 开始递增 60s」，裁定为 **60s、120s、180s…线性递增、上限仍 10 分钟**。
-  - **实现**：各插件 `failoverCooldownBase` 30s→60s（已下线插件当时也在范围），`LadderCap` 由 `max/base` 自动从 20 档变 10 档；公式不变（仍 `base × count`），账号×模型双层冷却共用同一函数。
-  - **验证**：当轮 10 插件 cgo-shim build+vet+test 全绿；gofmt 干净；`POLLUTION: PASS`；变异验证（workbuddy 基数改回 30s）→ 4 个用例精确 FAIL 并打印 `= 30s, want 1m0s`，还原后全绿。
-  - **并发盘点（只读）**：积分刷新走 `refreshConcurrency=10` worker 池（6 插件）；签到/保活 sem=4；coze 续期并发 4；zcode 单 worker + 300ms；traework 自动签到与 qwenwork 对账串行。全仓无跨插件共享限流，4h 槽位整点对齐致整机峰值约 70–80 个上游请求同刻在场。
-  - 文档：`doc/3-实施/2026-10-19_213000_账号冷却基数30s改60s实施总览.md`。
-- 当前会话（2026-10-19）：**Qoder 系模型发现风暴与 OOM 修复 P0/P1/P2 本地实施（按约束未发布生产）**：
-  - 放大器链：`callModelsAPI` 签名 body 与 GET 实际 body 不一致 → `Signature invalid` 恒 403（累计 5449 条、从未成功）→ 失败不写任何缓存 → 宿主每次 auth 重写触发 `model.for_auth` 逐账号全量重扫（实测 8409 条 N+1）。
-  - P0 改 GET 真实携带与签名同源的 `qoderEncode("{}")`（方向由外部可工作实现 qoder2api-hub 裁定）；P1 补 `failedAt` 负缓存 5min 切断风暴；P2 在 `pickNextAuth` 单点收口 50ms 退避 + 错误体 `io.LimitReader` 截断。复核追加修复「先开窗再回退致回退成死路径」。
-  - **P0/P1/P2 逐项细节、9 个新测试文件与变异复验见 `doc/3-实施/2026-10-19_133000_Qoder系模型发现风暴与OOM修复P0P1P2实施总览.md`；生产发布与验收由后续会话完成（见 git log 与 `PROJECT_MEMORY.md`）。**
-- 前序会话（2026-10-18）：**coze 0.3.0 发布生产并连修四处缺陷（0.3.1~0.3.4），后续 0.3.5/0.3.6/0.4.0/0.4.1 同会话收口**：四个根因（流式 channel 塞 `Chunks` 致序列化失败 → `host.stream.emit`；WS 缺 Cookie 只推心跳 → 补 `cookieHeader`；final 是累积全文致正文重复 → final 只留 Snapshot；固定 300ms 猜就绪 → `WaitReady` + 按 `reply_to_message_id` 精确配对）。另 0.3.6 修 `/v1/responses` 必然 503（`executorRequestBody` 改 Payload 优先）、0.4.1 修下游用量全记零。均热重载零重启验收。**细节见 `coze/CHANGELOG.md` 0.3.0~0.4.1 各章节**。未闭合待办：new-api 渠道 4「混合」的 `models` 需手工追加 coze 模型名。
-- 前序会话（2026-10-18）：**coze TASK-004 对话链路实现完成（v0.3.0），真流式落地**：新增 `frontier_frame.go`（12 字段 protobuf）、`frontier.go`（WS 客户端 + 心跳 + 退避重连）、`claw.go`、`convert.go`、`executor.go`（`turn_id+seq_num+phase` 去重）。实现中修两缺陷：心跳协程在断开后空等 10s（改为读循环结束即取消）、增量被合并成大块（改 `pending` 队列逐帧 emit）。cgo-shim 全绿、46 用例、3 次变异精确捕获。
-
-- 前序会话（2026-10-18，已压缩）：**coze CYCLE-01 协议取证：抓到真流式帧，TASK-004 阻断解除**：浏览器内给 `WebSocket.prototype.send` 打补丁捕获真实 WS 实例，抓到 100 帧业务数据。关键实测：`aid=751148`/`fpid=1289`/`xsack=0`/`pbbp2`（`connection-params` 的 `aid=578287`/`service=33555616` 是另一条通道，用错只收心跳）；claw 业务 `service=33555657`；阶段机 `event_start`→`event_delta`→`event_final`；`content.message_data.reply.content` 是 delta、`content_v2.session.final` 是累积快照；去重键 `turn_id+seq_num+phase`。见 `doc/5-tests/2026-10-18_164500_Coze对话链路协议补全.md` §4.6。
-- 前序会话（2026-10-18）：**coze-provider 0.2.2 定时续期改由插件自建定时器执行**：宿主 `refresh_interval_seconds` 只决定排期，`auto_refresh_loop.handleDueAuth` 在 `exec == nil` 时仅空转重排、不调用 `auth.refresh`；coze 声明 `Executor:false` 故宿主排期对本插件永不产生续期。新增 `coze/renew_loop.go`（默认 4h、并发 4、热重载即跑首轮）。顺带修真实缺陷：`applyRenewal` 原防覆盖判据比对对象永远是文件自身，外部重新授权的新凭据会被旧快照静默覆盖；改为读取时锚定 `StoredAuth.LoadedDigest`。已发布并生产热重载验收。
-- 前序会话（2026-10-18）：**coze-provider 0.2.0 模型动态发现 + 面板重做**：声明 `model_provider` 并实现 `model.static`/`model.for_auth`（`/v1/model/list` 的 `model_type` 必须是字符串枚举，多模态目录才有完整视频族，生产实测 16 模型）；面板移除授权区、按 workbuddy 风格重做、加 `/models` 与 `/test-active`、时间统一 `Asia/Shanghai`。已发布 0.2.0 并生产热重载验收（`active_version=0.2.0`、`/test-active` 可见 16 模型）。未验证：真实推理链路（属 CYCLE-01）。
-- 会话（2026-10-18，已压缩）：**qwenwork CYCLE-02 多账号调度：修复账号身份 key 失配（P0）**：执行器用 `auth.accessToken` 当账号身份，导致候选、冷却、会话绑定错位；改为账号维度稳定 key 并补回归；发布 0.2.x 生产热重载零重启。
-- 当前会话（2026-10-18）：**qwenwork-provider 0.1.0 立项实现并全链路发布**：Device Flow + PKCE（`gateway.qwenwork.cn`）换宿主 JWT → `POST /api/desktop-sessions`（**201 非 200**）签发 `sk-mm-v1.*` 短票据（TTL 2h）→ 裸 Bearer 打 `{base_url}/v1/chat/completions`；MaaS 无 `/v1/models`，目录在 `GET /api/desktop/chat-modes`。推理走**请求体透传**（仅强制 `stream=true` + `max_tokens` 自适应），管理路由收敛 13 条。发布链 `a9585c7` → CI `39050879075` → `91e050e` → `14bc392`(6 平台) → `3568d37`(registry)；图标改用仓库内 `assets/icons/QwenWork.png`（原外链 404）。
-- 当前会话（2026-10-18）：**发布矩阵下线 freebsd-amd64，平台数 7 → 6**：根因 `go-cross/cgo-actions@v1` 硬编码下载 FreeBSD `14.3-RELEASE/base.txz`，该版本已从官方源下架（404），曾致全部 10 插件 freebsd 构建集体失败并连带 Release job skipped；直接下线该平台根治。改动 `build.yml`（删 12 条矩阵项与 wget 补丁）、`publish-assets.py`（删 `freebsd_amd64` 与逃生门）、`registry.json`（10 插件各 7→6）。CI run `39052278051` 84 success / 1 skipped / 0 failure。见 `doc/6-review/2026-10-18_010000_发布矩阵下线freebsd平台_6-review.md`。
-- 当前会话（2026-10-17）：**qoder 三插件流式断流换号与冷却落盘修复（CYCLE-01 + CYCLE-02 全部闭环）**：根因三层（断流分支无换号路径 + 断流信封无状态码 + 24h 冷却 92 次触发零落盘）。qoderwork / workbuddy / qoder-ai 新增 `isStreamReadError` + `shouldRotateOnStreamReadError`，信封补 `http_status=502`。已发布 qoderwork 0.9.44 / workbuddy 0.16.5 / qoder-ai 0.1.24，热重载零重启。**未实证项与验收边界见 `doc/4-bugs/2026-10-17_202500_qoderwork流式中途断流不换号且24h冷却未落盘根因诊断.md`。**
-- 会话（2026-10-15，已压缩）：**跨插件同步第二轮复检（只读审计）**：md5 对比 + 机制分布 grep + 版本矩阵复核 9 插件，原批次 A~D 全部闭环。
-
-- 会话（2026-10-15，已压缩）：**qoder 双插件重建上游 messages 保留工具调用结构（qoderwork 0.9.40 / qoder-ai 0.1.20）**：根因是 baseprompt 的 agent 上下文 + 插件重建 messages 丢掉 `tool_calls`/`tool_call_id`；补三字段并同步自定义 `UnmarshalJSON`（陷阱：加字段必须同步解析否则恒空）。**判别力边界**：只修结构丢失，探索型任务仍不收敛。
-
-- 会话（2026-10-15，已压缩）：**五插件签到节奏统一为每 4 小时**：qoderwork/qoder-ai 由 `[10,22]` 恢复为 `[0,4,8,12,16,20]` 并移除失效门控；修正面板与文档错标的时段文案；四插件发布生产、零重启，远端 28/28 ALL PASS。
-
-- 会话（2026-10-14/15，已压缩）：**zcode-provider 中国区支持与额度领取链路（0.1.22→0.1.31）**：bigmodel OAuth 按 provider/域名/回调路径参数化复用 CLI 轮询链路；面板内无感验证领取额度（`captchaVerifyParam` 需带 `prefix`/`region`，修复后含 `securityToken`）；额度展示改走 `billing/balance` 取真实已用/剩余，面板改逐模型独立进度条。**未覆盖**：上游对全部账号 `billing/preview` 返回 `plans:[]`，完整激活未实证（上游活动态）。
-
-- 会话（2026-10-14，已压缩）：**四插件定时探活降频至 4 小时并修失败账号节流缺陷**：`recordActivePing` 原仅成功时刷新时间戳，失败账号不计时 → 每个 tick 被反复重测；改为「无论成败都先刷新」。
-
-- 会话（2026-10-14/15，已压缩）：**zcode-provider 0.1.22 领取指引**：改为如实 Start Plan 指引（`guideModal`）；根因：额度领取须官方客户端手动完成（claim 强制阿里云人机验证头，无头一律 `400 3007`）。
-
-- 历史会话（2026-10-15，已压缩）：**copilot-provider 立项与 0.1.0/0.1.1 两轮发布**。要点留存：宿主 `ServePluginAuthURL`（`auth_files_oauth_callback.go:218`）不把插件 `Metadata` 回传前端 → 0.1.1 改用**桥接页**方案（`/v0/resource/plugins/copilot-provider/login-bridge?state=…`，resource 路由是插件唯一免鉴权 GET 面），桥接页**只展示不轮询**（轮询成功即 read-once 删除会话，桥接页自行轮询会偷走凭据）。两轮均热重载零重启、7/7 artifacts ALL PASS。**Kiro 裁定不立项**：FAQ 明文禁第三方 harness、免费档仅 50 credits/月、有终局封禁实证。文档：`doc/3-实施/2026-10-16_010000_copilot宿主OAuth弹窗设备码桥接页实施总览.md`、`doc/3-实施/2026-10-15_Copilot与Kiro插件立项实施总览.md`、`doc/3-实施/2026-10-15_235000_Kiro可行性评估报告.md`。
-
-- 会话（2026-10-13，更早历史已压缩，详见 git log 与 PROJECT_HISTORY.md）：
-  - **六插件 max_tokens 统一 32768 底线**：`applyMaxTokensFloor` 四出口收敛；zcode 规格矩阵 14→64 条；四插件探活改「全量按序 any-success」。
-  - **Qoder 110 日上限 24h 持久化冷却**：`isDailyCountExceeded` 精确识别 110；`daily_cooling_until` 落盘 + 内存镜像 + watchdog 重建；路由/换号/粘性绝对排除，`resetAccountFailover` 刻意保留；新增 `POST /clear-cooldown` 与面板徽标。
-  - **max_tokens 官方规格自适应**：Qoder 客户端写死 `max_output_tokens=8192` 致思维链吃满配额、正文被 `finish_reason: length` 截断；内置规格表，推理模式放宽至官方上限、超限 clamp。
-  - **ZCode 0.1.14/0.1.15**：修 `usage_feed.go` 孤立路径与缺 `tokens` 嵌套、`ExecutorModelScopeStatic` 误声明致别名未绑定（改 `ExecutorModelScopeOAuth`）；claim 需 `X-Aliyun-Captcha-Verify-Param` + `sgp`（后被 0.1.28 无感验证取代）。
-  - **qoder 排队帧未识别致 60s 挂死（0.1.9 / 0.9.30）**：`parseQoderSSEChunk` 增第 4 类顶层 `code` 形态 + `unwrapNestedMessage` 逐层展开；哨兵反证移除后精确复现 10.00s 挂死。
-  - **删除 Gemini 插件**（体积 14.4MB、强依赖 GCP 结算、无面板与容灾）；**ZCode OAuth 重构为官方 CLI 轮询**（0.1.5→0.1.8，deep-link 唤起本地客户端）；**Qoder 403 首包假成功与流式诊断**（生产 nginx `proxy_buffering off` 后外网 1.35s）；**deepseek-v4.1-flash 推理断开根因**（同名裸模型多服务商认领 + 会话亲和钉死）；**Token 用量面板移除 4 图表**（0.2.6~0.2.8）。
-
-- （更早的 13 条会话进展摘要已按 51200 字节上限裁剪，历史见 git log 与 PROJECT_HISTORY.md）
+- 更早会话（2026-10-14 ~ 2026-10-20，已按 51200 字节上限压缩，完整记录见 git log 与 PROJECT_HISTORY.md）：
+  - **coze 系列 0.4.6 → 0.5.4**：64KB content 超限返回 413（防整池 503）；0.5.2 积分路由红线（执行入口闸门，非 scheduler）；0.5.3 生图收口统一 `awaitImages` + 4 分钟上限 + 缺图返回 400（止血额度被烧）；0.5.4 整池确定 0 分快速失败 400（零上游消耗）。
+  - **定时任务并发治理**：6 插件 4h 槽位改 `next*FireTime` + 5m 可注入抖动；traework 签到重试收敛并发 4；六个 watchdog 首轮加抖动；唯一无界扇出是 coze `/accounts`。
+  - **账号故障冷却基数 30s → 60s**：线性递增、上限 10 分钟、cap 10 档。
+  - **Qoder 系模型发现风暴与 OOM 修复（0.9.47 / 0.1.27）**：GET 真携带 `qoderEncode("{}")` 修复恒 403 Signature invalid；补负缓存 5min；`pickNextAuth` 50ms 退避 + 错误体截断。0.9.48 / 0.1.28 缓存按账号分片 + 额度优先排序。0.9.49 / 0.1.29 对外 ID 改官方展示名 + 执行链回译。
+  - **qwenwork-provider 立项与多账号**：0.1.0 Device Flow + PKCE → MaaS 短票据（TTL 2h）；CYCLE-02 修账号身份 key 失配；发布矩阵下线 freebsd-amd64（平台 7 → 6）。
+  - **coze 0.2.0~0.3.6**：模型动态发现 + 面板重做；定时续期改插件自建定时器；真流式落地（WS 心跳/退避重连、`turn_id+seq_num+phase` 去重、`WaitReady` 精确配对）；修 `/v1/responses` 503（Payload 优先）。
+  - **五插件签到节奏统一每 4 小时**；**zcode 中国区与额度领取（0.1.22→0.1.31）**、**copilot-provider 立项与 0.1.0/0.1.1**（宿主 OAuth 弹窗改桥接页）、**Kiro 裁定不立项**；**max_tokens 官方规格自适应 + 32768 底线**；**Qoder 110 日上限 24h 持久化冷却**；**排队帧不判账号故障**（403:10605 isQueued）；**删除 Gemini 插件**；**Token 用量面板移除 4 图表**。
 
 <!-- BEGIN RECENT PROJECT SESSIONS -->
 ## 最近 5 个同项目会话
