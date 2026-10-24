@@ -71,6 +71,13 @@ var (
 	// counterLoaded marks UIDs already seeded from the persisted json, so
 	// ensureCounterLoaded is idempotent and does not double-count.
 	counterLoaded = make(map[string]bool)
+
+	// 宿主读写注入点，与 daily_cooldown.go 同形态：生产走真实实现，单测替换为
+	// 内存假宿主。没有它，persistCounterDelta 的整条落盘链路（含冷却字段补齐）
+	// 在 cgo-shim 环境下无法覆盖，只能测到纯函数。
+	counterResolveIndexFn = resolveAuthIndexAndID
+	counterGetPhysicalFn  = hostAuthGetPhysical
+	counterPersistFn      = persistAuthDirect
 )
 
 // recordOutcome records one completed executor request against the account.
@@ -217,11 +224,11 @@ func persistCounterDelta(uid string, addSuccess, addFailed int64) error {
 	if uid == "" {
 		return fmt.Errorf("counter: empty uid")
 	}
-	authIndex, _ := resolveAuthIndexAndID(uid)
+	authIndex, _ := counterResolveIndexFn(uid)
 	if authIndex == "" {
 		return fmt.Errorf("counter: no auth_index for uid %s", uid)
 	}
-	phys, err := hostAuthGetPhysical(authIndex)
+	phys, err := counterGetPhysicalFn(authIndex)
 	if err != nil {
 		return err
 	}
@@ -229,11 +236,36 @@ func persistCounterDelta(uid string, addSuccess, addFailed int64) error {
 		return errAuthMissing()
 	}
 	raw := foldCounterIntoDoc(phys.JSON, addSuccess, addFailed)
+	// 宿主每次请求结束都用内存 Metadata 重建 auth 文件，daily_cooling_until 不在
+	// 白名单里会被抹掉；这里是唯一由插件自己驱动的周期性落盘，借它把字段补回去。
+	raw = restoreDailyCoolingIntoJSON(raw, uid)
 	name := phys.Name
 	if name == "" {
 		name = "qoderai-" + uid + ".json"
 	}
-	return persistAuthDirect(name, phys.Path, "", raw)
+	return counterPersistFn(name, phys.Path, "", raw)
+}
+
+// restoreDailyCoolingIntoJSON 在文档落盘前补齐 24h 冷却字段。
+// [参数] raw：待落盘的 auth 文档；uid：账号 UID。
+// [返回] 补写后的文档；无需补写时原样返回。
+// 最近修改时间：2026-10-25；改动原因：新增，承接 restoreDailyCoolingIntoDoc。
+func restoreDailyCoolingIntoJSON(raw []byte, uid string) []byte {
+	if len(raw) == 0 {
+		return raw
+	}
+	var doc map[string]any
+	if json.Unmarshal(raw, &doc) != nil || doc == nil {
+		return raw
+	}
+	if !restoreDailyCoolingIntoDoc(doc, uid) {
+		return raw
+	}
+	restored, err := json.Marshal(doc)
+	if err != nil {
+		return raw
+	}
+	return restored
 }
 
 // foldCounterIntoDoc increments success_count / failed_count on a top-level

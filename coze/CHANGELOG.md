@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.1 (2026-10-25)
+
+### Fix - 禁用状态随 auth.parse Metadata 回传，避免宿主 persist 抹掉
+
+- 背景: 宿主在**每次请求结束后**都会用内存里的 `Auth.Metadata` 重建物理 auth 文件（`MySQLStore.Save` → `auth.Storage.SaveTokenToFile`，白名单语义，未列出的顶层键一律丢弃）。插件直写的禁用归属标记不在该白名单内，于是「插件写禁 → 宿主 persist」之后盘上只剩 `disabled:true`，归属标记消失。标记一丢，探活循环按标记挑候选就再也找不到这个号，账号停在「宿主禁用、插件不认领」的死角。
+- 生产实证（workbuddy-provider 0.20.2）: 2026-10-25 三个账号带着 `failover_disable_at` 存活且 DB `disabled=true`（写盘链路本身可用）；另三个在 24 毫秒内被批量重写为 `disabled:false` 且标记全无，DB `updated_at` 分别早于文件 mtime —— 证明最后一笔不经 MySQL，是插件自身周期性落盘写回了已被宿主重建过的脏文档。
+- 修复: `authDataForLogin` 的 `Metadata` 补上 `disabled` / `low_credit_disable` / `low_credit_disable_below` / `low_credit_disable_at` 四个键。coze 原先的 Metadata 只有 5 个键、连 `disabled` 都没有，宿主一次 persist 就会把整个文件压成那 5 个键——禁用与归属一起消失，低额巡检再也认不出自己禁过的号。
+- 与其它插件的差异: workbuddy 系列靠「周期性落盘时补标记」修复，coze 没有计数器落盘通道，因此正解是让 `auth.parse` 直接把这些字段交给宿主，宿主重建时原样写回，形成闭环。
+- 验证: 新增 `disable_metadata_test.go` 3 用例（含 `handleParseAuth` 端到端往返）；变异验证（`disabled` 写死 `false`）被 2 条用例同时捕获；cgo-shim 全绿；gofmt 干净。
+- 涉及文件: `login.go`、新增 `disable_metadata_test.go`
+
 ## 0.6.0 (2026-10-25)
 
 ### 新增

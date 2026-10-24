@@ -1,5 +1,16 @@
 # Qoder AI Plugin Changelog
 
+## 0.1.31
+
+### Fix - 24h 每日冷却字段被宿主 persist 抹掉后自动补回
+
+- 背景: 宿主在**每次请求结束后**都会用内存里的 `Auth.Metadata` 重建物理 auth 文件（`MySQLStore.Save` → `auth.Storage.SaveTokenToFile`，白名单语义，未列出的顶层键一律丢弃）。插件直写的禁用归属标记不在该白名单内，于是「插件写禁 → 宿主 persist」之后盘上只剩 `disabled:true`，归属标记消失。标记一丢，探活循环按标记挑候选就再也找不到这个号，账号停在「宿主禁用、插件不认领」的死角。
+- 生产实证（workbuddy-provider 0.20.2）: 2026-10-25 三个账号带着 `failover_disable_at` 存活且 DB `disabled=true`（写盘链路本身可用）；另三个在 24 毫秒内被批量重写为 `disabled:false` 且标记全无，DB `updated_at` 分别早于文件 mtime —— 证明最后一笔不经 MySQL，是插件自身周期性落盘写回了已被宿主重建过的脏文档。
+- 修复: `persistCounterDelta`（watchdog 周期性落盘）在写盘前调用 `restoreDailyCoolingIntoDoc` 补齐 `daily_cooling_until`。只补「内存镜像里确实还在冷却期内」的账号——已到期的不补，避免把该恢复的号重新冻结。
+- 影响: `daily_cooling_until` 丢失后，进程重启或 `refreshDailyCoolingSetFromDisk` 再也恢复不出该号的 24h 冷却，账号会提前回到路由并再次撞上 110（日请求上限）。
+- 验证: 新增 `daily_cooling_restore_test.go` 3 用例；变异验证（断开 `persistCounterDelta` 的补字段调用 / 去掉「字段已存在」判据）全部 KILLED；cgo-shim 全绿；gofmt 干净。
+- 涉及文件: `daily_cooldown.go`、`counter.go`、新增 `daily_cooling_restore_test.go`
+
 ## 0.1.30
 
 ### Fix - 模型清单改为多场景并集 + 以上游 display_name 为准 + 补齐改名回译

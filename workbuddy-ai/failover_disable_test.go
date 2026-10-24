@@ -167,6 +167,7 @@ func clearFailoverProbeModels() {
 func clearFailoverDisabledLocalAll() {
 	failoverProbeModelMu.Lock()
 	failoverDisabledLocal = make(map[string]struct{})
+	failoverDisableAtLocal = make(map[string]string)
 	failoverProbeModelMu.Unlock()
 }
 

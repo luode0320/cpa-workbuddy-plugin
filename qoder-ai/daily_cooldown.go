@@ -113,6 +113,56 @@ func getAccountDailyCoolingUntil(authID string) time.Time {
 	return time.Time{}
 }
 
+// dailyCoolingUntilFor 读取内存镜像里该账号的冷却截止时间。
+// [参数] authID：账号标识（auth.ID / 归一化键任一形态）。
+// [返回] 冷却截止时间；无记录或已过期时返回零值。
+// 最近修改时间：2026-10-25；改动原因：新增，供重建盘上字段。
+func dailyCoolingUntilFor(authID string) time.Time {
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return time.Time{}
+	}
+	now := time.Now()
+	dailyCoolingMu.RLock()
+	defer dailyCoolingMu.RUnlock()
+	if until, ok := dailyCoolingMap[authID]; ok && now.Before(until) {
+		return until
+	}
+	if norm := normalizeFailoverKey(authID); norm != "" {
+		if until, ok := dailyCoolingMap[norm]; ok && now.Before(until) {
+			return until
+		}
+	}
+	return time.Time{}
+}
+
+// restoreDailyCoolingIntoDoc 在落盘前把 daily_cooling_until 补回文档。
+//
+// 为什么需要：宿主在每次请求结束后都会用内存里的 Metadata 重建 auth 文件，
+// 而那份 Metadata 只含白名单键，daily_cooling_until 不在其中，于是「插件写入
+// 24h 冷却 → 宿主 persist」之后盘上只剩白名单键。字段一丢，进程重启或
+// refreshDailyCoolingSetFromDisk 就再也恢复不出这个号的冷却，账号会提前回到路由。
+//
+// 只补「内存里确实还在冷却期内」的账号：已到期的不补，避免把该恢复的号重新冻结。
+//
+// [参数] doc：待落盘的顶层键映射（原地修改）；authID：账号标识。
+// [返回] true 表示本次补写了字段。
+// 最近修改时间：2026-10-25；改动原因：新增，堵住宿主 persist 抹冷却字段的缺口。
+func restoreDailyCoolingIntoDoc(doc map[string]any, authID string) bool {
+	if doc == nil {
+		return false
+	}
+	if existing, _ := doc["daily_cooling_until"].(string); strings.TrimSpace(existing) != "" {
+		return false
+	}
+	until := dailyCoolingUntilFor(authID)
+	if until.IsZero() {
+		return false
+	}
+	doc["daily_cooling_until"] = until.UTC().Format(time.RFC3339)
+	return true
+}
+
 // triggerDailyCooldown 将指定账号置入 24 小时每日调用上限冷却状态，并持久化到物理文件。
 // [参数] authIndex: 宿主 RPC 索引（可空，为空时自动反查）；authID: 账号唯一标识。
 // [返回] 写入与持久化成功返回 nil，失败返回对应错误。

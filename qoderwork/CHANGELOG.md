@@ -1,5 +1,17 @@
 # QoderWork Plugin Changelog
 
+## 0.11.1
+
+### Fix - 失败禁用标记被宿主 persist 抹掉后自动补回
+
+- 背景: 宿主在**每次请求结束后**都会用内存里的 `Auth.Metadata` 重建物理 auth 文件（`MySQLStore.Save` → `auth.Storage.SaveTokenToFile`，白名单语义，未列出的顶层键一律丢弃）。插件直写的禁用归属标记不在该白名单内，于是「插件写禁 → 宿主 persist」之后盘上只剩 `disabled:true`，归属标记消失。标记一丢，探活循环按标记挑候选就再也找不到这个号，账号停在「宿主禁用、插件不认领」的死角。
+- 生产实证（workbuddy-provider 0.20.2）: 2026-10-25 三个账号带着 `failover_disable_at` 存活且 DB `disabled=true`（写盘链路本身可用）；另三个在 24 毫秒内被批量重写为 `disabled:false` 且标记全无，DB `updated_at` 分别早于文件 mtime —— 证明最后一笔不经 MySQL，是插件自身周期性落盘写回了已被宿主重建过的脏文档。
+- 修复: `persistCounterDelta`（watchdog 周期性落盘）在写盘前调用 `restoreFailoverMarkersIntoDoc` 补齐三个归属键。补写条件严格限定为「本进程写过禁用」且「盘上确实 `disabled:true`」。`at` 时刻从内存新增的 `failoverDisableAtLocal` 取。
+- 说明: 0.11.0 引入的 sidecar（`data/qoderwork-failover.json`）已是路由判据与探活候选的权威来源，不受宿主 persist 影响，因此本缺口对 qoderwork 的影响小于 workbuddy；本次补齐是为了让盘上标记与 sidecar 口径一致，宿主侧写盘降级后仍能保留归属。
+- 面板: 新增 `failover_unconfirmed`，暴露「盘上禁用但宿主仍路由」的分叉。
+- 验证: 新增 `failover_marker_restore_test.go` 5 用例；变异验证全部 KILLED；cgo-shim 全绿；gofmt 干净。
+- 涉及文件: `counter.go`、`failover_disable.go`、`panel.go`、新增 `failover_marker_restore_test.go`
+
 ## 0.11.0
 
 ### Breaking - 失败禁用链路重构：三层分离 + 移植轮换/积分持久化

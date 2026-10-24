@@ -315,6 +315,14 @@ func authDataForLogin(sa *StoredAuth) pluginapi.AuthData {
 			"screen_name":              sa.ScreenName,
 			"mobile":                   sa.Mobile,
 			"refresh_interval_seconds": currentConfig().RenewIntervalSeconds,
+			// disabled 与三个低额禁用归属标记必须随 Metadata 回传：宿主在每次
+			// 请求结束后都用这份 Metadata 重建物理 auth 文件（白名单语义，未列出
+			// 的顶层键一律丢弃）。不回传就等于「插件写禁 → 宿主 persist → 盘上
+			// 只剩这 5 个键」，禁用与归属一起消失，巡检再也认不出这个号。
+			"disabled":                 sa.Disabled,
+			"low_credit_disable":       sa.LowCreditDisable,
+			"low_credit_disable_at":    sa.LowCreditDisableAt,
+			"low_credit_disable_below": sa.LowCreditDisableBelow,
 		},
 	}
 }
