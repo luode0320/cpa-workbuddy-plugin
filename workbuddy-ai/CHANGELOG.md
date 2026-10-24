@@ -1,5 +1,17 @@
 # WorkBuddy AI Plugin Changelog
 
+## 0.1.25
+
+### Fix - 移除「耗尽」标签与按额度排除逻辑（零积分同样可用）
+
+- 背景: WorkBuddy AI 账号即使积分为 0 也能正常推理，但插件沿用了国内版的额度语义——面板打「耗尽」红标、调度与换号按剩余额度排除候选、`lifecycle_auto` 把耗尽账号自动禁用。用户实测 `luode0322@gmail.com`（free，已用 100/100）被标「耗尽」且不再承载流量，与实际可用性冲突。
+- 路由: `scheduler.go` 候选过滤、`active_auth.go` 的 `accountRoutable` / `ensureDefaultActiveAuth`、`session_auth.go` 会话可用性、`failover_retry.go` 同请求换号候选，全部移除积分判据。零积分账号正常参与路由与会话粘性；积分仅保留为排序依据（高积分优先，未测排最后）。
+- 生命周期: 删除 `disableAuth` / `deleteAuth` / `applyExhaustedPolicy` / `lifecycleActionFor` / `shouldReenable` 全套按额度禁用删除逻辑；执行器硬额度错误（402 / 额度文案）只做失败冷却记账，不再触发禁用。新增一次性解禁：盘上带 `exhausted_disable` 标记的历史账号由其自动恢复为 `disabled:false` 并清除标记；`manual_disable` 与无标记禁用保持不动。
+- 面板与 API: 移除「耗尽」徽标、「耗尽」过滤器、「低额保护」徽标与统计项，`/accounts` 与 `/credits` 不再下发 `exhausted` / `low_credits`，汇总不再输出 `exhausted_count`。「可用」口径收敛为「未打测试标签」。
+- 配置: 移除 `min_routable_credits` 解析（存量配置写该键将被忽略，不再影响任何行为）；`lifecycle_auto` 描述改写为备注维护 + 历史标记解禁。
+- 测试: 新增零积分可路由回归（调度保留选中项、全池零积分仍 handled、会话粘性不受额度影响、面板选中不跳过零积分）；`shouldReenableLegacyExhausted` 判据新增 6 组用例（含 manual 优先、无标记不认领）。变异验证：注入「零积分排除」「accountRoutable 判零」「manual 不再优先」三处回退，分别被 3 / 5 / 1 个用例捕获。
+- 涉及文件: 修改 `policy.go`、`scheduler.go`、`active_auth.go`、`session_auth.go`、`failover_retry.go`、`lifecycle.go`、`billing.go`、`panel.go`、`panel.html`、`credits_handler.go`、`usage_config.go`、`main.go`、`main_test.go`、`scheduler_test.go`、`session_auth_test.go`、`routing_exclusion_test.go`、`min_routable_credits_test.go`；新增 `lifecycle_legacy_test.go`。
+
 ## 0.1.24
 
 ### Feature - 对齐国内版：连续使用轮换、失败即写盘禁用 + 探活解禁

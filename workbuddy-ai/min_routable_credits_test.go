@@ -7,107 +7,80 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// TestMinRoutableCredits_ConfigAndExclusion 验证安全缓冲额度红线默认 20、可配置、
-// 调度排除 remain < 20、平摊轮询以及 14018 换号判据。
-func TestMinRoutableCredits_ConfigAndExclusion(t *testing.T) {
+// TestCreditsDoNotGateRouting 锁定「积分不参与可用性判定」契约。
+//
+// 产品口径（2026-10-24 用户裁定）：WorkBuddy AI 无积分也能正常使用，因此
+// 额度耗尽既不打「耗尽」标签，也不排除路由、不触发自动禁用。本用例覆盖三处
+// 曾经的硬排除点：scheduler.pick 候选过滤、accountRoutable 判据、
+// ensureDefaultActiveAuth 的面板选中。
+func TestCreditsDoNotGateRouting(t *testing.T) {
 	resetActiveAuth(t)
 	resetTestFailed(t)
 	resetFailover(t)
-	restoreMin := setMinRoutableCredits(defaultMinRoutableCredits)
-	defer restoreMin()
 
-	// 1. 默认阈值为 20
-	if got := loadedMinRoutableCredits(); got != 20 {
-		t.Fatalf("default minRoutableCredits = %d, want 20", got)
-	}
-
-	// 2. 通过 configure() 动态修改阈值为 50
+	// 1. 已下线的配置键不再影响任何行为（存在即被忽略）。
 	cfgBytes, _ := json.Marshal(map[string]any{
 		"config_yaml": []byte("min_routable_credits: 50\nscheduler_mode: credits\n"),
 	})
 	configure(cfgBytes)
-	if got := loadedMinRoutableCredits(); got != 50 {
-		t.Fatalf("configured minRoutableCredits = %d, want 50", got)
+	if got := loadedSchedulerMode(); got != schedulerModeCredits {
+		t.Fatalf("scheduler_mode = %q, want %q", got, schedulerModeCredits)
 	}
-	setMinRoutableCredits(20)
 
-	// 3. 调度器硬排除 remain < 20 账号，并在健康账号间平摊轮询
-	accountCache.Store("acc-low", &accountCacheEntry{
-		credits: &creditsSummary{TotalRemain: 15, TotalUsed: 85, TotalSize: 100},
+	// 2. 零积分账号必须仍是可路由状态。
+	accountCache.Store("acc-zero", &accountCacheEntry{
+		credits: &creditsSummary{TotalRemain: 0, TotalUsed: 100, TotalSize: 100},
 	})
-	accountCache.Store("acc-ok1", &accountCacheEntry{
+	accountCache.Store("acc-ok", &accountCacheEntry{
 		credits: &creditsSummary{TotalRemain: 100, TotalUsed: 0, TotalSize: 100},
 	})
-	accountCache.Store("acc-ok2", &accountCacheEntry{
-		credits: &creditsSummary{TotalRemain: 200, TotalUsed: 0, TotalSize: 200},
-	})
 	defer func() {
-		accountCache.Delete("acc-low")
-		accountCache.Delete("acc-ok1")
-		accountCache.Delete("acc-ok2")
+		accountCache.Delete("acc-zero")
+		accountCache.Delete("acc-ok")
 	}()
+	if !accountRoutable("acc-zero") {
+		t.Fatal("零积分账号必须可路由：额度耗尽不等于不可用")
+	}
 
-	setActiveAuthID("acc-low")
-	raw1, err := handleSchedulerPick(mustMarshalBytes(t, pluginapi.SchedulerPickRequest{
+	// 3. 面板选中零积分账号时，调度不得因额度把它换掉。
+	setActiveAuthID("acc-zero")
+	raw, err := handleSchedulerPick(mustMarshalBytes(t, pluginapi.SchedulerPickRequest{
 		Provider: providerName,
 		Candidates: []pluginapi.SchedulerAuthCandidate{
-			{ID: "acc-low", Provider: providerName},
-			{ID: "acc-ok1", Provider: providerName},
-			{ID: "acc-ok2", Provider: providerName},
+			{ID: "acc-zero", Provider: providerName},
+			{ID: "acc-ok", Provider: providerName},
 		},
 	}))
 	if err != nil {
-		t.Fatalf("pick1 err: %v", err)
+		t.Fatalf("pick err: %v", err)
 	}
-	resp1 := parsePickResponse(t, raw1)
-	if !resp1.Handled || resp1.AuthID != "acc-ok2" {
-		t.Fatalf("expected acc-low (<20) excluded and highest healthy acc-ok2 picked first, got %+v", resp1)
+	if resp := parsePickResponse(t, raw); !resp.Handled || resp.AuthID != "acc-zero" {
+		t.Fatalf("零积分选中项必须保留，got %+v", resp)
 	}
 
-	// 再次切换（清空当前选中模拟轮询）：应轮询到下一个健康候选 acc-ok1
-	activeAuthMu.Lock()
-	activeAuthID = ""
-	activeAuthMu.Unlock()
-	raw2, err := handleSchedulerPick(mustMarshalBytes(t, pluginapi.SchedulerPickRequest{
+	// 4. 池内只剩零积分账号时仍由插件处理（不 defer）。
+	rawOnly, err := handleSchedulerPick(mustMarshalBytes(t, pluginapi.SchedulerPickRequest{
 		Provider: providerName,
 		Candidates: []pluginapi.SchedulerAuthCandidate{
-			{ID: "acc-low", Provider: providerName},
-			{ID: "acc-ok1", Provider: providerName},
-			{ID: "acc-ok2", Provider: providerName},
+			{ID: "acc-zero", Provider: providerName},
 		},
 	}))
 	if err != nil {
-		t.Fatalf("pick2 err: %v", err)
+		t.Fatalf("pick only-zero err: %v", err)
 	}
-	resp2 := parsePickResponse(t, raw2)
-	if !resp2.Handled || resp2.AuthID != "acc-ok1" {
-		t.Fatalf("expected round-robin to pick acc-ok1 on second turn, got %+v", resp2)
-	}
-
-	// 4. 所有候选均 < 20 时，必须全灭 defer (Handled: false)
-	rawAllLow, err := handleSchedulerPick(mustMarshalBytes(t, pluginapi.SchedulerPickRequest{
-		Provider: providerName,
-		Candidates: []pluginapi.SchedulerAuthCandidate{
-			{ID: "acc-low", Provider: providerName},
-		},
-	}))
-	if err != nil {
-		t.Fatalf("pickAllLow err: %v", err)
-	}
-	respAllLow := parsePickResponse(t, rawAllLow)
-	if respAllLow.Handled {
-		t.Fatalf("expected all low-credit candidates to defer (Handled: false), got %+v", respAllLow)
+	if resp := parsePickResponse(t, rawOnly); !resp.Handled || resp.AuthID != "acc-zero" {
+		t.Fatalf("仅剩零积分账号时仍应正常路由，got %+v", resp)
 	}
 
-	// 5. accountRoutable 对 remain < 20 判定为 false
-	if accountRoutable("acc-low") {
-		t.Fatal("expected accountRoutable(acc-low) == false for remain=15 < 20")
-	}
-	if !accountRoutable("acc-ok1") {
-		t.Fatal("expected accountRoutable(acc-ok1) == true for remain=100 >= 20")
+	// 5. 面板选中规则同样不得因额度跳过零积分账号。
+	dashID := ensureDefaultActiveAuth([]wbAccount{
+		{AuthIndex: "idx-zero", AuthID: "acc-zero"},
+	})
+	if dashID != "acc-zero" {
+		t.Fatalf("面板选中应为零积分账号 acc-zero，got %q", dashID)
 	}
 
-	// 6. 14018 与 exceeded the quota 必须触发换号
+	// 6. 14018 / exceeded the quota 仍必须触发换号（额度语义与上游失败分类无关）。
 	if !shouldRotateOnUpstreamErr(200, `upstream 200: 14018: Your requests have exceeded the quota.`) {
 		t.Fatal("expected 14018 / exceeded the quota to trigger account rotation")
 	}

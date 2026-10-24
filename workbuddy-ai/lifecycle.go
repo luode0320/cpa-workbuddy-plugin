@@ -1,15 +1,15 @@
-// lifecycle.go implements credit-based auth lifecycle for workbuddy:
-//   - CN exhausted → AUTO-DISABLE: write disabled:true + top-level marker
-//     exhausted_disable:true (policy update 2026-09-08, user mandate: 耗尽
-//     停用保留，但必须能自动恢复). The 4h check-in reconcile then re-enables
-//     the account automatically once refreshed credits are > 0.
-//   - Global exhausted → delete auth file (one-shot quota)
-//   - Manual disable (manual_disable marker, or a disabled doc without the
-//     exhausted_disable marker written by the host UI) is NEVER auto-touched:
-//     no automatic path re-enables or re-disables it.
-//   - Unknown credits → no-op (never mis-kill)
-//   - Hard credit errors from executor → recheck credits then apply policy
-//   - Soft rate limits → do not delete Global
+// lifecycle.go maintains auth-document notes and legacy-flag migration for
+// WorkBuddy AI.
+//
+// 产品口径（2026-10-24 用户裁定）：额度耗尽不代表账号不可用——零积分账号
+// 依然可以正常推理。因此本文件不再有任何「按额度禁用/删除账号」的自动动
+// 作，只负责：
+//   - 刷新 auth 文档上的展示备注（note）；
+//   - 把历史上被 `exhausted_disable` 标记自动禁用的账号重新启用（一次性
+//     迁移，残留标记随白名单重建被清除）；
+//   - 用户手动禁用（manual_disable / 宿主 UI 写入的无标记 disabled）一律
+//     不碰，保持用户意图。
+//   - 未知额度 → 同样不做任何动作。
 package main
 
 import (
@@ -73,165 +73,48 @@ func pruneLifecycleState() {
 	})
 }
 
-// disableAuth applies the exhausted-disable decision for one account.
+// shouldReenableLegacyExhausted 判定盘上的禁用状态是否由旧版「额度耗尽自动
+// 禁用」写入、因而应当被解除。
 //
-// Dual-path semantics (policy update 2026-09-08):
-//   - Manual toggle path (extra contains manual_disable:true): writes
-//     disabled:true and carries the manual_disable intent marker. The
-//     reconcile never auto-re-enables a manually disabled account, even
-//     when credits recover.
-//   - Auto exhaustion path (extra=nil, the only remaining automatic caller
-//     set — applyExhaustedPolicy / reconcileOneAccount lifecycleDisable):
-//     writes disabled:true + exhausted_disable:true when the account is
-//     currently enabled (耗尽自动停用). The 4h check-in reconcile clears the
-//     pair once refreshed credits are > 0 (自动恢复). If the file is already
-//     disabled, the existing flag is preserved untouched: manual_disable
-//     carries forward, exhausted_disable carries forward, and a marker-less
-//     disabled doc (host-UI toggle or unknown writer) gains NO marker — it
-//     stays exactly as the user left it.
-//
-// An existing manual_disable marker is ALWAYS carried forward, so an auto
-// note refresh of an already-manually-disabled account never erases the
-// user's choice. extra merges additional top-level keys into the auth file.
-func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string, extra map[string]any) error {
-	mu := checkinLockFor(authIndex)
-	mu.Lock()
-	defer mu.Unlock()
-
-	note := displayNote(sa, cr, true)
-	if reason != "" && !strings.Contains(note, reason) {
-		// keep note short; reason only if room
-		if len(note)+len(reason) < 75 {
-			note = note + " · " + reason
-		}
+// 只认本插件旧版写的 exhausted_disable 标记：用户手动禁用（manual_disable）
+// 优先，无标记的 disabled 视为宿主 UI 意图或其他写入方，一律不动。
+// [参数] raw：物理 auth 文档原文。
+// [返回] true 表示应由本插件解禁。
+// 最近修改时间：2026-10-24；改动原因：额度耗尽不再触发自动禁用。
+func shouldReenableLegacyExhausted(raw []byte) bool {
+	if manualDisableFromAuthJSON(raw) {
+		return false
 	}
-	// Prefer live physical file to preserve any extra fields if present.
-	phys, err := hostAuthGetPhysical(authIndex)
-	// Merge caller extras with any marker already on disk.
-	merged := map[string]any{}
-	for k, v := range extra {
-		merged[k] = v
-	}
-	if err == nil && manualDisableFromAuthJSON(phys.JSON) {
-		merged["manual_disable"] = true
-	}
-	// 本机制写的失败禁用标记必须原样搬运：buildAuthFileJSON 是白名单重建，
-	// 不搬运就会把 failover_disable 抹掉，探活循环从此找不到该账号（静默遗忘）。
-	if err == nil && phys != nil {
-		merged = putFailoverMarkersIntoExtra(merged, phys.JSON)
-	}
-	// Determine whether this is a manual toggle or an auto-lifecycle call.
-	// Manual toggle (extra contains manual_disable:true) writes disabled:true
-	// with the intent marker. The auto exhaustion path (policy update
-	// 2026-09-08) writes disabled:true + exhausted_disable:true when the
-	// account is enabled; already-disabled files keep their existing flag and
-	// markers untouched (manual_disable carries forward via merged above).
-	_, isManualToggle := extra["manual_disable"]
-	if !isManualToggle {
-		// Auto-lifecycle: exhaustion disable with auto-recovery marker.
-		finalDisabled := false
-		if err == nil && phys != nil {
-			finalDisabled = parseDisabledFromAuthJSON(phys.JSON)
-			switch {
-			case manualDisableFromAuthJSON(phys.JSON):
-				// Manually disabled: user intent wins — the manual_disable
-				// marker is already carried in merged; never add
-				// exhausted_disable (must not become auto-recoverable).
-			case exhaustedDisableFromAuthJSON(phys.JSON):
-				// Already auto-disabled by this lifecycle: marker carries
-				// forward so recovery stays armed.
-				merged["exhausted_disable"] = true
-			case finalDisabled:
-				// Disabled by an unknown/manual writer without markers
-				// (e.g. host-UI toggle): leave the flag exactly as-is.
-			default:
-				// Enabled → exhausted auto-disable (可自动恢复).
-				finalDisabled = true
-				merged["exhausted_disable"] = true
-			}
-		}
-		note = displayNote(sa, cr, finalDisabled)
-		if reason != "" && !strings.Contains(note, reason) {
-			// keep note short; reason only if room
-			if len(note)+len(reason) < 75 {
-				note = note + " · " + reason
-			}
-		}
-		// Skip the write when state+note are unchanged.
-		if lifecycleStateUnchanged(authID, finalDisabled, note) {
-			return nil
-		}
-		name := authFileNameFor(sa)
-		path := ""
-		legacyPath := ""
-		if phys != nil {
-			name, path, legacyPath = resolveAuthFileTarget(sa, phys)
-		}
-		raw, err := buildAuthFileJSON(sa, finalDisabled, note, merged)
-		if err != nil {
-			return err
-		}
-		if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
-			return err
-		}
-		rememberLifecycleState(authID, finalDisabled, note)
-		accountCache.Delete(authID)
-		return nil
-	}
-	// Manual toggle path: write disabled:true.
-	// Skip the write only when state+note are unchanged AND nothing new to
-	// merge — a manual toggle must persist even inside the lifecycle TTL.
-	if lifecycleStateUnchanged(authID, true, note) {
-		// already disabled; still refresh note if needed
-		if lifecycleStateUnchanged(authID, true, note) {
-			return nil
-		}
-	}
-	name := authFileNameFor(sa)
-	path := ""
-	legacyPath := ""
-	if phys != nil {
-		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
-	}
-	raw, err := buildAuthFileJSON(sa, true, note, merged)
-	if err != nil {
-		return err
-	}
-	// Direct physical write (NOT host.auth.save): the save channel rebuilds
-	// the record as Active and would silently re-enable the account. The file
-	// watcher applies top-level disabled to the scheduler instead.
-	if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
-		return err
-	}
-	rememberLifecycleState(authID, true, note)
-	accountCache.Delete(authID)
-	return nil
+	return exhaustedDisableFromAuthJSON(raw)
 }
 
-// reenableAuth writes disabled:false when CN has credits again.
-func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) error {
+// reenableLegacyExhaustedAuth 解除历史「额度耗尽自动禁用」遗留的禁用状态。
+//
+// 额度耗尽不再构成禁用理由（零积分账号可正常推理），因此历史上被
+// exhausted_disable 标记自动禁用的账号需要一次性恢复：写入 disabled:false，
+// 标记随白名单重建被清除，此后不再产生。
+// 用户手动禁用（manual_disable，或宿主 UI 写入的无标记 disabled）一律不碰。
+//
+// [参数] authIndex：宿主索引；authID：账号缓存键；sa：账号凭证。
+// [返回] 写盘失败时返回错误。
+// 最近修改时间：2026-10-24；改动原因：额度耗尽不再触发自动禁用。
+func reenableLegacyExhaustedAuth(authIndex, authID string, sa *storedAuth) error {
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
 	defer mu.Unlock()
 
-	if !shouldReenableCN(true, cr) {
-		return nil
-	}
-	note := displayNote(sa, cr, false)
-	if lifecycleStateUnchanged(authID, false, note) {
-		return nil
-	}
 	phys, err := hostAuthGetPhysical(authIndex)
-	name := authFileNameFor(sa)
-	path := ""
-	legacyPath := ""
-	extra := map[string]any{}
-	if err == nil {
-		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
-		// 本机制标记必须原样搬运，否则白名单重建会把 failover_disable 抹掉，
-		// 禁用探活从此认不出这个号；同时它是「这个禁用是不是我写的」的判据。
-		extra = putFailoverMarkersIntoExtra(extra, phys.JSON)
+	if err != nil || phys == nil {
+		return fmt.Errorf("load physical auth: %w", err)
 	}
+	if !shouldReenableLegacyExhausted(phys.JSON) {
+		return nil
+	}
+	note := displayNote(sa, nil, false)
+	name, path, legacyPath := resolveAuthFileTarget(sa, phys)
+	// 本机制标记必须原样搬运，否则白名单重建会把 failover_disable 抹掉，
+	// 禁用探活从此认不出这个号。
+	extra := putFailoverMarkersIntoExtra(map[string]any{}, phys.JSON)
 	raw, err := buildAuthFileJSON(sa, false, note, extra)
 	if err != nil {
 		return err
@@ -244,77 +127,6 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) 
 	}
 	rememberLifecycleState(authID, false, note)
 	accountCache.Delete(authID)
-	return nil
-}
-
-// deleteAuth removes Global exhausted credentials from disk.
-func deleteAuth(authIndex, authID string, sa *storedAuth) error {
-	mu := checkinLockFor(authIndex)
-	mu.Lock()
-	defer mu.Unlock()
-
-	phys, err := hostAuthGetPhysical(authIndex)
-	if err != nil {
-		return err
-	}
-	path := strings.TrimSpace(phys.Path)
-	if path == "" {
-		// Try to reconstruct path from peer workbuddy files' directory + canonical name.
-		name := authFileNameFor(sa)
-		if phys.Name != "" && !isLegacyWorkbuddyAuthName(phys.Name) {
-			name = phys.Name
-		} else if strings.TrimSpace(phys.Name) != "" && isLegacyWorkbuddyAuthName(phys.Name) {
-			name = authFileNameFor(sa)
-		}
-		if dir := peerAuthDir(); dir != "" && name != "" {
-			candidate := filepath.Join(dir, name)
-			if isSafeWorkbuddyAuthPath(candidate) {
-				path = candidate
-			}
-		}
-	}
-	if path == "" {
-		// Last resort: preserve the existing disabled flag (never auto-disable).
-		existingDisabled := parseDisabledFromAuthJSON(phys.JSON)
-		note := displayNote(sa, nil, existingDisabled)
-		extra := map[string]any{}
-		if manualDisableFromAuthJSON(phys.JSON) {
-			extra["manual_disable"] = true
-		}
-		if exhaustedDisableFromAuthJSON(phys.JSON) {
-			extra["exhausted_disable"] = true
-		}
-		extra = putFailoverMarkersIntoExtra(extra, phys.JSON)
-		raw, berr := buildAuthFileJSON(sa, existingDisabled, note, extra)
-		if berr != nil {
-			return fmt.Errorf("no path and build failed: %w", berr)
-		}
-		name := authFileNameFor(sa)
-		if phys.Name != "" && !isLegacyWorkbuddyAuthName(phys.Name) {
-			name = phys.Name
-		}
-		if err := hostAuthPersistMigrate(name, "", "", raw); err != nil {
-			return err
-		}
-		rememberLifecycleState(authID, true, note)
-		accountCache.Delete(authID)
-		clearActiveAuthIfMatch(authID)
-		return nil
-	}
-	if err := deleteAuthFileInDir(path, filepath.Dir(path)); err != nil {
-		return err
-	}
-	// Also remove legacy workbuddy.json if this UID was dual-named historically.
-	if sa != nil && strings.TrimSpace(sa.Account.UID) != "" {
-		if dir := filepath.Dir(path); dir != "" {
-			legacy := filepath.Join(dir, authFileName)
-			// A-36: same path safety as primary deleteAuthFileInDir.
-			if isLegacyWorkbuddyAuthName(filepath.Base(legacy)) {
-				_ = deleteAuthFileInDir(legacy, dir)
-			}
-		}
-	}
-	clearDeletedAccountState(authID, authIndex, sa.Account.UID)
 	return nil
 }
 
@@ -354,22 +166,6 @@ func peerAuthDir() string {
 	return ""
 }
 
-// applyExhaustedPolicy applies disable (CN) or delete (Global).
-func applyExhaustedPolicy(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string) error {
-	if !lifecycleEnabled() {
-		return nil
-	}
-	action := lifecycleActionFor(accountRegion(sa), cr)
-	switch action {
-	case lifecycleDelete:
-		return disableAuth(authIndex, authID, sa, cr, "耗尽", nil)
-	case lifecycleDisable:
-		return disableAuth(authIndex, authID, sa, cr, reason, nil)
-	default:
-		return nil
-	}
-}
-
 // syncAuthNote writes note without changing disabled state.
 func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, disabled bool) error {
 	if sa == nil {
@@ -393,8 +189,9 @@ func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 		disabled = parseDisabledFromAuthJSON(phys.JSON)
 		note = displayNote(sa, cr, disabled)
 		// carry the manual-disable marker forward (note refresh must not
-		// clear it), same for the exhausted-disable marker (note refresh
-		// must not disarm auto-recovery)
+		// clear it)。exhausted_disable 同样必须搬运：本函数可能先于
+		// reconcileOneAccount 的解禁路径执行，一旦抹标记却保留 disabled，
+		// 该账号就再也认不出是历史耗尽禁用，永久卡死。
 		if manualDisableFromAuthJSON(phys.JSON) {
 			extra["manual_disable"] = true
 		}
@@ -419,7 +216,11 @@ func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 	return nil
 }
 
-// reconcileOneAccount refreshes credits and applies lifecycle for one auth.
+// reconcileOneAccount 刷新积分快照并维护 auth 文档备注。
+//
+// 额度耗尽不再触发任何禁用/删除动作（零积分账号可正常推理），因此这里只做
+// 三件事：刷新缓存备注；把历史上被 exhausted_disable 自动禁用的账号一次性
+// 解禁；其余禁用状态（manual_disable / 无标记 disabled）保持不动。
 // authIndex is used for host RPC (host.auth.get), authID (auth.ID) is used
 // for cache keys (accountCache/lifecycleState) so it matches the scheduler's
 // SchedulerAuthCandidate.ID.
@@ -462,47 +263,28 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 		}
 	}
 
-	region := accountRegion(sa)
-	_ = region
 	if disabled {
 		// Manual disable (manual_disable marker) must stick: never
-		// auto-re-enable an account the user explicitly disabled, even when
-		// credits recover.
+		// auto-re-enable an account the user explicitly disabled.
 		if phys != nil && manualDisableFromAuthJSON(phys.JSON) {
 			_ = syncAuthNote(authIndex, authID, sa, cr, true)
 			return lifecycleNone, nil
 		}
-		// Marker-gated recovery (policy update 2026-09-08): only docs this
-		// lifecycle auto-disabled (exhausted_disable:true) re-enable
-		// automatically once credits recover. A marker-less disabled doc is
-		// host-UI manual intent or an unknown writer — sticky by design.
+		// 历史遗留解禁：仅认领本插件旧版写的 exhausted_disable 标记。
+		// 无标记的 disabled 视为宿主 UI 手动意图或未知写入方，保持原样。
 		if phys == nil || !exhaustedDisableFromAuthJSON(phys.JSON) {
 			_ = syncAuthNote(authIndex, authID, sa, cr, true)
 			return lifecycleNone, nil
 		}
-		if shouldReenable(true, cr) {
-			if err := reenableAuth(authIndex, authID, sa, cr); err != nil {
-				return lifecycleReenable, err
-			}
-			return lifecycleReenable, nil
+		if err := reenableLegacyExhaustedAuth(authIndex, authID, sa); err != nil {
+			return lifecycleReenable, err
 		}
-		// still disabled: refresh note
-		_ = syncAuthNote(authIndex, authID, sa, cr, true)
-		return lifecycleNone, nil
+		return lifecycleReenable, nil
 	}
 
-	act := lifecycleActionFor(region, cr)
-	switch act {
-	case lifecycleDelete:
-		// 防误删保护：WorkBuddy AI 独立插件中耗尽仅软禁用，绝不物理删除账号
-		return lifecycleDisable, disableAuth(authIndex, authID, sa, cr, "耗尽", nil)
-	case lifecycleDisable:
-		return lifecycleDisable, disableAuth(authIndex, authID, sa, cr, "耗尽", nil)
-	default:
-		// healthy: keep note fresh (throttled)
-		_ = syncAuthNote(authIndex, authID, sa, cr, false)
-		return lifecycleNone, nil
-	}
+	// 启用中的账号只刷新备注，绝不因额度为 0 而禁用。
+	_ = syncAuthNote(authIndex, authID, sa, cr, false)
+	return lifecycleNone, nil
 }
 
 // reconcileAllAccounts walks workbuddy auths and applies lifecycle.
@@ -566,18 +348,20 @@ func noteAccountFailureForModel(authID, model string, status int, body string) b
 	return true
 }
 
-// reconcileAfterExecutorError triggers lifecycle when upstream reports hard credit failure.
+// reconcileAfterExecutorError records an executor failure for the account.
 // AuthID from the executor may be the credential ID (UID) rather than runtime auth_index;
 // we resolve via host.auth.list when direct get fails.
+// 额度类硬错误不再触发禁用生命周期（零积分账号可正常推理），只走失败冷却记账。
 func reconcileAfterExecutorError(authID string, status int, body string) {
 	reconcileAfterExecutorErrorForModel(authID, "", status, body)
 }
 
 // reconcileAfterExecutorErrorForModel 带模型维度的执行器错误收尾。
-// 除按维度记账外，其余（硬额度生命周期）行为与历史一致。
+// 只做失败记账与绑定驱逐；额度耗尽不再影响账号可用性，因此不再触发任何
+// 禁用/删除动作。
 // [参数] authID：账号唯一标识；model：已归一化的上游模型名，可为空；
 // status：上游 HTTP 状态码；body：上游响应正文。
-// 最近修改时间：2026-10-18 23:40:00；改动原因：新增账号×模型双层冷却。
+// 最近修改时间：2026-10-24；改动原因：移除额度耗尽触发的自动禁用。
 func reconcileAfterExecutorErrorForModel(authID, model string, status int, body string) {
 	authID = strings.TrimSpace(authID)
 	if authID == "" {
@@ -586,17 +370,6 @@ func reconcileAfterExecutorErrorForModel(authID, model string, status int, body 
 	// Failover first — independent of lifecycle_auto: any upstream failure
 	// (429/402/5xx/transport) counts toward cooldown and evicts bindings.
 	noteAccountFailureForModel(authID, model, status, body)
-	// Hard credit errors additionally trigger the disable/delete lifecycle.
-	if !lifecycleEnabled() || !isHardCreditError(status, body) {
-		return
-	}
-	go func() {
-		idx, id := resolveAuthIndexAndID(authID)
-		if idx == "" {
-			return
-		}
-		_, _ = reconcileOneAccount(idx, id, true)
-	}()
 }
 
 // resolveAuthIndexAndID maps executor AuthID (index, file id, or account UID)
@@ -664,15 +437,16 @@ func noteSSEErrorFailure(authID, model, body string) bool {
 	return true
 }
 
-// reconcileByUID finds workbuddy auth by account UID and applies executor-error lifecycle.
+// reconcileByUID records an executor failure by account UID.
 func reconcileByUID(uid string, status int, body string) {
 	reconcileByUIDForModel(uid, "", status, body)
 }
 
 // reconcileByUIDForModel 带模型维度的 UID 侧收尾，供流式路径按实际失败模型记账。
+// 只做失败记账；额度耗尽不再影响账号可用性。
 // [参数] uid：账号 UID；model：已归一化的上游模型名，可为空；
 // status：上游 HTTP 状态码；body：上游响应正文。
-// 最近修改时间：2026-10-18 23:40:00；改动原因：新增账号×模型双层冷却。
+// 最近修改时间：2026-10-24；改动原因：移除额度耗尽触发的自动禁用。
 func reconcileByUIDForModel(uid, model string, status int, body string) {
 	uid = strings.TrimSpace(uid)
 	if uid == "" {
@@ -682,14 +456,6 @@ func reconcileByUIDForModel(uid, model string, status int, body string) {
 	// the account UID; noteAccountFailure resolves it to the auth.ID key the
 	// scheduler uses and evicts bindings when cooldown triggers.
 	noteAccountFailureForModel(uid, model, status, body)
-	if !lifecycleEnabled() || !isHardCreditError(status, body) {
-		return
-	}
-	idx, id := resolveAuthIndexAndID(uid)
-	if idx == "" {
-		return
-	}
-	_, _ = reconcileOneAccount(idx, id, true)
 }
 
 // invalidateAccountCredits drops cached credits so the next panel/reconcile

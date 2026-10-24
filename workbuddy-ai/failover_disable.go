@@ -16,8 +16,8 @@
 //
 // 与既有 `manual_disable` / `exhausted_disable` 的边界（本文件最重要的约束）：
 // 本机制只认领、只解除自己写的 `failover_disable` 标记。用户手动禁用（manual）
-// 与额度耗尽自动禁用（exhausted，由 4 小时签到 reconcile 在额度恢复时解除）都由
-// 各自的流程负责，本文件既不覆盖它们的 disabled，也绝不替它们解除禁用。
+// 由用户自己恢复；额度耗尽禁用（exhausted）已随「零积分可用」口径废弃，仅由
+// lifecycle 一次性解禁历史遗留。本文件既不覆盖它们的 disabled，也绝不替它们解除。
 //
 // 落盘一律走「读物理文件 → 改顶层键 → 整体写回」，不重建文档，也不用
 // host.auth.save：前者保留盘上所有既有顶层键，后者会重建记录。
@@ -278,7 +278,7 @@ func failoverMarkersFromMap(doc map[string]any) map[string]any {
 
 // failoverMarkersFromJSON 取出盘上已有的本机制顶层键，供白名单重建文档时搬运。
 //
-// 为什么必须搬运：lifecycle 的 disableAuth / syncAuthNote 走 buildAuthFileJSON
+// 为什么必须搬运：lifecycle 的 syncAuthNote 走 buildAuthFileJSON
 // （白名单重建，只输出固定几个键 + extra）。若账号正被本机制禁用，重建会把
 // failover_disable 抹掉——号仍是 disabled，但探活循环按标记挑候选，从此再也找不到
 // 它，账号就永久卡在禁用态（静默遗忘）。搬运这三个键是唯一防线。
@@ -608,7 +608,7 @@ func runFailoverTickNonOverlap(tick func()) bool {
 // reconcileFailoverLocalSet 把本地禁用集合与盘上真相核对一轮，清掉已被外部启用的号。
 //
 // 为什么必须做：本地集合只在「本进程写的恢复」时清除，但启用不止这一条路——用户
-// 在 CPA 面板启用、宿主 UI 改 disabled:false、lifecycle 的 reenableAuth 重建文档，
+// 在 CPA 面板启用、宿主 UI 改 disabled:false、lifecycle 重建文档，
 // 都不会经过 reenableAccountForFailover。那些号在宿主侧已经可路由，插件内存里却
 // 仍判它坏，于是调度与入口前置拦截会永久跳过它，直到插件重启（静默遗忘的镜像形态）。
 //

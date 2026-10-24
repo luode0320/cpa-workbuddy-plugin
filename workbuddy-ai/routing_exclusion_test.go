@@ -86,11 +86,10 @@ func TestSchedulerPick_AllTestFailed_Defers(t *testing.T) {
 	}
 }
 
-// TestSchedulerPick_LowCreditFirstAndUnknownLast pins the ordering contract:
-// a below-floor account is hard-excluded, and an account with no cached
-// snapshot (-1) never jumps ahead of a measured one. (The test name predates
-// the low-credit-first reversal; current routing is HIGH-CREDIT-FIRST.)
-func TestSchedulerPick_LowCreditFirstAndUnknownLast(t *testing.T) {
+// TestSchedulerPick_HighCreditFirstAndUnknownLast 锁定排序契约：积分只影响
+// 优先级不影响可用性——高积分账号排在前面，未测 (-1) 排在最后，低积分账号
+// 仍在候选池内（只是排在后面）。
+func TestSchedulerPick_HighCreditFirstAndUnknownLast(t *testing.T) {
 	resetActiveAuth(t)
 	resetTestFailed(t)
 	resetFailover(t)
@@ -110,9 +109,34 @@ func TestSchedulerPick_LowCreditFirstAndUnknownLast(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 	resp := parsePickResponse(t, raw)
-	// wbai-low (12 < 20) 低于安全红线被硬排除，wbai-mid (300) 排在 wbai-unknown (-1) 之前被选中
+	// 高积分 wbai-mid (300) 先于低积分 wbai-low (12)，未测 (-1) 排最后
 	if !resp.Handled || resp.AuthID != "wbai-mid" {
-		t.Fatalf("want healthy wbai-mid routed (wbai-low < 20 excluded), got %+v", resp)
+		t.Fatalf("want high-credit wbai-mid routed first, got %+v", resp)
+	}
+}
+
+// TestSchedulerPick_LowCreditAccountStillRoutable 断言低积分账号不再被排除：
+// 池内只剩它和一个未测账号时，它仍会被选中。
+func TestSchedulerPick_LowCreditAccountStillRoutable(t *testing.T) {
+	resetActiveAuth(t)
+	resetTestFailed(t)
+	resetFailover(t)
+	storeCredits(t, "wbai-low", 5, 295, 300)
+	accountCache.Store("wbai-unknown", &accountCacheEntry{})
+	defer accountCache.Delete("wbai-unknown")
+	raw, err := handleSchedulerPick(mustMarshalBytes(t, pluginapi.SchedulerPickRequest{
+		Provider: providerName,
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{ID: "wbai-unknown", Provider: providerName},
+			{ID: "wbai-low", Provider: providerName},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	resp := parsePickResponse(t, raw)
+	if !resp.Handled || resp.AuthID != "wbai-low" {
+		t.Fatalf("low-credit account must stay routable, got %+v", resp)
 	}
 }
 

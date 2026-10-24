@@ -85,11 +85,8 @@ func pickNextAuthForModel(currentAuthID, model string) (nextAuthID string, nextS
 		if isTestFailed(id) {
 			continue
 		}
-		// 跳过已耗尽或额度低于安全红线的残血账号，防止同请求换号再次中断
-		remain, lowOrExhausted := cachedCreditsScore(id)
-		if lowOrExhausted || (remain >= 0 && remain < loadedMinRoutableCredits()) {
-			continue
-		}
+		// 额度不参与候选排除：零积分账号仍可正常推理，真正不可用的号由
+		// 失败冷却与写盘禁用挡住。
 		// Skip candidates with no usable auth index — we can't load
 		// their stored body, so retrying on them would fail
 		// identically and burn a budget slot.

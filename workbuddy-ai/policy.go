@@ -14,22 +14,16 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// lifecycleAction is the policy decision for one account.
+// lifecycleAction is the maintenance decision for one account.
 type lifecycleAction int
 
 const (
 	lifecycleNone lifecycleAction = iota
-	lifecycleDisable
-	lifecycleDelete
 	lifecycleReenable
 )
 
 func (a lifecycleAction) String() string {
 	switch a {
-	case lifecycleDisable:
-		return "disable"
-	case lifecycleDelete:
-		return "delete"
 	case lifecycleReenable:
 		return "reenable"
 	default:
@@ -37,7 +31,8 @@ func (a lifecycleAction) String() string {
 	}
 }
 
-// lifecycleAuto gates automatic delete. Default false.
+// lifecycleAuto gates the automatic note/legacy-flag maintenance loop.
+// Default false.
 var (
 	lifecycleAuto   = false
 	lifecycleAutoMu sync.RWMutex
@@ -47,12 +42,6 @@ func lifecycleEnabled() bool {
 	lifecycleAutoMu.RLock()
 	defer lifecycleAutoMu.RUnlock()
 	return lifecycleAuto
-}
-
-// shouldActOnCredits is true only when credits are *known* exhausted.
-// nil / empty (no packages, no used) is unknown -> false.
-func shouldActOnCredits(cr *creditsSummary) bool {
-	return isCreditsExhausted(cr)
 }
 
 // hardCreditMarkers are case-insensitive substrings in upstream error bodies.
@@ -78,46 +67,6 @@ var hardCreditMarkers = []string{
 	"没有积分",
 	"credit not enough",
 	"not enough credit",
-}
-
-// defaultMinRoutableCredits 是安全缓冲额度红线默认值（20 点）。
-// 剩余额度低于该阈值的账号不再承载新请求，防止推理中途断开。
-const defaultMinRoutableCredits int64 = 20
-
-var (
-	minRoutableCredits   int64 = defaultMinRoutableCredits
-	minRoutableCreditsMu sync.RWMutex
-)
-
-// loadedMinRoutableCredits 返回当前生效的安全缓冲额度红线。
-func loadedMinRoutableCredits() int64 {
-	minRoutableCreditsMu.RLock()
-	defer minRoutableCreditsMu.RUnlock()
-	return minRoutableCredits
-}
-
-// setMinRoutableCredits 设置安全缓冲额度红线并返回清理函数，供单测或动态配置使用。
-func setMinRoutableCredits(n int64) func() {
-	minRoutableCreditsMu.Lock()
-	old := minRoutableCredits
-	minRoutableCredits = n
-	minRoutableCreditsMu.Unlock()
-	return func() {
-		minRoutableCreditsMu.Lock()
-		minRoutableCredits = old
-		minRoutableCreditsMu.Unlock()
-	}
-}
-
-// isCreditsLowOrExhausted 判定账号是否额度耗尽或已低于安全缓冲额度红线。
-func isCreditsLowOrExhausted(cr *creditsSummary) bool {
-	if cr == nil {
-		return false
-	}
-	if isCreditsExhausted(cr) {
-		return true
-	}
-	return cr.TotalRemain < loadedMinRoutableCredits()
 }
 
 const httpStatusPaymentRequired = 402
@@ -315,30 +264,9 @@ func isTransientThrottle(status int, body string) bool {
 	return isSoftRateLimit(status, body) || isEmptyStreamBody(body)
 }
 
-// lifecycleActionFor chooses disable/none from credits.
-// 与国内版保持一致：额度耗尽时仅禁用（lifecycleDisable），绝不物理删除账号。
-// 账号保留在专属面板与凭证库中，支持保号分析与充值/更新后自动重新启用。
-func lifecycleActionFor(region string, cr *creditsSummary) lifecycleAction {
-	if !shouldActOnCredits(cr) {
-		return lifecycleNone
-	}
-	return lifecycleDisable
-}
-
-// shouldReenable returns whether an exhausted account has recovered credits.
-func shouldReenable(disabled bool, cr *creditsSummary) bool {
-	if !disabled || cr == nil || isCreditsExhausted(cr) {
-		return false
-	}
-	return cr.TotalRemain > 0
-}
-
-// shouldReenableCN returns whether an exhausted account has recovered credits.
-func shouldReenableCN(disabled bool, cr *creditsSummary) bool {
-	return shouldReenable(disabled, cr)
-}
-
 // displayNote builds a one-line note for CPAMP Auth cards.
+// 积分只作展示，不参与任何可用性判定：零积分账号仍可正常推理，因此这里不产出
+// 「耗尽」措辞，避免与真实可用状态冲突。
 func displayNote(sa *storedAuth, cr *creditsSummary, disabled bool) string {
 	parts := []string{"Global"}
 	if disabled {
@@ -347,8 +275,6 @@ func displayNote(sa *storedAuth, cr *creditsSummary, disabled bool) string {
 	switch {
 	case cr == nil:
 		parts = append(parts, "余额未知")
-	case isCreditsExhausted(cr):
-		parts = append(parts, fmt.Sprintf("耗尽 · 余%d 已用%d", cr.TotalRemain, cr.TotalUsed))
 	default:
 		if cr.TotalSize > 0 {
 			parts = append(parts, fmt.Sprintf("余%d 已用%d 总%d", cr.TotalRemain, cr.TotalUsed, cr.TotalSize))

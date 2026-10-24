@@ -168,21 +168,25 @@ func TestPickSessionAuth_TTLExpiryReassigns(t *testing.T) {
 	}
 }
 
-func TestPickSessionAuth_ExhaustedAccountReassigns(t *testing.T) {
+// TestPickSessionAuth_TestFailedAccountReassigns 断言会话绑定只在账号被打上
+// 「测试」标签时重新分配；额度归零不触发换号（零积分账号可正常推理）。
+func TestPickSessionAuth_TestFailedAccountReassigns(t *testing.T) {
 	resetSessionRouting(t)
+	resetTestFailed(t)
 	cands := []activeAuthCandidate{
 		{ID: "wbai-a"}, {ID: "wbai-b"},
 	}
 	first := pickSessionAuth("conv-1", cands)
-	exhausted := make([]activeAuthCandidate, len(cands))
-	for i, c := range cands {
-		exhausted[i] = c
-		if c.ID == first {
-			exhausted[i].Exhausted = true
-		}
+	// 零积分不影响粘性：同一会话应继续留在原账号上。
+	accountCache.Store(first, &accountCacheEntry{credits: &creditsSummary{TotalRemain: 0, TotalUsed: 100, TotalSize: 100}})
+	defer accountCache.Delete(first)
+	if got := pickSessionAuth("conv-1", cands); got != first {
+		t.Fatalf("zero-credit binding must stay sticky at %q, got %q", first, got)
 	}
-	if got := pickSessionAuth("conv-1", exhausted); got == first {
-		t.Fatalf("exhausted pinned account should be re-assigned, stuck at %q", got)
+	// 打上「测试」标签后才重新分配。
+	testFailedSetPut(first)
+	if got := pickSessionAuth("conv-1", cands); got == first {
+		t.Fatalf("test-failed pinned account should be re-assigned, stuck at %q", got)
 	}
 }
 
@@ -203,21 +207,23 @@ func TestPickSessionAuth_NoSessionFallsBackToPanel(t *testing.T) {
 	}
 }
 
-func TestPickSessionAuth_AllExhaustedDefers(t *testing.T) {
+// TestPickSessionAuth_AllTestFailedDefers 断言全池打满「测试」标签时 defer；
+// 零积分不构成 defer 理由。
+func TestPickSessionAuth_AllTestFailedDefers(t *testing.T) {
 	resetSessionRouting(t)
-	allExhausted := []activeAuthCandidate{
-		{ID: "wbai-a", Exhausted: true},
-		{ID: "wbai-b", Exhausted: true},
+	resetTestFailed(t)
+	allFailed := []activeAuthCandidate{
+		{ID: "wbai-a"},
+		{ID: "wbai-b"},
 	}
-	if got := pickSessionAuth("conv-1", allExhausted); got != "" {
-		t.Fatalf("all-exhausted should defer (empty pick), got %q", got)
+	testFailedSetPut("wbai-a")
+	testFailedSetPut("wbai-b")
+	if got := pickSessionAuth("conv-1", allFailed); got != "" {
+		t.Fatalf("all-test-failed should defer (empty pick), got %q", got)
 	}
-	recovered := []activeAuthCandidate{
-		{ID: "wbai-a", Exhausted: false},
-		{ID: "wbai-b", Exhausted: true},
-	}
-	if got := pickSessionAuth("conv-1", recovered); got == "" {
-		t.Fatal("recovered pool should assign an account again")
+	testFailedSetClear("wbai-a")
+	if got := pickSessionAuth("conv-1", allFailed); got == "" {
+		t.Fatal("cleared pool should assign an account again")
 	}
 }
 

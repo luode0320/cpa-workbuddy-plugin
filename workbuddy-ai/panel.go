@@ -24,8 +24,6 @@ type wbAccount struct {
 	Status       string          `json:"status"`
 	CreatedAt    string          `json:"created_at,omitempty"`
 	Disabled     bool            `json:"disabled"`
-	Exhausted    bool            `json:"exhausted"`
-	LowCredits   bool            `json:"low_credits"` // 剩余额度低于安全红线(min_routable_credits)
 	Selected     bool            `json:"selected"`
 	TestFailed   bool            `json:"test_failed"`
 	Credits      *creditsSummary `json:"credits,omitempty"`
@@ -140,8 +138,6 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 				acct.Plan = plan
 				acct.Checkin = ci
 				acct.Credits = cr
-				acct.Exhausted = isCreditsExhausted(cr)
-				acct.LowCredits = cr != nil && !acct.Exhausted && cr.TotalRemain < loadedMinRoutableCredits()
 				acct.TrialClaimed = hasTrialPack(cr)
 				acct.Registered = resolveRegisteredState(f.ID, sa, plan)
 				_ = syncAuthNote(f.AuthIndex, f.ID, sa, cr, acct.Disabled)
@@ -152,8 +148,6 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 						acct.Plan = e.plan
 						acct.Checkin = e.checkin
 						acct.Credits = e.credits
-						acct.Exhausted = isCreditsExhausted(e.credits)
-						acct.LowCredits = e.credits != nil && !acct.Exhausted && e.credits.TotalRemain < loadedMinRoutableCredits()
 						acct.TrialClaimed = hasTrialPack(e.credits)
 						acct.Registered = resolveRegisteredState(f.ID, sa, e.plan)
 					}
@@ -186,7 +180,6 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 					if e, ok2 := v.(*accountCacheEntry); ok2 {
 						if e.credits != nil {
 							a.Credits = e.credits
-							a.Exhausted = isCreditsExhausted(e.credits)
 						}
 						if e.plan != "" {
 							a.Plan = e.plan
@@ -239,13 +232,10 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 
 func summarizeCredits(accounts []wbAccount) map[string]any {
 	var remain, used, size int64
-	var known, disabledN, exhaustedN, packs int
+	var known, disabledN, packs int
 	for _, a := range accounts {
 		if a.Disabled {
 			disabledN++
-		}
-		if a.Exhausted {
-			exhaustedN++
 		}
 		if a.Credits == nil {
 			continue
@@ -265,18 +255,17 @@ func summarizeCredits(accounts []wbAccount) map[string]any {
 		total = size
 	}
 	return map[string]any{
-		"account_count":   len(accounts),
-		"known_count":     known,
-		"disabled_count":  disabledN,
-		"exhausted_count": exhaustedN,
-		"pack_count":      packs,
-		"total_remain":    remain,
-		"total_used":      used,
-		"total_size":      size,
-		"total":           total,
-		"global_remain":   remain,
-		"global_used":     used,
-		"global_size":     size,
+		"account_count":  len(accounts),
+		"known_count":    known,
+		"disabled_count": disabledN,
+		"pack_count":     packs,
+		"total_remain":   remain,
+		"total_used":     used,
+		"total_size":     size,
+		"total":          total,
+		"global_remain":  remain,
+		"global_used":    used,
+		"global_size":    size,
 	}
 }
 

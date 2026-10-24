@@ -308,19 +308,6 @@ func hasTrialPack(cr *creditsSummary) bool {
 	return false
 }
 
-func isCreditsExhausted(cr *creditsSummary) bool {
-	if cr == nil {
-		return false
-	}
-	if cr.TotalRemain > 0 {
-		return false
-	}
-	if cr.TotalUsed > 0 || cr.TotalSize > 0 {
-		return true
-	}
-	return false
-}
-
 // fetchCheckinStatus probes the daily check-in state for one account. The
 // international service exposes two candidate status endpoints; the first
 // (checkin-activity-status) is the current one, the second is kept as a

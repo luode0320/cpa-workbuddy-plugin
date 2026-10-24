@@ -168,7 +168,7 @@ func headerSessionPrefix(header string) string {
 // sessionKey != "" → sticky session routing:
 //   - a fresh, still-usable binding is reused unchanged (1h stickiness);
 //   - a stale binding (expired) or a binding whose account became
-//     disabled/exhausted/cooling-down/测试失败 is re-assigned;
+//     disabled/cooling-down/测试失败 is re-assigned;
 //   - new assignments prefer accounts with no live bindings, then round-robin
 //     across all usable accounts (the candidate slice is already ordered
 //     HIGH-CREDIT-FIRST — healthiest first — by handleSchedulerPick);
@@ -191,7 +191,7 @@ func pickSessionAuth(sessionKey string, candidates []activeAuthCandidate) string
 	usableSet := make(map[string]struct{}, len(candidates))
 	for _, c := range candidates {
 		live[c.ID] = struct{}{}
-		if !c.Disabled && !c.Exhausted && accountRoutable(c.ID) {
+		if !c.Disabled && accountRoutable(c.ID) {
 			usable = append(usable, c.ID)
 			usableSet[c.ID] = struct{}{}
 		}
@@ -211,8 +211,8 @@ func pickSessionAuth(sessionKey string, candidates []activeAuthCandidate) string
 	}
 
 	if len(usable) == 0 {
-		// Everything disabled/exhausted/cooling-down: no healthy workbuddy
-		// account exists. Return "" so handleSchedulerPick defers (Handled:
+		// Everything disabled/cooling-down: no usable workbuddy account
+		// exists. Return "" so handleSchedulerPick defers (Handled:
 		// false) to the host's built-in scheduler, which can fail over to
 		// other providers' accounts (e.g. traework) instead of pinning this
 		// conversation to a dead account. The existing binding is kept: once

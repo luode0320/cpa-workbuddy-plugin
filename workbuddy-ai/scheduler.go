@@ -131,10 +131,6 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		if rotationCoolingDown(c.ID, rotationNow) {
 			continue
 		}
-		remain, lowOrExhausted := cachedCreditsScore(c.ID)
-		if lowOrExhausted || (remain >= 0 && remain < loadedMinRoutableCredits()) {
-			continue
-		}
 		available = append(available, c)
 	}
 	if len(available) == 0 {
@@ -143,7 +139,8 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	wbCandidates = available
 
 	// 健康平摊轮询：废除残血优先（Low-Credit-First）反模式。
-	// 健康可用账号按高积分优先排序（未测 -1 排最后），并在同一健康阶梯内平摊负载。
+	// 账号按高积分优先排序（未测 -1 排最后），并在同一阶梯内平摊负载。
+	// 积分只影响排序，不影响可用性：零积分账号同样承载流量。
 	sort.SliceStable(wbCandidates, func(i, j int) bool {
 		left, _ := cachedCreditsScore(wbCandidates[i].ID)
 		right, _ := cachedCreditsScore(wbCandidates[j].ID)
@@ -153,16 +150,12 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		return left > right
 	})
 
-	// Build thin view for active-auth picker. Exhausted accounts are passed
-	// through with Exhausted=true (rather than pre-filtered) so the picker can
-	// skip them and still report "no healthy account" when they are all spent.
+	// Build thin view for active-auth picker.
 	cands := make([]activeAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
-		_, exhausted := cachedCreditsScore(c.ID)
 		cands = append(cands, activeAuthCandidate{
-			ID:        c.ID,
-			Disabled:  false, // already filtered
-			Exhausted: exhausted,
+			ID:       c.ID,
+			Disabled: false, // already filtered
 		})
 	}
 	var picked string
@@ -199,8 +192,9 @@ func candidateDisabled(c pluginapi.SchedulerAuthCandidate) bool {
 	return false
 }
 
-// cachedCreditsScore returns (remain, exhaustedOrLow) from accountCache.
-// remain is -1 when unknown; exhaustedOrLow uses isCreditsLowOrExhausted.
+// cachedCreditsScore returns (remain, _) from accountCache.
+// remain is -1 when unknown. 第二个返回值保留为 false 的固定值以维持调用方签名
+// 稳定：额度不再参与可用性判定（零积分账号可正常推理），调用方不得据它排除账号。
 // Key is auth.ID (same as SchedulerAuthCandidate.ID and activeAuthID), with
 // normalized fallback resolution across key formats.
 func cachedCreditsScore(authID string) (int64, bool) {
@@ -235,5 +229,5 @@ func cachedCreditsScore(authID string) (int64, bool) {
 	if !ok || entry.credits == nil {
 		return -1, false
 	}
-	return entry.credits.TotalRemain, isCreditsLowOrExhausted(entry.credits)
+	return entry.credits.TotalRemain, false
 }

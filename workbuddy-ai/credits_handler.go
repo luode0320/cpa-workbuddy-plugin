@@ -389,8 +389,6 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 				acct["error"] = err.Error()
 			} else {
 				acct["credits"] = cr
-				acct["exhausted"] = isCreditsExhausted(cr)
-				acct["low_credits"] = cr != nil && !isCreditsExhausted(cr) && cr.TotalRemain < loadedMinRoutableCredits()
 				acct["trial_claimed"] = hasTrialPack(cr)
 				acct["plan"] = fetchPaymentType(sa)
 				if registered, regErr := fetchRegistrationStatus(sa); regErr == nil {
@@ -436,7 +434,6 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 			row["error"] = err.Error()
 		} else {
 			row["credits"] = cr
-			row["exhausted"] = isCreditsExhausted(cr)
 			row["trial_claimed"] = hasTrialPack(cr)
 			row["plan"] = fetchPaymentType(sa)
 		}
