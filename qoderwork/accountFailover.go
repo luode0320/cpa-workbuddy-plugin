@@ -230,6 +230,12 @@ func recordAccountFailure(authID string, status int, body string) bool {
 	if isQueueFrame(body) {
 		return false
 	}
+	// 模型级/后端池级故障与调用账号无关：换任何账号都会得到同样结果。
+	// 若在此记账，一次上游抖动就会把被路由到的全部账号逐个禁用，形成整池
+	// 自我禁用（2026-10-25 生产实证：单请求连续禁用 9 个号）。
+	if isModelLevelFailure(body) {
+		return false
+	}
 	if !isAccountFailure(status, body) && !isTransientThrottle(status, body) {
 		return false
 	}
@@ -255,7 +261,6 @@ func recordAccountFailure(authID string, status int, body string) bool {
 func recordCooldownState(authID string) bool {
 	now := time.Now()
 	failoverMu.Lock()
-	defer failoverMu.Unlock()
 	st := failoverStates[authID]
 	curCount := 0
 	if st != nil {
@@ -268,6 +273,9 @@ func recordCooldownState(authID string) bool {
 	newCount := curCount + 1
 	until := now.Add(failoverCooldownFor(newCount))
 	setCooldownRecordLocked(authID, until, newCount, false)
+	failoverMu.Unlock()
+	// 锁外落盘：sidecar 写盘要碰文件系统，压在 failoverMu 上会把所有并发记账串行化。
+	failoverStateRecordFailure(authID, until, newCount)
 	return true
 }
 
@@ -285,10 +293,23 @@ func isAccountCoolingDown(authID string) bool {
 	if authID == "" {
 		return false
 	}
-	// 双写判据第一层：本进程已把该号写盘禁用。禁用探活把它恢复前，
-	// 无论阶梯是否已到期，都不应再承载流量——冷却到期不代表故障消除。
+	// 第一层：插件自有 sidecar 判据。它不经过宿主，因此在宿主 watcher 失效
+	// 或重建 auth 文档抹掉标记时依然有效（2026-10-25 生产实证）。
+	// 禁用探活把它恢复前，无论阶梯是否已到期，都不应再承载流量——
+	// 冷却到期不代表故障消除。
+	if failoverStateIsDisabled(authID) {
+		return true
+	}
+	// 第二层：本进程内存标记。它是 sidecar 写盘失败时的最后一道防线。
 	if isFailoverDisabledLocal(authID) {
 		return true
+	}
+	// 第三层：sidecar 里持久化的冷却窗口。进程重启后内存表清空，
+	// 若只读内存，插件热重载等于给所有坏号免冷却——跨重启的冷却必须从盘上读。
+	if entry, ok := failoverStateGet(authID); ok && entry.CooldownUntil > 0 {
+		if time.Now().Unix() < entry.CooldownUntil {
+			return true
+		}
 	}
 	failoverMu.Lock()
 	defer failoverMu.Unlock()
@@ -322,7 +343,6 @@ func isAccountCoolingDown(authID string) bool {
 // 最近修改时间：2026-10-22；改动原因：抽出，供成功路径与禁用恢复路径复用。
 func resetCooldownState(authID string) {
 	failoverMu.Lock()
-	defer failoverMu.Unlock()
 	keys := []string{authID}
 	if norm := normalizeFailoverKey(authID); norm != "" && norm != authID {
 		keys = append(keys, norm)
@@ -333,6 +353,9 @@ func resetCooldownState(authID string) {
 			st.cooldownUntil = time.Time{}
 		}
 	}
+	failoverMu.Unlock()
+	// sidecar 同步清冷却，但保留 Disabled：一次成功不能替代探活确认故障已解除。
+	failoverStateReset(authID)
 }
 
 // resetAccountFailover clears the failure counter and cooldown after a
@@ -418,11 +441,15 @@ func clearFailoverStateForAuth(authID string) {
 // production paths.
 func setFailoverCooldownUntil(authID string, until time.Time) {
 	failoverMu.Lock()
-	defer failoverMu.Unlock()
 	st := failoverStates[authID]
 	if st == nil {
 		st = &authFailoverState{}
 		failoverStates[authID] = st
 	}
 	st.cooldownUntil = until
+	count := st.count
+	failoverMu.Unlock()
+	// sidecar 里的冷却窗口是同一份事实的持久化副本，测试改内存后必须同步，
+	// 否则 isAccountCoolingDown 的第三层判据仍按旧截止时间生效。
+	failoverStateRecordFailure(authID, until, count)
 }

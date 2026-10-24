@@ -131,6 +131,62 @@ func isDailyCountExceeded(status int, body string) bool {
 		strings.Contains(body, `110:`)
 }
 
+// modelLevelFailureMarkers 是「整个模型后端池不可用」的固定文案。
+// 这些响应与调用方账号无关：换任何账号请求同一个模型都会得到同样的结果，
+// 因此绝不能记在账号头上（2026-10-25 生产实证：单个请求把 9 个账号逐个试过，
+// 全部返回 All backends failed，旧逻辑据此把 9 个号全部写盘禁用，形成整池自我禁用）。
+var modelLevelFailureMarkers = []string{
+	"all backends failed",
+	"no available backend",
+	"no backend available",
+	"backend pool unavailable",
+	"model not available",
+	"model unavailable",
+}
+
+// modelLevelResourceMarkers 是上游容量类响应里的「资源不足」子码。
+// 只有同时命中 queueFrame 语义或 resource 子码时才归为模型级：
+// 单独出现 subCode 不足以证明与账号无关，保守起见要求成对出现。
+var modelLevelResourceMarkers = []string{
+	"resource_limit",
+	"resource limit",
+	"insufficient_resource",
+	"overloaded",
+}
+
+// isModelLevelFailure 判定一次上游失败是否属于「模型/后端池级故障」，
+// 即换账号也无法改变结果的失败。
+//
+// 为什么必须单独判定：失败记账的唯一目的是把坏账号从池子里摘出去。
+// 若故障与账号无关，记账只会把健康账号误摘，最终整池自我禁用——这比不记账
+// 危险得多。判定为模型级时，调用方必须跳过全部账号级副作用（冷却、禁用、探活）。
+//
+// [参数] body：上游响应正文（SSE 错误帧或 HTTP 错误体）。
+// [返回] true 表示属模型级故障，不应记在账号头上。
+// 最近修改时间：2026-10-25；改动原因：新增，修复模型级故障被误判为账号级导致整池自我禁用。
+func isModelLevelFailure(body string) bool {
+	if strings.TrimSpace(body) == "" {
+		return false
+	}
+	lower := strings.ToLower(body)
+	for _, m := range modelLevelFailureMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	// 容量类响应：serviceAvailable:false 或 RESOURCE_LIMIT 同时出现时，
+	// 说明上游后端池本身不可用，而非该账号凭据有问题。
+	for _, m := range modelLevelResourceMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	if strings.Contains(lower, `"serviceavailable":false`) || strings.Contains(lower, "serviceavailable:false") {
+		return true
+	}
+	return false
+}
+
 // isHardCreditError reports business "out of credits" style failures.
 // 402 is treated as payment/credit. Pure 429 is not hard unless body has credit markers.
 func isHardCreditError(status int, body string) bool {

@@ -387,6 +387,11 @@ function progressHTML(c, a){
   if(a&&(Number(a.success)>0||Number(a.failed)>0)){
     statSegments.push(`<span class="pb-segment">成功 ${Number(a.success)||0}</span>`,`<span class="pb-segment">失败 ${Number(a.failed)||0}</span>`);
   }
+  // 连续承流时长：运维判断「这个号是不是快被轮换让位了」的唯一依据。
+  // 只在轮换启用且已计时时显示（0 分钟表示刚开始或未启用）。
+  if(a&&Number(a.rotation_served_min)>0){
+    statSegments.push(`<span class="pb-segment" title="本轮连续承载请求的时长；达到设定阈值后会主动让位给其它账号">承流 ${Number(a.rotation_served_min)}m</span>`);
+  }
   if(a&&Number(a.fail_count)>0){
     statSegments.push(`<span class="pb-segment">连败 ${Number(a.fail_count)}</span>`);
     if(a.cooling){
@@ -441,7 +446,22 @@ function card(a){
   const dailyCooling=!!a.daily_cooling;
   const dailyCoolingRemain=a.daily_cooling_remain||"";
   // 110 日调用次数上限：账号级日限额，与积分无关，冷却期内换模型同样被拒
-  const coolingBadge=dailyCooling?`<span class="badge cooling" title="账号触发上游每日调用次数上限（110），已进入 24 小时冷却，到期自动恢复（${esc(dailyCoolingRemain)}）">日限冷却(${esc(dailyCoolingRemain)})</span>`:"";
+  const coolingBadge=dailyCooling?`<span class="badge cooling daily-limit" title="账号触发上游每日调用次数上限（110），已进入 24 小时冷却，到期自动恢复（${esc(dailyCoolingRemain)}）">日限冷却(${esc(dailyCoolingRemain)})</span>`:"";
+  // 失败冷却：上游调用失败后的阶梯冷却，到期自动恢复，与「禁用」是两件事。
+  const failCooling=!!a.cooling;
+  const failCoolRemain=failCooling?Math.max(0,(Number(a.cool_until)||0)-Math.floor(Date.now()/1000)):0;
+  const failCoolBadge=failCooling?`<span class="badge cooling" data-failcool-until="${Number(a.cool_until)||0}" title="上游调用失败后的阶梯冷却，到期自动恢复；连续失败 ${Number(a.fail_count)||0} 次">失败冷却(${failCoolRemain}s)</span>`:"";
+  // 禁用：探活确认前不会自动恢复，与冷却的语义完全不同，必须分开显示。
+  const failoverDisabled=!!a.failover_disabled;
+  const failoverBadge=failoverDisabled
+    ? `<span class="badge disabled" title="连续失败后被本插件禁用（模型：${esc(a.failover_model||"未知")}）；每 10 分钟探活一次，探通后自动恢复。当日探活失败 ${Number(a.probe_fails)||0}/${Number(a.probe_limit)||10} 次">禁用探活中</span>`
+    : "";
+  // 轮换让位：账号连续承流到阈值后被主动让出，属于负载均衡，不是故障。
+  const rotationCooling=!!a.rotation_cooling;
+  const rotationRemain=rotationCooling?Math.max(0,(Number(a.rotation_until)||0)-Math.floor(Date.now()/1000)):0;
+  const rotationBadge=rotationCooling
+    ? `<span class="badge cooling" data-rotation-until="${Number(a.rotation_until)||0}" title="连续承流已达设定时长，主动让位给其它账号以摊薄单号负载；到期自动恢复路由">轮换让位(${rotationRemain}s)</span>`
+    : "";
   const region=a.region||"cn";
   
   const disabled=!!a.disabled;
@@ -465,7 +485,7 @@ function card(a){
     : (disabled?``:`<button class="sec" data-action="select" data-auth-index="${esc(a.auth_index)}">选用</button>`);
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
   const clearCooldownBtn=dailyCooling?`<button class="sec" data-action="clear-cooldown" data-auth-index="${esc(a.auth_index)}" title="手动解除 110 日调用上限冷却">解冷</button>`:"";
-  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted" title="积分为 0，仍可调用免费模型">0积分</span>`:lowCreditsBadge)+coolingBadge+regionBadge+`<span class="badge ${esc(plan)}">${esc(a.plan||"-")}</span>`;
+  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+failoverBadge+(exhausted?`<span class="badge exhausted" title="积分为 0，仍可调用免费模型">0积分</span>`:lowCreditsBadge)+coolingBadge+failCoolBadge+rotationBadge+regionBadge+`<span class="badge ${esc(plan)}">${esc(a.plan||"-")}</span>`;
   const display=(a.nickname||a.label||a.name||"").replace(/^qoderwork-?/i,"");
   const nick=display||("u"+(a.uid||"").slice(-8));
   return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-refresh-state="${a._refreshState||""}" data-nickname="${esc(display)}" data-uid="${esc(a.uid||"")}" data-name="${esc(a.name||"")}">
@@ -478,13 +498,25 @@ function card(a){
   </div>`;
 }
 // 冷却倒计时：每秒刷新积分首行中的冷却剩余秒数。
-// 纯前端展示，不触发整卡重绘；后端 /accounts 刷新时自带最新冷却态。
+// 纯前端展示，不触发整卡重绘，也不发起任何请求；后端 /accounts 刷新时自带最新冷却态。
+// 这两条是「面板不自动刷新」的边界：面板只在用户主动操作时取数据。
 setInterval(()=>{
   const now=Math.floor(Date.now()/1000);
   document.querySelectorAll("[data-cool-until]").forEach(el=>{
     const until=Number(el.dataset.coolUntil)||0;
     if(until<=0||until<=now){ el.remove(); return; }
     el.textContent=`冷却 ${until-now}s`;
+  });
+  // 轮换让位与失败冷却走同一套倒计时逻辑，只换文案。
+  document.querySelectorAll("[data-rotation-until]").forEach(el=>{
+    const until=Number(el.dataset.rotationUntil)||0;
+    if(until<=0||until<=now){ el.remove(); return; }
+    el.textContent=`轮换让位(${until-now}s)`;
+  });
+  document.querySelectorAll("[data-failcool-until]").forEach(el=>{
+    const until=Number(el.dataset.failcoolUntil)||0;
+    if(until<=0||until<=now){ el.remove(); return; }
+    el.textContent=`失败冷却(${until-now}s)`;
   });
 },1000);
 let currentFilter="all";
@@ -534,6 +566,18 @@ function updateOneCard(a){
     }).catch(()=>{});
   }
 }
+// cardIsAvailable 判定一张卡片当前是否接流量。
+// 依据是卡片上真实渲染出的徽章，而不是再算一遍数据——避免筛选口径与显示口径不一致：
+// 用户看到有徽章却被归入"可用"是最容易误导运维的情况。
+function cardIsAvailable(c){
+  if(c.dataset.disabled==="1") return false;
+  // low-credits / cooling / disabled 三类徽章任一命中都不算可用。
+  // 「disabled」类包含人工禁用与禁用探活中两种，二者都不接流量。
+  if(c.querySelector(".badge.low-credits")) return false;
+  if(c.querySelector(".badge.cooling")) return false;
+  if(c.querySelector(".badge.disabled")) return false;
+  return true;
+}
 function filterRegion(region, btn){
   currentFilter=region||"all";
   document.querySelectorAll(".ftag").forEach(b=>b.classList.remove("active"));
@@ -547,9 +591,11 @@ function filterRegion(region, btn){
     const r=c.dataset.region||"cn";
     let show=true;
     if(currentFilter==="all") show=true;
-    // 0 积分不算不可用：免费模型不消耗积分，只有禁用 / 残血 / 日限冷却才排除
-    else if(currentFilter==="available") show=!(c.dataset.disabled==="1"||c.querySelector(".badge.low-credits")!=null||c.querySelector(".badge.cooling")!=null);
-    else if(currentFilter==="cooling") show=c.querySelector(".badge.cooling")!=null;
+    // 0 积分不算不可用：免费模型不消耗积分，只有禁用 / 残血 / 各类冷却才排除
+    else if(currentFilter==="available") show=cardIsAvailable(c);
+    // 「冷却」标签的计数只统计 110 日限冷却，筛选必须同口径，
+    // 否则点进去的卡片数会多于标签上的数字，运维会以为筛选失灵。
+    else if(currentFilter==="cooling") show=c.querySelector(".badge.cooling.daily-limit")!=null;
     else if(currentFilter==="exhausted") show=c.querySelector(".badge.exhausted")!=null;
     else show=r===currentFilter;
     if(show&&currentSearch){
@@ -569,8 +615,9 @@ function updateFilterCounts(accounts){
     const c=creditOf(a);
     const isExhausted=!!a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0));
     const isLowCredits=!isExhausted&&(!!a.low_credits||(c.known&&c.remain>0&&c.remain<20));
-    // 0 积分不参与可用性排除：免费模型不消耗积分
-    if(!(a.disabled||isLowCredits||a.daily_cooling)) avail++;
+    // 0 积分不参与可用性排除：免费模型不消耗积分。
+    // 禁用（含探活中）、失败冷却、轮换冷却都意味着当前不接流量。
+    if(!(a.disabled||a.failover_disabled||isLowCredits||a.daily_cooling||a.cooling||a.rotation_cooling)) avail++;
   });
   const elAll=document.getElementById("cntAll");
   const elCn=document.getElementById("cntCn");
@@ -587,15 +634,18 @@ function accountsForFilter(accounts){
   const list=accounts||[];
   if(currentFilter==="all") return list;
   if(currentFilter==="available"){
-    // 可用 = 不属于已禁用 / 低额保护 / 日限冷却；0 积分仍可走免费模型
+    // 可用 = 既没被禁用、没有低额保护，也不在任何冷却中；0 积分仍可走免费模型
     return list.filter(a=>{
       const c=creditOf(a);
       const isExhausted=!!a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0));
       const isLowCredits=!isExhausted&&(!!a.low_credits||(c.known&&c.remain>0&&c.remain<20));
-      return !(a.disabled||isLowCredits||a.daily_cooling);
+      return !(a.disabled||a.failover_disabled||isLowCredits||a.daily_cooling||a.cooling||a.rotation_cooling);
     });
   }
   if(currentFilter==="cooling"){
+    // 与标签计数同口径：只统计 110 日限冷却。
+    // 失败冷却与轮换冷却不单独设标签——它们要么会在 10 分钟内自动恢复，
+    // 要么已体现在"可用"计数里，单列反而稀释了运维最关心的日限告警。
     return list.filter(a=>!!a.daily_cooling);
   }
   if(currentFilter==="exhausted"){

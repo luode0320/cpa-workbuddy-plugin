@@ -383,10 +383,17 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			// SSE error frame on HTTP 200: the current account must enter
 			// failover cooldown. Remap to 403 so isAccountFailure classifies
 			// it as account-level and the account gets its laddered cooldown.
-			if isDailyCountExceeded(statusCode, sseErr) {
+			//
+			// 模型级故障不 remap：上游整个后端池不可用时，换账号结果一样，
+			// 记账只会把被路由到的健康账号逐个禁用。此时仍需换号（换个模型
+			// 后端池可能不同），但不把失败记在任何账号头上。
+			modelLevel := isModelLevelFailure(sseErr)
+			if !modelLevel && isDailyCountExceeded(statusCode, sseErr) {
 				logDailyCooldownPersistFailure(curAuthID, triggerDailyCooldown("", curAuthID))
 			}
-			noteAccountFailureForModel(curAuthID, upstreamModel, http.StatusForbidden, sseErr)
+			if !modelLevel {
+				noteAccountFailureForModel(curAuthID, upstreamModel, http.StatusForbidden, sseErr)
+			}
 			publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), true, statusCode, sseErr, reasoningEffort, collector.ttftNS(started), curAccountLabel, sessionKey)
 			// 200 内业务错误帧与 HTTP 4xx 同责：零泄漏（emitted=false）且账号级
 			// 分类命中且预算允许时换号续试；已泄漏分片时换号会造成输出重复或
@@ -431,6 +438,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), false, 0, "", reasoningEffort, collector.ttftNS(started), curAccountLabel, sessionKey)
 		invalidateAccountCredits(curAuthID, curAuthUID)
 		resetAccountFailover(curAuthID)
+		noteRotationUsage(curAuthID)
 		return
 	}
 }

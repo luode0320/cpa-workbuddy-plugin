@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -11,9 +12,13 @@ import (
 func resetFailover(t *testing.T) {
 	t.Helper()
 	clearFailoverStates()
+	// sidecar 是跨用例共享的进程级状态：指向临时文件隔离，避免前一个用例
+	// 写的禁用/冷却泄漏到后一个用例，也避免测试写到真实 data 目录。
+	restorePath := isolateFailoverStatePathForTest(filepath.Join(t.TempDir(), failoverStateFileName))
 	oldEnabled := failoverActive()
 	t.Cleanup(func() {
 		clearFailoverStates()
+		restorePath()
 		setFailoverEnabled(oldEnabled)
 	})
 	setFailoverEnabled(true)

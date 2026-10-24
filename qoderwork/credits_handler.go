@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -367,8 +368,13 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 			ac.Error = err.Error()
 		} else {
 			ac.Credits = cr
+			recordCreditSnapshot(f.ID, cr, "")
 		}
 		out = append(out, ac)
+	}
+	// 轮末统一落盘：中途崩溃时磁盘保留上一轮完整快照，读者不会读到残缺文件。
+	if err := persistCreditSnapshot(); err != nil {
+		log.Printf("[qoderwork] persist credits snapshot: %v", err)
 	}
 	return map[string]any{"accounts": out}
 }

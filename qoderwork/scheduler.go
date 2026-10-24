@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -104,8 +105,14 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	// scheduler can fail over to OTHER providers instead of pinning the request
 	// to an account we just declared unusable.
 	available := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
+	rotationNow := time.Now()
 	for _, c := range wbCandidates {
 		if isAccountCoolingDown(c.ID) {
+			continue
+		}
+		// 轮换冷却：账号连续承流到阈值后被主动让位，与失败冷却分表存储，
+		// 因此不会被成功请求的 resetAccountFailover 抹掉。
+		if rotationCoolingDown(c.ID, rotationNow) {
 			continue
 		}
 		_, lowCredits := cachedCreditsScore(c.ID)

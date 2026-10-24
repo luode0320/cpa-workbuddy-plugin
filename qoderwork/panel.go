@@ -14,22 +14,22 @@ import (
 
 // wbAccount is one row of the dashboard.
 type wbAccount struct {
-	AuthIndex string          `json:"auth_index"`
-	AuthID    string          `json:"auth_id,omitempty"`
-	Name      string          `json:"name"`
-	Label     string          `json:"label"`
-	Nickname  string          `json:"nickname"`
-	UID       string          `json:"uid"`
-	Region    string          `json:"region"` // "cn" or "global"
-	Plan      string          `json:"plan"`
-	Status    string          `json:"status"`
+	AuthIndex  string          `json:"auth_index"`
+	AuthID     string          `json:"auth_id,omitempty"`
+	Name       string          `json:"name"`
+	Label      string          `json:"label"`
+	Nickname   string          `json:"nickname"`
+	UID        string          `json:"uid"`
+	Region     string          `json:"region"` // "cn" or "global"
+	Plan       string          `json:"plan"`
+	Status     string          `json:"status"`
 	Disabled   bool            `json:"disabled"`
 	Exhausted  bool            `json:"exhausted"`
 	LowCredits bool            `json:"low_credits"` // 剩余额度低于安全红线(min_routable_credits)
 	Selected   bool            `json:"selected"`    // panel active routing card
-	Credits   *creditsSummary `json:"credits,omitempty"`
-	Checkin   *checkinSummary `json:"checkin,omitempty"`
-	Error     string          `json:"error,omitempty"`
+	Credits    *creditsSummary `json:"credits,omitempty"`
+	Checkin    *checkinSummary `json:"checkin,omitempty"`
+	Error      string          `json:"error,omitempty"`
 	// CPA-side cumulative counters (auth-file level, persisted by the host).
 	Success int64 `json:"success,omitempty"`
 	Failed  int64 `json:"failed,omitempty"`
@@ -48,6 +48,11 @@ type wbAccount struct {
 	// 当日探活配额：达到上限后当日不再探测，本地 0 点恢复。
 	ProbeFails int `json:"probe_fails,omitempty"`
 	ProbeLimit int `json:"probe_limit,omitempty"`
+	// 轮换让位：账号连续承流到阈值后被主动冷却，与失败冷却分表存储，
+	// 因此两者的徽章要在面板上分开显示，否则运维无法区分「坏了」和「用太久」。
+	RotationCooling bool  `json:"rotation_cooling,omitempty"`
+	RotationUntil   int64 `json:"rotation_until,omitempty"`      // 轮换冷却截止（unix 秒）
+	RotationServedM int   `json:"rotation_served_min,omitempty"` // 本轮已连续承流分钟数
 }
 
 // credits/checkin/plan fields are left empty — the panel renders skeletons
@@ -147,6 +152,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 				acct.Error = strings.Join(errs, "; ")
 			} else {
 				// Light load: use cached values if available, but don't fetch upstream.
+				loaded := false
 				if v, ok := accountCache.Load(f.ID); ok {
 					if e, ok2 := v.(*accountCacheEntry); ok2 {
 						acct.Plan = e.plan
@@ -154,6 +160,18 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 						acct.Credits = e.credits
 						acct.Exhausted = isCreditsExhausted(e.credits)
 						acct.LowCredits = isCreditsLowForRouting(e.credits)
+						loaded = true
+					}
+				}
+				// 内存缓存是空的时候（插件刚热重载、或本轮尚未刷新过这个号），
+				// 回落到 sidecar 快照：否则面板首屏会整片显示"积分未知"，
+				// 与实际状态不符，也会让运维误判整池数据丢失。
+				if !loaded {
+					if snap, ok := creditSnapshotGet(f.ID); ok {
+						acct.Plan = snap.Plan
+						acct.Credits = snap.Credits
+						acct.Exhausted = isCreditsExhausted(snap.Credits)
+						acct.LowCredits = isCreditsLowForRouting(snap.Credits)
 					}
 				}
 			}
@@ -231,10 +249,29 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 			out[i].FailoverDisabled = true
 			out[i].FailoverModel = failoverProbeModelFor(out[i].AuthID)
 		}
+		// sidecar 才是禁用的权威来源（宿主会按内存 Status 写回覆盖 disabled、
+		// fsnotify 也会静默失效）。盘上标记丢失但 sidecar 仍禁用时，
+		// 面板必须继续显示禁用，否则运维会以为账号已恢复。
+		if !out[i].FailoverDisabled {
+			if entry, ok := failoverStateGet(out[i].AuthID); ok && entry.Disabled {
+				out[i].FailoverDisabled = true
+				out[i].FailoverModel = entry.Model
+			}
+		}
 		if out[i].FailoverDisabled {
 			out[i].ProbeFails = failoverProbeQuotaSnapshot(out[i].AuthID)
 			out[i].ProbeLimit = failoverProbeQuotaBudget()
 		}
+		// 轮换让位与失败冷却分开标记：前者是负载均衡，后者是故障。
+		if rotationCoolingDown(out[i].AuthID, time.Now()) {
+			out[i].RotationCooling = true
+			rotationMu.Lock()
+			if st := rotationStateLocked(out[i].AuthID, false); st != nil {
+				out[i].RotationUntil = st.cooldownUntil.Unix()
+			}
+			rotationMu.Unlock()
+		}
+		out[i].RotationServedM = rotationServingMinutes(out[i].AuthID, time.Now())
 		if isAccountDailyCooling(out[i].AuthID) {
 			out[i].DailyCooling = true
 			until := getAccountDailyCoolingUntil(out[i].AuthID)

@@ -78,6 +78,12 @@ func configure(raw []byte) {
 	// never silently lifts a `retry_on_4xx: 0` kill switch.
 	nextRetryOn4xx := retryOn4xxDefault
 	retryOn4xxSeen := false
+	// rotation 默认沿用包级默认值；显式配置才覆盖。
+	nextRotationEnabled := defaultRotationEnabled
+	nextRotationServe := defaultRotationServeMinutes
+	nextRotationCooldown := defaultRotationCooldownMinutes
+	nextRotationIdle := defaultRotationIdleResetMinutes
+	rotationSeen := false
 
 	cfgURL, cfgKey := "", ""
 	if len(raw) > 0 {
@@ -134,13 +140,43 @@ func configure(raw []byte) {
 						nextMinRoutableCredits = n
 					}
 				}
-			if strings.HasPrefix(line, "retry_on_4xx:") {
-				retryOn4xxSeen = true
-				if n, ok := parseRetryOn4xxLine(line); ok {
-					nextRetryOn4xx = clampRetryOn4xx(n)
+				if strings.HasPrefix(line, "retry_on_4xx:") {
+					retryOn4xxSeen = true
+					if n, ok := parseRetryOn4xxLine(line); ok {
+						nextRetryOn4xx = clampRetryOn4xx(n)
+					}
 				}
-			}
-			if strings.HasPrefix(line, "models:") {
+				if strings.HasPrefix(line, "rotation_enabled:") {
+					rotationSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "rotation_enabled:"))
+					v = strings.Trim(v, "\"'")
+					nextRotationEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "rotation_serve_minutes:") {
+					rotationSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "rotation_serve_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextRotationServe = n
+					}
+				}
+				if strings.HasPrefix(line, "rotation_cooldown_minutes:") {
+					rotationSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "rotation_cooldown_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextRotationCooldown = n
+					}
+				}
+				if strings.HasPrefix(line, "rotation_idle_reset_minutes:") {
+					rotationSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "rotation_idle_reset_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextRotationIdle = n
+					}
+				}
+				if strings.HasPrefix(line, "models:") {
 					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
 					// 交给 parseModelsConfig（显式配置优先于动态获取与
 					// 静态默认，见 models.go；同步自 workbuddy-provider
@@ -168,6 +204,10 @@ func configure(raw []byte) {
 
 	setFailoverEnabled(nextFailoverEnabled)
 
+	if rotationSeen {
+		setLoadedRotationConfig(nextRotationEnabled, nextRotationServe, nextRotationCooldown, nextRotationIdle)
+	}
+
 	schedulerModeMu.Lock()
 	schedulerMode = nextSchedulerMode
 	schedulerModeMu.Unlock()
@@ -179,7 +219,6 @@ func configure(raw []byte) {
 	minRoutableCreditsMu.Lock()
 	minRoutableCredits = nextMinRoutableCredits
 	minRoutableCreditsMu.Unlock()
-
 
 	// Reconfigure storms collapse onto one tick via requestWatchdogTick's buffered chan cap 1.
 	requestWatchdogTick()

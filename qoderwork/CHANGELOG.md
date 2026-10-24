@@ -1,5 +1,23 @@
 # QoderWork Plugin Changelog
 
+## 0.11.0
+
+### Breaking - 失败禁用链路重构：三层分离 + 移植轮换/积分持久化
+
+- 变更要点:
+  1. **根因（生产实证 2026-10-25）**：失败禁用机制在生产完全未生效且有整池自毁风险，三个断点同时存在：① `stream.go` / `main.go` 把 HTTP 200 的 SSE 错误帧无条件 remap 成 403，使上游模型级故障 `provider_error: All backends failed` 被记成账号故障（单请求连撞 9 个号全部禁用）；② 宿主按内存 `Status` 写回覆盖 `disabled`、白名单重建丢弃插件标记键、fsnotify 对 auths 目录静默失效（5 小时窗口内 01:00 后零事件，目录 mtime 仍持续更新）；③ 宿主候选列表不含插件禁用信息，`scheduler.pick` 无法据此排除。
+  2. **修复一（故障分类）**：新增 `isModelLevelFailure`，识别 `All backends failed` / `no backend available` / `RESOURCE_LIMIT` / `serviceAvailable:false` 等模型级或后端池级文案，命中即跳过全部账号级副作用（不冷却、不禁用、不记账）。`stream.go` / `main.go` 的 `remap 403` 改为先分类再决定。
+  3. **修复二（状态落点）**：新增插件自有 sidecar `data/qoderwork-failover.json`（原子重命名写盘），承载禁用标记、失败模型、阶梯冷却与连续失败数。宿主 auth 文件的 `disabled` 降级为尽力而为，不再作为路由真相源。`isAccountCoolingDown` 改为三层判据：sidecar 禁用 → 进程内存标记 → sidecar 冷却窗口。
+  4. **修复三（整池熔断）**：单轮（30 分钟窗口）禁用账号数超过可路由池 50% 时整体回滚并告警；最小池 8 个以下不启用比例熔断（避免取消禁用机制本身）。
+  5. **新增（轮换让位）**：账号连续承流满 `rotation_serve_minutes`（默认 60）后主动让位，进入 `rotation_cooldown_minutes`（默认 60）冷却；空闲 `rotation_idle_reset_minutes`（默认 10，后者覆盖计时）后重新计时。与失败冷却**分表存储**——失败冷却会在每次成功时被清零，共用状态表会让轮换在第一次成功时被取消。全池将冷时先放开一半账号，避免调度无号可选。
+  6. **新增（积分持久化）**：新增 sidecar `data/qoderwork-credits.json`，跨重启保留积分快照与套餐明细；面板轻载时缓存未命中回落到快照，不再整片显示"积分未知"。与禁用 sidecar **刻意分文件**：积分每小时刷新属高频写入，禁用是低频故障状态，原子重命名会整份覆盖。
+  7. **新增（面板）**：失败冷却、禁用探活（含当日探活配额）、轮换让位三类徽章分开显示，各自逐秒倒计时；`承流 Nm` 展示连续承流时长；"可用"筛选口径统一为「未禁用 + 无低额保护 + 不在任何冷却中」。面板仍不自动刷新（1 秒定时器只改文本、2 秒轮询仅手动刷新后启动）。
+- 验证: 新增 24 个用例（模型级 3 / sidecar 5 / 熔断 4 / 轮换 7 / 积分 5），全部通过；**6 项变异全部 KILLED**（移除模型级豁免、sidecar 路由判据、熔断检查、熔断回滚、scheduler 轮换排除、nil 积分守卫）；cgo-shim build+vet+test 全绿；`gofmt` 干净；面板两段脚本 `node --check` 通过。
+- 修复过程中纠正的三个次生缺陷: ① 模型级判定假绿（首版测试用 `status=200`，而 `isAccountFailure(200)` 本就不记账，移除判定后测试仍过；改用 403 复现真实 remap 路径才具区分力）；② 测试间 sidecar 污染（改为 `t.TempDir()` 路径注入）；③ sidecar 禁用标记在冷却到期与外部启用时永久卡死（补 `reconcileFailoverLocalSet` 对账与冷却同步）。
+- 已知边界: 宿主 fsnotify 失效与 auth 白名单重建属上游代码，本仓无法修复，sidecar 是绕开而非修复。宿主后续修好 watcher 时写盘禁用会自动恢复生效。
+- 依据: 用户报障（生产面板测试 `Kimi-K3.1-Pro` 失败，且"生产有很多失败的账号，但是都没有禁用"）。
+- 涉及文件: qoderwork/policy.go、qoderwork/accountFailover.go、qoderwork/failover_state.go（新增）、qoderwork/failover_disable.go、qoderwork/usage_rotation.go（新增）、qoderwork/credits_snapshot.go（新增）、qoderwork/scheduler.go、qoderwork/failover_retry.go、qoderwork/stream.go、qoderwork/main.go、qoderwork/usage_config.go、qoderwork/cache.go、qoderwork/credits_handler.go、qoderwork/panel.go、qoderwork/panel.html、qoderwork/accountFailover_test.go、qoderwork/VERSION、qoderwork/CHANGELOG.md
+
 ## 0.10.1
 
 ### Fix - 模型清单漏掉上游新模型：改为全场景并集 + 以上游 display_name 为准

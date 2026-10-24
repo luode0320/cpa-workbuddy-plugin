@@ -37,6 +37,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 const (
@@ -59,6 +61,20 @@ const (
 	failoverDisableKey      = "failover_disable"
 	failoverDisableModelKey = "failover_disable_model"
 	failoverDisableAtKey    = "failover_disable_at"
+
+	// failoverDisableBudgetRatio 是单轮允许禁用的池子占比上限。
+	// 取 0.5：一半以上账号在短时间内被判坏，几乎只能是上游整体故障或分类失误，
+	// 而不是这些账号同时出问题。触发即回滚，把账号放回路由。
+	failoverDisableBudgetRatio = 0.5
+
+	// failoverDisableRoundWindow 界定「同一轮」的时间跨度。禁用是秒级完成的事，
+	// 30 分钟外的失败属于新一轮观察，不应被上一轮的计数拖累。
+	failoverDisableRoundWindow = 30 * time.Minute
+
+	// failoverDisableBudgetMinPool 是启用比例熔断的最小池子规模。
+	// 池子太小时「禁用一半」是正常的部分账号故障，拦下来等于取消禁用机制；
+	// 生产池子 27 个，熔断要防的是一次抖动打空整池。
+	failoverDisableBudgetMinPool = 8
 )
 
 var (
@@ -101,6 +117,14 @@ var (
 	// 各一条），它们解析到同一个物理文件；不加锁就会各写一次，每写一次都触发
 	// 宿主 watcher 增量重载。
 	failoverDocLocks = make(map[string]*sync.Mutex)
+
+	// failoverRoundMu 保护本轮禁用台账。
+	failoverRoundMu sync.Mutex
+	// failoverRoundDisabled 记录本轮由本机制禁用的账号（归一化键 → auth_index）。
+	// 熔断回滚要靠它知道该撤销谁；窗口过期即整体作废，重新开始计数。
+	failoverRoundDisabled = make(map[string]string)
+	// failoverRoundStart 是本轮台账的起始时刻。
+	failoverRoundStart time.Time
 )
 
 // failoverProbeDay 是一个账号在某个本地日期内的探活失败计数。
@@ -436,8 +460,140 @@ func confirmFailoverHostState(wait func(string, bool, time.Duration) bool, authI
 	return true
 }
 
-// failoverDocLock 取出（并按需创建）某个物理文档的读改写串行锁。
+// noteFailoverDisableThisRound 把刚禁用的账号记进本轮台账。
+// [参数] authID：账号标识；authIndex：宿主 auth_index。
+// [返回] 无。
+// 最近修改时间：2026-10-25；改动原因：新增，供熔断回滚定位对象。
+func noteFailoverDisableThisRound(authID, authIndex string) {
+	key := normalizeFailoverStateKey(authID)
+	if key == "" {
+		return
+	}
+	failoverRoundMu.Lock()
+	defer failoverRoundMu.Unlock()
+	now := time.Now()
+	if failoverRoundStart.IsZero() || now.Sub(failoverRoundStart) > failoverDisableRoundWindow {
+		failoverRoundDisabled = make(map[string]string)
+		failoverRoundStart = now
+	}
+	failoverRoundDisabled[key] = strings.TrimSpace(authIndex)
+}
+
+// failoverDisableBudgetExceeded 判定再禁用这一个账号是否会击穿池子。
 //
+// 判据用「本轮已禁用数 + 1 >= 池子总数 × 比例」：真正要防的是「几乎全部账号
+// 在短时间内一起被判坏」，用绝对数量而不是比例对小池子更稳健——3 个账号的池子
+// 禁用 2 个就已经是整池失效。
+//
+// [参数] authID：即将被禁用的账号（已在本轮台账里则不计新增）。
+// [返回] true 表示应触发熔断，拒绝本次禁用。
+// 最近修改时间：2026-10-25；改动原因：新增。
+func failoverDisableBudgetExceeded(authID string) bool {
+	total := failoverRoutablePoolSize()
+	if total <= 0 {
+		return false
+	}
+	key := normalizeFailoverStateKey(authID)
+	failoverRoundMu.Lock()
+	// 窗口过期时台账作废，按本轮首次禁用处理。
+	round := 0
+	if !failoverRoundStart.IsZero() && time.Since(failoverRoundStart) <= failoverDisableRoundWindow {
+		round = len(failoverRoundDisabled)
+		if _, already := failoverRoundDisabled[key]; already {
+			failoverRoundMu.Unlock()
+			return false
+		}
+	}
+	failoverRoundMu.Unlock()
+
+	budget := int(float64(total) * failoverDisableBudgetRatio)
+	if budget < 1 {
+		budget = 1
+	}
+	// 小池子不做比例熔断：3~5 个号时「禁用 2 个」可能是真实的部分账号故障，
+	// 而熔断会把它退化成「谁都不禁」，等于取消这套机制。生产池子是 27 个，
+	// 熔断要防的是「一次抖动打空整池」，那才是真正的危险。
+	if total < failoverDisableBudgetMinPool {
+		return false
+	}
+	return round+1 > budget
+}
+
+// failoverRoutablePoolSize 统计当前可路由的 qoderwork 账号总数。
+// [返回] 账号数；宿主列表不可用时返回 0（表示无法判定，调用方应按不熔断处理）。
+// 最近修改时间：2026-10-25；改动原因：新增。
+func failoverRoutablePoolSize() int {
+	files, err := failoverListFn()
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, f := range files {
+		if strings.TrimSpace(f.ID) == "" {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+// rollbackFailoverDisablesThisRound 撤销本轮全部禁用并把账号放回路由。
+//
+// 触发时说明「短时间内大批账号被判坏」，这在真实账号故障里几乎不可能同时发生，
+// 更可能是上游整体故障或分类失误。回滚比继续禁用更安全：宁可让账号带着故障
+// 继续接流量（用户看到的是单次失败并可重试），也不要把整池打空（服务完全不可用）。
+//
+// [返回] 实际回滚的账号数。
+// 最近修改时间：2026-10-25；改动原因：新增。
+func rollbackFailoverDisablesThisRound() int {
+	failoverRoundMu.Lock()
+	pending := make(map[string]string, len(failoverRoundDisabled))
+	for key, idx := range failoverRoundDisabled {
+		pending[key] = idx
+	}
+	failoverRoundDisabled = make(map[string]string)
+	failoverRoundStart = time.Time{}
+	failoverRoundMu.Unlock()
+
+	rolledBack := 0
+	for key, authIndex := range pending {
+		failoverStateClearDisabled(key)
+		clearFailoverDisabledLocal(key, authIndex)
+		forgetFailoverProbeModel(key)
+		resetFailoverProbeQuota(key)
+		resetCooldownState(key)
+		rolledBack++
+	}
+	if rolledBack > 0 {
+		log.Printf("[qoderwork] failover disable CIRCUIT BREAKER: rolled back %d disables in one round "+
+			"(more than %.0f%% of the pool flagged within %v) — treating as upstream-wide failure",
+			rolledBack, failoverDisableBudgetRatio*100, failoverDisableRoundWindow)
+	}
+	return rolledBack
+}
+
+// resetFailoverRoundForTest 清空本轮禁用台账，仅供测试使用。
+// [返回] 无。
+// 最近修改时间：2026-10-25；改动原因：新增，避免用例之间共享熔断计数。
+func resetFailoverRoundForTest() {
+	failoverRoundMu.Lock()
+	failoverRoundDisabled = make(map[string]string)
+	failoverRoundStart = time.Time{}
+	failoverRoundMu.Unlock()
+}
+
+// expireFailoverRoundForTest 把本轮台账起点拨到窗口之外，仅供测试使用。
+// [返回] 无。
+// 最近修改时间：2026-10-25；改动原因：新增，验证窗口过期后计数归零。
+func expireFailoverRoundForTest() {
+	failoverRoundMu.Lock()
+	if !failoverRoundStart.IsZero() {
+		failoverRoundStart = time.Now().Add(-failoverDisableRoundWindow - time.Minute)
+	}
+	failoverRoundMu.Unlock()
+}
+
+// failoverDocLock 取出（并按需创建）某个物理文档的读改写串行锁。//
 // 键用 auth_index 而不是账号标识：同一账号在宿主里可能以多种身份形态出现
 // （文件名 ID、UID、auth_index），只有 auth_index 能唯一指向同一个物理文件。
 //
@@ -477,9 +633,31 @@ func disableAccountForFailover(authID, model string) bool {
 	authIndex, _ := failoverResolveIndexFn(authID)
 	authIndex = strings.TrimSpace(authIndex)
 	if authIndex == "" {
+		// 解析不到 auth_index 说明宿主侧查不到这个账号（RPC 不通或账号已消失），
+		// 此时不写禁用：禁用是为了让路由跳过它，而连身份都无法确认的账号
+		// 本就不会被路由到，写一份无主禁用只会留下永远探不回来的死角。
+		// 内存阶梯冷却仍会生效，覆盖短时故障。
 		log.Printf("[qoderwork] failover disable skipped: no auth_index for auth=%s", authID)
 		return false
 	}
+
+	// 池级熔断：禁用是「把账号从路由里摘掉」，它必须是小概率事件。
+	// 当本轮已禁用的账号占可路由池达到 failoverDisableBudgetRatio 时，更可能的
+	// 解释是上游整体故障或分类失误，继续禁用只会把整池打空——2026-10-25 生产
+	// 实证正是如此：单请求连撞 9 个号全失败，全部禁用后另一个请求又撞上剩余账号。
+	// 触发熔断时回滚本轮全部禁用，并保留内存冷却观察真实故障是否在扩散。
+	if failoverDisableBudgetExceeded(authID) {
+		rollbackFailoverDisablesThisRound()
+		return false
+	}
+
+	// 先写插件自有 sidecar：它不经过宿主，是路由判据的真实来源。
+	// 宿主侧写盘（disabled 字段）降级为尽力而为——宿主会按内存 Status 写回
+	// 覆盖它、fsnotify 也会静默失效，因此绝不能再把「宿主认了」当作禁用成功。
+	failoverStateMarkDisabled(authID, model)
+	markFailoverDisabledLocal(authID, authIndex)
+	noteFailoverDisableThisRound(authID, authIndex)
+
 	// 锁必须罩住「读盘 → 判 disabled → 写盘」整段：这三步之间只要让出，第二个
 	// 记账入口就会读到同一份未禁用文档并再写一次，每写一次都触发宿主 reload。
 	lock := failoverDocLock(authIndex)
@@ -488,20 +666,21 @@ func disableAccountForFailover(authID, model string) bool {
 
 	phys, err := failoverGetPhysicalFn(authIndex)
 	if err != nil || phys == nil || len(phys.JSON) == 0 {
-		log.Printf("[qoderwork] failover disable skipped: no physical auth doc for auth=%s", authID)
-		return false
+		log.Printf("[qoderwork] failover disabled via sidecar, host doc unavailable auth=%s", authID)
+		return true
 	}
 	doc := parseFailoverAuthDoc(phys.JSON)
 	if doc.disabled {
 		// 已被禁用：谁的禁用谁负责。只有本机制的标记才认领；
 		// manual / exhausted / daily_cooling 一律不接管，避免抢走别人的恢复职责。
+		// 但 sidecar 已写下禁用，路由照样排除——这里只决定探活归属。
 		return doc.failoverDisable
 	}
 
 	var rawDoc map[string]any
 	if err := json.Unmarshal(phys.JSON, &rawDoc); err != nil || rawDoc == nil {
-		log.Printf("[qoderwork] failover disable skipped: unparsable auth doc for auth=%s", authID)
-		return false
+		log.Printf("[qoderwork] failover disable: sidecar written, auth doc unparsable auth=%s", authID)
+		return true
 	}
 	// 逐键改盘上现文档，不重建：盘上任何既有顶层键（note / 计数 / 其它标记）都原样保留。
 	rawDoc["disabled"] = true
@@ -510,12 +689,13 @@ func disableAccountForFailover(authID, model string) bool {
 	rawDoc[failoverDisableAtKey] = failoverNowFn().UTC().Format(time.RFC3339)
 	raw, err := json.Marshal(rawDoc)
 	if err != nil {
-		log.Printf("[qoderwork] failover disable skipped: marshal auth doc: %v", err)
-		return false
+		log.Printf("[qoderwork] failover disable: sidecar written, marshal auth doc: %v", err)
+		return true
 	}
 	if err := failoverPersistFn(phys.Name, phys.Path, "", raw); err != nil {
-		log.Printf("[qoderwork] failover disable write failed: auth=%s err=%v", authID, err)
-		return false
+		// 宿主侧写盘失败不影响 sidecar 已经生效的排除，只是探活还要靠 sidecar 枚举。
+		log.Printf("[qoderwork] failover disable: sidecar written, host write failed auth=%s err=%v", authID, err)
+		return true
 	}
 	markFailoverDisabledLocal(authID, authIndex)
 	wait := failoverWaitConfirmed
@@ -538,8 +718,11 @@ func reenableAccountForFailover(authIndex, authID string) bool {
 		resolved, _ := failoverResolveIndexFn(authID)
 		authIndex = strings.TrimSpace(resolved)
 	}
+	// sidecar 才是路由判据的真实来源：即使拿不到 auth_index（宿主 RPC 不通、
+	// 账号已从 auth.list 消失），也必须能解除插件自己的禁用，否则这个号
+	// 会永远停在「插件禁用、宿主不管」的死角。
 	if authIndex == "" {
-		return false
+		return failoverStateClearAndReport(authID, "no auth_index")
 	}
 	// 与 disableAccountForFailover 同一把文档锁：恢复读盘与写盘之间若让出，
 	// 期间一个新失败可能已经写进 disabled，随后被这里覆盖回 false。
@@ -549,17 +732,23 @@ func reenableAccountForFailover(authIndex, authID string) bool {
 
 	phys, err := failoverGetPhysicalFn(authIndex)
 	if err != nil || phys == nil || len(phys.JSON) == 0 {
-		return false
+		return failoverStateClearAndReport(authID, "no physical doc")
 	}
 	doc := parseFailoverAuthDoc(phys.JSON)
-	if !doc.failoverDisable || doc.manualDisable {
-		// 不是本机制禁的，或用户已表达禁用意图：绝不解除他人的禁用。
+	if doc.manualDisable {
+		// 用户已表达禁用意图：sidecar 里就算有本机制的禁用也必须让位，
+		// 否则探活会在用户明确禁用后把号放回路由。
 		return false
+	}
+	if !doc.failoverDisable {
+		// 盘上没有本机制标记，但 sidecar 可能仍有本进程写的禁用（宿主回写把它抹了）。
+		// 这种情况必须清 sidecar，否则账号永远回不来。
+		return failoverStateClearAndReport(authID, "no host marker")
 	}
 
 	var rawDoc map[string]any
 	if err := json.Unmarshal(phys.JSON, &rawDoc); err != nil || rawDoc == nil {
-		return false
+		return failoverStateClearAndReport(authID, "unparsable host doc")
 	}
 	rawDoc["disabled"] = false
 	delete(rawDoc, failoverDisableKey)
@@ -567,11 +756,10 @@ func reenableAccountForFailover(authIndex, authID string) bool {
 	delete(rawDoc, failoverDisableAtKey)
 	raw, err := json.Marshal(rawDoc)
 	if err != nil {
-		return false
+		return failoverStateClearAndReport(authID, "marshal failed")
 	}
 	if err := failoverPersistFn(phys.Name, phys.Path, "", raw); err != nil {
-		log.Printf("[qoderwork] failover re-enable write failed: auth=%s err=%v", authID, err)
-		return false
+		log.Printf("[qoderwork] failover re-enable host write failed, clearing sidecar only: auth=%s err=%v", authID, err)
 	}
 	// 解除禁用必须同时清掉内存冷却：双写下两侧是同一个故障的两份记录，只解一边
 	// 会得到「盘上可用、插件仍排除」的半恢复账号——宿主会把请求路由过来，但
@@ -584,9 +772,35 @@ func reenableAccountForFailover(authIndex, authID string) bool {
 	forgetFailoverProbeModel(authID)
 	resetFailoverProbeQuota(authID)
 	clearFailoverDisabledLocal(authID, authIndex)
+	failoverStateClearDisabled(authID)
 	wait := failoverWaitConfirmed
 	go confirmFailoverHostState(wait, authIndex, false, authID, phys.Path)
 	log.Printf("[qoderwork] failover re-enabled account: auth=%s", authID)
+	return true
+}
+
+// failoverStateClearAndReport 在宿主侧无法完成恢复时，仅清 sidecar 并记录原因。
+//
+// 为什么需要这条降级路径：sidecar 是路由判据的真实来源，若因为拿不到 auth_index
+// 或宿主导档读不到就拒绝清除，账号会永久停在「插件禁用、宿主不管」的死角，
+// 只能人工介入。清 sidecar 至少让账号回到路由，宿主侧的 disabled 由它自己负责。
+//
+// [参数] authID：账号标识；reason：降级原因，仅用于日志定位。
+// [返回] true 表示 sidecar 已完成清除。
+// 最近修改时间：2026-10-25；改动原因：新增，避免宿主不可达时账号永久禁用。
+func failoverStateClearAndReport(authID, reason string) bool {
+	if strings.TrimSpace(authID) == "" {
+		return false
+	}
+	if !failoverStateIsDisabled(authID) {
+		return false
+	}
+	resetCooldownState(authID)
+	forgetFailoverProbeModel(authID)
+	resetFailoverProbeQuota(authID)
+	clearFailoverDisabledLocal(authID, "")
+	failoverStateClearDisabled(authID)
+	log.Printf("[qoderwork] failover re-enabled via sidecar only (%s): auth=%s", reason, authID)
 	return true
 }
 
@@ -597,27 +811,71 @@ type failoverProbeCandidate struct {
 	model     string
 }
 
-// failoverProbeTargets 从盘上枚举被本机制禁用的账号。
+// failoverProbeTargets 枚举待探活的禁用账号。
 //
-// 真相源是物理文件而不是内存集合：禁用状态本身就在盘上，插件热重载或进程重启后
-// 不需要重建步骤就能继续把号探回来，也不会出现「内存记了、盘上没有」的双态。
-// host.auth.list 会原样返回 disabled 条目（宿主只在 runtime-only 或文件已消失时
-// 才隐藏），因此禁用中的账号仍在候选范围内。
+// 真相源是本插件的 sidecar，而不是宿主 auth 文件上的 disabled 标记。原因（2026-10-25
+// 生产实证）：宿主重建 auth 文档会抹掉标记、fsnotify 监听会静默失效，若仍按盘上标记
+// 挑候选，账号被禁用后永远进不了探活队列，只能人工启用。
+//
+// 候选来源分两路合并：
+//  1. sidecar 里标记为 disabled 的账号（本插件的权威记录）；
+//  2. 宿主 auth.list 里 disabled 且盘上带本机制标记的账号（兼容旧数据）。
+//
+// 判定条件不再要求 f.Disabled：宿主看不到 sidecar 写的禁用，若要求宿主先认账，
+// 这条链路就又回到依赖宿主的老路上。
 //
 // [返回] 待探活候选列表；无候选时返回 nil。
-// 最近修改时间：2026-10-22；改动原因：新增，取代按内存冷却挑候选。
+// 最近修改时间：2026-10-25；改动原因：真相源从宿主盘上标记改为插件 sidecar。
 func failoverProbeTargets() []failoverProbeCandidate {
 	files, err := failoverListFn()
 	if err != nil {
 		return nil
 	}
-	out := make([]failoverProbeCandidate, 0, len(files))
+	// 先建索引：sidecar 的键是归一化标识，需要映射回宿主记录才能拿到 auth_index。
+	byKey := make(map[string]pluginapi.HostAuthFileEntry, len(files))
 	for _, f := range files {
+		if key := normalizeFailoverStateKey(f.ID); key != "" {
+			byKey[key] = f
+		}
+	}
+
+	seen := make(map[string]struct{}, len(files))
+	out := make([]failoverProbeCandidate, 0, len(files))
+	appendCandidate := func(f pluginapi.HostAuthFileEntry, model string) {
 		authIndex := strings.TrimSpace(f.AuthIndex)
-		if !f.Disabled || authIndex == "" {
+		if authIndex == "" {
+			return
+		}
+		if _, dup := seen[authIndex]; dup {
+			return
+		}
+		seen[authIndex] = struct{}{}
+		out = append(out, failoverProbeCandidate{authIndex: authIndex, authID: f.ID, model: model})
+	}
+
+	// 1. sidecar 权威来源。
+	for _, key := range failoverStateDisabledIDs() {
+		f, ok := byKey[key]
+		if !ok {
 			continue
 		}
-		phys, errGet := failoverGetPhysicalFn(authIndex)
+		entry, okEntry := failoverStateGet(f.ID)
+		if !okEntry {
+			continue
+		}
+		model := failoverProbeModelFor(f.ID)
+		if model == "" {
+			model = entry.Model
+		}
+		appendCandidate(f, model)
+	}
+
+	// 2. 兼容旧数据：宿主盘上带本机制标记的账号。
+	for _, f := range files {
+		if !f.Disabled || strings.TrimSpace(f.AuthIndex) == "" {
+			continue
+		}
+		phys, errGet := failoverGetPhysicalFn(f.AuthIndex)
 		if errGet != nil || phys == nil || len(phys.JSON) == 0 {
 			continue
 		}
@@ -629,7 +887,7 @@ func failoverProbeTargets() []failoverProbeCandidate {
 		if model == "" {
 			model = doc.failoverModel
 		}
-		out = append(out, failoverProbeCandidate{authIndex: authIndex, authID: f.ID, model: model})
+		appendCandidate(f, model)
 	}
 	return out
 }
@@ -771,6 +1029,14 @@ func reconcileFailoverLocalSet() int {
 		delete(failoverProbeModels, key)
 		delete(failoverProbeQuota, key)
 		cleared++
+	}
+	// sidecar 必须同步对账：否则用户在宿主面板把号启用后，插件仍按 sidecar
+	// 判据一直跳过它，形成「宿主说可用、插件说禁用」的死角。
+	for _, key := range failoverStateDisabledIDs() {
+		if _, ok := enabled[key]; ok {
+			failoverStateClearDisabled(key)
+			cleared++
+		}
 	}
 	return cleared
 }

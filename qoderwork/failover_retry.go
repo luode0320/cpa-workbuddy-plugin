@@ -69,6 +69,11 @@ func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *storedAuth, 
 		if isAccountCoolingDown(id) {
 			continue
 		}
+		// 轮换冷却的账号同样不承接换号流量：它被让位的原因是「用得太久」，
+		// 不是「坏了」，但继续给它加压会让轮换目标落空。
+		if rotationCoolingDown(id, time.Now()) {
+			continue
+		}
 		// 跳过残血账号（正积分低于安全红线）；0 积分账号可继续走免费模型
 		if _, lowCredits := cachedCreditsScore(id); lowCredits {
 			continue

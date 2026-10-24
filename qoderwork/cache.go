@@ -131,6 +131,9 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 		cr.FetchedAt = now.UTC().Format(time.RFC3339)
 	}
 	accountCache.Store(authID, &accountCacheEntry{checkin: ci, credits: cr, plan: plan, fetched: now})
+	// 快照落内存镜像：跨重启记忆由 persistCreditSnapshot 在轮末统一写盘。
+	// 这里只写内存，避免每个账号一次文件写。
+	recordCreditSnapshot(authID, cr, plan)
 	// Soft cap: if map is huge, drop oldest-looking entries beyond bound.
 	pruneAccountCacheSoftCap(accountCacheSoftCap)
 	return plan, ci, cr, errList

@@ -348,7 +348,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.10.1"
+var version = "0.11.0"
 
 func wbRegistration() registration {
 	return registration{
@@ -365,6 +365,10 @@ func wbRegistration() registration {
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每4小时 access-token 自动刷新，防止 Keycloak 离线会话过期（默认开启）。"},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "可选模型列表。每个条目可包含 id、name、alias、context、max_tokens、enabled、reasoning 字段；配置后优先于自动获取的模型列表。"},
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeSession, schedulerModeCredits, schedulerModeOff}, Description: "多账号选择策略：session（按会话轮询，同一会话 1 小时内固定同一账号；默认）／credits（面板指定的固定账号）／off（交给内置逻辑）。0 积分账号仍参与路由（免费模型不消耗积分），仅冷却中或低于安全红线的账号被排除。"},
+				{Name: "rotation_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用连续使用轮换（默认开启）：单个账号连续承流达到 rotation_serve_minutes 后主动让位，进入 rotation_cooldown_minutes 冷却，后续请求改由其它账号承接。已在会话粘性绑定中的会话同样生效；关闭填 false。"},
+				{Name: "rotation_serve_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "单账号连续承流多少分钟后让位（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
+				{Name: "rotation_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "轮换让位后停留在冷却的时长（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
+				{Name: "rotation_idle_reset_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "连续使用计时在空闲多少分钟后重新开始（默认 10）。零散流量不会因此触发轮换。"},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 用量上报地址（默认 http://cpa-manager-plus:18317/v0/management/usage/import；也可用环境变量 USAGE_REPORT_URL）。"},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 管理密钥。优先从环境变量 CPAMP_ADMIN_KEY / USAGE_REPORT_KEY 或密钥文件 /run/secrets/cpamp_admin_key 自动探测。"},
 				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
@@ -866,6 +870,11 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		} else if statusCode == 200 {
 			// SSE error frame on HTTP 200: remap to 403 so isAccountFailure
 			// correctly triggers the laddered failover cooldown.
+			// 模型级故障（provider_error / 后端池不可用）不 remap：否则 403 会绕过
+			// isModelLevelFailure 的语义，把模型故障记成账号故障。
+			if isModelLevelFailure(completionErr.Error()) {
+				return nil, completionErr
+			}
 			noteAccountFailureForModel(usedAuthID, upstreamModel, http.StatusForbidden, completionErr.Error())
 		}
 		return nil, completionErr
@@ -875,6 +884,8 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "", reasoningEffort, 0, accountLabel, sessionKey)
 	invalidateAccountCredits(usedAuthID, authUID)
 	resetAccountFailover(usedAuthID)
+	// 轮换打点：只有确实由该账号服务的成功请求才推进连续使用计时。
+	noteRotationUsage(usedAuthID)
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 }
 
@@ -1002,6 +1013,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), false, 0, "", reasoningEffort, collector.ttftNS(started), accountLabel, sessionKey)
 		invalidateAccountCredits(req.AuthID, authUID)
 		resetAccountFailover(req.AuthID)
+		noteRotationUsage(req.AuthID)
 		return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
 	}
 
