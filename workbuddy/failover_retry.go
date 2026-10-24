@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // pickNextAuth returns the next workbuddy account to retry on after
@@ -59,6 +60,7 @@ func pickNextAuthForModel(currentAuthID, model string) (nextAuthID string, nextS
 	// because a mid-request switch must stay deterministic across the
 	// retry chain.
 	normCurrent := normalizeFailoverKey(currentAuthID)
+	rotationNow := time.Now()
 	for _, f := range files {
 		id := strings.TrimSpace(f.ID)
 		if id == "" {
@@ -71,6 +73,11 @@ func pickNextAuthForModel(currentAuthID, model string) (nextAuthID string, nextS
 			continue
 		}
 		if isAuthModelCoolingDown(id, model) {
+			continue
+		}
+		// 轮换冷却中的号不能作为换号目标，否则「换号」会落到同样该让位的账号上，
+		// 轮换等于没做。
+		if rotationCoolingDown(id, rotationNow) {
 			continue
 		}
 		// 「测试」accounts are unusable by product definition — they must not

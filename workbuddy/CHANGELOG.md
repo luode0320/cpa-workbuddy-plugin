@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.20.0
+
+### Feature - 连续使用轮换：单账号连续承流 1 小时后让位冷却 1 小时（默认开启）
+
+- 背景: 生产实测单个账号在 1000 次请求量级会触发上游频率限制（`6004`），而会话亲和命中后无限滑动续期，导致负载长期压在少数账号上，其余账号几乎无流量。priority 分层对此无效——宿主 `SessionAffinitySelector` 命中缓存时跨所有 priority 层校验绑定，已绑定会话不受 priority 影响。
+- 机制: 插件在请求入口独立记账，账号**连续**承流满 `rotation_serve_minutes`（默认 60）后主动让位，进入 `rotation_cooldown_minutes`（默认 60）冷却；冷却期内该账号不再作为调度候选，后续请求改由其它账号承接。因换号发生在插件入口而非依赖宿主 selector，**已绑定会话同样生效**。
+- 计时语义: 取「连续使用」而非「累计使用」——距上次使用超过 `rotation_idle_reset_minutes`（默认 10）即视为新一轮并从当前请求重新计时，避免全天零散流量被误判为持续负载。
+- 防抽干: 冷却前做一次全冷检查，若除本号外池内账号已全部冷却，先按冷却结束时间从晚到早放开一半（向上取整）再冷却本号；只有本号一个候选时不放开，避免全池无冷却。
+- 配置项（4 个，全部可在面板配置）：`rotation_enabled`（默认 true）、`rotation_serve_minutes`（60）、`rotation_cooldown_minutes`（60）、`rotation_idle_reset_minutes`（10）。`serve` 或 `cooldown` 填 0 等同关闭。
+- 覆盖点: 插件调度器候选过滤、跨请求换号候选（`pickNextAuthForModel`）、执行入口前置冷却拦截（非流式与流式各一处）、成功路径打点（非流式 / 流式同步 / 异步流式三条）。
+- 与失败冷却相互独立: 轮换状态单独存储，不被成功路径的 `resetAccountFailover` 清零，避免 1 小时让位冷却被一次成功立刻抹掉。
+- 验证: `usage_rotation_test.go` 8 项单测全绿；三处变异（关闭全冷放开 / 忽略 serve 阈值 / 取消中断重置）均被精准捕获。cgo-shim build + vet + test 全绿。
+- 涉及文件: 新增 `usage_rotation.go` `usage_rotation_test.go`；修改 `main.go` `stream.go` `scheduler.go` `failover_retry.go` `usage_config.go` `VERSION`
+
 ## 0.19.0
 
 ### Feature - 重新接入成长中心（修复旧版「任务永远完不成」的两个根因）

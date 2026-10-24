@@ -77,6 +77,13 @@ func configure(raw []byte) {
 	nextMinRoutableCredits := defaultMinRoutableCredits
 	nextLowCreditDisableBelow := defaultLowCreditDisableBelow
 
+	// rotation_*: 连续使用轮换。默认开启，四个键里任何一个缺失都回落到默认值，
+	// 存量配置里没有这些键时按默认值生效。
+	nextRotationEnabled := defaultRotationEnabled
+	nextRotationServeMinutes := defaultRotationServeMinutes
+	nextRotationCooldownMinutes := defaultRotationCooldownMinutes
+	nextRotationIdleResetMinutes := defaultRotationIdleResetMinutes
+
 	// retry_on_4xx: per-request account-failover budget. Applied ONLY when
 	// the key is present in config_yaml: a valid value is clamped to
 	// [0, 10] and applied; an unparseable value resets to the default 10.
@@ -154,6 +161,32 @@ func configure(raw []byte) {
 						nextLowCreditDisableBelow = n
 					}
 				}
+				if strings.HasPrefix(line, "rotation_enabled:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "rotation_enabled:"))
+					v = strings.Trim(v, "\"'")
+					nextRotationEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "rotation_serve_minutes:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "rotation_serve_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextRotationServeMinutes = n
+					}
+				}
+				if strings.HasPrefix(line, "rotation_cooldown_minutes:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "rotation_cooldown_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextRotationCooldownMinutes = n
+					}
+				}
+				if strings.HasPrefix(line, "rotation_idle_reset_minutes:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "rotation_idle_reset_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextRotationIdleResetMinutes = n
+					}
+				}
 			if strings.HasPrefix(line, "retry_on_4xx:") {
 				retryOn4xxSeen = true
 				if n, ok := parseRetryOn4xxLine(line); ok {
@@ -220,6 +253,18 @@ func configure(raw []byte) {
 	lowCreditDisableBelowMu.Lock()
 	lowCreditDisableBelow = nextLowCreditDisableBelow
 	lowCreditDisableBelowMu.Unlock()
+
+	// 轮换配置写回。serve/cooldown 为 0 时 loadedRotationConfig 会把 enabled
+	// 降级为 false，因此这里不需要额外校验，避免两处判断分叉。
+	rotationEnabledMu.Lock()
+	rotationEnabled = nextRotationEnabled
+	rotationEnabledMu.Unlock()
+
+	rotationConfigMu.Lock()
+	rotationServeMinutes = nextRotationServeMinutes
+	rotationCooldownMinutes = nextRotationCooldownMinutes
+	rotationIdleResetMinutes = nextRotationIdleResetMinutes
+	rotationConfigMu.Unlock()
 
 	// management key: config_yaml > env > keep existing. Empty stays empty
 	// (plugin-layer auth disabled, host middleware still guards).

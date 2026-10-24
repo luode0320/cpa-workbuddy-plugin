@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -100,12 +101,19 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
 
-	// 3. 排除「测试」标签、账号×模型冷却、以及低于禁用线/已耗尽的账号。
+	// 3. 排除「测试」标签、账号×模型冷却、轮换冷却、以及低于禁用线/已耗尽的账号。
 	// 全部被排除时延迟给宿主，让宿主切到其它 provider，而不是钉死在不可用账号上。
 	upstreamModel := resolveUpstreamModel(req.Model, nil)
+	rotationNow := time.Now()
 	available := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
 		if isTestFailed(c.ID) || isAuthModelCoolingDown(c.ID, upstreamModel) {
+			continue
+		}
+		// 轮换冷却：连续使用满阈值的号主动让位，让新会话落到其它账号。
+		// 这里与 isAuthModelCoolingDown 并列而非合并，因为两者生命周期不同——
+		// 失败冷却会被一次成功清零，轮换冷却必须稳定持续到窗口结束。
+		if rotationCoolingDown(c.ID, rotationNow) {
 			continue
 		}
 		// 三档语义（2026-10-23）：只有低于硬禁用线或已耗尽的号才真正摘出；

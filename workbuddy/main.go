@@ -342,7 +342,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.19.0"
+var version = "0.20.0"
 
 func wbRegistration() registration {
 	return registration{
@@ -362,6 +362,10 @@ func wbRegistration() registration {
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeSession, schedulerModeCredits, schedulerModeOff}, Description: "多账号选择策略：session（按会话轮询，同一会话 1 小时内固定同一账号；默认）／credits（面板指定的固定账号）／off（交给内置逻辑）。注意：off 且 lifecycle_auto=false 时，额度耗尽的账号仍可能被路由——请启用 lifecycle_auto 或保持 session/credits。"},
 				{Name: "min_routable_credits", Type: pluginapi.ConfigFieldTypeInteger, Description: "保活线，默认 400 点：剩余积分低于该值但高于禁用线的账号打「保活」标，仍可路由但排在正常号之后。填 0 关闭保活降级。"},
 				{Name: "low_credit_disable_below", Type: pluginapi.ConfigFieldTypeInteger, Description: "硬禁用线，默认 100 点：每小时扫描或手动刷新发现剩余积分低于该值时，直接写盘停用该账号；积分回到线上且探活成功才自动解禁。填 0 关闭该机制。"},
+				{Name: "rotation_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用连续使用轮换（默认开启）：单个账号连续承流达到 rotation_serve_minutes 后主动让位，进入 rotation_cooldown_minutes 冷却，后续请求改由其它账号承接。与 priority 不同，该机制在请求入口换号，已绑定会话同样生效；关闭填 false。"},
+				{Name: "rotation_serve_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "单账号连续承流多少分钟后让位（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
+				{Name: "rotation_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "轮换让位后停留在冷却的时长（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
+				{Name: "rotation_idle_reset_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "连续使用的中断阈值（默认 10）：账号距上次使用超过该时长即视为新一轮，重新计时，避免零散流量被误判为持续负载。"},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 用量上报地址（默认 http://cpa-manager-plus:18317/v0/management/usage/import；也可用环境变量 USAGE_REPORT_URL）。"},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 管理密钥。优先从环境变量 CPAMP_ADMIN_KEY / USAGE_REPORT_KEY 或密钥文件 /run/secrets/cpamp_admin_key 自动探测。"},
 				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
@@ -753,6 +757,8 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	)
 
 	// 前置冷却拦截：如果初始账号正处于冷却中，不要发送无效的上游请求，立即换号！
+	// 轮换冷却同样走这条拦截——这正是它区别于 priority 降级的地方：宿主的会话亲和
+	// 命中时不会看 priority，但请求进入插件后由这里主动换号，已绑定会话也能切走。
 	initID := strings.TrimSpace(req.AuthID)
 	if initID == "" && curSA != nil {
 		initID = strings.TrimSpace(curSA.Auth.AccessToken)
@@ -760,7 +766,11 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			initID = strings.TrimSpace(curSA.Account.UID)
 		}
 	}
-	if initID != "" && (isAuthModelCoolingDown(initID, upstreamModel) || (curSA != nil && curSA.Account.UID != "" && isAuthModelCoolingDown(curSA.Account.UID, upstreamModel))) {
+	rotationNow := time.Now()
+	if initID != "" && (isAuthModelCoolingDown(initID, upstreamModel) ||
+		(curSA != nil && curSA.Account.UID != "" && isAuthModelCoolingDown(curSA.Account.UID, upstreamModel)) ||
+		rotationCoolingDown(initID, rotationNow) ||
+		(curSA != nil && curSA.Account.UID != "" && rotationCoolingDown(curSA.Account.UID, rotationNow))) {
 		if nextID, nextSA, hasNext := pickNextAuthForModel(initID, upstreamModel); hasNext && nextSA != nil {
 			curSA = nextSA
 			curBody = prepareUpstreamBody(req.Payload, req.OriginalRequest, curSA, upstreamModel)
@@ -850,6 +860,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "", reasoningEffort, 0, accountLabel, sessionKey)
 	invalidateAccountCredits(usedAuthID, authUID)
 	resetAccountFailover(usedAuthID)
+	// 连续使用轮换：只在真实成功后推进计时；达到 serve 阈值时让位，
+	// 使长时间承流的账号主动退出，把后续请求交给其它账号。
+	noteRotationUsage(usedAuthID)
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 }
 
@@ -918,6 +931,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), false, 0, "", reasoningEffort, collector.ttftNS(started), accountLabel, sessionKey)
 		invalidateAccountCredits(req.AuthID, authUID)
 		resetAccountFailover(req.AuthID)
+		noteRotationUsage(req.AuthID)
 		return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
 	}
 
