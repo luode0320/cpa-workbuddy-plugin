@@ -2,7 +2,7 @@
 
 [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 的 Go 原生插件集合，将主流 AI 服务与私有逆向协议封装为 **OpenAI / Anthropic 兼容 Provider**，供 CPA 网关统一调度。套件支持多账号运维管理、账号故障禁用与探活自愈、40x 同请求换号重试、会话粘性路由、动态模型发现与别名映射、流式长推理稳定性加固（首包即停与 liveBody 实时流）、每日自动签到与积分生命周期管理、额度领取与客户端指纹模拟，以及统一 Token 用量统计与实时看板。
 
-每个插件采用独立模块、独立版本与独立 Release 生命周期管理。本文档重点说明以下六个插件：
+每个插件采用独立模块、独立版本与独立 Release 生命周期管理。本文档重点说明以下七个插件：
 
 | 插件 ID | 源码目录 | 服务商 / 目标服务 | 当前版本 |
 |---|---|---|:---:|
@@ -11,6 +11,7 @@
 | [`traework-provider`](#traework-provider--trae-solo-provider) | [`traework/`](traework/) | TRAE SOLO（字节跳动 AI IDE） | `v0.3.0` |
 | [`qoderwork-provider`](#qoderwork-provider--qoderwork-cn-provider) | [`qoderwork/`](qoderwork/) | QoderWork CN（qoder.com.cn） | `v0.10.0` |
 | [`zcode-provider`](#zcode-provider--zcode-provider) | [`zcode/`](zcode/) | ZCode（智谱 BigModel Coding Plan） | `v0.1.34` |
+| [`coze-provider`](#coze-provider--扣子-coze-provider) | [`coze/`](coze/) | 扣子 Coze（对话 + 生图映射） | `v0.5.6` |
 | [`workbuddy-token-usage`](#workbuddy-token-usage--用量统计-dashboard) | [`token-usage-tracker/`](token-usage-tracker/) | 统一 Token 用量统计与实时看板 | `v0.2.8` |
 
 > 注：版本以 [registry.json](registry.json)（CPA 插件商店官方可直接安装版本）为准；源码目录内 `VERSION` 可能包含已开发完毕的更高版本。
@@ -96,6 +97,25 @@
 
 ---
 
+### coze-provider — 扣子 Coze Provider
+
+把扣子（Coze）账号接入 CPA，对话与生图统一走扣子 claw 会话通道：
+
+- **同源脚本授权** — 扣子未开放第三方一键授权（`/sign/oauth` 的 `redirect_uri` 硬编码、`/desktop-login` 的协议白名单不可扩展），因此采用一次性同源脚本：用户在 `www.coze.cn` 完成官方登录后执行插件签发的脚本取 `x-tt-token`，插件再以 `passport/token/beat/v2/` 换回 13 条 `Set-Cookie` 落盘。不读浏览器 Cookie 库、不内嵌浏览器、不注册自定义协议。
+- **双向无限续期** — `passport/token/beat/v2/` 是双向换发端点（带 Cookie 回 `x-tt-token`，带 `x-tt-token` 回 Cookie），因此会话可持续滚动，不存在快照硬失效。定时续期由插件自建循环负责（默认 4 小时，热重载即跑首轮），不依赖宿主 `auth.refresh` 排期。
+- **WebSocket 真流式对话** — 走 `wss://frontier.coze.cn/ws/v2`（`aid=751148` / `fpid=1289` / 子协议 `pbbp2`，业务 `service=33555657`）；WS 必须在 `message/chat` 之前建连，否则丢首帧；`event_delta` 逐帧增量下发，`event_final` 收尾。
+- **生图映射（重点）** — 扣子没有独立的图片 API，生图在扣子侧就是一轮对话、结果落在附件而非正文。插件因此声明 `executor_input/output_formats` 含 `openai-image`，把标准 `POST /v1/images/generations` 的请求翻成一条生图提示词打进 claw，再把上游签名直链按 `response_format` 包装成 `{created, data[]}`：
+  - **模型类型必须是 `openai-image`** — 宿主图片端点白名单只认该字面量，填 `image` 会被直接 400 拒绝；模型目录里的 `image_generation` 条目在输出时统一映射为该类型。
+  - **`n` / `size` 走提示词** — claw 只接受自然语言，`size` 追加「画面尺寸：」段、`n>1` 追加「请生成 N 张不同的图片」，其余字段（`quality` / `style` 等）通道无法表达，不解析也不透传。
+  - **晚到附件必须等** — 生图收尾帧 6~9 秒就到且正文只有占位符，真实附件要十几秒到数分钟才落库，因此生图路径独立按 1 秒间隔轮询至 **4 分钟**上限（生产实测成功端到端 24s~3m6s）；取不到图返回 **400** 请求级错误，避免宿主当账号故障换号、把同一笔额度反复烧。
+  - **`b64_json` 真实下载** — 扣子只给签名直链，不给 base64；`b64_json` 模式下服务端真实下载后编码，且目标域名限定 `coze.site` 后缀白名单以防 SSRF。
+- **积分路由红线** — 扣子不声明 scheduler 能力（宿主只取第一个 scheduler 插件，抢槽会顶掉现有调度内核），改走**执行入口闸门**：后台每 5 分钟刷新积分快照，低于 `min_routable_credits`（默认 100）的账号在执行前直接 403、不打上游；整池确定 0 分时快速失败返回 400，同时止住宿主换号与上游重试。
+- **每日登录积分自动领取** — 唯一触发器是 `GET /api/marketplace/trade/credit/balance/check`，每日 1500 分且当天不领即归零；插件按积分刷新周期「先领取再查询」，面板显示今日领取三态并支持手动补领。判据是明细中当天仍有余额的「每日登录」条目，不能凭响应里的 `pass` 判定。
+- **失败分类** — 扣子 claw 业务失败统一返回 HTTP 200 + `code`，必须按 `code` 判语义：`1000521`（积分耗尽）映射 **403** 走账号级冷却与换号，其余 4xx 视为请求级故障直接回给调用方、不赔其他账号配额，未分类失败兜底 **502**。
+- **控制面板** — `/v0/resource/plugins/coze-provider/panel`：授权登录、账号启停与删除、续期、积分与今日登录积分；「测试」按三层递进探活（会话有效性 → 模型目录权限 → 选中 chat 模型时真跑一次推理），图片/视频模型只做前两层以免空耗配额。
+
+---
+
 ### workbuddy-token-usage — 用量统计 Dashboard
 
 记录、统计并可视化跨插件各账户的真实 Token 消耗与费用：
@@ -119,12 +139,12 @@
 
 ## 核心架构与工程规范
 
-以下规范适用于上述六个插件；个别条目的适用插件已就地标注。
+以下规范适用于上述七个插件；个别条目的适用插件已就地标注。
 
 ### 1. 统一调度与账号健康隔离
 
 1. **硬排除不可用账号**：带 `test_failed` 标签、处于故障禁用（盘上 `disabled: true`）、或剩余积分低于 `low_credit_disable_below` 硬禁用线的账号，调度器无条件硬排除，绝不分配流量；低于保活线 `min_routable_credits` 的账号打「保活」标，正常档存在时整体让位。
-2. **存活账号按积分排序**：workbuddy / workbuddy-ai / traework / qoderwork 按剩余积分降序取号（未测 -1 排最后），并在同一健康阶梯内平摊负载；zcode 采用轮询取号。
+2. **存活账号按积分排序**：workbuddy / workbuddy-ai / traework / qoderwork 按剩余积分降序取号（未测 -1 排最后），并在同一健康阶梯内平摊负载；zcode 采用轮询取号；coze 不声明 scheduler，改由执行入口的积分闸门按 `min_routable_credits`（默认 100）拦截低额账号。
 3. **全灭 Defer 跨 Provider 容灾**：当该 Provider 下所有账号均被排除时，执行全灭 defer（`Handled: false`），将请求交还 CPA 宿主调度其他 Provider，严禁死锁在故障 Provider 上。
 4. **会话粘性绑定**：开启 `session` 模式时，同一会话的后续请求绑定到同一账号；换号重试前主动解绑失效会话。
 
@@ -157,6 +177,7 @@ cpa-workbuddy-plugin/
 ├── traework/                   # TRAE SOLO Provider（浏览器授权 / 签到防风控 / 流式加固）
 ├── qoderwork/                  # QoderWork CN Provider（COSY 签名 / 双登录 / 消除假成功）
 ├── zcode/                      # ZCode Provider（Anthropic 兼容 / 客户端指纹 Mimic / 额度领取）
+├── coze/                       # 扣子 Coze Provider（claw WS 流式 / 生图映射 / 积分红线）
 ├── token-usage-tracker/        # 统一 Token 用量看板（共享 NDJSON / 明细表 / 维度分析）
 ├── registry.json               # 插件商店自定义源元数据（schema v2，direct install，包含 sha256 与 size）
 ├── release-assets/             # 本地资产缓存（.gitignore 忽略；二进制托管在 GitHub Release）
@@ -253,6 +274,11 @@ plugins:
       base_url: "https://api.z.ai/api/anthropic"
       mimic:
         enabled: true
+    coze-provider:
+      enabled: true
+      # 积分路由红线：低于该值的账号不再承载新请求，显式配 0 关闭闸门
+      min_routable_credits: 100
+      credit_refresh_interval_seconds: 300
     workbuddy-token-usage:
       enabled: true
 ```
@@ -274,6 +300,7 @@ python scripts/cgo-shim-build.py workbuddy
 python scripts/cgo-shim-build.py workbuddy-ai
 python scripts/cgo-shim-build.py qoderwork
 python scripts/cgo-shim-build.py zcode
+python scripts/cgo-shim-build.py coze
 python scripts/cgo-shim-build.py token-usage-tracker
 
 # 校验 registry.json 格式与哈希合法性
