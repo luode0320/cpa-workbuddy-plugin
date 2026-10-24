@@ -1,5 +1,21 @@
 # QoderWork Plugin Changelog
 
+## 0.10.1
+
+### Fix - 模型清单漏掉上游新模型：改为全场景并集 + 以上游 display_name 为准
+
+- 变更要点:
+  1. 根因一（命名滞后）：上游改模型展示名时内部代号不变，插件对外名取自硬编码表 `internalKeyDisplayNames`，而上游返回的 `display_name` 字段虽被解析却从未使用。2026-10-25 真实上游实测：`kmodel_latest` 的上游 `display_name` 已是 `Kimi-K3.1-Pro`、`mmodel` 已是 `MiniMax-M3.1-Flash`，插件仍暴露 `Kimi-K3` / `MiniMax-M3`，用户在客户端模型表里找不到这两个模型。
+  2. 根因二（单场景漏取）：上游 `model/list` 按场景返回（chat / developer / assistant / inline / quest / qwork / experts / qwake …），旧代码只读 `chat`。同一账号在不同场景下可见模型并不相同，任何只出现在其它场景的模型都对用户不可见。
+  3. 修复一：`exposeModelIDs` 主条目改用上游 `display_name`，硬编码表降为「上游没给名字时」的兜底；兼容条目仍按内部代号注册，旧调用方不受影响。
+  4. 修复二：`callModelsAPI` 改为遍历响应中全部场景取并集（场景名有序、按代号去重、非数组场景跳过），日志补 `N models in M scenes`。
+  5. 修复三（回译闭环）：新增运行时映射 `upstreamModelNames`，动态发现时登记「上游官方名 → 内部代号」，`cpaToUpstreamKey` / `resolveUpstreamModel` 优先查它。缺这一步时客户端按新名请求会被透传给上游并**静默落到 auto**，参数与计费全错且无报错。映射采用先到先得，后到的旧清单不会覆盖新名。
+  6. 静态兜底清理：`wbModels()` 移除 `cmodel`（上游已下线）与 `qmodel_latest` / `qmodel` / `q37fmodel` / `gm51model`（Free 档 `enable=false`），与生产 18 个 Free 账号实测可用集合对齐。代号映射仍保留，上游恢复即可用。
+- 验证: 新增 `models_scene_union_test.go`（多场景并集、跨场景去重、脏场景跳过、enable=false 过滤、空响应报错、上游名压过硬编码表、改名回译、大小写与空白容错、运行时名优先于静态表、映射先到先得、静态表与上游可用集合一致、静态表全量回译）；**4 项变异全部 KILLED**（主条目忽略 display_name / 退回只读 chat / 移除上游名回译 / 静态表加回已下线模型）；cgo-shim build+vet+test 全绿；gofmt 干净。
+- 真实上游验收: 用生产账号凭据直连 `gateway.qoder.com.cn` 跑通完整链路，`dynamic discovery ok: 10 models in 11 scenes`，对外主条目为 `Kimi-K3.1-Pro` / `MiniMax-M3.1-Flash`，20 条对外 ID 全部通过「对外名 → 内部代号」回译校验。
+- 依据: 用户报障（截图对比官方客户端默认模型列表，插件缺 `Kimi-K3.1-Pro` 与 `MiniMax-M3.1-Flash`）。
+- 涉及文件: qoderwork/models.go、qoderwork/body.go、qoderwork/models_scene_union_test.go（新增）、qoderwork/models_expose_test.go、qoderwork/models_config_test.go、qoderwork/main.go、qoderwork/VERSION、qoderwork/CHANGELOG.md
+
 ## 0.10.0
 
 ### Feat - 账号故障改为写盘禁用 + 每 10 分钟只探失败模型

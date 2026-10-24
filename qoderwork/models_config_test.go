@@ -230,7 +230,12 @@ func TestNoConfiguredModels_FallsBackToStatic(t *testing.T) {
 	}
 }
 
-// TestWBModels_AlignmentWithClient 验证静态兜底模型列表与 Qoder 客户端权威配置一致。
+// TestWBModels_AlignmentWithClient 验证静态兜底模型列表与当前上游档位可用的模型一致。
+//
+// 基准取自 2026-10-24 生产实测（18 个 Free 账号，健康账号动态发现稳定返回的
+// 10 个内部代号）。cmodel 已被上游下线，qmodel_latest / qmodel / q37fmodel /
+// gm51model 在 Free 档 enable=false，因此都不得出现在静态兜底里——兜底只在
+// 动态完全失败时生效，列出当前档位必然失败的模型会让用户选到后直接收到上游错误。
 func TestWBModels_AlignmentWithClient(t *testing.T) {
 	models := exposeModelIDs(wbModels())
 	if len(models) == 0 {
@@ -244,13 +249,18 @@ func TestWBModels_AlignmentWithClient(t *testing.T) {
 		}
 	}
 	expectedCore := []string{
-		"auto", "Cantus", "Qwen3.8-Max", "Qwen3.8-Flash", "Qwen3.7-Max", "Qwen3.7-Plus",
-		"GLM-5.3", "GLM-5.3-Flash", "Kimi-K3", "Kimi-K2.8-Preview", "DeepSeek-V4-Pro",
-		"DeepSeek-Flash", "MiniMax-M3",
+		"Auto", "Qwen3.8-Max", "Qwen3.8-Flash", "GLM-5.3", "GLM-5.3-Flash",
+		"Kimi-K3", "Kimi-K2.8-Preview", "DeepSeek-V4-Pro", "DeepSeek-Flash", "MiniMax-M3",
 	}
 	for _, id := range expectedCore {
 		if _, ok := modelMap[id]; !ok {
 			t.Errorf("missing core model: %s", id)
+		}
+	}
+	// 上游当前档位不可用的代号必须已移出静态兜底。
+	for _, id := range []string{"cmodel", "qmodel_latest", "qmodel", "q37fmodel", "gm51model"} {
+		if _, ok := modelMap[id]; ok {
+			t.Errorf("static fallback still exposes unavailable model: %s", id)
 		}
 	}
 }

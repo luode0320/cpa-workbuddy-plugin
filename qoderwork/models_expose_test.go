@@ -27,15 +27,32 @@ func TestExposeModelIDs_KnownCode(t *testing.T) {
 	}
 }
 
-// TestExposeModelIDs_UnknownPassthrough 验证未登记官方名的 ID 原样透传，
-// 且不额外产出兼容条目（上游新增代号时不能凭空造名字）。
+// TestExposeModelIDs_UnknownPassthrough 验证上游新增代号时的两种形态：
+//   - 上游给了 display_name：主条目用上游官方名（客户端才看得到可读名字），
+//     兼容条目保留内部代号（旧调用方与按代号路由的账号仍可用）；
+//   - 上游没给 display_name：原样透传单条，不凭空造名字。
+//
+// 这里断言的是「不猜名字」，而不是「必须只有一条」：上游 display_name 是权威
+// 名字，使用它不属于猜测。2026-10-24 生产实测的 Kimi-K3.1-Pro 就属第一种形态。
 func TestExposeModelIDs_UnknownPassthrough(t *testing.T) {
-	got := exposeModelIDs([]pluginapi.ModelInfo{{ID: "upstream-new", DisplayName: "Upstream New"}})
+	// 1. 上游未给官方名：原样透传，不追加兼容条目。
+	got := exposeModelIDs([]pluginapi.ModelInfo{{ID: "upstream-new"}})
 	if len(got) != 1 {
 		t.Fatalf("expose count = %d, want 1", len(got))
 	}
-	if got[0].ID != "upstream-new" || got[0].DisplayName != "Upstream New" {
-		t.Fatalf("entry = %+v, want passthrough with original display name", got[0])
+	if got[0].ID != "upstream-new" {
+		t.Fatalf("entry = %+v, want passthrough id", got[0])
+	}
+	// 2. 上游给了官方名：主条目用官方名，兼容条目保留代号。
+	named := exposeModelIDs([]pluginapi.ModelInfo{{ID: "upstream-new", DisplayName: "Upstream New"}})
+	if len(named) != 2 {
+		t.Fatalf("expose count = %d, want 2 (main + compat)", len(named))
+	}
+	if named[0].ID != "Upstream New" || named[0].DisplayName != "Upstream New" {
+		t.Fatalf("main entry = %+v, want upstream display name", named[0])
+	}
+	if named[1].ID != "upstream-new" || named[1].Name != "upstream-new" {
+		t.Fatalf("compat entry = %+v, want internal key", named[1])
 	}
 }
 
