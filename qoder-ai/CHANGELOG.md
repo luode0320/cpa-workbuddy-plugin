@@ -1,5 +1,22 @@
 # Qoder AI Plugin Changelog
 
+## 0.1.30
+
+### Fix - 模型清单改为多场景并集 + 以上游 display_name 为准 + 补齐改名回译
+
+- 变更要点:
+  1. 根因一（漏模型）：`callModelsAPI` 只读响应里的 `chat` 场景。上游 `model/list` 按场景切分（2026-10-25 真实国际版响应 11 个场景：chat / assistant / quest / qwake / app / inline / qwork / experts / nap / byok_teams / byok_enterprise），各场景模型集合不同。本机官方客户端目录样本 chat 15 个、qwork 6 个、inline 4 个；真实上游实测 `chat` 漏掉 9 个 key，其中 `performance`（国际版档位模型）只在 `qwake` 场景出现，一直没有暴露给用户。
+  2. 根因二（名字滞后）：上游 `display_name` 字段虽被解析却从未使用，对外名恒取自硬编码表 `internalKeyDisplayNames`。上游改展示名但内部代号不变（实测 `kmodel_latest`→`Kimi-K3.1-Pro`、`mmodel`→`MiniMax-M3.1-Flash`），硬编码表永久滞后，客户端看不到新版模型名。
+  3. 根因三（静默降级）：只改命名不改回译，客户端按新名请求会被透传给上游并静默落到 `auto`（HTTP 200、无报错、参数与计费全错）。新增运行时映射 `upstreamModelNames` 登记「官方名 → 内部代号」，`cpaToUpstreamKey` / `resolveUpstreamModel` 优先查它（先到先得，旧清单不覆盖新名；账号级 alias 仍最高优先）。
+  4. 场景别名排除（本插件特有，与 qoderwork 不同）：国际版把档位嵌进场景 id（`quest-auto` / `quest-ultimate` / `qwork-auto` / `qwork-advanced` / `qwork-ultimate` / `experts-auto` / `experts-ultimate` / `nap-auto`），display_name 只是 Auto / Standard / Premium / Advanced，不是独立模型，通用推理链路也无从路由。`isSceneScopedAlias` 按前缀排除这 8 个伪模型，避免并入后客户端出现"选了却落不到具体型号"的条目。
+  5. 静态兜底对齐：`wbModels()` 补入双区客户端目录里都有、但插件此前完全没收录的 `fast`；`internalKeyDisplayNames` 同步补 `fast`。静态表继续只放旧名代号，新名一律交给运行时映射（否则运行时映射会被静态表遮住，删掉它测试也不会红）。
+  6. 场景内嵌档位以外的并集改动：`callModelsAPI` 抽出纯函数 `parseModelsResponse` 遍历全部场景取并集（场景名有序、按代号去重、非数组脏场景跳过），保留上游 `display_name` 供对外命名与回译。
+- 验证: 新增 `models_scene_union_test.go`（12 用例，覆盖并集 / 别名排除 / 去重 / 脏场景 / 禁用 / 空结果 / 名称登记 / 改名回译 / 优先级 / 先到先得 / 静态全覆盖 / 大小写恒等不登记）；**5 项变异全部 KILLED**（退回只读 chat / 主条目忽略 display_name / 移除场景别名过滤 / 移除运行时回译 / 静态表加回上游已无代号）；cgo-shim build+vet+test 全绿；gofmt 干净。
+- 真实上游验收（本机官方客户端凭据直连 `openapi.qoder.sh`）: `13 models in 11 scenes`（改造前仅 12 个、只读 chat）；对外展开 26 条 ID（13 主条目 + 13 兼容条目）全部回译通过；`performance` 首次进入清单；`Kimi-K3.1-Pro` / `MiniMax-M3.1-Flash` 由上游 display_name 驱动；静态兜底 36/36 回译通过。
+- 边界说明: 与 qoderwork 0.10.1 同源但**不完全同构**——国际版场景专用别名必须排除，国内版实测 chat 与并集完全一致（各 11 个），照搬会引入伪模型。生产 qoder-ai 当前 `enabled=false` 且无账号，本次未做生产流量验证。
+- 依据: 用户要求「对 qoder-ai 插件做同样的修复」；上游事实来自真实 `model/list` 响应与本机客户端 QMC 加密目录（`~/.qoder/.models/<uid>/catalog-v6|v7`）解密对照。
+- 涉及文件: qoder-ai/models.go、qoder-ai/body.go、qoder-ai/models_scene_union_test.go、qoder-ai/models_expose_test.go、qoder-ai/VERSION、qoder-ai/main.go、qoder-ai/CHANGELOG.md
+
 ## 0.1.29
 
 ### Fix - 模型对外 ID 改用官方展示名，并补齐执行链回译

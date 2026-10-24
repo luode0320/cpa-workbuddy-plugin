@@ -39,14 +39,27 @@ func TestExposeModelIDs_CaseOnlyDiff(t *testing.T) {
 	}
 }
 
-// TestExposeModelIDs_UnknownPassthrough 验证未登记官方名的 ID 原样透传。
+// TestExposeModelIDs_UnknownPassthrough 验证未登记官方名的 ID 的两种语义：
+// 上游没给 display_name 时原样透传一条；上游给了 display_name 时以上游名为主条目
+// 并追加兼容代号条目（上游命名是权威，不是"凭空造名"）。
 func TestExposeModelIDs_UnknownPassthrough(t *testing.T) {
-	got := exposeModelIDs([]pluginapi.ModelInfo{{ID: "upstream-new", DisplayName: "Upstream New"}})
+	got := exposeModelIDs([]pluginapi.ModelInfo{{ID: "upstream-new"}})
 	if len(got) != 1 {
-		t.Fatalf("expose count = %d, want 1", len(got))
+		t.Fatalf("expose count = %d, want 1 (no display_name => passthrough only)", len(got))
 	}
-	if got[0].ID != "upstream-new" || got[0].DisplayName != "Upstream New" {
-		t.Fatalf("entry = %+v, want passthrough with original display name", got[0])
+	if got[0].ID != "upstream-new" {
+		t.Fatalf("entry = %+v, want passthrough id", got[0])
+	}
+
+	got = exposeModelIDs([]pluginapi.ModelInfo{{ID: "upstream-new", DisplayName: "Upstream New"}})
+	if len(got) != 2 {
+		t.Fatalf("expose count = %d, want 2 (display_name => main + compat)", len(got))
+	}
+	if got[0].ID != "Upstream New" || got[0].DisplayName != "Upstream New" || got[0].Name != "upstream-new" {
+		t.Fatalf("main entry = %+v, want ID/DisplayName=Upstream New Name=upstream-new", got[0])
+	}
+	if got[1].ID != "upstream-new" {
+		t.Fatalf("compat entry = %+v, want ID=upstream-new", got[1])
 	}
 }
 

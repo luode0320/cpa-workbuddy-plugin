@@ -18,6 +18,63 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+// upstreamModelNames 保存「上游官方展示名 → 内部代号」的运行时映射。
+//
+// 上游会在不改内部代号的前提下给模型改名（2026-10-25 生产实测：客户端已把
+// kmodel_latest 显示为 Kimi-K3.1-Pro、mmodel 显示为 MiniMax-M3.1-Flash，
+// 而本文件的静态表仍停在改名前的旧名字）。硬编码表无法跟上这种漂移，
+// 因此动态发现拿到的 display_name 必须同时用于两件事：对外主条目命名，
+// 以及请求回译（见 registerUpstreamModelNames / lookupUpstreamKey）。
+var upstreamModelNames struct {
+	sync.RWMutex
+	byDisplay map[string]string
+}
+
+// registerUpstreamModelNames 把一批动态发现结果登记进运行时映射。
+//
+// 写入策略是「先到先得」：多个账号的清单可能不同（旧账号缓存仍带旧名），
+// 后到的旧名不得覆盖先到的映射；同名不同代号属上游数据异常，同样不覆盖，
+// 避免把请求按错误代号发出去。
+// [参数] models：动态发现得到的模型条目（ID 为内部代号，DisplayName 为上游官方名）
+// [返回] 无
+// 最近修改时间 2026-10-25（新增，承接上游模型改名）
+func registerUpstreamModelNames(models []pluginapi.ModelInfo) {
+	upstreamModelNames.Lock()
+	defer upstreamModelNames.Unlock()
+	if upstreamModelNames.byDisplay == nil {
+		upstreamModelNames.byDisplay = make(map[string]string, len(models))
+	}
+	for _, m := range models {
+		// 内部代号只能取 ID：ModelInfo.Name 在不同来源下语义不一致
+		// （动态发现存展示名、exposeModelIDs 输出存内部代号），用它当 key
+		// 会把映射登记成「展示名 → 展示名」，请求回译时原样返回错值。
+		key := strings.ToLower(strings.TrimSpace(m.ID))
+		name := strings.ToLower(strings.TrimSpace(m.DisplayName))
+		if key == "" || name == "" || name == key {
+			continue
+		}
+		if _, exists := upstreamModelNames.byDisplay[name]; exists {
+			continue
+		}
+		upstreamModelNames.byDisplay[name] = key
+	}
+}
+
+// lookupUpstreamKey 按上游官方名查内部代号。
+// [参数] officialName：客户端请求里的模型名（大小写不敏感）
+// [返回] 命中的内部代号与 true；未登记时返回空串与 false
+// 最近修改时间 2026-10-25（新增，承接上游模型改名）
+func lookupUpstreamKey(officialName string) (string, bool) {
+	key := strings.ToLower(strings.TrimSpace(officialName))
+	if key == "" {
+		return "", false
+	}
+	upstreamModelNames.RLock()
+	defer upstreamModelNames.RUnlock()
+	name, ok := upstreamModelNames.byDisplay[key]
+	return name, ok
+}
+
 // internalKeyDisplayNames 映射上游内部模型代号到官方展示名。
 //
 // 官方名取自 Qoder 客户端模型目录（与 qoder2api-hub 的 qoder_catalog_intl.json
@@ -25,11 +82,15 @@ import (
 // 国内版独有 q37fmodel / gm51model，两边都列在这里：同一个代号在两区代表的
 // 型号可能不同（如 mmodel 国际版是 MiniMax-M3、国内版是 MiniMax-M2.7），
 // 各插件按自己的区维护这份表。
+//
+// 本表**只是兜底**：动态发现返回的 display_name 才是上游权威名，上游改名后
+// 本表会滞后（见 upstreamModelNames）。仅当上游没给 display_name 时才回落到这里。
 var internalKeyDisplayNames = map[string]string{
 	"auto":          "Auto",
 	"ultimate":      "Ultimate",
 	"performance":   "Performance",
 	"efficient":     "Efficient",
+	"fast":          "Fast",
 	"smodel":        "Sonus",
 	"cmodel":        "Cantus",
 	"qmodel_38max":  "Qwen3.8-Max",
@@ -66,9 +127,13 @@ func modelDisplayName(modelID string) string {
 // exposeModelIDs 把上游内部代号改写成客户端可读的官方模型名。
 //
 // 每个已知内部代号产出两个条目，共用同一份元数据（Name 恒为内部代号）：
-//  1. 主条目 ID = 官方名（Qwen3.8-Max），DisplayName 同步为官方名：客户端
-//     下拉里显示的就是它，与 Qoder 官方客户端一致；
+//  1. 主条目 ID = 官方名：动态发现优先使用上游返回的 display_name，缺失时
+//     回落到 internalKeyDisplayNames；客户端下拉里显示的就是它；
 //  2. 兼容条目 ID = 内部代号（qmodel_38max），仅当两者不同时追加。
+//
+// 之所以主条目必须用上游 display_name 而不是硬编码表：上游改模型展示名时
+// 内部代号不变（2026-10-25 实测 Kimi-K3 → Kimi-K3.1-Pro），硬编码表会一直
+// 暴露旧名，用户在客户端模型表里找不到新版模型。
 //
 // 兼容条目必须真实注册而不能只做映射：宿主用模型名反查 provider
 // （internal/util/provider.go GetProviderName → registry.GetModelProviders），
@@ -76,9 +141,9 @@ func modelDisplayName(modelID string) string {
 // 匹配账号（sdk/cliproxy/auth/conductor_selection.go authSupportsRouteModel）。
 //
 // 无法识别的 ID（用户配置的模型、上游新增但未登记官方名的代号）原样透传。
-// [参数] models：内部代号列表
+// [参数] models：内部代号列表（DisplayName 为上游官方名，可为空）
 // [返回] 主条目在前、兼容条目随后的新切片
-// 最近修改时间 2026-10-20（新增）
+// 最近修改时间 2026-10-25（主条目改用上游 display_name，硬编码表降为兜底）
 func exposeModelIDs(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
 	out := make([]pluginapi.ModelInfo, 0, len(models)*2)
 	seen := make(map[string]struct{}, len(models)*2)
@@ -103,8 +168,14 @@ func exposeModelIDs(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
 		if base == "" {
 			continue
 		}
-		display, known := internalKeyDisplayNames[strings.ToLower(base)]
-		if !known {
+		// 1. 官方名优先取上游 display_name，其次查硬编码表。
+		display := strings.TrimSpace(m.DisplayName)
+		if display == "" || strings.EqualFold(display, base) {
+			display = internalKeyDisplayNames[strings.ToLower(base)]
+		}
+		if display == "" {
+			// 2. 上游与本地表都认不出：原样透传，不凭空造名字，也不追加
+			//    兼容条目（没有官方名就没有第二个名字可注册）。
 			add(m, base, m.DisplayName, base)
 			continue
 		}
@@ -130,6 +201,7 @@ func wbModels() []pluginapi.ModelInfo {
 		{ID: "ultimate", Name: "", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "performance", Name: "", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "efficient", Name: "", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "fast", Name: "", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "smodel", Name: "", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "cmodel", Name: "", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "qmodel_38max", Name: "", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
@@ -627,11 +699,17 @@ func newModelsAPIRequest(ctx context.Context, sa *storedAuth, rawURL string) (*h
 }
 
 // callModelsAPI GETs /algo/api/v2/model/list from the Qoder AI gateway
-// with COSY signing and parses the plain-JSON chat scene into ModelInfo.
+// with COSY signing and parses every model scene into ModelInfo.
 // 请求构造（含签名）见 newModelsAPIRequest。
+//
+// 为什么取**多场景并集**而不是只读 chat：上游按场景切分（2026-10-25 真实国际版
+// 响应 11 个场景：chat / assistant / quest / qwake / app / inline / qwork /
+// experts / nap / byok_teams / byok_enterprise），同一账号在不同场景下可见的
+// 模型集合不同——本机官方客户端目录样本 chat 15 个、qwork 6 个、inline 4 个。
+// 只读 chat 会漏掉仅出现在其它场景的模型（真实上游实测漏 9 个 key）。
 // [参数] sa：用于签名与鉴权的账号凭据
 // [返回] 动态模型列表；请求或解析失败时返回错误，由调用方按优先级链回退配置 / 静态默认。
-// 最近修改时间：2026-10-19 12:30:00；改动原因：GET 真携带签名所用 body，修复 Signature invalid。
+// 最近修改时间：2026-10-25；改动原因：改为多场景并集，并保留上游 display_name 供对外命名与回译。
 func callModelsAPI(sa *storedAuth) ([]pluginapi.ModelInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -648,58 +726,126 @@ func callModelsAPI(sa *storedAuth) ([]pluginapi.ModelInfo, error) {
 		return nil, fmt.Errorf("models API status %d", resp.StatusCode)
 	}
 	// Response is plain JSON: {"chat":[{key,display_name,...}], "developer":[...], ...}
+	return parseModelsResponse(resp.Body)
+}
+
+// parseModelsResponse 把 model/list 的原始响应解析为模型条目并集。
+//
+// 抽成纯函数是为了让「多场景合并 / 去重 / 场景别名过滤 / 脏场景跳过」这几条
+// 判定可被单测直接覆盖：callModelsAPI 自身依赖宿主 HTTP 桥与 COSY 签名，
+// 在 shim 环境无法驱动，若把解析内联在里面，删掉合并逻辑不会有任何用例失败。
+//
+// 场景专用别名必须排除：国际版把档位嵌进场景 id（quest-auto / quest-ultimate /
+// qwork-auto / qwork-advanced / qwork-ultimate / experts-auto / experts-ultimate /
+// nap-auto），它们的 display_name 只是 Auto / Standard / Premium / Advanced，
+// 既不是独立模型，回译也无从对应（通用推理链路只认裸代号）。若并入对外清单，
+// 客户端会多出 8 个语义重复、且无法路由到具体型号的伪模型。
+// [参数] body：上游响应原始字节
+// [返回] 去重后的模型列表；无可用模型时返回错误
+// 最近修改时间 2026-10-25（从 callModelsAPI 抽出，支持多场景并集测试）
+func parseModelsResponse(body []byte) ([]pluginapi.ModelInfo, error) {
 	var apiResp map[string]json.RawMessage
-	if err := json.Unmarshal(resp.Body, &apiResp); err != nil {
+	if err := json.Unmarshal(body, &apiResp); err != nil {
 		return nil, fmt.Errorf("models parse: %w", err)
 	}
-	// Prefer the "chat" scene (matches our inference use case).
-	chatRaw, ok := apiResp["chat"]
-	if !ok {
-		return nil, fmt.Errorf("no chat scene in models response")
+	// 按场景名排序合并，保证同一账号多次发现的模型顺序稳定。
+	scenes := make([]string, 0, len(apiResp))
+	for scene := range apiResp {
+		scenes = append(scenes, scene)
 	}
-	var models []struct {
-		Key            string  `json:"key"`
-		DisplayName    string  `json:"display_name"`
-		Enable         bool    `json:"enable"`
-		IsReasoning    bool    `json:"is_reasoning"`
-		IsVL           bool    `json:"is_vl"`
-		MaxInputTokens int64   `json:"max_input_tokens"`
-		PriceFactor    float64 `json:"price_factor"`
-	}
-	if err := json.Unmarshal(chatRaw, &models); err != nil {
-		return nil, fmt.Errorf("chat scene parse: %w", err)
-	}
-	var out []pluginapi.ModelInfo
-	for _, m := range models {
-		if !m.Enable {
+	sort.Strings(scenes)
+	out := make([]pluginapi.ModelInfo, 0, 32)
+	seen := make(map[string]struct{}, 32)
+	for _, scene := range scenes {
+		raw := apiResp[scene]
+		if len(raw) == 0 || raw[0] != '[' {
+			// 非模型数组的场景（字符串 / 对象）直接跳过，避免一次脏数据
+			// 让整个发现失败并连带开启负缓存。
 			continue
 		}
-		ctx2 := int64(180000)
-		if m.MaxInputTokens > 0 {
-			ctx2 = m.MaxInputTokens
+		var models []struct {
+			Key            string  `json:"key"`
+			DisplayName    string  `json:"display_name"`
+			Enable         bool    `json:"enable"`
+			IsReasoning    bool    `json:"is_reasoning"`
+			IsVL           bool    `json:"is_vl"`
+			MaxInputTokens int64   `json:"max_input_tokens"`
+			PriceFactor    float64 `json:"price_factor"`
 		}
-		// 缓存只存内部代号；对外官方名与兼容代号条目统一由 exposeModelIDs
-		// 生成，保证动态/配置/静态三条来源的暴露口径完全一致。
-		out = append(out, pluginapi.ModelInfo{
-			ID:            m.Key,
-			Name:          modelDisplayName(m.Key),
-			ContextLength: ctx2,
-			MaxCompletionTokens: func() int64 {
-				spec := resolveOfficialModelSpec(m.Key)
-				if spec.ReasoningMax > 0 {
-					return applyMaxTokensFloor(spec.ReasoningMax)
-				}
-				return applyMaxTokensFloor(spec.MaxOutputTokens)
-			}(),
-			OwnedBy:                    providerName,
-			SupportedGenerationMethods: []string{"chat"},
-		})
+		if err := json.Unmarshal(raw, &models); err != nil {
+			continue
+		}
+		for _, m := range models {
+			if !m.Enable {
+				continue
+			}
+			key := strings.TrimSpace(m.Key)
+			if key == "" || isSceneScopedAlias(key) {
+				continue
+			}
+			// 并集去重：同一代号在多个场景重复出现时只保留首个（场景名有序，
+			// 结果可复现），否则同一模型会注册出重复条目。
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			ctxLen := int64(180000)
+			if m.MaxInputTokens > 0 {
+				ctxLen = m.MaxInputTokens
+			}
+			// 缓存同时保留内部代号（ID）与上游官方名（DisplayName）：对外命名
+			// 与请求回译都以上游官方名为准，硬编码表只是兜底。
+			out = append(out, pluginapi.ModelInfo{
+				ID:            key,
+				Name:          modelDisplayName(key),
+				DisplayName:   strings.TrimSpace(m.DisplayName),
+				ContextLength: ctxLen,
+				MaxCompletionTokens: func() int64 {
+					spec := resolveOfficialModelSpec(key)
+					if spec.ReasoningMax > 0 {
+						return applyMaxTokensFloor(spec.ReasoningMax)
+					}
+					return applyMaxTokensFloor(spec.MaxOutputTokens)
+				}(),
+				OwnedBy:                    providerName,
+				SupportedGenerationMethods: []string{"chat"},
+			})
+		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("no enabled chat models")
+		return nil, fmt.Errorf("no enabled models in any scene")
 	}
-	log.Printf("[qoder-ai] callModelsAPI: dynamic discovery ok: %d models", len(out))
+	// 登记「官方名 → 内部代号」：上游改名后客户端会按新名请求，
+	// 没有这层映射 cpaToUpstreamKey 会把新名透传给上游并静默落到 auto。
+	registerUpstreamModelNames(out)
+	log.Printf("[qoder-ai] callModelsAPI: dynamic discovery ok: %d models in %d scenes", len(out), len(scenes))
 	return out, nil
+}
+
+// sceneScopedAliasPrefixes 列出国际版上游用「场景名-」前缀嵌入场景档位的代号族。
+//
+// 这些 key 只在该场景内有效，且 display_name 是档位名（Auto / Standard /
+// Premium / Advanced）而非模型名；通用推理链路（agent_chat_generation）只认
+// 裸代号，把它们当模型对外暴露会让客户端出现「选了却落不到具体型号」的条目。
+var sceneScopedAliasPrefixes = []string{
+	"quest-",
+	"qwork-",
+	"experts-",
+	"nap-",
+}
+
+// isSceneScopedAlias 判断代号是否为场景内嵌档位别名。
+// [参数] key：上游返回的内部代号
+// [返回] true 表示该代号只在某个场景内有效，不应进入对外模型清单
+// 最近修改时间 2026-10-25（新增，真实上游并集实测后排除 8 个伪模型）
+func isSceneScopedAlias(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	for _, prefix := range sceneScopedAliasPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func cacheModelAliases(host pluginapi.HostConfigSummary) {
@@ -727,8 +873,6 @@ func cacheModelAliases(host pluginapi.HostConfigSummary) {
 	modelAliasCache.Unlock()
 }
 
-// resolveUpstreamModel maps an aliased requested model back to the real
-// upstream model ID. Returns the input unchanged when nothing matches.
 // defaultModelAliasMap provides canonical mapping from client-facing model
 // names to upstream Qoder gateway model keys.
 var defaultModelAliasMap = map[string]string{
@@ -738,6 +882,7 @@ var defaultModelAliasMap = map[string]string{
 	"ultimate":    "ultimate",
 	"performance": "performance",
 	"efficient":   "efficient",
+	"fast":        "fast",
 	"sonus":       "smodel",
 	// Qwen 3.8
 	"qwen3.8-max":         "qmodel_38max",
@@ -767,6 +912,15 @@ var defaultModelAliasMap = map[string]string{
 	"minimax-m2.7": "mmodel",
 }
 
+// resolveUpstreamModel maps an aliased requested model back to the real
+// upstream model ID. Returns the input unchanged when nothing matches.
+//
+// 优先级：账号级 alias > 宿主 oauth-model-alias > 运行时上游官方名 > 静态别名表。
+// 用户显式配置的 alias 必须压倒自动映射；运行时上游官方名排在静态表之前，
+// 因为静态表在上游改名后只会给出旧名。
+// [参数] model：客户端请求的模型名；attributes：账号级 alias 配置
+// [返回] 上游内部代号；全部未命中时返回原值
+// 最近修改时间 2026-10-25（接入上游官方名运行时映射）
 func resolveUpstreamModel(model string, attributes map[string]string) string {
 	m := strings.TrimSpace(model)
 	if m == "" {
@@ -781,6 +935,9 @@ func resolveUpstreamModel(model string, attributes map[string]string) string {
 	modelAliasCache.RUnlock()
 	if ok {
 		return name
+	}
+	if upstream, ok := lookupUpstreamKey(m); ok {
+		return upstream
 	}
 	if canonical, ok := defaultModelAliasMap[key]; ok {
 		return canonical

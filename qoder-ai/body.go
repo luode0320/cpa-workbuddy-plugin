@@ -20,8 +20,19 @@ var basepromptJSON []byte
 
 // cpaToUpstreamKey maps CPA-facing model names to upstream keys.
 // Unknown names pass through unchanged (server silently routes to auto).
+//
+// 查找顺序：运行时映射（动态发现登记的上游官方名）优先，其次是下面的静态
+// 别名表。运行时映射必须优先——上游改名后内部代号不变，静态表只会给出旧名，
+// 新名未命中则透传，最终由上游静默落到 auto，参数与计费全错且无报错。
+// [参数] cpaModel: 客户端请求的模型名（可带 provider/ 前缀由调用方剥离）
+// [返回] 上游内部代号；全部未命中时原样返回入参
+// 最近修改时间 2026-10-25（接入上游官方名运行时映射，承接上游模型改名）
 func cpaToUpstreamKey(cpaModel string) string {
-	switch strings.ToLower(strings.TrimSpace(cpaModel)) {
+	trimmed := strings.TrimSpace(cpaModel)
+	if key, ok := lookupUpstreamKey(trimmed); ok {
+		return key
+	}
+	switch strings.ToLower(trimmed) {
 	case "qoder-auto", "auto":
 		return "auto"
 	// Cantus
@@ -34,6 +45,8 @@ func cpaToUpstreamKey(cpaModel string) string {
 		return "performance"
 	case "efficient":
 		return "efficient"
+	case "fast":
+		return "fast"
 	case "sonus", "smodel":
 		return "smodel"
 	// Qwen
