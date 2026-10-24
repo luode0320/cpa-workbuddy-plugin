@@ -343,3 +343,56 @@ func TestCreditsPersistWiringIsPresent(t *testing.T) {
 		}
 	}
 }
+
+// TestCreditsSnapshotSurvivesWhitelistRebuild 是本次持久化最容易被忽视的断点。
+//
+// buildAuthFileJSON 是白名单重建：只输出 type/provider/logo/disabled/note/
+// auth/account 加 extra。而 lifecycle 的 syncAuthNote 会在 4 小时巡检里 routinely
+// 重建文档——若不搬运 credits_snapshot，刚持久化的积分会在下一次备注刷新时
+// 被静默抹掉，持久化等于白做。这里同时锁住 failover 标记与积分快照都被搬运。
+func TestCreditsSnapshotSurvivesWhitelistRebuild(t *testing.T) {
+	onDisk := []byte(`{"disabled":true,"failover_disable":true,` +
+		`"failover_disable_model":"glm-4.6","success_count":5,` +
+		`"credits_snapshot":{"total_remain":88,"total_used":12,"total_size":100}}`)
+
+	extra := putFailoverMarkersIntoExtra(nil, onDisk)
+	// 积分快照必须被搬进 extra（原样原始值）。
+	if _, ok := extra[creditsSnapshotKey]; !ok {
+		t.Fatalf("白名单重建未搬运 %s，积分会在下次备注刷新时丢失", creditsSnapshotKey)
+	}
+	sa := &storedAuth{Account: storedAccount{UID: "uid-rebuild"}}
+	raw, err := buildAuthFileJSON(sa, true, "note", extra)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := doc[creditsSnapshotKey]; !ok {
+		t.Fatalf("重建后的文档丢失 %s: %s", creditsSnapshotKey, raw)
+	}
+	var snap struct {
+		TotalRemain int64 `json:"total_remain"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	// 二次解析确认数值没被中间层改写。
+	if out := parseCreditsSnapshotFromAuthJSON(raw); out == nil || out.TotalRemain != 88 {
+		t.Fatalf("搬运后快照数值漂移: %+v", out)
+	}
+	_ = snap
+	// failover 标记同样必须在（既有不变量，一并锁住）。
+	if _, ok := doc[failoverDisableKey]; !ok {
+		t.Fatalf("重建后丢失 %s", failoverDisableKey)
+	}
+}
+
+// TestPutFailoverMarkersNilWhenNothingToCarry 断言无可搬运键时仍返回 nil，
+// 保持既有调用方的「空即无」判断（新登录取依赖这个语义）。
+func TestPutFailoverMarkersNilWhenNothingToCarry(t *testing.T) {
+	if got := putFailoverMarkersIntoExtra(nil, []byte(`{"disabled":false,"note":"x"}`)); got != nil {
+		t.Fatalf("无可搬运键时应返回 nil, got %v", got)
+	}
+}

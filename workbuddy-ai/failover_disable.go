@@ -295,21 +295,48 @@ func failoverMarkersFromJSON(raw []byte) map[string]any {
 }
 
 // putFailoverMarkersIntoExtra 把盘上已有的本机制键并入 extra 映射。
+//
+// 同时搬运积分快照 credits_snapshot：它虽然不属于本机制，但同样只能靠这条
+// 路径逃过白名单重建。buildAuthFileJSON 只输出固定键 + extra，任何一次备注
+// 刷新都会把快照抹掉；而备注刷新是 4 小时巡检的常规动作，等于「刚持久化的
+// 积分很快又丢了」。把两类键统一在这里搬运，避免每个调用点各记一份清单。
 // [参数] extra：待补全的映射，可为 nil；raw：物理 auth JSON 原文。
-// [返回] 合并后的映射（无标记时原样返回 extra）。
-// 最近修改时间：2026-10-21；改动原因：新增。
+// [返回] 合并后的映射（无可搬运键时原样返回 extra）。
+// 最近修改时间：2026-10-24；改动原因：积分快照持久化需要同样的白名单搬运。
 func putFailoverMarkersIntoExtra(extra map[string]any, raw []byte) map[string]any {
 	markers := failoverMarkersFromJSON(raw)
-	if len(markers) == 0 {
+	snapshot := creditsSnapshotRawFromJSON(raw)
+	if len(markers) == 0 && snapshot == nil {
 		return extra
 	}
 	if extra == nil {
-		extra = make(map[string]any, len(markers))
+		extra = make(map[string]any, len(markers)+1)
 	}
 	for k, v := range markers {
 		extra[k] = v
 	}
+	if snapshot != nil {
+		extra[creditsSnapshotKey] = snapshot
+	}
 	return extra
+}
+
+// creditsSnapshotRawFromJSON 取出盘上的积分快照原始值，供白名单重建搬运。
+//
+// 返回 any 而非 *creditsSummary：重建时按原样透传，避免中间再序列化一遍造成
+// 字段漂移（例如 omitempty 让空包列表消失）。
+// [参数] raw：物理 auth JSON 原文。
+// [返回] 快照的原始 JSON 值；不存在时返回 nil。
+// 最近修改时间：2026-10-24；改动原因：新增，配合积分快照持久化。
+func creditsSnapshotRawFromJSON(raw []byte) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var doc map[string]any
+	if json.Unmarshal(raw, &doc) != nil {
+		return nil
+	}
+	return doc[creditsSnapshotKey]
 }
 
 // confirmFailoverHostState 轮询宿主内存状态，确认这次写盘真的被吸收。

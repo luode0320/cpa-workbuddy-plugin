@@ -1,5 +1,15 @@
 # WorkBuddy AI Plugin Changelog
 
+## 0.1.27
+
+### Fix - 积分快照在备注刷新时被白名单重建抹掉（0.1.26 的补漏）
+
+- 背景: 0.1.26 把积分写进顶层键 `credits_snapshot` 后，生产实测发现文件里该键会被周期性清除。根因是 `buildAuthFileJSON` 走**白名单重建**——只输出 `type/provider/logo/disabled/note/auth/account` 加 `extra`，任何未显式搬运的顶层键都会消失。`lifecycle.syncAuthNote` 在 4 小时巡检里 routinely 重建文档，于是「刚持久化的积分」最多存活一个巡检周期。
+- 修复: 把快照搬运并入既有的 `putFailoverMarkersIntoExtra`，与 failover 三个标记统一走同一条搬运路径。这样所有 `buildAuthFileJSON` 调用点**自动**受保护，不需要每个调用点各记一份键清单——少记一处就是一次静默丢数据。
+- 新增 `creditsSnapshotRawFromJSON`：按原始 JSON 值搬运而非反序列化成 `*creditsSummary` 再序列化，避免 `omitempty` 让空包列表在往返中消失。
+- 测试: `TestCreditsSnapshotSurvivesWhitelistRebuild` 锁住「重建后快照与 failover 标记都在、数值不漂移」；`TestPutFailoverMarkersNilWhenNothingToCarry` 保住「无可搬运键返回 nil」的既有语义（新登录取依赖它）。变异验证：删掉快照搬运后该用例立即 FAIL。
+- 涉及文件: 修改 `failover_disable.go`、`credits_persist_test.go`、`main.go`、`VERSION`。
+
 ## 0.1.26
 
 ### Feature - 积分快照持久化（照搬计数器的内存优先 + 盘上备份模型）
