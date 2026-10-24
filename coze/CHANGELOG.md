@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.5.6 (2026-10-24)
+
+### 修复
+
+- **历史账号无法被宿主识别，导致 coze 模型能列出但请求必然 503**。
+  生产实证：`GET /v1/models` 正常返回 5 个 coze 模型，但真实请求报
+  `auth_not_found: no auth available (providers=coze-provider, ...)`。
+- **根因**：插件凭据写在自己的目录 `~/.antigravity_cockpit/coze_accounts/`，
+  宿主只认自己的 spool（`mysqlstore/mysqlstore/auths/`）。两者唯一的同步点
+  是 `writeAuthFileDirect` 里 `if auth.PhysicalPath == ""` 分支——
+  **只有「首次授权且尚未关联物理路径」时才调 `host.auth.save`**。
+  已存在于磁盘的历史账号永远不满足该条件，于是形成死角：
+  插件 `/accounts` 能读到、积分能刷新，宿主 spool 里却没有条目。
+  生产 9 个账号全部处于该状态；`docker logs` 中 `host.auth.save` **零命中**，
+  证明 coze 从未成功注册过任何账号（对照：qoderwork 有 18 个账号在 spool）。
+
+### 新增
+
+- 管理路由 `POST /register-host`：把本地已落盘的账号按宿主命名规则
+  （`<auth_id>.json`）原样搬运到宿主 spool，补齐历史欠账。
+- **只推未禁用账号**：禁用号推上去会立刻参与路由，与用户意图相反。
+- **原样搬运磁盘内容**而不是内存快照：内存里可能持有续期前的旧 Cookie。
+- 逐账号留痕（`账号补注册宿主成功/失败`），失败原因可从 `docker logs` 直接追。
+- 路径安全：`auth_id` 来自请求，拼成文件名前经 `isSafeCozeAuthFileName`
+  命名空间校验与 `isSafeCozeAuthPath` 穿越校验，读取侧同样过闸门。
+
+### 测试
+
+- 新增 3 个用例：非法账号标识被拒（含 `../../etc/passwd`）、
+  禁用账号不注册且给出跳过原因、原样读取拒绝路径穿越与非扣子文件。
+- `cgo-shim-build.py coze`：build + vet + test 全绿；gofmt 干净。
+
 ## 0.5.5 (2026-10-24)
 
 ### 新增

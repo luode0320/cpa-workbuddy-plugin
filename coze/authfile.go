@@ -190,6 +190,24 @@ func writeAuthFileDirect(filePath string, auth *StoredAuth) error {
 	return nil
 }
 
+// readAuthFileRaw 读取凭据文件的原始字节。
+//
+// 补注册到宿主时用它是为了「原样搬运」：宿主侧解析的是同一份 JSON，
+// 反向重新序列化会丢掉字段顺序与未知字段，也可能把一个刚续期的
+// 凭据写成内存快照的形态。
+// [参数] filePath: 文件路径。
+// [返回] 文件字节与读取错误。
+// 最近修改时间：2026-10-24；改动原因：新增，宿主补注册原样搬运。
+func readAuthFileRaw(filePath string) ([]byte, error) {
+	authFilesMu.RLock()
+	defer authFilesMu.RUnlock()
+
+	if !isSafeCozeAuthPath(filePath) {
+		return nil, fmt.Errorf("不安全的凭据文件路径：%s", filePath)
+	}
+	return os.ReadFile(filePath)
+}
+
 // hostAuthSaveJSON 通过宿主 RPC 保存认证文件。
 // [参数] name: 文件名；raw: 文件内容。
 // [返回] 同步错误。

@@ -78,6 +78,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/test-active", Description: "对单个账号发起一次登录态与模型可见性探活（body: {auth_id, model?}）。"},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "查询指定账号积分余额与即将过期明细（query: auth_id）。"},
 			{Method: http.MethodPost, Path: base + "/claim-daily", Description: "立即为指定账号领取当日登录积分（body: {auth_id}）。"},
+			{Method: http.MethodPost, Path: base + "/register-host", Description: "把本地已落盘的账号补注册到宿主认证目录（body: {}）。"},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "Coze", Description: "扣子 Provider 管理面板：授权登录、账号管理与续期。"},
@@ -186,6 +187,9 @@ func handleManagement(raw []byte) ([]byte, error) {
 
 	case method == http.MethodPost && subPath == "/claim-daily":
 		return handleClaimDaily(req.Body)
+
+	case method == http.MethodPost && subPath == "/register-host":
+		return handleReRegister()
 
 	default:
 		return makeHTTPResponse(http.StatusNotFound, []byte(`{"error":"not_found"}`))
