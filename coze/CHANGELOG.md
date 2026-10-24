@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.5.5 (2026-10-24)
+
+### 新增
+
+- **自动领取每日登录积分（1500 分/天）**。此前插件只调 `credit/balance` 与
+  `credit/balance/detail` 两个只读端点，从不触发每日发放，账号池长期 0 分。
+  现按积分刷新周期自动领取，面板显示「今日已领/未领」并提供手动补领按钮。
+
+### 关键契约（2026-10-24 生产九账号对照实验实证）
+
+- **每日 1500 分真实存在**：来源 `src=24`「活动积分」，有效期仅 **1 天**，
+  当天不领即归零——这是账号池经常 0 分的根因，不是额度被消耗光。
+- **唯一触发器是 `GET /api/marketplace/trade/credit/balance/check`**。逐项排除：
+  - 只调 `passport/token/beat/v2/`（插件现有续期）→ **不发**
+  - 只访问 `GET /home`（模拟网页登录）→ **不发**
+  - `coze_space/activity/info` / `commerce/get_user_benefit` /
+    `incentive/user_task/list` → **均不发**
+  - 不请求（对照组）→ **不发**
+  - 只调 `credit/balance/check` → **发 1500 分**（3/3 复现）
+- **幂等**：同日连打 3 次 check，当日条目始终 1 条、总额 1500，
+  可跟随 5 分钟刷新周期高频调用而不重复发放。
+- **响应口径（关键坑，初版实现曾被推翻）**：HTTP 200 + `code=0`，`data` 含
+  `pass` / `deny_reason`。**它们描述的是「余额是否够用」，与本次是否发放无关**：
+  全 9 账号复核中 b3f25e 与 f18297 返回 `{"pass":false,"deny_reason":1}`，
+  但两者当日「每日登录」条目同样到账、`remain` 同为 1500。
+  因此**绝不能凭 `pass` 判定领取结果**——真实判据只能是「明细里存在当天、
+  且仍有余额的每日登录条目」，即先调 check、再从明细确认。
+  `pass` 仅作排查线索保留。
+
+### 实现
+
+- 新增 `coze/daily_credit.go`：领取内核 + 明细确认 + 状态记录 + 跨日判定；
+  `coze/daily_credit_manage.go`：面板状态视图与手动补领入口
+  （`management.go` 已近 500 行，新链路独立成文件）。
+- **必须先领再查**：check 会改变余额，顺序反了本轮拿到的仍是领取前的旧值，
+  闸门会把刚领到 1500 分的账号继续判成 0 分并挡回宿主。
+  由 `TestRunCreditTickClaimsDailyCreditBeforeFetch` 锁定调用序列。
+- 跨日按**北京时间固定 UTC+8** 切日，不用 `time.LoadLocation("Asia/Shanghai")`
+  —— 容器镜像不一定装 tzdata，缺库时会静默回退 UTC，把凌晨 8 点前的领取
+  算到前一天，导致每天早上误报「今天还没领」。
+- 领取失败只记日志不阻断余额刷新：一次网络抖动不该让整轮刷新失败、
+  把好号的余额一起丢掉。
+- 新增管理路由 `POST /claim-daily`（面板手动补领，领完立即回传最新余额）。
+- `/accounts` 新增 `daily_credit` 字段（`claimed_today` / `claimed_at` / `error`）；
+  从未尝试过领取时该字段为 `null`，面板显示「未知」而不是「今天没领」。
+- 面板卡片积分区新增「今日登录积分已领 / 未领（1500 分 · 当天过期）/ 领取失败」
+  三态文案，操作区新增「领今日积分」按钮。
+
+### 测试
+
+- 新增 12 个用例：请求只发一次、`pass=false` 仅记 hint、HTTP/业务码失败记录、
+  无账号标识不发请求、**pass=false 但明细有当天余额 → 判已领**、
+  零余额条目不判已领、非当日条目不判已领、请求失败时不做确认、跨日重置、
+  UTC+8 切日、从未尝试返回 nil；`credits_routing_test.go` 新增 2 个顺序/过滤用例。
+- **5 项变异反证全部 KILLED**：claim 移到 fetch 之后 → 顺序用例 FAIL；
+  跨日判定退化为「领过就算今天」→ 跨日用例 FAIL；确认时要求 `passHint` 为真 →
+  到账用例 FAIL（这条正是初版错误语义的回归守卫）；请求失败仍做确认 → FAIL；
+  确认时忽略 `remaining>0` → FAIL。
+- `cgo-shim-build.py coze`：build + vet + test 全绿；gofmt 干净；
+  面板两段 `<script>` `new Function()` 语法校验 PASS。
+
 ## 0.5.4 (2026-10-21)
 
 ### 修复

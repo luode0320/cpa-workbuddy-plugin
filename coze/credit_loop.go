@@ -112,7 +112,17 @@ type creditDeps struct {
 	list  func() ([]*StoredAuth, error)
 	fetch func(*StoredAuth) (*creditSummary, error)
 	store func(*StoredAuth, *creditSummary)
-	logf  func(level, message string, fields map[string]any)
+	// claim 领取当日登录积分；为 nil 时跳过领取。
+	//
+	// 必须在 fetch 之前执行：check 端点触发发放后余额才会变，
+	// 顺序反了会让本轮余额仍是领取前的旧值，闸门继续把账号判成 0 分。
+	claim func(*StoredAuth) bool
+	// confirm 用刚查到的积分摘要确认领取是否真的到账；为 nil 时跳过确认。
+	//
+	// 上游的 check 响应不携带发放结果（见 daily_credit.go），
+	// 到账事实只能从明细里读，因此确认必须在 fetch 之后。
+	confirm func(*StoredAuth, *creditSummary)
+	logf    func(level, message string, fields map[string]any)
 }
 
 // defaultCreditDeps 返回生产依赖：宿主账号列表、真实积分查询与宿主日志。
@@ -120,10 +130,12 @@ type creditDeps struct {
 // [返回] 依赖集合。
 func defaultCreditDeps() creditDeps {
 	return creditDeps{
-		list:  listAllAuthFiles,
-		fetch: fetchCreditSummary,
-		store: storeCreditSummary,
-		logf:  hostLogf,
+		list:    listAllAuthFiles,
+		fetch:   fetchCreditSummary,
+		store:   storeCreditSummary,
+		claim:   claimDailyCreditForAccount,
+		confirm: confirmDailyCreditBySummary,
+		logf:    hostLogf,
 	}
 }
 
@@ -176,6 +188,12 @@ func runCreditTick(deps creditDeps) int {
 		go func() {
 			defer wg.Done()
 			for item := range queue {
+				// 先领当日登录积分再查余额：领取会改变余额，
+				// 顺序反了本轮拿到的仍是领取前的旧值，闸门会继续把
+				// 账号判成 0 分并把请求挡回宿主（见 daily_credit.go）。
+				if deps.claim != nil {
+					deps.claim(item.sa)
+				}
 				summary, errFetch := deps.fetch(item.sa)
 				if errFetch != nil {
 					deps.logf("warn", "积分刷新失败", map[string]any{
@@ -183,6 +201,10 @@ func runCreditTick(deps creditDeps) int {
 						"error":   errFetch.Error(),
 					})
 					continue
+				}
+				// 到账事实只能从明细确认：check 的响应不携带发放结果。
+				if deps.confirm != nil {
+					deps.confirm(item.sa, summary)
 				}
 				deps.store(item.sa, summary)
 				mu.Lock()

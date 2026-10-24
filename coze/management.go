@@ -77,6 +77,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: base + "/models", Description: "列出指定账号可测试的模型（query: auth_id）。"},
 			{Method: http.MethodPost, Path: base + "/test-active", Description: "对单个账号发起一次登录态与模型可见性探活（body: {auth_id, model?}）。"},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "查询指定账号积分余额与即将过期明细（query: auth_id）。"},
+			{Method: http.MethodPost, Path: base + "/claim-daily", Description: "立即为指定账号领取当日登录积分（body: {auth_id}）。"},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "Coze", Description: "扣子 Provider 管理面板：授权登录、账号管理与续期。"},
@@ -183,6 +184,9 @@ func handleManagement(raw []byte) ([]byte, error) {
 	case method == http.MethodGet && subPath == "/credits":
 		return makeJSONResponse(handleCreditsQuery(req))
 
+	case method == http.MethodPost && subPath == "/claim-daily":
+		return handleClaimDaily(req.Body)
+
 	default:
 		return makeHTTPResponse(http.StatusNotFound, []byte(`{"error":"not_found"}`))
 	}
@@ -239,6 +243,8 @@ type accountSummary struct {
 	Credits *creditSummary `json:"credits,omitempty"`
 	// LowCredits 表示剩余积分低于路由红线，该账号不再承载新请求。
 	LowCredits bool `json:"low_credits"`
+	// DailyCredit 是当日登录积分的领取状态，面板据此显示「今日已领」。
+	DailyCredit *dailyCreditView `json:"daily_credit,omitempty"`
 }
 
 // handleListAccounts 返回全部扣子账号摘要。
@@ -271,6 +277,7 @@ func handleListAccounts() ([]byte, error) {
 			LastRenewAt: acc.LastRenewAt,
 			CreatedAt:   acc.CreatedAt,
 			UpdatedAt:   acc.UpdatedAt,
+			DailyCredit: buildDailyCreditView(acc.AuthID),
 		}
 		wg.Add(1)
 		go func(slot int, sa *StoredAuth) {

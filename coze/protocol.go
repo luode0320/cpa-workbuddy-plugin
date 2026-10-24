@@ -91,6 +91,25 @@ const (
 
 	// creditDetailPageSize 是明细单页条数。
 	creditDetailPageSize = "100"
+
+	// dailyCreditCheckPath 是触发每日登录积分发放的端点。
+	//
+	// 契约（2026-10-24 生产九账号对照实验实证）：GET，无需参数，无积分消耗。
+	// 响应恒为 HTTP 200 + code=0，业务结果在 data：
+	//   - {"pass":true}                 → 当日 1500 活动积分已发放
+	//   - {"pass":false,"deny_reason":1} → 上游拒绝（当日已达上限等）
+	//
+	// 关键事实：这是**唯一**能触发每日登录积分发放的入口。只调 token beat
+	// 续期不发、只访问 /home 不发、activity/info 与 incentive/user_task/list
+	// 都不发；网页端也是在加载积分页时调它才拿到当天额度。
+	// 幂等：同日连打多次只发一条，可跟随积分刷新周期高频调用。
+	dailyCreditCheckPath = "/api/marketplace/trade/credit/balance/check"
+
+	// dailyCreditAccountType 是领取端点携带的账户类型。
+	//
+	// 与明细端点同口径取 2（个人空间）；实测不带该参数也能触发发放，
+	// 显式携带是为了与网页端行为一致，避免上游按默认类型判定后不发放。
+	dailyCreditAccountType = "2"
 )
 
 // tokenBeatURL 返回令牌端点的完整 URL。
@@ -254,6 +273,30 @@ func creditBalanceURL() string {
 // 最近修改时间：2026-10-18；改动原因：新增，积分明细出口。
 func creditDetailURL() string {
 	return cozeSiteHost + creditDetailPath + "?account_type=" + creditDetailAccountType
+}
+
+// dailyCreditCheckURL 返回每日登录积分领取端点的完整 URL。
+// [参数] 无。
+// [返回] 完整 URL。
+// 最近修改时间：2026-10-24；改动原因：新增，每日积分领取出口。
+func dailyCreditCheckURL() string {
+	return cozeSiteHost + dailyCreditCheckPath + "?account_type=" + dailyCreditAccountType
+}
+
+// dailyCreditCheckOverride 是领取端点的测试覆盖点；非空时优先使用。
+//
+// 生产路径下始终为空，端点由常量拼装。
+var dailyCreditCheckOverride string
+
+// resolveDailyCreditURL 返回实际使用的领取端点。
+// [参数] 无。
+// [返回] 端点 URL。
+// 最近修改时间：2026-10-24；改动原因：新增，测试覆盖入口。
+func resolveDailyCreditURL() string {
+	if dailyCreditCheckOverride != "" {
+		return dailyCreditCheckOverride
+	}
+	return dailyCreditCheckURL()
 }
 
 // creditBalanceResponse 是积分余额端点响应。

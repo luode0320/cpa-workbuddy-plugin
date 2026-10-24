@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -253,6 +254,87 @@ func TestConfigurePluginParsesRoutableCredits(t *testing.T) {
 	}
 	if got := loadedMinRoutableCredits(); got != 0 {
 		t.Fatalf("显式 0 应关闭闸门，实际 %d", got)
+	}
+}
+
+// TestRunCreditTickClaimsDailyCreditBeforeFetch 验证「先领后查」的顺序约束。
+//
+// 顺序反了不会报错，只会让闸门拿到领取前的余额——账号明明刚领到 1500 分
+// 却被判成 0 分并挡回宿主。断言方式是记录调用序列，而不是只看余额，
+// 因为倒序时余额最终仍是正确值，只有序列能区分两种实现。
+// [参数] t: 测试上下文。
+// [返回] 无。
+func TestRunCreditTickClaimsDailyCreditBeforeFetch(t *testing.T) {
+	t.Cleanup(resetCreditCache)
+	resetCreditCache()
+
+	sa := &StoredAuth{AuthID: "coze-order"}
+	var mu sync.Mutex
+	var order []string
+	deps := creditDeps{
+		list: func() ([]*StoredAuth, error) { return []*StoredAuth{sa}, nil },
+		claim: func(*StoredAuth) bool {
+			mu.Lock()
+			order = append(order, "claim")
+			mu.Unlock()
+			return true
+		},
+		fetch: func(*StoredAuth) (*creditSummary, error) {
+			mu.Lock()
+			order = append(order, "fetch")
+			mu.Unlock()
+			return &creditSummary{Total: 1500, Remain: 1500}, nil
+		},
+		confirm: func(*StoredAuth, *creditSummary) {
+			mu.Lock()
+			order = append(order, "confirm")
+			mu.Unlock()
+		},
+		store: storeCreditSummary,
+		logf:  func(string, string, map[string]any) {},
+	}
+
+	runCreditTick(deps)
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"claim", "fetch", "confirm"}
+	if len(order) != len(want) {
+		t.Fatalf("调用序列应为 %v，实际 %v", want, order)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("调用序列应为 %v，实际 %v", want, order)
+		}
+	}
+}
+
+// TestRunCreditTickSkipsClaimWhenDisabledAccount 验证禁用账号不参与领取。
+//
+// 禁用号不承载流量，为它领积分纯属浪费上游调用；
+// 而刷新循环本就在投递阶段跳过禁用账号，领取必须共用同一判据。
+// [参数] t: 测试上下文。
+// [返回] 无。
+func TestRunCreditTickSkipsClaimWhenDisabledAccount(t *testing.T) {
+	t.Cleanup(resetCreditCache)
+	resetCreditCache()
+
+	claimed := 0
+	deps := creditDeps{
+		list: func() ([]*StoredAuth, error) {
+			return []*StoredAuth{{AuthID: "coze-off", Disabled: true}}, nil
+		},
+		claim: func(*StoredAuth) bool { claimed++; return true },
+		fetch: func(*StoredAuth) (*creditSummary, error) {
+			return &creditSummary{Total: 0, Remain: 0}, nil
+		},
+		store: storeCreditSummary,
+		logf:  func(string, string, map[string]any) {},
+	}
+
+	runCreditTick(deps)
+	if claimed != 0 {
+		t.Fatalf("禁用账号不应触发领取，实际调用 %d 次", claimed)
 	}
 }
 
