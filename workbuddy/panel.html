@@ -438,7 +438,11 @@ function progressHTML(c, a){
   // 双写下的禁用侧才是恢复通道：冷却到期不会让号回来，只有 10 分钟探活探通才解除。
   // 所以两个段同时显示，避免用户把冷却倒计时误读成「多少秒后自动恢复」。
   if(a&&a.failover_disabled){
-    statSegments.push(`<span class="pb-segment" style="color:var(--warn)">失败禁用${a.failover_model?" · "+esc(a.failover_model):""}（10 分钟探活中）</span>`);
+    // failover_unconfirmed：盘上写了禁用但宿主列表仍是 enabled，说明这次写盘
+    // 还没被宿主吸收，账号此刻仍在接流量。必须如实区分，否则用户会以为它已下线。
+    const pending=!!a.failover_unconfirmed;
+    const tail=pending?"（写盘未生效·仍在接流量）":"（10 分钟探活中）";
+    statSegments.push(`<span class="pb-segment" style="color:var(--warn)">失败禁用${a.failover_model?" · "+esc(a.failover_model):""}${tail}</span>`);
   }
   if(isAccountLowCredits(a)){
     statSegments.push(`<span class="pb-segment" style="color:var(--warn)">保活(&lt;${minRoutableCredits})</span>`);

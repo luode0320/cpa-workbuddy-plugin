@@ -76,6 +76,10 @@ var (
 	// 进程重启后本集合为空，但被禁用的账号此时已由宿主自己跳过，插件侧不需要
 	// 再判一次；等探活把它恢复，集合始终为空，行为仍然正确。
 	failoverDisabledLocal = make(map[string]struct{})
+	// failoverDisableAtLocal 记录本进程写入禁用时的时刻，与 failoverDisabledLocal
+	// 同键。宿主每次请求结束都会用内存 Metadata 重建 auth 文件并抹掉本机制的三个
+	// 顶层键，重建标记时 at 已无法从盘上读到，只能从这里取。
+	failoverDisableAtLocal = make(map[string]string)
 
 	// failoverTickMu 是单轮探活的不重叠闸门。
 	failoverTickMu sync.Mutex
@@ -93,13 +97,23 @@ var (
 // [参数] authID：账号标识；authIndex：宿主 auth_index（可为空）。
 // 最近修改时间：2026-10-21；改动原因：新增，供热路径快速判据。
 func markFailoverDisabledLocal(authID, authIndex string) {
+	markFailoverDisabledLocalAt(authID, authIndex, failoverNowFn().UTC().Format(time.RFC3339))
+}
+
+// markFailoverDisabledLocalAt 记录账号已被本进程禁用，并记下禁用时刻。
+// [参数] authID：账号标识；authIndex：宿主 auth_index（可为空）；at：禁用时刻（RFC3339）。
+// 最近修改时间：2026-10-25；改动原因：新增，供重建标记时取回 at。
+func markFailoverDisabledLocalAt(authID, authIndex, at string) {
 	failoverProbeModelMu.Lock()
 	defer failoverProbeModelMu.Unlock()
 	if key := failoverProbeKey(authID); key != "" {
 		failoverDisabledLocal[key] = struct{}{}
+		failoverDisableAtLocal[key] = at
 	}
 	if idx := strings.TrimSpace(authIndex); idx != "" {
-		failoverDisabledLocal[strings.ToLower(idx)] = struct{}{}
+		key := strings.ToLower(idx)
+		failoverDisabledLocal[key] = struct{}{}
+		failoverDisableAtLocal[key] = at
 	}
 }
 
@@ -111,9 +125,12 @@ func clearFailoverDisabledLocal(authID, authIndex string) {
 	defer failoverProbeModelMu.Unlock()
 	if key := failoverProbeKey(authID); key != "" {
 		delete(failoverDisabledLocal, key)
+		delete(failoverDisableAtLocal, key)
 	}
 	if idx := strings.TrimSpace(authIndex); idx != "" {
-		delete(failoverDisabledLocal, strings.ToLower(idx))
+		key := strings.ToLower(idx)
+		delete(failoverDisabledLocal, key)
+		delete(failoverDisableAtLocal, key)
 	}
 }
 
@@ -133,6 +150,57 @@ func isFailoverDisabledLocal(authID string) bool {
 	defer failoverProbeModelMu.Unlock()
 	_, ok := failoverDisabledLocal[key]
 	return ok
+}
+
+// failoverDisableAtFor 读取本进程为该账号记录过的禁用时刻。
+// [参数] authID：账号标识。
+// [返回] RFC3339 时刻；无记录时为空串。
+// 最近修改时间：2026-10-25；改动原因：新增，供重建标记。
+func failoverDisableAtFor(authID string) string {
+	key := failoverProbeKey(authID)
+	if key == "" {
+		key = strings.ToLower(strings.TrimSpace(authID))
+	}
+	if key == "" {
+		return ""
+	}
+	failoverProbeModelMu.Lock()
+	defer failoverProbeModelMu.Unlock()
+	return failoverDisableAtLocal[key]
+}
+
+// restoreFailoverMarkersIntoDoc 在落盘前把本机制的三个顶层键补回文档。
+//
+// 为什么需要：宿主在每次请求结束后都会用内存里的 Metadata 重建 auth 文件，
+// 而那份 Metadata 只含白名单键（type/provider/logo/note/disabled），本机制的
+// 三个键不在其中，于是「插件写禁 → 宿主 persist」之后盘上只剩 disabled:true。
+// 标记一旦丢失，探活循环就再也找不到这个号（它按标记挑候选），账号会停在
+// 「宿主禁用、插件不认领」的死角，直到有人手工启用。
+//
+// 补标记只在「本进程写过禁用」且「盘上确实 disabled」时进行：前者保证不会替
+// 用户手动禁用或额度耗尽禁用伪造归属，后者保证不会把已恢复的账号重新标成禁用。
+//
+// [参数] doc：待落盘的顶层键映射（原地修改）；authID：账号标识；model：失败模型。
+// [返回] true 表示本次补写了标记。
+// 最近修改时间：2026-10-25；改动原因：新增，堵住宿主 persist 抹标记的缺口。
+func restoreFailoverMarkersIntoDoc(doc map[string]any, authID, model string) bool {
+	if doc == nil || !isFailoverDisabledLocal(authID) {
+		return false
+	}
+	if disabled, _ := doc["disabled"].(bool); !disabled {
+		return false
+	}
+	if doc[failoverDisableKey] == true {
+		return false
+	}
+	at := failoverDisableAtFor(authID)
+	if at == "" {
+		at = failoverNowFn().UTC().Format(time.RFC3339)
+	}
+	doc[failoverDisableKey] = true
+	doc[failoverDisableModelKey] = strings.TrimSpace(model)
+	doc[failoverDisableAtKey] = at
+	return true
 }
 
 // failoverAuthDoc 是物理 auth 文档里与本机制相关的顶层状态快照。
@@ -403,10 +471,11 @@ func disableAccountForFailover(authID, model string) bool {
 		return false
 	}
 	// 逐键改盘上现文档，不重建：盘上任何既有顶层键（note / 计数 / 其它标记）都原样保留。
+	at := failoverNowFn().UTC().Format(time.RFC3339)
 	rawDoc["disabled"] = true
 	rawDoc[failoverDisableKey] = true
 	rawDoc[failoverDisableModelKey] = strings.TrimSpace(model)
-	rawDoc[failoverDisableAtKey] = failoverNowFn().UTC().Format(time.RFC3339)
+	rawDoc[failoverDisableAtKey] = at
 	raw, err := json.Marshal(rawDoc)
 	if err != nil {
 		log.Printf("[workbuddy] failover disable skipped: marshal auth doc: %v", err)
@@ -416,7 +485,7 @@ func disableAccountForFailover(authID, model string) bool {
 		log.Printf("[workbuddy] failover disable write failed: auth=%s err=%v", authID, err)
 		return false
 	}
-	markFailoverDisabledLocal(authID, authIndex)
+	markFailoverDisabledLocalAt(authID, authIndex, at)
 	wait := failoverWaitConfirmed
 	go confirmFailoverHostState(wait, authIndex, true, authID, phys.Path)
 	log.Printf("[workbuddy] failover disabled account: auth=%s model=%s", authID, strings.TrimSpace(model))
@@ -649,6 +718,7 @@ func reconcileFailoverLocalSet() int {
 			continue
 		}
 		delete(failoverDisabledLocal, key)
+		delete(failoverDisableAtLocal, key)
 		delete(failoverProbeModels, key)
 		cleared++
 	}

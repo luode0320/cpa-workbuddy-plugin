@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.20.2
+
+### Fix - 失败禁用的盘上标记被宿主 persist 抹掉后自动补回，并暴露「写盘未生效」
+
+- 背景: 宿主在**每次请求结束后**都会 `m.persist(ctx, auth)`，用内存里的 `Auth.Metadata` 重建物理 auth 文件。那份 Metadata 只含插件 `auth.parse` 白名单键（`type`/`provider`/`logo`/`note`/`disabled`），本机制的 `failover_disable` / `failover_disable_model` / `failover_disable_at` 不在其中，于是「插件写禁 → 宿主 persist」之后盘上只剩 `disabled:true`。标记一旦丢失，10 分钟探活按标记挑候选就再也找不到这个号，账号停在「宿主禁用、插件不认领」的死角，只能人工启用。
+- 生产实证: 2026-10-25 三个账号（`2ca400e3`/`5e6050ba`/`242e1dde`）带着 `failover_disable_at` 存活且 DB `disabled=true`，证明写盘链路本身可用；另三个（`700fd592`/`59667798`/`7b251fe4`）在 `03:33:55.74~.765` 这 24 毫秒内被批量重写为 `disabled:false` 且标记全无，DB 更新时间分别停在 `03:28:23`/`03:31:08`/`03:33:52`——文件 mtime 晚于 DB，证明最后一笔写盘不经 MySQL，是插件自身的周期性落盘写回了已被宿主重建过的脏文档。
+- 修复: `persistCounterDelta`（watchdog 每 10 分钟一次的唯一插件驱动落盘）在写盘前调用 `restoreFailoverMarkersIntoDoc` 补齐三个标记。补写条件严格限定为「本进程写过禁用」且「盘上确实 `disabled:true`」——前者防止替用户手动禁用或额度耗尽禁用伪造归属，后者防止把已恢复的账号重新标成禁用。`at` 时刻从内存新增的 `failoverDisableAtLocal` 取，保证重建的标记仍是原始禁用时刻而非当前时间。
+- 面板: 新增 `failover_unconfirmed` 字段。盘上写着禁用而宿主列表仍 `enabled` 时，徽标改显示「写盘未生效·仍在接流量」而不是「10 分钟探活中」——此前这种情况会把「插件以为禁了、宿主照常路由」显示成「已禁用」，是 6 vs 3 显示分叉的直接来源。
+- 验证: 新增 `failover_marker_restore_test.go` 6 个用例；**5 项变异全部 KILLED**（去掉本地归属判据 / 去掉 `disabled` 判据 / 断开 `persistCounterDelta` 的补标记调用 / 丢弃原始禁用时刻 / 面板判据忽略宿主状态）。其中「断开调用」首轮**存活**，暴露纯函数测试不覆盖调用点的缺口，据此为 `counter.go` 补宿主注入点并新增 `TestPersistCounterDelta_RestoresMarkersOnDisk`。cgo-shim build+vet+test 全绿；gofmt 干净（`panel.go` 的既有对齐差异一并修掉）；`panel.html` 两块脚本 `node --check` PASS。
+- 边界: 本轮只做「补标记 + 暴露分叉」，不改写禁用通道。宿主 persist 与插件写盘的竞态窗口依然存在（补标记只保证最后一笔不丢），彻底消除需改用 `PATCH /v0/management/auth-files/status` 走宿主自己的禁用通道，属后续独立改动。
+- 涉及文件: `counter.go`、`failover_disable.go`、`panel.go`、`panel.html`、新增 `failover_marker_restore_test.go`
+
 ## 0.20.1
 
 ### Fix - 客户端标识对齐真实客户端：UA 改为 `WorkBuddy/<版本>`、按日同步版本号、补 X-IDE-Version
