@@ -35,6 +35,17 @@
 
 ## 活动会话进展摘要
 
+- 当前会话（2026-10-24）：**coze 每日登录积分自动领取（0.5.5）+ 历史账号补注册宿主（0.5.6），均已发生产并验收**：
+  - 用户诉求：「扣子插件不能每日签到领积分，看看有什么办法」→ 裁定方案 A（插件内置），并要求「把号都导入到生产」→ 明确为「启用插件让 9 个号回归路由」。
+  - **上游契约（九账号对照实验实证）**：每日 1500 分「每日登录」活动积分真实存在，**有效期仅 1 天、当天不领即归零**——这是账号池长期 0 分的根因。唯一触发器是 `GET /api/marketplace/trade/credit/balance/check`：只调 token beat 续期不发、只访问 `/home` 不发、`activity/info` 与 `incentive/user_task/list` 也不发；只打 check 则 3/3 复现 0→1500，同日连打只发一条（幂等）。
+  - **关键坑（初版实现曾因此做错并被推翻）**：check 响应的 `pass`/`deny_reason` 描述的是「**余额是否够用**」，与本次是否发放无关——实测 `pass=false` 的 b3f25e / f18297 同样到账 1500。到账判据只能是「明细里存在当天且仍有余额的每日登录条目」，即先 check 再查明细。`display_status`：2=当天可用、3=未来到期、4=已过期。
+  - **0.5.5 实现**：新增 `daily_credit.go`（领取内核+明细确认+跨日判定）、`daily_credit_manage.go`（面板视图与手动补领）；领取必须**先于**余额查询（否则闸门读到旧余额继续判 0 分）；跨日按固定 UTC+8（不依赖容器 tzdata）；失败只记日志不阻断刷新；禁用号不领；面板加今日领取三态与「领今日积分」按钮。
+  - **第二个缺陷（0.5.6）**：启用后模型能列出但请求必 503 `auth_not_found`。根因是注册只有 `writeAuthFileDirect` 里 `if auth.PhysicalPath == ""`（仅首次授权）一个入口，历史账号永不满足 → 插件能读能刷积分、宿主 spool 一条都没有（`host.auth.save` 日志零命中，对照 qoderwork 有 18 条）。新增 `POST /register-host` 把已落盘账号原样搬运进宿主 spool（只推未禁用、原样读磁盘、逐账号留痕、路径双闸门）。
+  - **验证**：新增 15 个用例；**8 项变异全部 KILLED**（claim 后置 / 跨日退化 / 确认要求 passHint / 失败仍确认 / 忽略 remaining>0 等），其中「确认要求 passHint」正是初版错误语义的回归守卫。cgo-shim build+vet+test 全绿；gofmt 干净；面板两段脚本语法 PASS。
+  - **发布链**：0.5.5 `1b4990b` → CI `40104373276` success → `37db359`(registry)；0.5.6 `c46ec70` → CI `40106095504` success（首轮失败于 **traework** 的 TempDir 清理 flaky，与 coze 无关，重跑后全绿）→ `dad3e94`(registry)。两轮均 6/6 assets sha256 OK、产物版本串与旧版归零核对通过。
+  - **生产验收（全程热重载零重启，容器 Up 46h）**：0.5.5 后 9/9 账号 `remain=1500`、`claimed_today=true`；`/claim-daily` 返回 `claimed:true, remain:1500`。0.5.6 补注册 `success:9/failed:0`，宿主 spool coze 文件 0→9、`auth-files` coze 条目 0→9，**端到端推理 `coze/doubao-seed-2-0-lite-260215` 返回 HTTP 200「你好呀」**。
+  - 文档：`doc/2-需求/2026-10-24_220000_Coze每日登录积分自动领取需求.md`、`doc/5-tests/2026-10-24_220000_Coze每日登录积分自动领取验证.md`。
+
 - 当前会话（2026-10-24）：**workbuddy-provider 0.20.0 连续使用轮换已发生产并完成验收**：
   - 用户诉求演进：先尝试 priority 降级（800 请求降 0、次日恢复）→ 代码取证证伪（宿主 `SessionAffinitySelector.Pick` 命中缓存时用 `getAvailableAuthsAcrossPriorities` 跨全部 priority 层校验绑定，priority 对已绑定会话完全无效）→ 改为「单账号持续用 1 小时就进入 1 小时冷却」。
   - **两个用户裁定**：① 计时语义取「连续使用」（有请求就续期，中断超 10 分钟重置）；② 防抽干——冷却前检查是否除本号外全池已冷却，若是先放开一半。

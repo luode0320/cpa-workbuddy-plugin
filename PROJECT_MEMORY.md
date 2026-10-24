@@ -54,6 +54,25 @@
 
 ### 关键设计决策
 
+- **扣子每日登录积分由 `credit/balance/check` 触发，且 pass 字段与发放无关（2026-10-24 九账号实证）**：
+  每日 1500 分「每日登录」活动积分**有效期仅 1 天、当天不领即归零**，是账号池长期 0 分的真因。
+  **唯一触发器**是 `GET /api/marketplace/trade/credit/balance/check?account_type=2`——
+  只调 `passport/token/beat/v2/` 续期**不发**、只访问 `/home` **不发**、`coze_space/activity/info` /
+  `commerce/get_user_benefit` / `incentive/user_task/list` **都不发**；只打 check 则 3/3 复现 0→1500，
+  同日连打只发一条（幂等），可跟随 5 分钟刷新周期高频调用。
+  **`pass`/`deny_reason` 描述的是「余额是否够用」，不是发放结果**——实测 `pass=false` 的账号
+  照样到账 1500，按 pass 判发放会写出「已领到却报失败」的错误实现。
+  到账判据只能是「积分明细里存在当天且 `remaining>0` 的『每日登录』条目」（`display_status`：
+  2=当天可用 / 3=未来到期 / 4=已过期）。领取还必须**先于**余额查询，否则本轮读到的仍是
+  发放前余额、闸门继续把刚领到分的账号判成 0 分。
+- **插件本地账号目录与宿主 spool 是两套存储，历史账号不会自动注册（2026-10-24 生产实证）**：
+  扣子（以及 copilot / zcode 同类）凭据写在 `~/.antigravity_cockpit/<plugin>_accounts/`，
+  宿主只认自己的 spool（`mysqlstore/mysqlstore/auths/`）。同步只在
+  `writeAuthFileDirect` 的 `if auth.PhysicalPath == ""` 分支发生，即**仅首次授权**；
+  已存在的账号永远不满足该条件，结果是「插件 `/accounts` 能读、积分能刷新、模型能列，
+  但真实请求必然 `auth_not_found`」。判据：`docker logs | grep host.auth.save` 零命中 +
+  spool 里该插件 0 个文件。补救入口为 coze 0.5.6 的 `POST /register-host`
+  （只推未禁用、原样搬磁盘内容、逐账号留痕）。
 - 数据库/配置一律逻辑引用（无物理外键）
 - failover：1/3/10 分钟阶梯退避，429/402/5xx/传输错误计入，业务 400 不计
 - 40x 换号重试（2026-08-22）：401/403/404/405 计入账号级故障，`retry_on_4xx` 预算默认 3（0-5），**缺省键保持当前值**（kill switch 安全），400 直通不重试
