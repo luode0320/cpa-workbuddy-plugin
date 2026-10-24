@@ -233,7 +233,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   <div class="filter-bar" id="filterBar">
     <button type="button" class="ftag active" data-region="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
     <button type="button" class="ftag" data-region="available" onclick="filterRegion('available',this)" title="未打「测试」标签的账号，均可正常路由（积分为 0 也可用）">可用 <span class="cnt" id="cntAvailable">0</span></button>
-    <button type="button" class="ftag" data-region="failed" onclick="filterRegion('failed',this)" title="累计失败 > 0 或连败中（fail_count > 0）的账号；卡片上的「失败/连败/冷却」段即数据来源">失败 <span class="cnt" id="cntFailed">0</span></button>
+    <button type="button" class="ftag" data-region="failed" onclick="filterRegion('failed',this)" title="累计失败 > 0、连败中（fail_count > 0）或被失败禁用的账号；卡片上的「失败/连败/冷却/失败禁用」段即数据来源">失败 <span class="cnt" id="cntFailed">0</span></button>
     <button type="button" class="ftag" data-region="test" onclick="filterRegion('test',this)" title="定时活跃测试失败的账号；建议人工复核后清理">测试 <span class="cnt" id="cntTest">0</span></button>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
@@ -432,6 +432,11 @@ function progressHTML(c, a){
       statSegments.push(`<span class="pb-segment cooling-text" data-cool-until="${Number(a.cool_until)||0}" data-cool-count="${Number(a.fail_count)||0}">冷却 ${Math.max(0,(Number(a.cool_until)||0)-Math.floor(Date.now()/1000))}s</span>`);
     }
   }
+  // 双写下的禁用侧才是恢复通道：冷却到期不会让号回来，只有 10 分钟探活探通才解除。
+  // 所以两个段同时显示，避免用户把冷却倒计时误读成「多少秒后自动恢复」。
+  if(a&&a.failover_disabled){
+    statSegments.push(`<span class="pb-segment" style="color:var(--warn)">失败禁用${a.failover_model?" · "+esc(a.failover_model):""}（10 分钟探活中）</span>`);
+  }
   const statHTML=statSegments.join('');
   const primaryHTML=`<span class="pb-primary"><span class="pb-segment">可用积分</span>${statHTML}</span>`;
   // 无快照：面板不再自动刷新，永远显示「加载中…」会误导用户以为在等结果。
@@ -496,7 +501,7 @@ function card(a){
   const unregisteredBadge=unregistered?`<span class="badge unregistered" title="授权成功但未完成注册（注册地未填），拿不到额度池；点击「补注册」按出口 IP 自动补齐">未注册</span>`:"";
   const registerBtn=unregistered?`<button class="sec" data-action="register" data-auth-index="${esc(a.auth_index)}" title="按出口 IP 自动提交注册地并注册云账号，随后领取试用包">补注册</button>`:"";
   const badges=testFailedBadge+unregisteredBadge+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
-  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-nickname="${esc(a.nickname||a.label||a.name||"")}" data-label="${esc(a.label||"")}" data-name="${esc(a.name||"")}" data-uid="${esc(a.uid||"")}" data-test="${a.test_failed?"1":"0"}" data-failed="${((Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0)?"1":"0"}">
+  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-nickname="${esc(a.nickname||a.label||a.name||"")}" data-label="${esc(a.label||"")}" data-name="${esc(a.name||"")}" data-uid="${esc(a.uid||"")}" data-test="${a.test_failed?"1":"0"}" data-failed="${((Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0||a.failover_disabled)?"1":"0"}">
   <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}<button type="button" class="card-del" data-action="delete" data-auth-index="${esc(a.auth_index)}" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
   ${a.created_at?`<div class="uid">创建 ${esc(fmtCST(a.created_at))}</div>`:''}
@@ -652,8 +657,8 @@ function updateFilterCounts(accounts){
   (accounts||[]).forEach(a=>{
     if((a.region||"global")==="global") gl++; else cn++;
     if(a.test_failed) test++;
-    // 失败 = 累计失败 > 0 或连败中（fail_count > 0）
-    if((Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0) fail++;
+    // 失败 = 累计失败 > 0、连败中（fail_count > 0）或被失败禁用
+    if((Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0||a.failover_disabled) fail++;
     // 可用 = 未打「测试」标签；额度为 0 不影响可用性
     if(!a.test_failed) ava++;
   });
@@ -680,7 +685,7 @@ function accountsForFilter(accounts){
     return list.filter(a=>!!a.test_failed);
   }
   if(currentFilter==="failed"){
-    return list.filter(a=>(Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0);
+    return list.filter(a=>(Number(a.failed)||0)>0||(Number(a.fail_count)||0)>0||a.failover_disabled);
   }
   return list.filter(a=>(a.region||"global")===currentFilter);
 }
