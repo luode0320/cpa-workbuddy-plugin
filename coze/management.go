@@ -77,6 +77,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: base + "/models", Description: "列出指定账号可测试的模型（query: auth_id）。"},
 			{Method: http.MethodPost, Path: base + "/test-active", Description: "对单个账号发起一次登录态与模型可见性探活（body: {auth_id, model?}）。"},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "查询指定账号积分余额与即将过期明细（query: auth_id）。"},
+			{Method: http.MethodPost, Path: base + "/refresh-all", Description: "立即触发一轮全量积分巡检（含签到、落盘与低额分级，body: {}）。"},
 			{Method: http.MethodPost, Path: base + "/claim-daily", Description: "立即为指定账号领取当日登录积分（body: {auth_id}）。"},
 			{Method: http.MethodPost, Path: base + "/register-host", Description: "把本地已落盘的账号补注册到宿主认证目录（body: {}）。"},
 		},
@@ -185,6 +186,9 @@ func handleManagement(raw []byte) ([]byte, error) {
 	case method == http.MethodGet && subPath == "/credits":
 		return makeJSONResponse(handleCreditsQuery(req))
 
+	case method == http.MethodPost && subPath == "/refresh-all":
+		return handleRefreshAll()
+
 	case method == http.MethodPost && subPath == "/claim-daily":
 		return handleClaimDaily(req.Body)
 
@@ -245,62 +249,92 @@ type accountSummary struct {
 	UpdatedAt   string `json:"updated_at"`
 	// Credits 是积分摘要；查询失败时 Error 非空，面板据此显示「未知」。
 	Credits *creditSummary `json:"credits,omitempty"`
-	// LowCredits 表示剩余积分低于路由红线，该账号不再承载新请求。
+	// LowCredits 表示剩余积分低于红线，该账号不再承载新请求。
 	LowCredits bool `json:"low_credits"`
+	// CreditTier 是分级结果：normal / disabled / unknown。
+	CreditTier string `json:"credit_tier,omitempty"`
+	// AutoDisabled 表示该账号的禁用由积分机制写入，可被自动解禁。
+	AutoDisabled bool `json:"auto_disabled"`
+	// AutoDisabledAt 是自动禁用时刻，供面板解释「什么时候被禁的」。
+	AutoDisabledAt string `json:"auto_disabled_at,omitempty"`
+	// SnapshotAt 是积分快照的拉取时刻，供面板显示数据新鲜度。
+	SnapshotAt string `json:"snapshot_at,omitempty"`
 	// DailyCredit 是当日登录积分的领取状态，面板据此显示「今日已领」。
 	DailyCredit *dailyCreditView `json:"daily_credit,omitempty"`
 }
 
 // handleListAccounts 返回全部扣子账号摘要。
 //
-// 积分并发查询：多账号下串行会让面板首屏等待 N 倍超时。单个账号积分失败
-// 不影响列表本身——积分是附加信息，不能因为上游抖动让整个面板报错。
+// 积分一律读落盘快照，不发任何上游请求（2026-10-25 起）：
+// 巡检每小时已经把全部账号刷过一遍，面板打开再逐号并发打上游既是
+// 无界 goroutine 扇出，也让「打开面板」变成一次上游压测。
+// 需要最新数字时走单卡「刷新积分」（force=1）或「立即扫描」。
 // [参数] 无。
 // [返回] 管理响应。
-// 最近修改时间：2026-10-18；改动原因：新增，账号列表；并发补积分摘要。
+// 最近修改时间：2026-10-25；改动原因：改为零上游读快照，替代逐号并发查询。
 func handleListAccounts() ([]byte, error) {
 	accounts, errList := listAllAuthFiles()
 	if errList != nil {
 		return makeHTTPResponse(http.StatusInternalServerError, []byte(fmt.Sprintf(`{"error":%q}`, errList.Error())))
 	}
 
+	snapshots := creditSnapshotAll()
+	redline := loadedMinRoutableCredits()
 	list := make([]accountSummary, len(accounts))
-	var wg sync.WaitGroup
 	for i, acc := range accounts {
-		list[i] = accountSummary{
-			AuthID:      acc.AuthID,
-			AuthIndex:   acc.AuthID,
-			Label:       acc.Label,
-			ScreenName:  acc.ScreenName,
-			Mobile:      acc.Mobile,
-			SecUserID:   maskIdentifier(acc.SecUserID),
-			UserID:      acc.UserID,
-			Disabled:    acc.Disabled,
-			AuthState:   authStateOf(acc),
-			LoginAt:     acc.LoginAt,
-			LastRenewAt: acc.LastRenewAt,
-			CreatedAt:   acc.CreatedAt,
-			UpdatedAt:   acc.UpdatedAt,
-			DailyCredit: buildDailyCreditView(acc.AuthID),
-		}
-		wg.Add(1)
-		go func(slot int, sa *StoredAuth) {
-			defer wg.Done()
-			summary, errFetch := cachedCreditSummary(sa, false)
-			if errFetch != nil {
-				list[slot].Credits = &creditSummary{Error: errFetch.Error()}
-				return
-			}
-			list[slot].Credits = summary
-			// 低额标记与闸门同源：都读同一份缓存和同一个红线，
-			// 避免面板显示「够用」而实际已被拦截。
-			list[slot].LowCredits = !sa.Disabled && summary.Remain < loadedMinRoutableCredits()
-		}(i, acc)
+		list[i] = buildAccountSummary(acc, snapshots, redline)
 	}
-	wg.Wait()
 
-	body, _ := json.Marshal(map[string]any{"accounts": list, "count": len(list)})
+	body, _ := json.Marshal(map[string]any{
+		"accounts": list,
+		"count":    len(list),
+		"redline":  redline,
+		"sweep":    lastCreditSweep(),
+		"running":  creditSweepIsRunning(),
+	})
 	return makeHTTPResponse(http.StatusOK, body)
+}
+
+// buildAccountSummary 把账号与其积分快照组装成面板视图。
+//
+// 快照缺失时 Credits 必须保持 nil：面板据此显示「等待首轮巡检」。
+// 填一个 0 分摘要会让用户看到「积分耗尽」，而实际只是还没跑过巡检——
+// 这两件事的处置完全不同（前者要补积分，后者只需等待或手动巡检）。
+// [参数] acc：账号；snapshots：全部积分快照；redline：当前红线。
+// [返回] 面板账号视图。
+// 最近修改时间：2026-10-25；改动原因：抽出纯函数，让「缺失不当 0」可被测试锁定。
+func buildAccountSummary(acc *StoredAuth, snapshots map[string]creditSnapshotEntry, redline int64) accountSummary {
+	out := accountSummary{
+		AuthID:         acc.AuthID,
+		AuthIndex:      acc.AuthID,
+		Label:          acc.Label,
+		ScreenName:     acc.ScreenName,
+		Mobile:         acc.Mobile,
+		SecUserID:      maskIdentifier(acc.SecUserID),
+		UserID:         acc.UserID,
+		Disabled:       acc.Disabled,
+		AuthState:      authStateOf(acc),
+		LoginAt:        acc.LoginAt,
+		LastRenewAt:    acc.LastRenewAt,
+		CreatedAt:      acc.CreatedAt,
+		UpdatedAt:      acc.UpdatedAt,
+		DailyCredit:    buildDailyCreditView(acc.AuthID),
+		AutoDisabled:   acc.LowCreditDisable,
+		AutoDisabledAt: acc.LowCreditDisableAt,
+	}
+	entry, ok := snapshots[creditSnapshotKey(acc.AuthID)]
+	if !ok {
+		// 快照缺失：只回档位，绝不构造 0 分摘要。
+		out.CreditTier = creditTierUnknown.String()
+		return out
+	}
+	out.Credits = entry.Credits
+	out.SnapshotAt = entry.FetchedAt
+	out.CreditTier = creditTierFor(entry.Remain, redline).String()
+	// 低额标记与闸门同源：都读同一份快照和同一个红线，
+	// 避免面板显示「够用」而实际已被拦截。
+	out.LowCredits = entry.Remain >= 0 && redline > 0 && entry.Remain < redline
+	return out
 }
 
 // authStateOf 判定账号的登录态状态。
@@ -431,6 +465,37 @@ func handleLoginStartFromPanel() ([]byte, error) {
 	return makeHTTPResponse(http.StatusOK, payload)
 }
 
+// handleRefreshAll 立即触发一轮全量积分巡检。
+//
+// 异步返回而不是同步等待：一轮巡检要逐号打上游（含签到），9 个账号
+// 通常需要数秒到数十秒，同步等待会让面板请求超时。面板拿到 queued 后
+// 轮询 /accounts 的 running 字段判断何时完成。
+// [参数] 无。
+// [返回] 管理响应。
+// 最近修改时间：2026-10-25；改动原因：新增，面板「立即扫描」入口。
+func handleRefreshAll() ([]byte, error) {
+	started := runCreditSweepNonOverlap()
+	payload, _ := json.Marshal(map[string]any{
+		"ok":      started,
+		"queued":  started,
+		"running": creditSweepIsRunning(),
+		"sweep":   lastCreditSweep(),
+		"message": refreshAllMessage(started),
+	})
+	return makeHTTPResponse(http.StatusOK, payload)
+}
+
+// refreshAllMessage 生成扫描触发结果的说明文案。
+// [参数] started: 是否真的启动了新一轮。
+// [返回] 结果说明。
+// 最近修改时间：2026-10-25；改动原因：新增，避免面板显示「未知」。
+func refreshAllMessage(started bool) string {
+	if started {
+		return "已开始全量巡检，完成后自动刷新"
+	}
+	return "上一轮巡检尚未结束，请稍后再试"
+}
+
 // extractAuthID 从请求体中提取 auth_id / auth_index / authID / id。
 // [参数] body: 请求体字节。
 // [返回] 账号标识；均缺失时返回空串。
@@ -445,9 +510,13 @@ func extractAuthID(body []byte) string {
 }
 
 // setAccountDisabled 修改指定账号的禁用状态并落盘。
+//
+// 必须清掉本机制的归属标记：用户手动禁用一个「已被自动禁用」的账号时，
+// disabled 已经是 true，若不清标记，次日签到到账会违背用户意愿自动解禁；
+// 手动启用同理——用户既然要它跑，就不该再被低额机制二次接管。
 // [参数] authID: 账号标识；disabled: 目标状态。
 // [返回] 错误。
-// 最近修改时间：2026-10-18；改动原因：新增，账号启停状态直写物理文件。
+// 最近修改时间：2026-10-25；改动原因：改走锁内读改写并清除低额归属标记。
 func setAccountDisabled(authID string, disabled bool) error {
 	authID = strings.TrimSpace(authID)
 	accounts, errList := listAllAuthFiles()
@@ -458,13 +527,17 @@ func setAccountDisabled(authID string, disabled bool) error {
 		if acc.AuthID != authID && acc.AuthID != strings.TrimSuffix(authID, ".json") {
 			continue
 		}
-		acc.Disabled = disabled
-		acc.UpdatedAt = time.Now().Format(time.RFC3339)
 		path := acc.PhysicalPath
 		if path == "" {
 			path = getAccountsDir() + "/" + authID + ".json"
 		}
-		return writeAuthFileDirect(path, acc)
+		// 锁内读改写：避免与巡检的自动禁用/解禁并发覆盖。
+		_, errMutate := mutateAuthFile(path, func(auth *StoredAuth) bool {
+			auth.Disabled = disabled
+			clearLowCreditMarkers(auth)
+			return true
+		})
+		return errMutate
 	}
 	return fmt.Errorf("账号不存在：%s", authID)
 }

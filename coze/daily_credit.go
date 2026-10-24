@@ -195,6 +195,12 @@ func confirmDailyCreditBySummary(sa *StoredAuth, summary *creditSummary) {
 	}
 	dailyCredits.entries[key] = entry
 	dailyCredits.mu.Unlock()
+
+	// 确认到账后立刻落进快照：内存态在热重载 / 重启后丢失，而当日额度
+	// 一旦被消耗光就会从明细里消失，纯明细反推会把已领误报成未领。
+	if ok {
+		recordDailyClaimedSnapshot(sa.AuthID, amount)
+	}
 }
 
 // dailyCreditAmountIn 从积分摘要中取出指定自然日的每日登录额度。
@@ -246,14 +252,25 @@ func dailyCreditSnapshot(authID string) (dailyCreditEntry, bool) {
 // 判据是「最近一次成功领取发生在今天」，按北京时间切日：
 // 上游的每日额度以自然日（UTC+8）为周期，用 UTC 会把凌晨 8 点前的
 // 领取算到前一天，导致面板误报「今天还没领」并重复触发。
+//
+// 内存无记录时回落到落盘快照：热重载 / 重启会清空内存态，
+// 而当日额度可能早已被消耗光、从明细里消失，只看内存会让面板
+// 把「已领且已用完」显示成「未领」。
 // [参数] authID: 账号标识。
 // [返回] 今日已领取时为 true。
+// 最近修改时间：2026-10-25；改动原因：内存无记录时回落到持久化快照。
 func dailyCreditClaimedToday(authID string) bool {
-	entry, ok := dailyCreditSnapshot(authID)
-	if !ok || entry.claimedAt.IsZero() {
-		return false
+	if entry, ok := dailyCreditSnapshot(authID); ok && !entry.claimedAt.IsZero() {
+		return sameDayCST(entry.claimedAt, time.Now())
 	}
-	return sameDayCST(entry.claimedAt, time.Now())
+	// 回落到快照里的确认时刻。
+	if claimedAt, _ := dailyClaimedFromSnapshot(authID); claimedAt != "" {
+		parsed, errParse := time.Parse(time.RFC3339, claimedAt)
+		if errParse == nil {
+			return sameDayCST(parsed, time.Now())
+		}
+	}
+	return false
 }
 
 // sameDayCST 判断两个时刻是否落在同一个北京时间的自然日。

@@ -69,11 +69,15 @@ func (r *renewRecorder) callCount(authID string) int {
 	return r.calls[authID]
 }
 
-// TestRenewTargets_SkipsDisabledAndPathless 验证禁用与缺路径账号被排除。
+// TestRenewTargets_IncludesDisabledAndSkipsPathless 验证禁用号参与续期、缺路径被排除。
+//
+// 语义在 2026-10-25 反转：禁用号必须继续续期，否则 Cookie 会在等待
+// 「次日签到」的窗口内失效，签到失败后账号永久卡死无法自动恢复。
+// 缺路径的账号仍要排除——续期结果无处落盘，跑了也是白耗上游请求。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-18；改动原因：新增，筛选口径。
-func TestRenewTargets_SkipsDisabledAndPathless(t *testing.T) {
+// 最近修改时间：2026-10-25；改动原因：禁用号改为参与续期（解禁依赖凭据可用）。
+func TestRenewTargets_IncludesDisabledAndSkipsPathless(t *testing.T) {
 	accounts := []*StoredAuth{
 		{AuthID: "coze-ok", PhysicalPath: "/tmp/coze-ok.json"},
 		{AuthID: "coze-disabled", PhysicalPath: "/tmp/coze-disabled.json", Disabled: true},
@@ -81,8 +85,8 @@ func TestRenewTargets_SkipsDisabledAndPathless(t *testing.T) {
 		nil,
 	}
 	targets, pathless := renewTargets(accounts)
-	if len(targets) != 1 || targets[0].AuthID != "coze-ok" {
-		t.Fatalf("待续期账号 = %v，期望只有 coze-ok", authIDsOf(targets))
+	if len(targets) != 2 || targets[0].AuthID != "coze-ok" || targets[1].AuthID != "coze-disabled" {
+		t.Fatalf("待续期账号 = %v，期望 [coze-ok coze-disabled]", authIDsOf(targets))
 	}
 	if len(pathless) != 1 || pathless[0] != "coze-nopath" {
 		t.Fatalf("缺路径账号 = %v，期望 [coze-nopath]", pathless)
@@ -101,11 +105,11 @@ func authIDsOf(accounts []*StoredAuth) []string {
 	return out
 }
 
-// TestRunRenewTick_RenewsAllEnabled 验证一轮会续期所有启用账号。
+// TestRunRenewTick_RenewsAllAccounts 验证一轮会续期所有具路径账号（含禁用）。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-18；改动原因：新增，主路径。
-func TestRunRenewTick_RenewsAllEnabled(t *testing.T) {
+// 最近修改时间：2026-10-25；改动原因：禁用号改为参与续期。
+func TestRunRenewTick_RenewsAllAccounts(t *testing.T) {
 	rec := newRenewRecorder()
 	accounts := []*StoredAuth{
 		{AuthID: "coze-a", PhysicalPath: "/tmp/a.json"},
@@ -113,11 +117,11 @@ func TestRunRenewTick_RenewsAllEnabled(t *testing.T) {
 		{AuthID: "coze-c", PhysicalPath: "/tmp/c.json", Disabled: true},
 	}
 	renewed := runRenewTick(rec.deps(accounts))
-	if renewed != 2 {
-		t.Fatalf("成功续期数 = %d，期望 2", renewed)
+	if renewed != 3 {
+		t.Fatalf("成功续期数 = %d，期望 3", renewed)
 	}
-	if rec.callCount("coze-c") != 0 {
-		t.Fatalf("禁用账号不应被续期，实际调用 %d 次", rec.callCount("coze-c"))
+	if rec.callCount("coze-c") != 1 {
+		t.Fatalf("禁用账号应继续续期（解禁依赖凭据可用），实际调用 %d 次", rec.callCount("coze-c"))
 	}
 	if rec.callCount("coze-a") != 1 || rec.callCount("coze-b") != 1 {
 		t.Fatalf("启用账号调用次数 = a:%d b:%d，期望各 1 次", rec.callCount("coze-a"), rec.callCount("coze-b"))

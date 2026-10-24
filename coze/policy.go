@@ -20,16 +20,20 @@ import (
 // 套餐类产品，20 分只够一两次请求，起不到缓冲作用。
 
 const (
-	// defaultMinRoutableCredits 是扣子账号的积分路由红线默认值。
+	// defaultMinRoutableCredits 是扣子账号的积分红线默认值。
 	//
-	// 低于该值的账号不再承载新请求，避免请求打到上游后才因积分不足失败。
-	defaultMinRoutableCredits int64 = 100
+	// 低于该值的账号不再承载新请求，并会被巡检写盘禁用、等签到恢复。
+	// 取值 200（2026-10-25 用户裁定）：扣子单次对话消耗远高于按次计费的
+	// 套餐类产品，100 分只够一两次请求，且每日签到固定发放 1500 分，
+	// 200 的分界既能挡住残血号，又不会把「刚领到签到、正在消耗」的号误杀。
+	defaultMinRoutableCredits int64 = 200
 
-	// creditRefreshDefaultSeconds 是后台积分刷新间隔默认值。
+	// creditRefreshDefaultSeconds 是后台积分巡检间隔默认值。
 	//
-	// 积分余额只在面板与闸门两处被读，5 分钟（与积分缓存 TTL 一致）
-	// 足以让闸门跟上消耗速度，又不会给上游增加可观请求量。
-	creditRefreshDefaultSeconds = 300
+	// 3600 秒（2026-10-25 用户裁定）：巡检要承担签到、落盘与分级三重职责，
+	// 5 分钟一次会把上游打成周期性压力且毫无收益（签到是幂等的）。
+	// 数据新鲜度由面板单卡「刷新积分」提供即时通道。
+	creditRefreshDefaultSeconds = 3600
 
 	// creditRefreshConcurrency 是单轮积分刷新的并发上限。
 	//
@@ -39,11 +43,10 @@ const (
 
 	// creditDepletedTrustWindow 是「全池耗尽」判据允许采信缓存的年龄。
 	//
-	// 比缓存 TTL（5 分钟）宽 3 倍：刷新周期本身就是 5 分钟，若沿用 TTL，
-	// 每轮刷新之间的边界期会把刚拿到的 0 分判成「数据不可信」，
-	// 快速失败随之失效、请求又回去白打上游。超过这个窗口说明刷新循环
-	// 已经停摆，此时宁可放行让上游自己判，也不要把整池误判成死号。
-	creditDepletedTrustWindow = 15 * time.Minute
+	// 必须显著宽于巡检周期（1 小时）：若沿用旧的 15 分钟，每轮中后段
+	// 缓存都会被判成「数据不可信」，快速失败静默失效、请求又回去白打上游。
+	// 90 分钟 = 一个周期 + 50% 余量，容忍一轮延迟完成。
+	creditDepletedTrustWindow = 90 * time.Minute
 )
 
 var (
@@ -108,33 +111,37 @@ func applyMinRoutableCredits(n int64) {
 // 未知积分返回 (-1, false)，由调用方决定放行还是拦截。
 // [参数] authID: 账号标识。
 // [返回] 余量与「是否已知」。
+// 最近修改时间：2026-10-25；改动原因：键归一化，兼容宿主侧带前缀/后缀的标识形态。
 func cachedCreditRemain(authID string) (int64, bool) {
-	if authID == "" {
-		return -1, false
+	key := creditSnapshotKey(authID)
+	if key == "" {
+		return creditUnknownRemain, false
 	}
 	creditsCache.mu.Lock()
 	defer creditsCache.mu.Unlock()
-	entry, ok := creditsCache.entries[authID]
+	entry, ok := creditsCache.entries[key]
 	if !ok || entry.summary.Error != "" {
-		return -1, false
+		return creditUnknownRemain, false
 	}
 	return entry.summary.Remain, true
 }
 
 // cachedCreditTrustworthy 判断账号积分缓存是否还值得采信。
 //
-// 「已知」不等于「可信」：余额接口只写成功结果，刷新循环停摆时缓存会长期
+// 「已知」不等于「可信」：余额接口只写成功结果，巡检停摆时缓存会长期
 // 停在旧值。全池耗尽的快速失败会把请求直接判死，必须确认数据是新的，
-// 否则一次刷新停滞就会把整池误判成 0 分而全线拒服务。
+// 否则一次巡检停滞就会把整池误判成 0 分而全线拒服务。
 // [参数] authID: 账号标识。
 // [返回] 缓存有值、无错误且年龄小于采信窗口时为 true。
+// 最近修改时间：2026-10-25；改动原因：键归一化，与写入侧保持一致。
 func cachedCreditTrustworthy(authID string) bool {
-	if authID == "" {
+	key := creditSnapshotKey(authID)
+	if key == "" {
 		return false
 	}
 	creditsCache.mu.Lock()
 	defer creditsCache.mu.Unlock()
-	entry, ok := creditsCache.entries[authID]
+	entry, ok := creditsCache.entries[key]
 	if !ok || entry.summary.Error != "" {
 		return false
 	}

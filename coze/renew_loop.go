@@ -145,18 +145,23 @@ func defaultRenewDeps() renewDeps {
 
 // renewTargets 从账号列表里挑出本轮需要续期的账号。
 //
-// 只排除显式禁用的账号：登录态已判为 expired 的账号同样要试——Cookie 可能
-// 只是主会话项过期，token beat 仍能换回新会话，直接跳过会让账号永久失修。
+// 不排除禁用账号（2026-10-25 起）：被低额机制禁用的号要靠「次日签到」
+// 才能恢复，而签到必须用有效 Cookie；若禁用一个号就停止续期，
+// Cookie 会在等待期内失效，签到失败后账号永久卡死无法自动恢复。
+// 禁用号续期不会带来流量——它们不参与路由，只是维持凭据可用。
+//
+// 登录态已判为 expired 的账号同样要试：Cookie 可能只是主会话项过期，
+// token beat 仍能换回新会话，直接跳过会让账号永久失修。
 // 缺少物理路径的账号单独返回：续期结果无处落盘，继续跑等于白耗上游请求，
 // 且这种情况通常意味着宿主账号发现链路异常，需要在上层日志里可见。
 // [参数] accounts: 账号列表。
 // [返回] 待续期账号与缺路径的账号标识。
-// 最近修改时间：2026-10-18；改动原因：新增，续期目标筛选。
+// 最近修改时间：2026-10-25；改动原因：不再跳过禁用账号，解禁依赖其凭据可用。
 func renewTargets(accounts []*StoredAuth) ([]*StoredAuth, []string) {
 	out := make([]*StoredAuth, 0, len(accounts))
 	var pathless []string
 	for _, sa := range accounts {
-		if sa == nil || sa.Disabled {
+		if sa == nil {
 			continue
 		}
 		if sa.PhysicalPath == "" {

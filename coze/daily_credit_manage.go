@@ -22,6 +22,8 @@ type dailyCreditView struct {
 	ClaimedToday bool `json:"claimed_today"`
 	// ClaimedAt 是最近一次确认领取的时间（RFC3339，北京时间）。
 	ClaimedAt string `json:"claimed_at,omitempty"`
+	// Amount 是确认到账的当日额度，0 表示上游未返回该信息。
+	Amount int64 `json:"amount,omitempty"`
 	// Error 是最近一次领取失败的简述。
 	Error string `json:"error,omitempty"`
 }
@@ -30,17 +32,31 @@ type dailyCreditView struct {
 //
 // 从未尝试过领取时返回 nil：面板据此显示「未知」而不是「今天没领」，
 // 否则刚热重载、循环还没跑第一轮时用户会误以为功能失效。
+//
+// 内存无记录但快照里有确认时刻时仍要出视图：热重载会清空内存态，
+// 而当日额度可能早已用完、从明细里消失，返回 nil 会让面板显示「未知」。
 // [参数] authID: 账号标识。
-// [返回] 视图；无任何领取记录时返回 nil。
-// 最近修改时间：2026-10-24；改动原因：新增，面板领取状态来源。
+// [返回] 视图；内存与快照都无记录时返回 nil。
+// 最近修改时间：2026-10-25；改动原因：补快照回落，避免热重载后显示未知。
 func buildDailyCreditView(authID string) *dailyCreditView {
 	entry, ok := dailyCreditSnapshot(authID)
 	if !ok {
-		return nil
+		// 回落到快照里的签到确认记录。
+		claimedAt, amount := dailyClaimedFromSnapshot(authID)
+		if claimedAt == "" {
+			return nil
+		}
+		view := &dailyCreditView{
+			ClaimedToday: dailyCreditClaimedToday(authID),
+			ClaimedAt:    claimedAt,
+			Amount:       amount,
+		}
+		return view
 	}
 	view := &dailyCreditView{
 		ClaimedToday: dailyCreditClaimedToday(authID),
 		Error:        entry.errorText,
+		Amount:       entry.amount,
 	}
 	if !entry.claimedAt.IsZero() {
 		view.ClaimedAt = entry.claimedAt.In(cstZone).Format(time.RFC3339)

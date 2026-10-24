@@ -52,8 +52,17 @@ type StoredAuth struct {
 	AuthInvalid bool   `json:"auth_invalid,omitempty"`
 	Label       string `json:"label"`
 	Disabled    bool   `json:"disabled"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	// LowCreditDisable 表示该账号的禁用由「积分低于红线」机制写入。
+	//
+	// 它是归属标记：只有带此标记的账号才会被自动解禁。用户手动禁用
+	// 或其它机制禁用的账号没有该标记，永不被巡检改动（见 credit_grade.go）。
+	LowCreditDisable bool `json:"low_credit_disable,omitempty"`
+	// LowCreditDisableBelow 记录禁用时的阈值，供人工判断「为什么被禁」。
+	LowCreditDisableBelow int64 `json:"low_credit_disable_below,omitempty"`
+	// LowCreditDisableAt 是禁用时刻（RFC3339），供面板展示。
+	LowCreditDisableAt string `json:"low_credit_disable_at,omitempty"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
 	// PhysicalPath 是账号文件绝对路径，不落盘（json:"-"）。
 	PhysicalPath string `json:"-"`
 	// LoadedDigest 是读取该账号时物理文件的内容摘要，不落盘（json:"-"）。
@@ -228,6 +237,59 @@ func hostAuthSaveJSON(name string, raw []byte) error {
 		return fmt.Errorf("host.auth.save 调用失败")
 	}
 	return nil
+}
+
+// mutateAuthFile 在账号文件锁内完成「读盘 → 判定 → 写盘」。
+//
+// 为什么不能复用 readAuthFile + writeAuthFileDirect：那两步各自加锁，
+// 中间的判定窗口里用户可能刚点过「禁用」，巡检的旧判定会把它覆盖成
+// 「自动禁用」，次日积分到账后又自动解禁——违背用户意图。
+// 判定必须基于磁盘的当前内容，因此读与写必须在同一把锁内完成。
+//
+// mutate 返回 false 表示放弃写入（判定认为无需改动）。
+// [参数] filePath: 账号文件绝对路径；mutate: 在锁内对账号结构做原地修改。
+// [返回] 是否真的写入了磁盘，以及写入错误。
+// 最近修改时间：2026-10-25；改动原因：新增，分级判定需要原子读改写。
+func mutateAuthFile(filePath string, mutate func(*StoredAuth) bool) (bool, error) {
+	authFilesMu.Lock()
+	defer authFilesMu.Unlock()
+
+	// 1. 路径安全闸门：账号路径来自宿主返回，仍须防穿越。
+	if !isSafeCozeAuthPath(filePath) {
+		return false, fmt.Errorf("不安全的凭据文件路径：%s", filePath)
+	}
+	// 2. 读盘拿到当前真相。
+	raw, errRead := os.ReadFile(filePath)
+	if errRead != nil {
+		return false, errRead
+	}
+	var auth StoredAuth
+	if errUnmarshal := json.Unmarshal(raw, &auth); errUnmarshal != nil {
+		return false, errUnmarshal
+	}
+	auth.PhysicalPath = filePath
+	auth.LoadedDigest = fileDigest(filePath)
+
+	// 3. 在锁内做判定；判定认为无需改动时直接放弃，避免无谓写盘。
+	if mutate == nil || !mutate(&auth) {
+		return false, nil
+	}
+	auth.UpdatedAt = time.Now().Format(time.RFC3339)
+
+	// 4. 序列化并原子写回（与 writeAuthFileDirect 同一套临时文件语义）。
+	data, errMarshal := json.MarshalIndent(&auth, "", "  ")
+	if errMarshal != nil {
+		return false, fmt.Errorf("序列化凭据失败：%w", errMarshal)
+	}
+	tmpFile := fmt.Sprintf("%s.tmp.%d", filePath, time.Now().UnixNano())
+	if errWrite := os.WriteFile(tmpFile, data, 0600); errWrite != nil {
+		return false, fmt.Errorf("写入临时文件失败：%w", errWrite)
+	}
+	if errRename := os.Rename(tmpFile, filePath); errRename != nil {
+		_ = os.Remove(tmpFile)
+		return false, fmt.Errorf("重命名临时文件失败：%w", errRename)
+	}
+	return true, nil
 }
 
 // readAuthFile 读取单个账号凭据文件。

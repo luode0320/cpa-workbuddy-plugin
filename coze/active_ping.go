@@ -313,10 +313,12 @@ func handleModelsQuery(req pluginapi.ManagementRequest) map[string]any {
 // handleCreditsQuery 查询指定账号的积分余额与即将过期明细。
 //
 // force=true 时跳过缓存：面板「刷新」按钮需要拿到最新数字，
-// 而列表接口默认走 5 分钟缓存以避免频繁打上游。
+// 而列表接口读的是巡检落盘的快照。强制刷新后必须把结果写回快照并
+// 重跑分级——只更新内存缓存的话，面板下一次加载又会退回旧快照，
+// 用户会以为刷新没生效（workbuddy 侧踩过同款）。
 // [参数] req: 管理请求，query 参数 auth_id 指定账号，可选 force=1。
 // [返回] 积分摘要；失败时带 error 字段。
-// 最近修改时间：2026-10-18；改动原因：新增，面板积分查询入口。
+// 最近修改时间：2026-10-25；改动原因：强制刷新补写快照与分级，避免面板回退旧值。
 func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 	authID := queryAuthID(req)
 	if authID == "" {
@@ -331,8 +333,21 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 	if errFetch != nil {
 		return map[string]any{"ok": false, "error": errFetch.Error()}
 	}
+	// 1. 强制刷新时同步写回快照与分级：面板读的是快照，不写等于没刷新。
+	if force {
+		recordCreditSnapshot(sa.AuthID, summary, sa.ScreenName)
+		if errPersist := persistCreditSnapshot(); errPersist != nil {
+			hostLogf("warn", "单卡刷新落盘失败", map[string]any{
+				"auth_id": sa.AuthID,
+				"error":   errPersist.Error(),
+			})
+		}
+		gradeCreditsForAccount(sa, summary)
+	}
 	out := creditSummaryMap(summary)
 	out["ok"] = true
+	out["credit_tier"] = creditTierFor(summary.Remain, loadedMinRoutableCredits()).String()
+	out["auto_disabled"] = sa.LowCreditDisable
 	return out
 }
 

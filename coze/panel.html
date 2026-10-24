@@ -194,10 +194,13 @@ button.danger:hover{background:var(--err);color:#fff}
 
   <div class="bar">
     <button class="sec" id="btnRefresh">刷新账号</button>
+    <button class="sec" id="btnSweep" title="立即对所有账号执行一轮积分巡检（含签到领取与低额分级）">立即巡检</button>
     <button class="sec" id="btnEnableAll" title="启用全部已禁用账号">全部启用</button>
     <button class="sec" id="btnDisableAll" title="禁用全部账号（不再参与路由）">全部禁用</button>
     <input id="searchInput" class="search" type="search" placeholder="搜索昵称 / 手机 / 账号标识" autocomplete="off">
   </div>
+
+  <div class="summary" id="sweepBox" style="display:none"></div>
 
   <div class="filter-bar" id="filterBar">
     <button type="button" class="ftag active" data-filter="all">全部 <span class="cnt" id="cntAll">0</span></button>
@@ -320,6 +323,9 @@ function saveKey(){
 /* --------------------------------------------------------------------------- */
 
 let lastAccounts=[];
+// lastRedline 是后端下发的当前红线。面板不自带副本：阈值以服务端为唯一真相，
+// 否则改了配置面板还在按旧值判断低额。
+let lastRedline=0;
 let currentFilter="all";
 let currentSearch="";
 let pendingDeleteID="";
@@ -394,11 +400,22 @@ async function api(path, opts={}){
 }
 
 function stateBadge(a){
+  // 自动禁用优先展示：这是积分机制写入的状态，与用户手动禁用要区分开，
+  // 否则用户会以为是自己禁的、不知道它在等签到恢复。
+  if(a.auto_disabled) return '<span class="badge off" title="'+esc(autoDisableTitle(a))+'">低额自动禁用</span>';
   if(a.disabled) return '<span class="badge off">已禁用</span>';
   if(a.auth_state==="expired") return '<span class="badge warn">待重新授权</span>';
   // 低额账号仍能登录，但已不再承载新请求，必须与「可用」区分开。
   if(a.low_credits) return '<span class="badge warn">低额保护</span>';
   return '<span class="badge ok">可用</span>';
+}
+
+// autoDisableTitle 生成自动禁用徽标的悬停说明。
+// [参数] a: 账号视图。
+// [返回] 说明文本。
+function autoDisableTitle(a){
+  const at=a.auto_disabled_at?("禁用于 "+fmtCST(a.auto_disabled_at)):"";
+  return "剩余积分低于红线，已自动停用并等待每日签到恢复"+((at)?"（"+at+"）":"");
 }
 
 function accountMatches(a){
@@ -418,12 +435,14 @@ function visibleAccounts(){
 }
 
 // 积分区块：可用余量 + 即将过期提示 + 消耗进度条。
-// 查询失败时只显示错误原因，绝不把「未知」渲染成 0（会把用户吓一跳）。
+// 无快照时不渲染成 0（会把用户吓一跳），提示等待首轮巡检；
+// 积分数据来自插件落盘的 sidecar，打开面板不会触发任何上游请求。
 function creditHTML(a){
   const c=a&&a.credits;
   if(!c){
     return '<div class="credit"><div class="credit-hd"><span class="credit-main">—<span class="unit">积分</span></span>'+
-      '<span class="credit-meta">未查询</span></div></div>';
+      '<span class="credit-meta">等待首轮巡检</span></div>'+
+      '<div class="credit-meta" style="margin-top:6px">积分由后台巡检每小时刷新，也可点「立即巡检」或卡片「刷新积分」</div></div>';
   }
   if(c.error){
     return '<div class="credit"><div class="credit-hd"><span class="credit-main">—<span class="unit">积分</span></span>'+
@@ -494,7 +513,7 @@ function card(a){
     '<div class="actions">'+
     '<button data-act="test" data-id="'+id+'" title="校验登录态与模型可见性">测试</button>'+
     '<button data-act="claimDaily" data-id="'+id+'" title="立即领取当日登录积分（1500 分，当天不领即过期）">领今日积分</button>'+
-    '<button class="sec" data-act="credits" data-id="'+id+'" title="强制刷新积分（跳过 5 分钟缓存）">刷新积分</button>'+
+    '<button class="sec" data-act="credits" data-id="'+id+'" title="强制刷新积分并落盘（不等待下一轮巡检）">刷新积分</button>'+
     '<button class="sec" data-act="renew" data-id="'+id+'" title="立即刷新会话 Cookie">续期</button>'+
     '<button class="sec" data-act="'+toggleAct+'" data-id="'+id+'">'+toggleText+'</button>'+
     '</div></div>';
@@ -562,6 +581,74 @@ function render(){
   grid.innerHTML=list.map(card).join("");
 }
 
+/* ---------- 巡检报告 ---------- */
+// renderSweep 渲染最近一轮巡检的统计；从未巡检过时隐藏整块。
+// [参数] d: /accounts 响应。
+// [返回] 无。
+function renderSweep(d){
+  const box=document.getElementById("sweepBox");
+  const s=d&&d.sweep;
+  if(!box) return;
+  if(!s){
+    box.style.display="none";
+    return;
+  }
+  const running=!!(d&&d.running);
+  const parts=[
+    "巡检 "+(s.started_at?fmtCST(s.started_at):"—")+" → "+(s.finished_at?fmtCST(s.finished_at):"—"),
+    (s.total||0)+" 号",
+    (s.refreshed||0)+" 成功",
+    (s.failed||0)+" 失败",
+    "红线 "+(s.redline||0)+" 分"
+  ];
+  if(s.disabled) parts.push("本轮禁用 "+s.disabled);
+  if(s.re_enabled) parts.push("本轮解禁 "+s.re_enabled);
+  box.style.display="";
+  box.innerHTML='<div class="summary-meta">'+esc(parts.join(" · "))+
+    (running?' <b style="color:var(--warn)">巡检中…</b>':"")+'</div>';
+}
+
+/* ---------- 立即巡检 ---------- */
+// triggerSweep 触发一轮后台巡检并轮询到完成为止。
+//
+// 后端异步返回（一轮要逐号打上游），因此这里不能等单次响应，
+// 必须按 running 字段轮询；轮询上限防止后端异常时无限打接口。
+// [参数] 无。
+// [返回] 无。
+async function triggerSweep(){
+  const btn=document.getElementById("btnSweep");
+  busy(btn,true);
+  try{
+    const d=await api("/refresh-all",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    if(!d||!d.queued){
+      toast("巡检未启动","warn",(d&&d.message)||"上一轮尚未结束");
+      return;
+    }
+    toast("已开始巡检","ok","完成后自动刷新");
+    await pollSweepDone(60);
+    await load();
+  }catch(e){
+    toast("巡检触发失败","err",e.message||String(e));
+  }finally{
+    busy(btn,false);
+  }
+}
+
+// pollSweepDone 轮询 /accounts 直到巡检结束。
+// [参数] maxRounds: 最大轮询次数（每轮约 2 秒）。
+// [返回] 无。
+async function pollSweepDone(maxRounds){
+  for(let i=0;i<maxRounds;i++){
+    await new Promise(r=>setTimeout(r,2000));
+    let d;
+    try{ d=await api("/accounts"); }catch(e){ return; }
+    if(d&&!d.error&&!d.running){
+      renderSweep(d);
+      return;
+    }
+  }
+}
+
 async function load(){
   const btn=document.getElementById("btnRefresh");
   busy(btn,true);
@@ -573,7 +660,9 @@ async function load(){
       return;
     }
     lastAccounts=(d&&d.accounts)||[];
+    lastRedline=Number(d&&d.redline)||0;
     render();
+    renderSweep(d);
   }catch(e){
     const msg=e&&e.message?e.message:String(e);
     if(!lastAccounts.length) document.getElementById("grid").innerHTML='<div class="loading">'+esc(msg)+'</div>';
@@ -617,7 +706,7 @@ async function act(kind, id, btn){
   }
 }
 
-// 单账号强制刷新积分：跳过服务端 5 分钟缓存，只重绘该卡片不整表刷新。
+// 单账号强制刷新积分：跳过缓存并落盘，只重绘该卡片不整表刷新。
 async function refreshCredits(id, btn){
   busy(btn,true);
   try{
@@ -633,6 +722,13 @@ async function refreshCredits(id, btn){
         expiring_at:d.expiring_at, items:d.items,
         fetched_at:d.fetched_at, detail_error:d.detail_error
       };
+      // 分级结果同步回填：刷新可能刚好触发禁用或解禁，
+      // 不更新这两个字段面板会继续显示旧状态。
+      if(typeof d.credit_tier==="string") a.credit_tier=d.credit_tier;
+      a.auto_disabled=!!d.auto_disabled;
+      a.disabled=a.auto_disabled||a.disabled;
+      // 低额判定消费服务端红线；红线为 0（kill switch）时不禁用任何号。
+      if(typeof d.remain==="number") a.low_credits=lastRedline>0&&d.remain<lastRedline;
       render();
     }
     toast("积分已刷新","ok","可用 "+d.remain+(d.expiring?" · 即将过期 "+d.expiring:""));
@@ -785,6 +881,7 @@ async function confirmDelete(){
 document.getElementById("keySave").addEventListener("click",saveKey);
 document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
 document.getElementById("btnRefresh").addEventListener("click",()=>load());
+document.getElementById("btnSweep").addEventListener("click",()=>triggerSweep());
 document.getElementById("btnEnableAll").addEventListener("click",()=>setAll(false));
 document.getElementById("btnDisableAll").addEventListener("click",()=>setAll(true));
 document.getElementById("searchInput").addEventListener("input",e=>{currentSearch=String(e.target.value||"").trim();render()});

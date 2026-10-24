@@ -70,23 +70,27 @@ func seedAccounts(t *testing.T, remaining ...int64) []*StoredAuth {
 //
 // 这个常量与兄弟插件的 20 不同，是产品判断而不是笔误，
 // 用例把它钉住以防后续有人「统一口径」时误改回去。
+// 2026-10-25 由 100 上调为 200（用户裁定）：每日签到固定发 1500 分，
+// 200 的分界能挡住残血号又不会误杀刚领到签到的号。
 // [参数] t: 测试上下文。
 // [返回] 无。
-func TestMinRoutableCreditsDefaultIs100(t *testing.T) {
-	if defaultMinRoutableCredits != 100 {
-		t.Fatalf("扣子积分红线默认值应为 100，实际 %d", defaultMinRoutableCredits)
+// 最近修改时间：2026-10-25；改动原因：红线默认值调整为 200。
+func TestMinRoutableCreditsDefaultIs200(t *testing.T) {
+	if defaultMinRoutableCredits != 200 {
+		t.Fatalf("扣子积分红线默认值应为 200，实际 %d", defaultMinRoutableCredits)
 	}
-	if got := defaultConfig().MinRoutableCredits; got == nil || *got != 100 {
-		t.Fatalf("默认配置的红线应为 100，实际 %v", got)
+	if got := defaultConfig().MinRoutableCredits; got == nil || *got != 200 {
+		t.Fatalf("默认配置的红线应为 200，实际 %v", got)
 	}
 }
 
 // TestIsCreditsBelowRedlineBoundary 验证红线边界的精确判据。
 //
 // 等于红线视为可用（`<` 而不是 `<=`）：红线是「低于此值不再放行」，
-// 恰好 100 分仍应承载请求。
+// 恰好 200 分仍应承载请求。
 // [参数] t: 测试上下文。
 // [返回] 无。
+// 最近修改时间：2026-10-25；改动原因：边界值随默认红线调整为 200。
 func TestIsCreditsBelowRedlineBoundary(t *testing.T) {
 	dir := t.TempDir()
 	setAccountsDir(dir)
@@ -95,12 +99,12 @@ func TestIsCreditsBelowRedlineBoundary(t *testing.T) {
 	resetCreditCache()
 
 	sa := &StoredAuth{AuthID: "coze-boundary"}
-	storeCreditSummary(sa, &creditSummary{Remain: 100, Total: 1000})
+	storeCreditSummary(sa, &creditSummary{Remain: 200, Total: 1000})
 
 	if isCreditsBelowRedline(sa.AuthID) {
 		t.Fatal("恰好等于红线不应判定为低额")
 	}
-	storeCreditSummary(sa, &creditSummary{Remain: 99, Total: 1000})
+	storeCreditSummary(sa, &creditSummary{Remain: 199, Total: 1000})
 	if !isCreditsBelowRedline(sa.AuthID) {
 		t.Fatal("低于红线必须判定为低额")
 	}
@@ -234,8 +238,8 @@ func TestConfigurePluginParsesRoutableCredits(t *testing.T) {
 	if errConfigure := configurePlugin(payload); errConfigure != nil {
 		t.Fatalf("配置解析失败：%v", errConfigure)
 	}
-	if got := loadedMinRoutableCredits(); got != 100 {
-		t.Fatalf("缺省键应保持默认 100，实际 %d", got)
+	if got := loadedMinRoutableCredits(); got != 200 {
+		t.Fatalf("缺省键应保持默认 200，实际 %d", got)
 	}
 
 	// 显式配置：覆盖默认值。
@@ -257,21 +261,23 @@ func TestConfigurePluginParsesRoutableCredits(t *testing.T) {
 	}
 }
 
-// TestRunCreditTickClaimsDailyCreditBeforeFetch 验证「先领后查」的顺序约束。
+// TestRunCreditSweepClaimsDailyCreditBeforeFetch 验证「先领后查」的顺序约束。
 //
-// 顺序反了不会报错，只会让闸门拿到领取前的余额——账号明明刚领到 1500 分
-// 却被判成 0 分并挡回宿主。断言方式是记录调用序列，而不是只看余额，
+// 顺序反了不会报错，只会让分级拿到领取前的余额——账号明明刚领到 1500 分
+// 却被判成 0 分并写盘禁用，而它下一轮才会解禁，账号凭空下线一小时。
+// 断言方式是记录调用序列，而不是只看余额，
 // 因为倒序时余额最终仍是正确值，只有序列能区分两种实现。
 // [参数] t: 测试上下文。
 // [返回] 无。
-func TestRunCreditTickClaimsDailyCreditBeforeFetch(t *testing.T) {
+// 最近修改时间：2026-10-25；改动原因：改走 creditSweepDeps，语义升级为「误禁用」。
+func TestRunCreditSweepClaimsDailyCreditBeforeFetch(t *testing.T) {
 	t.Cleanup(resetCreditCache)
 	resetCreditCache()
 
 	sa := &StoredAuth{AuthID: "coze-order"}
 	var mu sync.Mutex
 	var order []string
-	deps := creditDeps{
+	deps := creditSweepDeps{
 		list: func() ([]*StoredAuth, error) { return []*StoredAuth{sa}, nil },
 		claim: func(*StoredAuth) bool {
 			mu.Lock()
@@ -290,11 +296,14 @@ func TestRunCreditTickClaimsDailyCreditBeforeFetch(t *testing.T) {
 			order = append(order, "confirm")
 			mu.Unlock()
 		},
-		store: storeCreditSummary,
-		logf:  func(string, string, map[string]any) {},
+		store:   storeCreditSummary,
+		persist: func() error { return nil },
+		publish: func([]*StoredAuth) {},
+		logf:    func(string, string, map[string]any) {},
+		now:     time.Now,
 	}
 
-	runCreditTick(deps)
+	runCreditSweepWith(deps)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -309,47 +318,58 @@ func TestRunCreditTickClaimsDailyCreditBeforeFetch(t *testing.T) {
 	}
 }
 
-// TestRunCreditTickSkipsClaimWhenDisabledAccount 验证禁用账号不参与领取。
+// TestRunCreditSweepScansDisabledAccounts 验证禁用账号仍参与巡检。
 //
-// 禁用号不承载流量，为它领积分纯属浪费上游调用；
-// 而刷新循环本就在投递阶段跳过禁用账号，领取必须共用同一判据。
+// 语义在 2026-10-25 反转：此前禁用号被跳过（省上游调用），
+// 现在禁用号必须照常签到与查余额——积分回升是它们唯一的解禁途径，
+// 跳过等于让它们永远停在「不知道还有没有钱」的状态。
 // [参数] t: 测试上下文。
 // [返回] 无。
-func TestRunCreditTickSkipsClaimWhenDisabledAccount(t *testing.T) {
+// 最近修改时间：2026-10-25；改动原因：需求要求禁用号可自动恢复。
+func TestRunCreditSweepScansDisabledAccounts(t *testing.T) {
 	t.Cleanup(resetCreditCache)
 	resetCreditCache()
 
 	claimed := 0
-	deps := creditDeps{
+	fetched := 0
+	deps := creditSweepDeps{
 		list: func() ([]*StoredAuth, error) {
 			return []*StoredAuth{{AuthID: "coze-off", Disabled: true}}, nil
 		},
 		claim: func(*StoredAuth) bool { claimed++; return true },
 		fetch: func(*StoredAuth) (*creditSummary, error) {
+			fetched++
 			return &creditSummary{Total: 0, Remain: 0}, nil
 		},
-		store: storeCreditSummary,
-		logf:  func(string, string, map[string]any) {},
+		store:   storeCreditSummary,
+		persist: func() error { return nil },
+		publish: func([]*StoredAuth) {},
+		logf:    func(string, string, map[string]any) {},
+		now:     time.Now,
 	}
 
-	runCreditTick(deps)
-	if claimed != 0 {
-		t.Fatalf("禁用账号不应触发领取，实际调用 %d 次", claimed)
+	runCreditSweepWith(deps)
+	if claimed != 1 {
+		t.Fatalf("禁用账号仍应参与签到（解禁途径），实际调用 %d 次", claimed)
+	}
+	if fetched != 1 {
+		t.Fatalf("禁用账号仍应查询积分（解禁途径），实际调用 %d 次", fetched)
 	}
 }
 
-// TestRunCreditTickStoresAndIsolatesFailures 验证刷新循环的写入与失败隔离。
+// TestRunCreditSweepStoresAndIsolatesFailures 验证巡检的写入与失败隔离。
 //
 // 单账号失败不得影响其他账号，也不得写入错误摘要污染闸门。
 // [参数] t: 测试上下文。
 // [返回] 无。
-func TestRunCreditTickStoresAndIsolatesFailures(t *testing.T) {
+// 最近修改时间：2026-10-25；改动原因：改走 creditSweepDeps。
+func TestRunCreditSweepStoresAndIsolatesFailures(t *testing.T) {
 	t.Cleanup(resetCreditCache)
 	resetCreditCache()
 
 	good := &StoredAuth{AuthID: "coze-good"}
 	bad := &StoredAuth{AuthID: "coze-bad"}
-	deps := creditDeps{
+	deps := creditSweepDeps{
 		list: func() ([]*StoredAuth, error) { return []*StoredAuth{good, bad}, nil },
 		fetch: func(sa *StoredAuth) (*creditSummary, error) {
 			if sa.AuthID == "coze-bad" {
@@ -357,12 +377,16 @@ func TestRunCreditTickStoresAndIsolatesFailures(t *testing.T) {
 			}
 			return &creditSummary{Total: 1000, Remain: 777}, nil
 		},
-		store: storeCreditSummary,
-		logf:  func(string, string, map[string]any) {},
+		store:   storeCreditSummary,
+		persist: func() error { return nil },
+		publish: func([]*StoredAuth) {},
+		logf:    func(string, string, map[string]any) {},
+		now:     time.Now,
 	}
 
-	if got := runCreditTick(deps); got != 1 {
-		t.Fatalf("应只有 1 个账号刷新成功，实际 %d", got)
+	report := runCreditSweepWith(deps)
+	if report == nil || report.Refreshed != 1 {
+		t.Fatalf("应只有 1 个账号刷新成功，实际 %+v", report)
 	}
 	if remain, known := cachedCreditRemain("coze-good"); !known || remain != 777 {
 		t.Fatalf("成功账号的积分应写入缓存，实际 remain=%d known=%v", remain, known)
@@ -372,15 +396,16 @@ func TestRunCreditTickStoresAndIsolatesFailures(t *testing.T) {
 	}
 }
 
-// TestRunCreditTickPublishesPoolSnapshot 验证刷新结束时真的发布了闸门快照。
+// TestRunCreditSweepPublishesPoolSnapshot 验证巡检结束时真的发布了闸门快照。
 //
 // 闸门只读快照（见 policy.go），而快照只有这里能更新：少了这一步，
 // 余额变化永远不会反映到闸门，低额账号会一直被当成健康号放行。
-// 断言方式是「刷新前后闸门结论翻转」——只看返回值无法区分
+// 断言方式是「巡检前后闸门结论翻转」——只看返回值无法区分
 // 「积分写进缓存」与「快照也跟着发布」两件事。
 // [参数] t: 测试上下文。
 // [返回] 无。
-func TestRunCreditTickPublishesPoolSnapshot(t *testing.T) {
+// 最近修改时间：2026-10-25；改动原因：改走 creditSweepDeps。
+func TestRunCreditSweepPublishesPoolSnapshot(t *testing.T) {
 	t.Cleanup(resetCreditCache)
 	t.Cleanup(func() { publishCreditPool(nil) })
 	resetCreditCache()
@@ -392,15 +417,18 @@ func TestRunCreditTickPublishesPoolSnapshot(t *testing.T) {
 	// 初始：两个号都充足，闸门不会拦任何号。
 	storeCreditSummary(healthy, &creditSummary{Total: 10000, Remain: 9000})
 	storeCreditSummary(low, &creditSummary{Total: 10000, Remain: 9000})
-	deps := creditDeps{
+	deps := creditSweepDeps{
 		list: func() ([]*StoredAuth, error) { return []*StoredAuth{healthy, low}, nil },
 		fetch: func(sa *StoredAuth) (*creditSummary, error) {
 			return &creditSummary{Total: 10000, Remain: 9000}, nil
 		},
-		store: storeCreditSummary,
-		logf:  func(string, string, map[string]any) {},
+		store:   storeCreditSummary,
+		persist: func() error { return nil },
+		publish: publishCreditPool,
+		logf:    func(string, string, map[string]any) {},
+		now:     time.Now,
 	}
-	runCreditTick(deps)
+	runCreditSweepWith(deps)
 	if errCredits := verifyAccountCredits(low); errCredits != nil {
 		t.Fatalf("两个号都充足时不应拦截：%v", errCredits)
 	}
@@ -412,9 +440,9 @@ func TestRunCreditTickPublishesPoolSnapshot(t *testing.T) {
 		}
 		return &creditSummary{Total: 10000, Remain: 9000}, nil
 	}
-	runCreditTick(deps)
+	runCreditSweepWith(deps)
 	if errCredits := verifyAccountCredits(low); errCredits == nil {
-		t.Fatal("刷新后低额号必须被拦截：快照未随缓存更新")
+		t.Fatal("巡检后低额号必须被拦截：快照未随缓存更新")
 	}
 }
 

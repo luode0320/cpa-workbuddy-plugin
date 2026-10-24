@@ -65,7 +65,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.5.6"
+	version      = "0.6.0"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -134,9 +134,9 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 	// 续期定时器必须在宿主装配完成后启动：init() 早于 cliproxy_plugin_init，
 	// 此刻 hostAPI 仍为 nil，循环会先等宿主就绪再跑首轮（见 renew_loop.go）。
 	startRenewLoop()
-	// 积分刷新循环同理：执行入口的积分闸门只读缓存，
-	// 没有后台刷新时缓存会一直为空，闸门等于不存在。
-	startCreditLoop()
+	// 积分巡检同理：执行入口的积分闸门只读缓存，
+	// 没有后台巡检时缓存会一直为空，闸门等于不存在。
+	startCreditSweep()
 	return 0
 }
 
@@ -176,7 +176,7 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 //export cliproxyPluginShutdown
 func cliproxyPluginShutdown() {
 	stopRenewLoop()
-	stopCreditLoop()
+	stopCreditSweep()
 	hostAPIMu.Lock()
 	hostAPI = nil
 	hostAPIMu.Unlock()
@@ -282,6 +282,8 @@ func cozeRegistration() registration {
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "上游请求超时（秒）。"},
 				{Name: "renew_interval_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "会话续期巡检间隔（秒）。"},
+				{Name: "credit_refresh_interval_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "积分巡检间隔（秒），默认 3600。巡检同时完成当日签到领取、积分落盘与低额分级。"},
+				{Name: "min_routable_credits", Type: pluginapi.ConfigFieldTypeInteger, Description: "积分红线，默认 200 分：剩余积分低于该值的账号不承载新请求，并被自动写盘禁用；积分回到线上后自动解禁。填 0 关闭整个机制。"},
 			},
 		},
 		Capabilities: registrationCapability{
