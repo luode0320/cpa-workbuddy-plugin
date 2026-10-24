@@ -110,6 +110,9 @@ func init() {
 	go watchdogLoop()
 	// 冷却前探活：独立于 watchdog 的 5s 粒度循环，见 cooldown_probe.go。
 	go cooldownProbeLoop()
+	// 禁用探活：每 10 分钟串行遍历被本机制禁用的账号，回放失败模型，成功即解除禁用。
+	// 与 cooldownProbeLoop 分工：后者在冷却到期前探活，本循环只处理已写盘禁用的账号。
+	go failoverProbeLoop()
 	go func() {
 		ticker := time.NewTicker(loginStatesPruneInterval)
 		defer ticker.Stop()
@@ -297,7 +300,7 @@ type registrationCapability struct {
 	UsagePlugin           bool                         `json:"usage_plugin"`
 }
 
-var version = "0.1.23"
+var version = "0.1.24"
 
 func wbRegistration() registration {
 	return registration{
@@ -314,6 +317,10 @@ func wbRegistration() registration {
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每4小时 access-token 自动刷新，防止 Keycloak 离线会话过期（默认开启）。"},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "可选模型列表。每个条目可包含 id、name、alias、context、max_tokens、enabled、reasoning 字段；配置后优先于自动获取的模型列表。"},
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeSession, schedulerModeCredits, schedulerModeOff}, Description: "多账号选择策略：session（按会话轮询，同一会话 1 小时内固定同一账号；默认）／credits（面板指定的固定账号）／off（交给内置逻辑）。"},
+				{Name: "rotation_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用连续使用轮换（默认开启）：单个账号连续承流达到 rotation_serve_minutes 后主动让位，进入 rotation_cooldown_minutes 冷却，后续请求改由其它账号承接。与 priority 不同，该机制在请求入口换号，已绑定会话同样生效；关闭填 false。"},
+				{Name: "rotation_serve_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "单账号连续承流多少分钟后让位（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
+				{Name: "rotation_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "轮换让位后停留在冷却的时长（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
+				{Name: "rotation_idle_reset_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "连续使用的中断阈值（默认 10）：账号距上次使用超过该时长即视为新一轮，重新计时，避免零散流量被误判为持续负载。"},
 				{Name: "client_version", Type: pluginapi.ConfigFieldTypeString, Description: "可选：钉死 User-Agent 里上报给上游的产品版本号。留空时每天自动从官方发布源拉取最新版本；填如 2.174.0 则固定使用该值、不再自动更新。注意 X-IDE-Version 头固定为 0.0.0，不受此项影响。"},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 用量上报地址（默认 http://cpa-manager-plus:18317/v0/management/usage/import；也可用环境变量 USAGE_REPORT_URL）。"},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 管理密钥。优先从环境变量 CPAMP_ADMIN_KEY / USAGE_REPORT_KEY 或密钥文件 /run/secrets/cpamp_admin_key 自动探测。"},
@@ -543,6 +550,10 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 		return okEnvelope(pluginapi.AuthParseResponse{Handled: false})
 	}
 	ad := toAuthDataOpts(sa, nil, parseDisabledFromAuthJSON(req.RawJSON))
+	// 盘上本机制的顶层键必须随这次回传一起交回宿主：宿主吸收文件后，会用我们
+	// 给出的 StorageJSON + Metadata 反向重建物理文档，不回传就抹掉标记，
+	// 10 分钟禁用探活将再也认不出「这个号是本机制禁用的」。
+	carryFailoverKeysIntoMetadata(ad.Metadata, req.RawJSON)
 	ad.ID = ""
 	if fn := strings.TrimSpace(req.FileName); fn != "" {
 		ad.FileName = fn
@@ -619,7 +630,13 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			initID = strings.TrimSpace(curSA.Account.UID)
 		}
 	}
-	if initID != "" && (isAuthModelCoolingDown(initID, upstreamModel) || (curSA != nil && curSA.Account.UID != "" && isAuthModelCoolingDown(curSA.Account.UID, upstreamModel))) {
+	// 轮换让位与失败冷却共用同一个换号入口：账号连续承流满阈值后，
+	// 新请求主动切到其它账号；已绑定的宿主会话同样在这一层被切走。
+	rotationNow := time.Now()
+	if initID != "" && (isAuthModelCoolingDown(initID, upstreamModel) ||
+		(curSA != nil && curSA.Account.UID != "" && isAuthModelCoolingDown(curSA.Account.UID, upstreamModel)) ||
+		rotationCoolingDown(initID, rotationNow) ||
+		(curSA != nil && curSA.Account.UID != "" && rotationCoolingDown(curSA.Account.UID, rotationNow))) {
 		if nextID, nextSA, hasNext := pickNextAuthForModel(initID, upstreamModel); hasNext && nextSA != nil {
 			curSA = nextSA
 			curBody = prepareUpstreamBody(req.Payload, req.OriginalRequest, curSA, upstreamModel)
@@ -690,6 +707,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "", reasoningEffort, 0, accountLabel, sessionKey)
 	invalidateAccountCredits(usedAuthID, authUID)
 	resetAccountFailover(usedAuthID)
+	// 连续使用轮换：只在真实成功后推进计时；达到 serve 阈值时让位，
+	// 使长时间承流的账号主动退出，把后续请求交给其它账号。
+	noteRotationUsage(usedAuthID)
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 }
 
@@ -750,6 +770,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), false, 0, "", reasoningEffort, collector.ttftNS(started), accountLabel, sessionKey)
 		invalidateAccountCredits(req.AuthID, authUID)
 		resetAccountFailover(req.AuthID)
+		noteRotationUsage(req.AuthID)
 		return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
 	}
 

@@ -344,6 +344,9 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), false, 0, "", reasoningEffort, collector.ttftNS(started), curAccountLabel, sessionKey)
 		invalidateAccountCredits(curAuthID, curAuthUID)
 		resetAccountFailover(curAuthID)
+		// 异步流式是生产主路径，轮换计时必须在这里推进，否则长流量的账号
+		// 永远不会被判定为「连续使用满 N 分钟」。
+		noteRotationUsage(curAuthID)
 		// 一次真实成功即证明该模型已恢复，清掉该模型上残留的冷却，
 		// 避免其它账号的旧记录让已恢复的模型继续被跳过。
 		resetModelBlockedState(upstreamModel)
@@ -375,13 +378,19 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 	var lastStatus int
 	var lastErr error
 
-	// 前置冷却拦截：如果初始账号处于冷却中，直接换号到健康候选
+	// 前置冷却拦截：如果初始账号处于冷却中，直接换号到健康候选。
+	// 轮换让位走同一入口——已满承流阈值的账号在此被换走，否则异步长流
+	// 会继续压在同一个号上，轮换对生产主路径失效。
 	if curSA != nil {
 		currentID := strings.TrimSpace(curSA.Auth.AccessToken)
 		if currentID == "" {
 			currentID = strings.TrimSpace(curSA.Account.UID)
 		}
-		if isAuthModelCoolingDown(currentID, model) || (curSA.Account.UID != "" && isAuthModelCoolingDown(curSA.Account.UID, model)) {
+		rotationNow := time.Now()
+		if isAuthModelCoolingDown(currentID, model) ||
+			(curSA.Account.UID != "" && isAuthModelCoolingDown(curSA.Account.UID, model)) ||
+			rotationCoolingDown(currentID, rotationNow) ||
+			(curSA.Account.UID != "" && rotationCoolingDown(curSA.Account.UID, rotationNow)) {
 			if _, nextSA, hasNext := pickNextAuthForModel(currentID, model); hasNext && nextSA != nil {
 				curSA = nextSA
 			}

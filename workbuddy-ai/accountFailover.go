@@ -271,6 +271,21 @@ func recordSSEErrorFailureForModel(authID, model, body string) bool {
 // [返回] true 表示已写入；scope 为 none 时返回 false。
 // 最近修改时间：2026-10-18 23:40:00；改动原因：抽出唯一写入落点，避免多处复制阶梯逻辑。
 func recordFailureScoped(authID, model string, scope failureScope) bool {
+	if !recordCooldownScoped(authID, model, scope) {
+		return false
+	}
+	disableAccountForFailover(authID, model)
+	return true
+}
+
+// recordCooldownScoped 按给定维度写入内存阶梯冷却，是冷却侧的唯一写入落点。
+// 不碰盘上禁用状态——写盘由 recordFailureScoped 在锁外单独发起，避免持锁做 IO。
+//
+// [参数] authID：账号唯一标识；model：已归一化的上游模型名，可为空；
+// scope：记账维度。
+// [返回] true 表示已写入；scope 为 none 时返回 false。
+// 最近修改时间：2026-10-24；改动原因：拆分出纯内存写入，供失败双写复用。
+func recordCooldownScoped(authID, model string, scope failureScope) bool {
 	if scope == failureScopeNone {
 		return false
 	}

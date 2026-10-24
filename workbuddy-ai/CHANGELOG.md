@@ -1,5 +1,21 @@
 # WorkBuddy AI Plugin Changelog
 
+## 0.1.24
+
+### Feature - 对齐国内版：连续使用轮换、失败即写盘禁用 + 探活解禁
+
+- 背景: 国际版此前只有「冷却」一层，缺少国内版已上线的两项能力：单账号长期承流无让位机制、账号级失败只冷却不落盘（宿主重启后失效）。本次按国内版语义补齐，积分分级体系按产品裁定不同步。
+- 连续使用轮换（新增 `usage_rotation.go`）: 单个账号**连续**承流满 `rotation_serve_minutes`（默认 60）后主动让位，进入 `rotation_cooldown_minutes`（默认 60）冷却，后续请求改由其它账号承接。计时取「连续使用」——距上次使用超过 `rotation_idle_reset_minutes`（默认 10）即视为新一轮。因换号发生在插件入口而非依赖宿主 selector，**已绑定会话同样生效**。防抽干：冷却前若除本号外池内已全部冷却，先按冷却结束时间放开一半（向上取整）。
+- 轮换接线覆盖: 调度候选过滤、同请求换号候选（`pickNextAuthForModel`）、执行入口前置拦截（非流式与流式各一处）、成功路径打点（非流式 / 同步流式 / 异步流式三条）。
+- 失败即写盘禁用（新增 `failover_disable.go`）: 账号级失败除写内存冷却阶梯外，同时把 `disabled:true` + `failover_disable` 标记写入物理 auth 文档；每 10 分钟串行遍历被本机制禁用的账号，回放**失败当时的模型**探活，成功即解禁。只认自己写的标记，manual / exhausted 一律不接管。
+- 顺带修复三个既有缺口（迁移测试暴露）:
+  1. **后台刷新会静默解封禁用号**：原 `toAuthData(sa)` 固定回 `disabled:false`，禁用中的号被一次 token 刷新绕开探活直接解封。改为沿用盘上禁用状态并搬运标记。
+  2. **7 个白名单重建调用点会抹掉 failover 标记**：`buildAuthFileJSON` 不搬运标记会让探活循环认不出被禁用的号（静默遗忘）。已补齐 `credits_handler`、`lifecycle`（4 处）、`management`。
+  3. **失败记账未触发写盘**：`recordFailureScoped` 原先只写内存冷却，现拆出 `recordCooldownScoped` 作为纯内存写入，外层补上写盘调用。
+- 配置项（4 个，全部可在面板配置）: `rotation_enabled`（默认 true）、`rotation_serve_minutes`（60）、`rotation_cooldown_minutes`（60）、`rotation_idle_reset_minutes`（10）。`serve` 或 `cooldown` 填 0 等同关闭。
+- 测试护栏: 新增 `failover_disable_test.go`（含「失败记账必须触发写盘」接线用例，已做变异验证确认能捕获断线）与轮换相关用例。
+- 涉及文件: 新增 `usage_rotation.go`、`failover_disable.go`、`failover_disable_test.go`；修改 `main.go`、`scheduler.go`、`stream.go`、`failover_retry.go`、`accountFailover.go`、`lifecycle.go`、`oauth.go`、`management.go`、`credits_handler.go`、`usage_config.go`。
+
 ## 0.1.23
 
 ### Fix - 客户端标识对齐真实客户端：UA 改为 `WorkBuddy/<版本>`、按日同步版本号、补 X-IDE-Version

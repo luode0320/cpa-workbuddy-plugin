@@ -36,7 +36,9 @@ func handleImportAuth(req pluginapi.ManagementRequest) map[string]any {
 		return map[string]any{"success": false, "error": err.Error()}
 	}
 	sa.Auth.Domain = "www.workbuddy.ai"
-	fileJSON, err := buildAuthFileJSON(sa, false, displayNote(sa, nil, false), nil)
+	// 导入的凭据可能带着本机制标记（例如从本插件导出的禁用号再导回），
+	// 白名单重建不搬运就会把 failover_disable 抹掉，探活循环认不出该账号。
+	fileJSON, err := buildAuthFileJSON(sa, false, displayNote(sa, nil, false), putFailoverMarkersIntoExtra(nil, raw))
 	if err != nil {
 		return map[string]any{"success": false, "error": err.Error()}
 	}

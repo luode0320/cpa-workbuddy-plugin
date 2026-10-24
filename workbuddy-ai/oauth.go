@@ -220,8 +220,14 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	sa.Auth.ExpiresAt = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second).Unix()
 	sa.Auth.Domain = "www.workbuddy.ai"
 
+	// 刷新回传必须沿用盘上原有的禁用状态与本机制标记。固定回 disabled:false
+	// 会让禁用中的号被一次后台 token 刷新静默解封，完全绕开 10 分钟探活。
+	ad := toAuthDataOpts(sa, nil, parseDisabledFromAuthJSON(req.StorageJSON))
+	carryFailoverKeysIntoMetadata(ad.Metadata, req.StorageJSON)
+	ad.FileName = "" // 由宿主按原路径回填，避免改名产生重复条目
+	ad.ID = ""
 	return okEnvelope(pluginapi.AuthRefreshResponse{
-		Auth: toAuthData(sa),
+		Auth: ad,
 	})
 }
 

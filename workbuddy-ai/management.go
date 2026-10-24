@@ -206,7 +206,10 @@ func handleLoginPollRoute(req pluginapi.ManagementRequest) map[string]any {
 				}
 				if authDir != "" {
 					targetPath := filepath.Join(authDir, fileName)
-					rawJSON, _ := buildAuthFileJSON(sa, false, "WorkBuddy AI", nil)
+					// 新登录取到的账号没有历史标记，搬运是 no-op；保留这一行是为了
+					// 让「所有白名单重建点都显式搬运」这条不变量成立——少一个点，
+					// 将来该路径一旦改为「登录后回写既有文档」就会静默抹掉标记。
+					rawJSON, _ := buildAuthFileJSON(sa, false, "WorkBuddy AI", putFailoverMarkersIntoExtra(nil, nil))
 					_ = writeAuthFileDirect(targetPath, rawJSON)
 				}
 			}

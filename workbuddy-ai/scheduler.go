@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -118,9 +119,16 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	// 否则一次限流就会把该账号从其它模型上一并摘掉。调度请求的 Model 是
 	// 客户端模型名，需与记账侧一样归一化后再比对。
 	upstreamModel := resolveUpstreamModel(req.Model, nil)
+	rotationNow := time.Now()
 	available := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
 		if isTestFailed(c.ID) || isAuthModelCoolingDown(c.ID, upstreamModel) {
+			continue
+		}
+		// 轮换冷却：连续使用满阈值的号主动让位，让新会话落到其它账号。
+		// 与 isAuthModelCoolingDown 并列而非合并，因为两者生命周期不同——
+		// 失败冷却会被一次成功清零，轮换冷却必须稳定持续到窗口结束。
+		if rotationCoolingDown(c.ID, rotationNow) {
 			continue
 		}
 		remain, lowOrExhausted := cachedCreditsScore(c.ID)

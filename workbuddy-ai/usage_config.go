@@ -79,6 +79,13 @@ func configure(raw []byte) {
 	// never silently lifts a `retry_on_4xx: 0` kill switch.
 	nextRetryOn4xx := retryOn4xxDefault
 	retryOn4xxSeen := false
+
+	// rotation_*: 连续使用轮换。四个键里任何一个缺失都回落到默认值，
+	// 因为存量配置里没有这些键，不能因此把轮换意外打开。
+	nextRotationEnabled := defaultRotationEnabled
+	nextRotationServeMinutes := defaultRotationServeMinutes
+	nextRotationCooldownMinutes := defaultRotationCooldownMinutes
+	nextRotationIdleResetMinutes := defaultRotationIdleResetMinutes
 	// client_version: 人工钉死上报给上游的客户端版本号。留空表示交给每日
 	// 自动更新；填合法三段版本号则固定使用该值（见 client_version.go）。
 	nextClientVersion := ""
@@ -145,6 +152,32 @@ func configure(raw []byte) {
 						nextRetryOn4xx = clampRetryOn4xx(n)
 					}
 				}
+				if strings.HasPrefix(line, "rotation_enabled:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "rotation_enabled:"))
+					v = strings.Trim(v, "\"'")
+					nextRotationEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "rotation_serve_minutes:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "rotation_serve_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextRotationServeMinutes = n
+					}
+				}
+				if strings.HasPrefix(line, "rotation_cooldown_minutes:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "rotation_cooldown_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextRotationCooldownMinutes = n
+					}
+				}
+				if strings.HasPrefix(line, "rotation_idle_reset_minutes:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "rotation_idle_reset_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextRotationIdleResetMinutes = n
+					}
+				}
 				if strings.HasPrefix(line, "client_version:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "client_version:"))
 					nextClientVersion = clientVersionFromConfig(strings.Trim(v, "\"'"))
@@ -206,6 +239,18 @@ func configure(raw []byte) {
 	managementAPIKeyMu.Unlock()
 
 	resolveUsageReport(cfgURL, cfgKey)
+
+	// 轮换配置写回。serve/cooldown 为 0 时 loadedRotationConfig 会把 enabled
+	// 降级为 false，因此这里不需要额外校验，避免两处判断分叉。
+	rotationEnabledMu.Lock()
+	rotationEnabled = nextRotationEnabled
+	rotationEnabledMu.Unlock()
+
+	rotationConfigMu.Lock()
+	rotationServeMinutes = nextRotationServeMinutes
+	rotationCooldownMinutes = nextRotationCooldownMinutes
+	rotationIdleResetMinutes = nextRotationIdleResetMinutes
+	rotationConfigMu.Unlock()
 
 	// 客户端版本：先应用人工钉死值，再启动每日自动检查（钉死时自动更新会让位）。
 	setPinnedClientVersion(nextClientVersion)
