@@ -167,10 +167,16 @@ func watchdogLoop() {
 	// Seed the in-memory success/failure counters from the persisted json so
 	// the panel reads restart-recovered values (memory-first; see counter.go).
 	loadCountersFromDisk()
+	// 积分快照同理：把盘上快照回灌进 accountCache，使面板首屏不必等首轮
+	// 上游刷新就能显示数字（见 credits_persist.go）。
+	loadCreditsFromDisk()
 	// One-time sweep: strip the dead legacy top-level `anomaly` key from
 	// physical auth files (the anomaly pool was removed on 2026-09-08).
 	purgeLegacyAnomalyFlags()
 	runWatchdogTick()
+	// 首轮刷新是异步入队的（runWatchdogTick 只排队不阻塞），这里不能立刻 flush；
+	// 首个循环体在 10 分钟后才落盘。为避免「重启后一小时才攒到盘上」，让首轮
+	// 刷新完成后的那次 flush 由 refresh runner 收尾时触发（见 doFetchOne）。
 	for {
 		timer := time.NewTimer(watchdogIntervalDefault)
 		select {
@@ -191,6 +197,9 @@ func watchdogLoop() {
 		// in-memory value stays the source of truth for the panel regardless
 		// of this cadence.
 		flushCounters()
+		// 积分快照与计数器同节奏落盘：同为 best-effort 备份，内存值才是面板
+		// 的即时来源，崩一次最多丢一个 tick 的快照。
+		flushCreditsSnapshots()
 		runWatchdogTick()
 	}
 }

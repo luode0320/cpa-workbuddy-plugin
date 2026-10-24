@@ -253,6 +253,12 @@ func (r *refreshRunner) drainBatch(gen int) {
 
 	wg.Wait()
 
+	// 一轮刷新结束后立刻落盘积分快照：watchdog 的 flush 要等下一个 tick
+	// （默认 10 分钟），而首轮刷新恰恰发生在启动后，等下去会让「刚重启就
+	// 取到的新积分」在盘上缺席很久。这里多一次写盘的代价可接受——每账号
+	// 一份文档，且只在快照真的变化时才会写。
+	flushCreditsSnapshots()
+
 	// Mark batch finished if this generation is still current.
 	r.mu.Lock()
 	if r.generation == gen {

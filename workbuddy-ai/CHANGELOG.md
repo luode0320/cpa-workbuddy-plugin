@@ -1,5 +1,18 @@
 # WorkBuddy AI Plugin Changelog
 
+## 0.1.26
+
+### Feature - 积分快照持久化（照搬计数器的内存优先 + 盘上备份模型）
+
+- 背景: 积分原本只活在 `accountCache`（纯内存 `sync.Map`），容器重启或插件热重载后全丢，面板首屏积分列退回「加载中…」，要等一轮上游刷新才恢复。同插件的成功/失败计数早已有 `success_count` / `failed_count` 落盘 + 启动回读，积分缺这一层。
+- 落盘: 新增顶层键 `credits_snapshot`，由 `foldCreditsSnapshotIntoDoc` 并入物理 auth JSON，**保留其余所有顶层键**（禁用标记、计数器、备注等）。走 `persistAuthDirect` 而非 `host.auth.save`——后者按宿主类型重建记录，会丢掉它不认识的键。
+- 启动回灌: `loadCreditsFromDisk` 在 watchdog 启动时紧跟 `loadCountersFromDisk` 执行，把盘上快照写回 `accountCache`，使面板首屏立刻有数字。`fetched` 取当前时间，避免刚回灌就被 45s TTL 判为过期。
+- 落盘节奏: watchdog tick（默认 10 分钟）调用 `flushCreditsSnapshots`；另在 refresh runner 每轮刷新收尾时补一次，让「刚重启就取到的新积分」不必等满一个 tick 才进盘。
+- 面板兜底: `/accounts` 在 `fetchCredits=false` 且缓存缺失时直接读盘上快照并顺手回灌缓存，覆盖「刚重启」「缓存被 4×TTL GC 清掉」两种窗口。
+- 幂等与新鲜度契约: 积分是**快照**不是累加量，故用 `serial` / `persistedSerial` 对齐而非增量折叠。`ensureCreditsPersistLoaded` 在内存已有更新快照时**保留内存值**，绝不让盘上旧值覆盖实时数据；`seedCreditsCacheFromDisk` 同样只填空缓存、不覆盖已有条目。
+- 测试: 新增 `credits_persist_test.go` 共 12 例——解析四形态（缺失/坏 JSON/空账本/零余额有用量）、落盘保留既有键、坏 JSON 容忍、nil 快照不写、serial 递增、回灌不覆盖新值、幂等、读取优先级、round-trip 保留积分包。另加 `TestCreditsPersistWiringIsPresent` 静态审计（扫生产源码、排除定义行与注释），守护五个接缝不被静默删除。变异验证：盘上值覆盖内存、覆盖已有缓存、删掉打标调用三处回退分别被对应用例捕获。
+- 涉及文件: 新增 `credits_persist.go`、`credits_persist_test.go`；修改 `cache.go`、`watchdog.go`、`refresh_runner.go`、`panel.go`、`main.go`。
+
 ## 0.1.25
 
 ### Fix - 移除「耗尽」标签与按额度排除逻辑（零积分同样可用）

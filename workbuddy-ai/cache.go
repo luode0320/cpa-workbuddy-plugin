@@ -72,6 +72,8 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 		wg      sync.WaitGroup
 		errMu   sync.Mutex
 		errList []string
+		// creditsFetched 区分「本轮真的取到新积分」与「沿用上一次缓存」。
+		creditsFetched bool
 	)
 	addErr := func(msg string) {
 		errMu.Lock()
@@ -92,6 +94,7 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 		defer wg.Done()
 		if r, err := fetchUserResource(sa); err == nil {
 			cr = r
+			creditsFetched = true
 		} else {
 			addErr("credits: " + err.Error())
 		}
@@ -113,6 +116,11 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 		cr.FetchedAt = now.UTC().Format(time.RFC3339)
 	}
 	accountCache.Store(authID, &accountCacheEntry{checkin: ci, credits: cr, plan: plan, fetched: now})
+	// 只有真正从上游取到的新快照才标记待落盘；沿用旧值（本次失败）时
+	// 盘上已是最接近的数据，重复写盘只会制造无意义的 fsnotify 事件。
+	if creditsFetched {
+		tagCreditsPersist(sa.Account.UID, cr)
+	}
 	pruneAccountCacheSoftCap(accountCacheSoftCap)
 	return plan, ci, cr, errList
 }

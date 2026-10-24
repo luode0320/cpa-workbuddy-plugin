@@ -152,6 +152,16 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 						acct.Registered = resolveRegisteredState(f.ID, sa, e.plan)
 					}
 				}
+				// 缓存缺失时用盘上快照兜底：进程刚重启、watchdog 还没跑完
+				// 首轮回灌，或缓存条目已被 4×TTL 的 GC 清掉时，面板首屏
+				// 也不会退回「加载中…」。顺手回灌缓存，避免每次渲染都重读盘。
+				if acct.Credits == nil && phys != nil {
+					if cr := parseCreditsSnapshotFromAuthJSON(phys.JSON); cr != nil {
+						acct.Credits = cr
+						acct.TrialClaimed = hasTrialPack(cr)
+						accountCache.Store(f.ID, &accountCacheEntry{credits: cr, fetched: time.Now()})
+					}
+				}
 			}
 			out[i] = acct
 		}(i, f)
