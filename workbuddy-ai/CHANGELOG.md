@@ -1,5 +1,17 @@
 # WorkBuddy AI Plugin Changelog
 
+## 0.1.29
+
+### Refactor - 移除失败冷却前置探活，与国际版对齐
+
+- 背景: 0.1.24 从国内版移植「失败即写盘禁用 + 探活解禁」时，一并带上了国内版已于 2026-10-22 删除的冷却探活（`cooldown_probe*.go`），导致国际版同时跑两条恢复通道——内存冷却到期前 20 秒回放一次（1 秒 tick），盘上禁用账号每 10 分钟回放一次。两条都对同一账号发请求、判据不同，且 `failover_disable.go` 的头注释早已写明该机制已移除，注释与实现不一致。
+- 删除: `cooldown_probe.go`、`cooldown_probe_test.go`、`cooldown_probe_cycle_test.go`；`main.go` 的 `init()` 不再启动 `cooldownProbeLoop`。恢复通道收敛为唯一一条：10 分钟禁用探活，只回放失败模型，探通才解禁。
+- 补齐移植时漏掉的路由判据: `isAccountCoolingDown` 增加「本进程已写盘禁用」这层判据。国内版有、国际版缺失，后果是内存阶梯封顶 10 分钟到期后，插件会把一个盘上仍 `disabled:true` 的账号判为可用——直到禁用探活恢复它为止，这期间路由判据与宿主实际状态不一致。
+- 注释对齐: `accountFailover.go`、`failure_class.go`、`model_circuit.go`、`stream.go`、`main.go` 中指向「冷却探活到期前回放」的说明统一改为禁用探活口径。
+- 测试: `model_circuit_test.go` 三个冷却探活用例改写为禁用探活版（`TestModelBlockedDualWritesCooldownAndDisable` / `TestProbeSuccessClearsBothCooldownAndDisable` / `TestProbeFailureKeepsAccountDisabled`），并补回国内版已有的 `TestAccountLevelFailureDualWritesCooldownAndDisable`、`TestRepeatedFailuresDoNotRewriteDisk`。
+- 变异验证: 临时移除 `isAccountCoolingDown` 中新增的写盘禁用判据 → 相关用例立即 FAIL；还原后全绿，确认该判据确实被测试覆盖。
+- 涉及文件: 删除 `cooldown_probe.go` / `cooldown_probe_test.go` / `cooldown_probe_cycle_test.go`；修改 `accountFailover.go`、`failure_class.go`、`main.go`、`model_circuit.go`、`model_circuit_test.go`、`stream.go`、`VERSION`。
+
 ## 0.1.28
 
 ### Feature - 面板不再自动刷新，默认只展示持久化积分

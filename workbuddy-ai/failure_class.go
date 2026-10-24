@@ -50,12 +50,13 @@ func (s failureScope) String() string {
 //
 // 11128「请求被拦截」按账号×模型记账：该错误在单个账号上是请求被拦，
 // 但同一模型跨账号等量出现时就是上游对该模型的拦截，换号同样失败。
-// 两种成因的处置完全一致——不再把该账号的这个模型放上路由，由冷却探活
-// 在到期前回放验证。因此这里不需要区分「账号级」还是「模型级」成因。
+// 两种成因的处置完全一致——冷却只给命中的那个模型记账，禁用则摘掉整个账号
+// （双写，见 accountFailover.recordFailureScoped），恢复统一由 10 分钟禁用探活
+// 裁决。因此这里不需要区分「账号级」还是「模型级」成因。
 //
 // [参数] status：上游 HTTP 状态码，0 表示传输层失败；body：上游响应正文或错误文本。
 // [返回] 该失败应记入的冷却维度。
-// 最近修改时间：2026-10-20；改动原因：11128 由不记账改为账号×模型冷却。
+// 最近修改时间：2026-10-21；改动原因：冷却探活移除，改为冷却+禁用双写口径。
 func classifyUpstreamFailure(status int, body string) failureScope {
 	// 1. 硬额度与凭据/端点问题属账号级：换模型也不可用。
 	//    硬额度优先，避免 429 + 额度标记被误判成限流。
@@ -66,9 +67,10 @@ func classifyUpstreamFailure(status int, body string) failureScope {
 	if status == 0 || status >= 500 {
 		return failureScopeAccount
 	}
-	// 3. 请求被拦截（11128）按账号×模型冷却：冷却探活会用同一模型回放，
-	//    验证该账号在这模型上是否真的恢复。先于限流文案判定，因为 11128
-	//    的 displayMsg 里可能带「请重新发送」这类无关文案。
+	// 3. 请求被拦截（11128）按账号×模型冷却：模型维度只记这一个模型，
+	//    禁用探活会把它排在回放序列最前，验证该账号在这模型上是否真的恢复。
+	//    先于限流文案判定，因为 11128 的 displayMsg 里可能带「请重新发送」
+	//    这类无关文案。
 	if isModelBlockedError(status, body) {
 		return failureScopeAuthModel
 	}

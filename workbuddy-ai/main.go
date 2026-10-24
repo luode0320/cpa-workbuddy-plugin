@@ -108,10 +108,8 @@ const loginStatesPruneInterval = time.Minute
 
 func init() {
 	go watchdogLoop()
-	// 冷却前探活：独立于 watchdog 的 5s 粒度循环，见 cooldown_probe.go。
-	go cooldownProbeLoop()
 	// 禁用探活：每 10 分钟串行遍历被本机制禁用的账号，回放失败模型，成功即解除禁用。
-	// 与 cooldownProbeLoop 分工：后者在冷却到期前探活，本循环只处理已写盘禁用的账号。
+	// 冷却本身不再探测（cooldown_probe.go 已移除），见 failover_disable.go。
 	go failoverProbeLoop()
 	go func() {
 		ticker := time.NewTicker(loginStatesPruneInterval)
@@ -300,7 +298,7 @@ type registrationCapability struct {
 	UsagePlugin           bool                         `json:"usage_plugin"`
 }
 
-var version = "0.1.28"
+var version = "0.1.29"
 
 func wbRegistration() registration {
 	return registration{
@@ -665,9 +663,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			resetModelBlockedState(upstreamModel)
 			break
 		}
-		// 11128：把命中的账号×模型写入冷却，并立即停止本轮换号。
+		// 11128：把命中的账号×模型写入冷却并禁用账号，立即停止本轮换号。
 		// 上游拦截的是这个组合，其余账号大概率同样命中，继续换号只会把
-		// 预算耗在一连串必败的往返上；冷却探活会在到期前用同一模型回放验证。
+		// 预算耗在一连串必败的往返上；恢复改由 10 分钟禁用探活裁决。
 		statusCode := parseUpstreamStatusFromErr(completionErr)
 		if isModelBlockedError(statusCode, completionErr.Error()) {
 			currentID := strings.TrimSpace(curSA.Auth.AccessToken)

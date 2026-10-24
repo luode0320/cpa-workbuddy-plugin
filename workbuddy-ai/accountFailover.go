@@ -61,7 +61,7 @@ var (
 type authFailoverState struct {
 	count         int       // consecutive failures; reset to 0 on success
 	cooldownUntil time.Time // zero means not cooling down
-	// lastModel 记录最近一次触发冷却的上游模型（已归一化），供冷却前探活回放。
+	// lastModel 记录最近一次触发冷却的上游模型（已归一化），供禁用探活回放。
 	lastModel string
 	// modelStates 保存账号×模型级冷却，键为归一化后的上游模型名。
 	modelStates map[string]*modelFailoverState
@@ -374,6 +374,11 @@ func isAccountCoolingDown(authID string) bool {
 	if authID == "" {
 		return false
 	}
+	// 双写判据第一层：本进程已把该号写盘禁用。禁用探活把它恢复前，
+	// 无论阶梯是否已到期，都不应再承载流量——冷却到期不代表故障消除。
+	if isFailoverDisabledLocal(authID) {
+		return true
+	}
 	failoverMu.Lock()
 	defer failoverMu.Unlock()
 	now := time.Now()
@@ -459,7 +464,7 @@ func resetAccountFailover(authID string) {
 }
 
 // resetAuthModelFailover 只清除指定账号×模型的冷却，保留账号级状态。
-// 供冷却前探活确认「该模型已恢复」时调用，避免把其它模型的冷却一起抹掉。
+// 供探活确认「该模型已恢复」时调用，避免把其它模型的冷却一起抹掉。
 // [参数] authID：账号唯一标识；model：已归一化的上游模型名。
 // 最近修改时间：2026-10-18 23:40:00；改动原因：新增，供探活精确清除模型维度。
 func resetAuthModelFailover(authID, model string) {
@@ -555,7 +560,7 @@ func authModelFailoverSnapshot(authID, model string) (count int, cooldownUntil t
 	return ms.count, ms.cooldownUntil, true
 }
 
-// lastFailoverModel 返回账号最近一次触发冷却的模型名，供冷却前探活回放。
+// lastFailoverModel 返回账号最近一次触发冷却的模型名，供诊断与禁用探活回放。
 // [参数] authID：账号唯一标识。
 // [返回] 归一化后的上游模型名；无记录时为空串。
 // 最近修改时间：2026-10-18 23:40:00；改动原因：新增，供周期 3 探活读取失败模型。

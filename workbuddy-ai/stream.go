@@ -164,10 +164,10 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			//   Business 400 is request-shaped and would fail identically
 			//   on every account, so we propagate it immediately.
 			//
-			// 11128「请求被拦截」：写入账号×模型冷却后直接返回。
+			// 11128「请求被拦截」：写入账号×模型冷却并禁用账号后直接返回。
 			// 该状态码是 400，本就不会进入换号分支（isAccountLevel4xx 不含
-			// 400），因此这里只需负责记账——冷却探活会在到期前用同一模型
-			// 回放验证，路由层则通过 isAuthModelCoolingDown 跳过该组合。
+			// 400），因此这里只需负责记账——恢复由 10 分钟禁用探活裁决，
+			// 路由层则通过 isAuthModelCoolingDown 跳过该组合。
 			if isModelBlockedError(statusCode, errPayload) {
 				noteModelBlockedHit(curAuthID, upstreamModel)
 				streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(errPayload, 200)))
@@ -407,8 +407,8 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 		lastStatus = statusCode
 		lastErr = errOnce
 
-		// 11128：写入账号×模型冷却后直接返回。冷却探活会在到期前用同一
-		// 模型回放验证，路由层则跳过冷却中的组合。
+		// 11128：写入账号×模型冷却后直接返回。禁用探活会把这个模型排在
+		// 回放序列最前，探通才解除禁用，路由层则跳过冷却中的组合。
 		if isModelBlockedError(statusCode, errOnce.Error()) {
 			if curSA != nil {
 				currentID := strings.TrimSpace(curSA.Auth.AccessToken)
