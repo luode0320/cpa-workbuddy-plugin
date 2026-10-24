@@ -343,6 +343,13 @@ func handleDeleteAuth(req pluginapi.ManagementRequest) map[string]any {
 	return map[string]any{"error": "account not found", "auth_index": authIndex}
 }
 
+// handleCreditsQuery 处理面板的单卡「刷新」：按 auth_index 直连上游取最新积分。
+//
+// 面板已移除自动刷新，这是仅剩的手动取数入口，因此取到新积分后必须当场落盘
+// （tagCreditsPersist + flushCreditsSnapshots），否则下次打开面板仍显示旧快照。
+// [参数] req：管理请求，Query 可带 auth_index（缺省表示全部账号）。
+// [返回] {accounts:[...]}；单账号失败时该行带 error。
+// 最近修改时间：2026-10-24；改动原因：手动刷新成为唯一取数入口，取到即落盘
 func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 	authIndex := ""
 	if vals := req.Query["auth_index"]; len(vals) > 0 {

@@ -132,8 +132,7 @@ func runAutoCheckin() {
 // 拆出以便并发扇出而不重复逻辑。
 // [参数] f：host.auth.list 条目；doCheckin：签到开关快照。
 // [返回] 无（结果写入 accountCache，供面板与巡检读取）。
-// 最近修改时间：2026-10-09；改动原因：国际版签到链路新建，删除国内版
-// 的 Global 跳过分支。
+// 最近修改时间：2026-10-24；改动原因：签到新增积分同步落盘（面板已移除自动刷新）
 func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 	// 仅在需要签到时读取账号快照；纯生命周期路径交给
 	// reconcileOneAccount 内部的 hostAuthGetBundle 单次读取。
