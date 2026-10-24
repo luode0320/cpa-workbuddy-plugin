@@ -41,6 +41,7 @@ type wbAccount struct {
 // resolveRegisteredState 判定账号是否已完成注册。已有 plan（trial/free/付费）的账号
 // 必然走过注册流程，直接判定为已注册、不产生额外上游调用；仅对无 plan 的疑似未注册
 // 账号查询上游 areaInfoComplete，并把结果缓存到 accountCache 避免每轮重查。
+// 这是「显式刷新」口径：会打上游。面板默认渲染路径必须用 cachedRegisteredState。
 // [参数] authID 账号缓存键；sa 账号凭证；plan 当前套餐（空表示无套餐）
 // [返回] true 表示已完成注册
 // 最近修改时间：2026-10-15 18:20:00；改动原因：新增补注册链路的面板状态透出
@@ -67,6 +68,47 @@ func resolveRegisteredState(authID string, sa *storedAuth, plan string) bool {
 	return registered
 }
 
+// cachedRegisteredState 是面板默认渲染用的纯缓存口径。
+//
+// 面板不再自动刷新，渲染路径若还对每个无 plan 账号打一次上游，就与「打开面板
+// 不打上游」直接冲突——账号越多代价越大。未探测过的账号按未注册处理（宁可不显示
+// 「未注册」徽标，也不在渲染时发起请求）；真实探测交回显式刷新与「补注册」按钮。
+// [参数] authID 账号缓存键；plan 当前套餐（非空即视为已注册）
+// [返回] true 表示已确认注册完成
+// 最近修改时间：2026-10-24；改动原因：面板移除自动刷新后，渲染路径不得触发上游
+func cachedRegisteredState(authID, plan string) bool {
+	if strings.TrimSpace(plan) != "" {
+		return true
+	}
+	if v, ok := accountCache.Load(authID); ok {
+		if e, ok2 := v.(*accountCacheEntry); ok2 && e.registered != nil {
+			return *e.registered
+		}
+	}
+	return false
+}
+
+// pruneAccountCacheForLive 回收已消失账号的缓存残留。
+//
+// 只按「账号是否仍在宿主列表」判据，不按 fetched 年龄过期。历史实现还会删
+// 「fetched 超过 4×TTL（3 分钟）」的条目，那是在面板每次打开都自动全量刷新、
+// 随时能补回的前提下才成立的假设；自动刷新移除后能补数据的只剩 watchdog 的
+// 10 分钟巡检，按 3 分钟过期会让 plan / 签到态在两次巡检之间被越刷越空。
+// [参数] live：仍然存在的 auth.ID 集合。
+// [返回] 无。
+// 最近修改时间：2026-10-24；改动原因：面板移除自动刷新后，过期 GC 会丢活账号状态
+func pruneAccountCacheForLive(live map[string]struct{}) {
+	accountCache.Range(func(key, _ any) bool {
+		idx, _ := key.(string)
+		if _, ok := live[idx]; !ok {
+			accountCache.Delete(key)
+			checkinLocks.Delete(key)
+			lifecycleState.Delete(key)
+		}
+		return true
+	})
+}
+
 func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	files, err := hostAuthList()
 	if err != nil {
@@ -76,19 +118,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	for _, f := range files {
 		live[f.ID] = struct{}{}
 	}
-	accountCache.Range(func(key, value any) bool {
-		idx, _ := key.(string)
-		if _, ok := live[idx]; !ok {
-			accountCache.Delete(key)
-			checkinLocks.Delete(key)
-			lifecycleState.Delete(key)
-			return true
-		}
-		if e, ok := value.(*accountCacheEntry); ok && time.Since(e.fetched) > 4*accountCacheTTL {
-			accountCache.Delete(key)
-		}
-		return true
-	})
+	pruneAccountCacheForLive(live)
 	pruneLifecycleState()
 	pruneCheckinLocks()
 
@@ -149,7 +179,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 						acct.Checkin = e.checkin
 						acct.Credits = e.credits
 						acct.TrialClaimed = hasTrialPack(e.credits)
-						acct.Registered = resolveRegisteredState(f.ID, sa, e.plan)
+						acct.Registered = cachedRegisteredState(f.ID, e.plan)
 					}
 				}
 				// 缓存缺失时用盘上快照兜底：进程刚重启、watchdog 还没跑完

@@ -403,6 +403,11 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 						accountCache.Store(f.ID, &fresh)
 					}
 				}
+				// 单卡「刷新」是面板唯一的上游取数入口（自动刷新已移除），
+				// 取到就必须落盘：否则用户手动刷出最新积分后，下次打开面板
+				// 仍显示盘上的旧快照，持久化停在旧值。
+				tagCreditsPersist(sa.Account.UID, cr)
+				flushCreditsSnapshots()
 			}
 			return map[string]any{"accounts": []map[string]any{acct}}
 		}

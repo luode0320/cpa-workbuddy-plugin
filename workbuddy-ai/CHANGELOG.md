@@ -1,5 +1,22 @@
 # WorkBuddy AI Plugin Changelog
 
+## 0.1.28
+
+### Feature - 面板不再自动刷新，默认只展示持久化积分
+
+- 背景: 接 0.1.26/0.1.27 的积分持久化后，面板打开仍会自动触发一轮全量后台刷新（`enterPanel` → `POST /refresh`），并每 10 分钟定时再刷一轮，随后 2s 轮询 `/refresh/status`。账号规模后续会明显变大，这个「打开即对全池打一轮上游」的成本随账号数线性增长，且多数时候用户只是想看一眼余额。
+- 改为: 面板打开只渲染后端已有数据（`accountCache` 优先，缺失时用盘上 `credits_snapshot` 兜底），不再发任何刷新请求，也不注册定时刷新器。要看最新积分时点卡片上的「刷新」——该按钮走 `GET /credits?auth_index=`，只刷一个账号。
+- 连带清理: 随自动刷新一起失效的死代码整体移除——卡片刷新三态（`data-refresh-state` / `.ref-tag` CSS）、顶部「后台刷新中 N/M」进度、2s 状态轮询、`startBackgroundRefresh` 及其 429 退避，以及仅供静默刷新使用的 `api()` `__silent` 通道。后端 `POST /refresh`、`GET /refresh/status` 与 10 分钟 watchdog 巡检按用户裁定**保留不动**（巡检同时承担定时探活与「测试」标签维护）。
+- 修复（移除自动刷新暴露的三处连带缺陷）:
+  1. **手动刷新不落盘**: `handleCreditsQuery` 取到新积分后只更新内存，没打持久化标记。自动刷新在时可被后续 flush 顺带写盘，移除后面板唯一的上游取数入口不再写盘 → 下次打开仍显示旧快照。现在取到即 `tagCreditsPersist` + `flushCreditsSnapshots`。
+  2. **签到积分不落盘**: 签到新增积分包后同样只更新内存，重启即丢。自动巡检路径补同样的打标与落盘。
+  3. **缓存过期 GC 会掏空活账号**: `buildDashboardEx` 原本删除 `fetched` 超过 4×TTL（3 分钟）的条目。该策略依赖「面板一打开就全量刷新补回」，移除后能补数据的只剩 10 分钟巡检，两次巡检之间打开面板会让 plan / 签到态越刷越空。现改为只回收「账号已从宿主列表消失」的残留（抽成 `pruneAccountCacheForLive`）。
+- 顺带修正: 默认渲染分支不再调用会打上游的 `resolveRegisteredState`，改用新增的纯缓存版 `cachedRegisteredState`；否则账号越多，打开面板的上游请求越多，与本次目标直接冲突。真实注册态探测仍由显式刷新与「补注册」按钮承担。
+- 面板文案: 无快照账号不再显示会永久转圈的「加载中…」，改为「暂无积分数据，点「刷新」获取」。注意判据只认「没有快照对象」——三项全 0 是真实零余额（0.1.25 已确认零积分仍可用），仍照常渲染为「可用 0」。
+- 测试: 新增 `test/workbuddy-ai/panel_no_auto_refresh_repro.mjs`（Node vm 真实执行面板 JS，断言打开面板零刷新请求、无长周期定时器、单卡刷新仍生效、零余额不被误判为无数据）；新增 `panel_cache_test.go`（渲染路径不触网 + 活账号缓存不被过期清除 + 渲染路径确实调用缓存版）；`credits_persist` 接线审计期望上调为 tag×2 / flush×3。
+- 变异验证: ①把 `startBackgroundRefresh` 与 10 分钟定时器加回面板 → 前端回归 6 条断言 FAIL；②删掉手动刷新的打标与落盘 → 接线审计 FAIL（tag 1/2、flush 2/3）；③恢复按 `fetched` 年龄删缓存 → `TestPruneAccountCacheKeepsLiveStaleEntry` FAIL；④把渲染路径换回 `resolveRegisteredState` → 首轮**存活**（纯函数单测覆盖不到调用点），补 `TestDashboardRenderPathUsesCachedRegistration` 后捕获。
+- 涉及文件: 修改 `panel.html`、`panel.go`、`credits_handler.go`、`checkin.go`、`credits_persist_test.go`、`main.go`、`VERSION`；新增 `panel_cache_test.go`、`test/workbuddy-ai/panel_no_auto_refresh_repro.mjs`。
+
 ## 0.1.27
 
 ### Fix - 积分快照在备注刷新时被白名单重建抹掉（0.1.26 的补漏）

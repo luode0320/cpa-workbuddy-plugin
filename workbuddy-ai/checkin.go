@@ -161,6 +161,10 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 							accountCache.Store(f.ID, &fresh)
 						}
 					}
+					// 面板不再自动刷新，盘上快照是下次打开时的唯一来源：
+					// 签到新增的积分包必须当场落盘，否则重启后这段收益消失。
+					tagCreditsPersist(sa.Account.UID, cr2)
+					flushCreditsSnapshots()
 				}
 			}
 		}

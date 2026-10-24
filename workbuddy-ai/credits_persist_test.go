@@ -299,9 +299,9 @@ func TestCreditsPersistWiringIsPresent(t *testing.T) {
 	// 接缝 → 期望出现的最小次数。tagCreditsPersist 必须恰好出现在缓存写入点，
 	// 少一处就意味着那条刷新路径的积分不会落盘。
 	required := map[string]int{
-		"tagCreditsPersist(":               1,
+		"tagCreditsPersist(":               2, // cachedAccountDetails + 单卡 /credits 刷新
 		"loadCreditsFromDisk(":             1,
-		"flushCreditsSnapshots()":          2, // watchdog tick + refresh runner 收尾
+		"flushCreditsSnapshots()":          3, // watchdog tick + refresh runner 收尾 + 单卡刷新
 		"seedCreditsCacheFromDisk(":        1, // loadCreditsFromDisk 内部（定义行已排除）
 		"parseCreditsSnapshotFromAuthJSON": 4, // 播种 / 回灌 / creditsSnapshotForAuthID / 面板兜底
 	}
