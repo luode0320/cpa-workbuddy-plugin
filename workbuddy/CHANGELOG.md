@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.20.1
+
+### Fix - 客户端标识对齐真实客户端：UA 改为 `WorkBuddy/<版本>`、按日同步版本号、补 X-IDE-Version
+
+- 背景: 插件长期发送 `User-Agent: CLI/2.63.2 CodeBuddy/2.63.2`。从官方 CLI 产物（`@tencent-ai/codebuddy-code` 的 `dist/codebuddy.js` 与 `dist/codebuddy-lite-wb.mjs`）反查发现两处偏差：① 上游真实 UA 形态是 `${X-IDE-Name}/${版本}`，双产品名前缀的写法在当前 bundle 中已不存在；② `2.63.2` 停留在 2026-03-17，落后当时最新版 181 个稳定版。真实客户端每次启动都会检查更新，版本长期不动本身就是可观测的异常特征。
+- UA: 改为 `WorkBuddy/<产品版本>`。品牌名直接复用 `X-IDE-Name` 的同一常量 `ideNameHeaderValue`，避免 UA 与头部各自为政。
+- 版本来源: 从官方发布源 `https://acc-1258344699.cos.accelerate.myqcloud.com/@tencent-ai/codebuddy-code/releases/latest`（纯文本 8 字节，腾讯云 COS）每 24 小时拉取一次并叠加不超过 30 分钟抖动；npm registry 作为备用源；两个源都失败时保留当前值，启动兜底为编译期常量 `builtinClientVersion`。
+- 安全边界: 只升不降——新版本必须严格大于当前值且符合三段纯数字（拒绝 `v` 前缀与 `-beta`/`-next` 预发布后缀），失败与脏响应一律不采纳，避免上游发布回退或返回异常内容时削弱现有 UA。
+- X-IDE-Version: 补上该头并固定为 `0.0.0`。该字段语义是「宿主 IDE 版本」：官方桌面客户端与 CLI 的缺省值都是 `0.0.0`（bundle 中写作 `IDE_VERSION_HEADER] = ideVersion || "0.0.0"`），独立应用没有宿主 IDE；只有作为 VS Code 等插件运行时才填宿主版本。**该值与 UA 里的产品版本号是两套语义，不随其变化**（有专项不变量测试守护）。
+- 配置项: 新增 `client_version`，留空表示每日自动更新；填合法版本号则钉死（自动更新整体让位）。
+- 覆盖点: `commonHeaders`（登录/签到/成长/保活等全部通用请求）、`backendHeaders`（聊天补全）、模型发现链路三处头部构造，确保所有上游请求口径一致。
+- 涉及文件: `main.go`、`models.go`、`usage_config.go`、新增 `client_version.go` 与 `client_version_test.go`。
+
 ## 0.20.0
 
 ### Feature - 连续使用轮换：单账号连续承流 1 小时后让位冷却 1 小时（默认开启）

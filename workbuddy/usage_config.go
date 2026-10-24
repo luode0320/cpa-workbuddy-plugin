@@ -76,6 +76,9 @@ func configure(raw []byte) {
 	nextFailoverEnabled := true
 	nextMinRoutableCredits := defaultMinRoutableCredits
 	nextLowCreditDisableBelow := defaultLowCreditDisableBelow
+	// client_version: 人工钉死上报给上游的客户端版本号。留空表示交给每日
+	// 自动更新；填合法三段版本号则固定使用该值（见 client_version.go）。
+	nextClientVersion := ""
 
 	// rotation_*: 连续使用轮换。默认开启，四个键里任何一个缺失都回落到默认值，
 	// 存量配置里没有这些键时按默认值生效。
@@ -193,6 +196,10 @@ func configure(raw []byte) {
 					nextRetryOn4xx = clampRetryOn4xx(n)
 				}
 			}
+			if strings.HasPrefix(line, "client_version:") {
+				v := strings.TrimSpace(strings.TrimPrefix(line, "client_version:"))
+				nextClientVersion = clientVersionFromConfig(strings.Trim(v, "\"'"))
+			}
 			if strings.HasPrefix(line, "models:") {
 					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
 					// 交给 parseModelsConfig（显式配置优先于动态获取与
@@ -276,6 +283,11 @@ func configure(raw []byte) {
 	managementAPIKeyMu.Unlock()
 
 	resolveUsageReport(cfgURL, cfgKey)
+
+	// 客户端版本：先应用人工钉死值，再启动每日自动检查（钉死时自动更新会让位）。
+	setPinnedClientVersion(nextClientVersion)
+	startClientVersionUpdater()
+
 	ensureScheduler()
 
 	// Drop a non-blocking tick request so a freshly (re)configured plugin

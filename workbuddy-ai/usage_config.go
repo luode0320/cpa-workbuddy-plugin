@@ -79,6 +79,9 @@ func configure(raw []byte) {
 	// never silently lifts a `retry_on_4xx: 0` kill switch.
 	nextRetryOn4xx := retryOn4xxDefault
 	retryOn4xxSeen := false
+	// client_version: 人工钉死上报给上游的客户端版本号。留空表示交给每日
+	// 自动更新；填合法三段版本号则固定使用该值（见 client_version.go）。
+	nextClientVersion := ""
 
 	cfgURL, cfgKey := "", ""
 	if len(raw) > 0 {
@@ -142,6 +145,10 @@ func configure(raw []byte) {
 						nextRetryOn4xx = clampRetryOn4xx(n)
 					}
 				}
+				if strings.HasPrefix(line, "client_version:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "client_version:"))
+					nextClientVersion = clientVersionFromConfig(strings.Trim(v, "\"'"))
+				}
 				if strings.HasPrefix(line, "models:") {
 					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
 					// 交给 parseModelsConfig（显式配置优先于动态获取与
@@ -199,6 +206,11 @@ func configure(raw []byte) {
 	managementAPIKeyMu.Unlock()
 
 	resolveUsageReport(cfgURL, cfgKey)
+
+	// 客户端版本：先应用人工钉死值，再启动每日自动检查（钉死时自动更新会让位）。
+	setPinnedClientVersion(nextClientVersion)
+	startClientVersionUpdater()
+
 	ensureScheduler()
 
 	// Drop a non-blocking tick request so a freshly (re)configured plugin

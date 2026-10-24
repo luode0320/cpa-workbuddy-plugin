@@ -1,5 +1,18 @@
 # WorkBuddy AI Plugin Changelog
 
+## 0.1.23
+
+### Fix - 客户端标识对齐真实客户端：UA 改为 `WorkBuddy/<版本>`、按日同步版本号、补 X-IDE-Version
+
+- 背景: 插件长期发送 `User-Agent: CLI/2.63.2 WorkBuddy/2.63.2`。从官方 CLI 产物反查确认上游真实 UA 形态是 `${X-IDE-Name}/${版本}`，双产品名前缀的写法在当前 bundle 中已不存在；且 `2.63.2` 停留在 2026-03-17，落后当时最新版 181 个稳定版。
+- UA: 改为 `WorkBuddy/<产品版本>`，品牌名与 `X-IDE-Name` 复用同一常量 `ideNameHeaderValue`。
+- 版本来源: 官方 COS `releases/latest` 每 24 小时拉取（24h + ≤30min 抖动），npm registry 备用；失败保留当前值，兜底编译期常量 `builtinClientVersion`。
+- 安全边界: 只升不降，只接受三段纯数字，拒绝预发布后缀与 `v` 前缀。
+- X-IDE-Version: 补上并固定 `0.0.0`（该字段是宿主 IDE 版本语义，独立客户端无宿主 IDE；与 UA 产品版本号是两套语义，有专项不变量测试守护）。
+- 配置项: 新增 `client_version`，留空每日自动更新，填写则钉死。
+- 覆盖点: `commonHeaders`、`backendHeaders`、模型发现链路三处头部构造。
+- 涉及文件: `main.go`、`models.go`、`usage_config.go`、新增 `client_version.go` 与 `client_version_test.go`。
+
 ## 0.1.22
 
 ### Fix - 补齐会话追踪头，修复国际版部分账号 11128

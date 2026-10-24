@@ -82,9 +82,12 @@ const (
 	// Global chat/auth gateway (iss = workbuddy.ai realm). APISIX on
 	// copilot.tencent.com rejects Global JWTs with 401; must use workbuddy.ai.
 	upstreamBaseGlobal  = "https://www.workbuddy.ai"
-	clientUA            = "CLI/2.63.2 CodeBuddy/2.63.2"
 	originReferer       = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
+
+	// ideNameHeaderValue 是 X-IDE-Name 的取值，同时也是 User-Agent 的品牌前缀
+	// （上游形态为 `${X-IDE-Name}/${版本}`，见 client_version.go）。
+	ideNameHeaderValue = "WorkBuddy"
 
 	// CN endpoint aliases (login / chat / models). upstreamBaseCN is the only
 	// CN base; Global has its own upstreamBaseGlobal. No "upstreamBase" legacy
@@ -342,7 +345,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.20.0"
+var version = "0.20.1"
 
 func wbRegistration() registration {
 	return registration{
@@ -366,6 +369,7 @@ func wbRegistration() registration {
 				{Name: "rotation_serve_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "单账号连续承流多少分钟后让位（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
 				{Name: "rotation_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "轮换让位后停留在冷却的时长（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
 				{Name: "rotation_idle_reset_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "连续使用的中断阈值（默认 10）：账号距上次使用超过该时长即视为新一轮，重新计时，避免零散流量被误判为持续负载。"},
+				{Name: "client_version", Type: pluginapi.ConfigFieldTypeString, Description: "可选：钉死 User-Agent 里上报给上游的产品版本号。留空时每天自动从官方发布源拉取最新版本；填如 2.174.0 则固定使用该值、不再自动更新。注意 X-IDE-Version 头固定为 0.0.0，不受此项影响。"},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 用量上报地址（默认 http://cpa-manager-plus:18317/v0/management/usage/import；也可用环境变量 USAGE_REPORT_URL）。"},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 管理密钥。优先从环境变量 CPAMP_ADMIN_KEY / USAGE_REPORT_KEY 或密钥文件 /run/secrets/cpamp_admin_key 自动探测。"},
 				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
@@ -523,13 +527,22 @@ func parseStored(raw []byte) (*storedAuth, error) {
 // HTTP plumbing
 // -------------------------------------------------------------------------------
 
+// commonHeaders 填充所有上游请求的通用头。
+//
+// User-Agent 使用每日更新的产品版本号；X-IDE-Version 是另一套语义，固定发
+// 0.0.0（独立客户端没有宿主 IDE 版本），详见 client_version.go。
+//
+// [参数] req：待填充的 HTTP 请求。
+// [返回] 无。
+// 最近修改时间：2026-10-24；改动原因：UA 改为上游真实形态 `WorkBuddy/<版本>`，并补 X-IDE-Version。
 func commonHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("Origin", originReferer)
 	req.Header.Set("Referer", originReferer+"/")
-	req.Header.Set("User-Agent", clientUA)
+	req.Header.Set("User-Agent", currentUserAgent())
+	req.Header.Set("X-IDE-Version", currentIDEVersionHeader())
 }
 
 // originRefererFor returns the Origin/Referer base URL appropriate for the
@@ -596,9 +609,10 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 		req.Header.Set("X-No-Department-Info", "1")
 	}
 	req.Header.Set("X-Product", "SaaS")
-	// 使用端标识：声明请求来自 WorkBuddy 客户端，供上游记录 client / agentPurpose 字段
-	req.Header.Set("X-IDE-Type", "WorkBuddy")
-	req.Header.Set("X-IDE-Name", "WorkBuddy")
+	// 使用端标识：声明请求来自 WorkBuddy 客户端，供上游记录 client / agentPurpose 字段。
+	// X-IDE-Version 已在 commonHeaders 中填充（固定 0.0.0，与 UA 版本号语义不同）。
+	req.Header.Set("X-IDE-Type", ideNameHeaderValue)
+	req.Header.Set("X-IDE-Name", ideNameHeaderValue)
 	req.Header.Set("X-Agent-Purpose", "conversation")
 	// Override Origin/Referer for Global accounts so the upstream doesn't
 	// reject the request as cross-origin.

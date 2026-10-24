@@ -335,7 +335,8 @@ func callModelsAPI(accessToken string) ([]pluginapi.ModelInfo, error) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Origin", origin)
 	req.Header.Set("Referer", origin+"/")
-	req.Header.Set("User-Agent", clientUA)
+	req.Header.Set("User-Agent", currentUserAgent())
+	req.Header.Set("X-IDE-Version", currentIDEVersionHeader())
 	resp, err := hostHTTPDo(req)
 	if err != nil {
 		log.Printf("[workbuddy] models: GET %s transport failed: %v", modelsURL, err)

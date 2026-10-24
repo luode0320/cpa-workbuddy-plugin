@@ -76,8 +76,11 @@ const (
 
 	// Upstream endpoints strictly pinned to workbuddy.ai
 	upstreamBase  = "https://www.workbuddy.ai"
-	clientUA      = "CLI/2.63.2 WorkBuddy/2.63.2"
 	originReferer = "https://www.workbuddy.ai"
+
+	// ideNameHeaderValue 是 X-IDE-Name 的取值，同时也是 User-Agent 的品牌前缀
+	// （上游形态为 `${X-IDE-Name}/${版本}`，见 client_version.go）。
+	ideNameHeaderValue = "WorkBuddy"
 
 	endpointAuthState    = upstreamBase + "/v2/plugin/auth/state?platform=CLI"
 	endpointLoginAcct    = upstreamBase + "/v2/plugin/login/account?state="
@@ -294,7 +297,7 @@ type registrationCapability struct {
 	UsagePlugin           bool                         `json:"usage_plugin"`
 }
 
-var version = "0.1.22"
+var version = "0.1.23"
 
 func wbRegistration() registration {
 	return registration{
@@ -311,6 +314,7 @@ func wbRegistration() registration {
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每4小时 access-token 自动刷新，防止 Keycloak 离线会话过期（默认开启）。"},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "可选模型列表。每个条目可包含 id、name、alias、context、max_tokens、enabled、reasoning 字段；配置后优先于自动获取的模型列表。"},
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeSession, schedulerModeCredits, schedulerModeOff}, Description: "多账号选择策略：session（按会话轮询，同一会话 1 小时内固定同一账号；默认）／credits（面板指定的固定账号）／off（交给内置逻辑）。"},
+				{Name: "client_version", Type: pluginapi.ConfigFieldTypeString, Description: "可选：钉死 User-Agent 里上报给上游的产品版本号。留空时每天自动从官方发布源拉取最新版本；填如 2.174.0 则固定使用该值、不再自动更新。注意 X-IDE-Version 头固定为 0.0.0，不受此项影响。"},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 用量上报地址（默认 http://cpa-manager-plus:18317/v0/management/usage/import；也可用环境变量 USAGE_REPORT_URL）。"},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 管理密钥。优先从环境变量 CPAMP_ADMIN_KEY / USAGE_REPORT_KEY 或密钥文件 /run/secrets/cpamp_admin_key 自动探测。"},
 				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
@@ -433,13 +437,22 @@ func parseStored(raw []byte) (*storedAuth, error) {
 	return &sa, nil
 }
 
+// commonHeaders 填充所有上游请求的通用头。
+//
+// User-Agent 使用每日更新的产品版本号；X-IDE-Version 是另一套语义，固定发
+// 0.0.0（独立客户端没有宿主 IDE 版本），详见 client_version.go。
+//
+// [参数] req：待填充的 HTTP 请求。
+// [返回] 无。
+// 最近修改时间：2026-10-24；改动原因：UA 改为上游真实形态 `WorkBuddy/<版本>`，并补 X-IDE-Version。
 func commonHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("Origin", originReferer)
 	req.Header.Set("Referer", originReferer+"/")
-	req.Header.Set("User-Agent", clientUA)
+	req.Header.Set("User-Agent", currentUserAgent())
+	req.Header.Set("X-IDE-Version", currentIDEVersionHeader())
 }
 
 func upstreamBaseFor(sa *storedAuth) string {
@@ -487,9 +500,10 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 	}
 	req.Header.Set("X-Domain", "www.workbuddy.ai")
 	req.Header.Set("X-Product", "SaaS")
-	// 使用端标识：声明请求来自 WorkBuddy 客户端，供上游记录 client / agentPurpose 字段
-	req.Header.Set("X-IDE-Type", "WorkBuddy")
-	req.Header.Set("X-IDE-Name", "WorkBuddy")
+	// 使用端标识：声明请求来自 WorkBuddy 客户端，供上游记录 client / agentPurpose 字段。
+	// X-IDE-Version 已在 commonHeaders 中填充（固定 0.0.0，与 UA 版本号语义不同）。
+	req.Header.Set("X-IDE-Type", ideNameHeaderValue)
+	req.Header.Set("X-IDE-Name", ideNameHeaderValue)
 	req.Header.Set("X-Agent-Purpose", "conversation")
 	req.Header.Set("Origin", originReferer)
 	req.Header.Set("Referer", originReferer+"/")

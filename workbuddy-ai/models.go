@@ -342,7 +342,8 @@ func fetchModelsFromURL(accessToken, targetURL string) ([]pluginapi.ModelInfo, e
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Origin", originReferer)
 	req.Header.Set("Referer", originReferer+"/")
-	req.Header.Set("User-Agent", clientUA)
+	req.Header.Set("User-Agent", currentUserAgent())
+	req.Header.Set("X-IDE-Version", currentIDEVersionHeader())
 	resp, err := hostHTTPDo(req)
 	if err != nil {
 		return nil, err
