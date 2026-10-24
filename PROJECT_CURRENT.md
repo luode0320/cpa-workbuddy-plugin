@@ -26,7 +26,7 @@
   - `qoderwork-provider`: **0.9.44**（0.9.44 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502` + 冷却落盘失败可观测与内存兜底；0.9.40 重建上游 messages 时保留工具调用结构修复 agent 多轮往返工具结果失配对；0.9.38 签到节奏恢复每 4 小时六槽 + 移除冗余门控；0.9.37 tools 对齐修复；0.9.35 max_tokens 统一 32768 最低输出底线；0.9.34 上游 110 日调用上限 24 小时持久化冷却 + 路由/换号排除 + 面板解冷）
   - `qoder-ai-provider`: **0.1.24**（0.1.24 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502`；0.1.20 重建上游 messages 时保留工具调用结构修复 agent 多轮往返工具结果失配对；0.1.18 签到节奏恢复每 4 小时六槽 + 移除冗余门控；0.1.17 tools 对齐修复；0.1.15 max_tokens 统一 32768 最低输出底线；0.1.14 上游 110 日调用上限 24 小时持久化冷却 + 补齐 /clear-cooldown 路由注册）
   - `traework-provider`: **0.2.13**（面板签到时刻文案漂移修正为 00/04/08/12/16/20；0.2.12 定时探活降频至 4 小时 + 失败也刷新节流时间戳；0.2.11 max_tokens 32768 底线 + payload 层同步，探活改全量模型按序测试）
-  - `workbuddy-provider`: **0.19.0**（0.19.0 重新接入成长中心 7 段，修复旧版「任务永远完不成」的两个根因：从未调用 `buddy/first` 领养 + 完全没有 `POST /v2/report` 行为上报；0.18.2 面板单卡刷新补写积分快照；0.18.1 积分三档分级 + 每小时串行扫描 + 低于 100 硬禁用；0.18.0 下线 Global 耗尽自动删号 + 低额红线可配置；0.16.5 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502`）
+  - `workbuddy-provider`: **0.20.0**（0.20.0 新增连续使用轮换：单账号连续承流满 60 分钟让位、冷却 60 分钟，默认开启，含全冷放开一半防抽干；0.19.0 重新接入成长中心 7 段，修复旧版「任务永远完不成」的两个根因：从未调用 `buddy/first` 领养 + 完全没有 `POST /v2/report` 行为上报；0.18.2 面板单卡刷新补写积分快照；0.18.1 积分三档分级 + 每小时串行扫描 + 低于 100 硬禁用；0.18.0 下线 Global 耗尽自动删号 + 低额红线可配置；0.16.5 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502`）
   - `workbuddy-ai-provider`: **0.1.16**（0.1.16 授权后自动补注册地等新能力；0.1.15 定时探活降频至 4 小时 + 失败也刷新节流时间戳；0.1.14 max_tokens 32768 底线，探活改全量模型按序测试）
   - `copilot-provider`: **0.1.2**（0.1.2 调度器对齐宿主候选集语义修复越界缺陷，已发布 `0054c28`→`ba471b0`→`bca1264`→`78b4069` 并生产验收：热重载前 5 分钟 50/50 请求告警、热重载后 0/57；0.1.1 宿主 OAuth 弹窗改开插件桥接页展示设备码；0.1.0 首发：Device Flow 登录 + 内部令牌 80% 提前保活 + VS Code Copilot Chat 指纹模拟 + 动态模型发现 + 多账号池换号重试 + 流式/非流式转发 + 额度与面板）
   - `workbuddy-token-usage`: **0.2.8**（0.2.8 让退役实例的 feed 导入协程在连续 3 轮关闭句柄后自行退出；0.2.7 修复宿主配置重载换句柄窗口导致的用量记录丢失；0.2.6 移除四个图表与导出图片、下线 `/stats/trends` 及序列聚合以省算力与响应体积；0.2.5 起请求明细与维度汇总展示原始 provider id）
@@ -34,6 +34,18 @@
 - 当前时间：2026-10-17 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 当前会话（2026-10-24）：**workbuddy-provider 0.20.0 连续使用轮换已发生产并完成验收**：
+  - 用户诉求演进：先尝试 priority 降级（800 请求降 0、次日恢复）→ 代码取证证伪（宿主 `SessionAffinitySelector.Pick` 命中缓存时用 `getAvailableAuthsAcrossPriorities` 跨全部 priority 层校验绑定，priority 对已绑定会话完全无效）→ 改为「单账号持续用 1 小时就进入 1 小时冷却」。
+  - **两个用户裁定**：① 计时语义取「连续使用」（有请求就续期，中断超 10 分钟重置）；② 防抽干——冷却前检查是否除本号外全池已冷却，若是先放开一半。
+  - **实现**：新增 `usage_rotation.go`（446 行）+ `usage_rotation_test.go`（10 用例）。核心是**轮换状态独立于失败冷却**：`resetAccountFailover` 会在每次成功时清零失败冷却，复用它会让 1 小时让位冷却被第一次成功立刻抹掉。接入 4 个覆盖点——调度候选人过滤、`pickNextAuthForModel` 换号候选、执行入口前置冷冷却拦截（非流式 + 流式）、成功打点（非流式 / 流式同步 / 异步流式三条）。**能在插件入口换号是关键**：宿主的会话亲和命中时不会看 priority，但请求进入插件后由前置拦截主动换号，已绑定会话同样生效。
+  - **性能自我修正**：初版 `noteRotationUsage` 每个成功请求都调 `host.auth.list`（跨进程 RPC），改为连续使用达阈值才查池；并把 `markAuthUsed` 改为返回已用时长，省掉一次加锁与整数截断。
+  - **配置项**：`rotation_enabled`（**默认 true**）、`rotation_serve_minutes`（60）、`rotation_cooldown_minutes`（60）、`rotation_idle_reset_minutes`（10）。`serve` 或 `cooldown` 填 0 等同关闭。生产未显式写这些键，走代码默认。
+  - **验证**：cgo-shim build+vet+test 全绿（新增 `TestRotation_EnabledByDefault`、`TestRotation_NoteUsageSkipsPoolLookupBeforeThreshold`、`TestRotationConfig_ParsesFromConfigYAML`）；**4 项变异精准捕获**（关闭全冷放开 / 忽略 serve 阈值 / 取消中断重置 / 阈值改为恒真）。gofmt 全绿（`usage_config.go` 的格式问题是 HEAD 历史遗留，新增行缩进正确）。
+  - **发布链**：`97b4b08`(feat, 9 文件) → CI `40087206136` success（4 分钟，取消冗余 push run `40087200695`）→ 6/6 assets sha256 OK + 二进制内置 `0.20.0` 且含 14 处 `rotation` 符号 → `d8da4c8`(registry) → 远端 6/6 sha+size ALL PASS 且无旧版本残留。
+  - **生产部署（热重载零重启）**：`hot reloaded active_version=0.20.0 retired_version=0.19.0`；落盘 `.so` sha256 `df8d066f…0a84f43f` 与本地 zip 逐字节一致，内置版本串 `0.20.0`；accounts / panel 均 200；容器未重启。
+  - **生产行为验收**：3 轮流式 `deepseek-v4.1-flash` 请求全部完整返回 `[DONE]`（2482 字节/轮，无截断），插件侧无 error/fail/panic。生产当前 11 个 workbuddy 账号、9 个启用，稳态约 4-5 个可用，池容充裕。
+  - **实现踩坑（外部）**：`plugin-store install` 首次与第二次均报 `direct plugin version "0.20.0" not found`，而服务器本机 `curl` raw registry 已能看到 0.20.0 —— 属踩坑 28 的宿主侧 CDN 边缘缓存滞后，等待约 3 分钟后第三次 install 成功。
 
 - 当前会话（2026-10-24）：**workbuddy-provider 0.19.0 重新接入成长中心，已发生产并完成行为验收**：
   - 用户先给参考项目 `linguo2625469/workbuddy2api-panel`，要求分析「我们之前删掉的成长中心为什么有问题」再重新加上。多轮决策：恢复完整 7 段 / 照参考项目做进度上报 / 默认开启定时自动跑 / 通用上报层（25 个专属动作只读）/ 先探针再实现。
