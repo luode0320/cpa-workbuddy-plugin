@@ -35,6 +35,26 @@
 
 ## 活动会话进展摘要
 
+- 当前会话（2026-10-25）：**qoder-ai 0.1.30 修复模型清单漏模型（多场景并集 + 上游 display_name 权威 + 场景别名排除），已提交并触发发布**：
+  - 用户诉求：「对 qoder-ai 插件做同样的修复」（承接 qoderwork 0.10.1）。
+  - **上游取证（真实国际版账号直连 `openapi.qoder.sh`）**：响应按 11 个场景切分（chat / assistant / quest / qwake / app / inline / qwork / experts / nap / byok_teams / byok_enterprise）；`chat` 仅 12 个 key，全场景并集 21 个。本机官方客户端 QMC 加密目录（`~/.qoder/.models/<uid>/catalog-v6|v7`，HKDF-SHA256(uid)+AES-256-GCM，参考 qoder2api-hub `qoder_sign.qmc_decrypt`）解密后同样证实按场景切分（chat 15 / qwork 6 / inline 4）。
+  - **与 qoderwork 的关键差异（不能照搬）**：国际版把档位嵌进场景 id（`quest-auto` / `quest-ultimate` / `qwork-auto` / `qwork-advanced` / `qwork-ultimate` / `experts-auto` / `experts-ultimate` / `nap-auto`，display 分别只是 Auto/Standard/Premium/Advanced），共 8 个伪模型。国内版实测 chat 与并集完全一致（各 11 个），故 qoderwork 直接取全集即可；国际版必须 `isSceneScopedAlias` 按前缀排除。真正漏掉的只有 `performance`（只在 `qwake` 出现）。
+  - **命名与回译**：上游 `display_name` 已改名（`kmodel_latest`→`Kimi-K3.1-Pro`、`mmodel`→`MiniMax-M3.1-Flash`）而硬编码表仍是旧名。主条目改用上游 display_name；新增 `upstreamModelNames` 运行时映射供 `cpaToUpstreamKey` / `resolveUpstreamModel` 回译（先到先得，账号级 alias 最高优先）。
+  - **静态表**：补入双区客户端目录都有、插件此前完全没收录的 `fast`；静态表**只保留旧名代号**——新名一律交给运行时映射，否则静态表会遮住运行时映射（变异验证发现：硬编码新名会让「移除运行时回译」这个变异存活）。
+  - **验证**：新增 `models_scene_union_test.go`（12 用例）；**5 项变异全部 KILLED**（退回只读 chat / 主条目忽略 display_name / 移除场景别名过滤 / 移除运行时回译 / 静态表加回上游已无代号）；cgo-shim build+vet+test 全绿；gofmt 干净。
+  - **真实上游验收（改后代码）**：`13 models in 11 scenes`（改造前 12 个且只读 chat）；对外展开 26 条 ID 全部回译通过；`performance` 首次进入清单；两个改名模型由上游 display_name 驱动；静态兜底 36/36 回译通过。
+  - **发布链**：`3b9596c`（fix，7 文件）已推 main（`2757f14..3b9596c`）；CI dispatch `qoder-ai-provider 0.1.30` → run `40116130945`。
+  - **生产状态**：qoder-ai 当前 `configured=true / registered=false / enabled=false`，且 spool 无 `qoderai-` 前缀账号（生产从未启用该插件），故本轮只做发版与资产校验，无法做生产流量验收。
+  - **未闭环**：qoder-ai 启用前的账号导入与真实推理验证；`/v1/models` 中部分模型无 provider 归属的旁证线索（见上一条会话记录）。
+
+- 当前会话（2026-10-25）：**qoderwork 生产 Kimi-K3.1-Pro 测试失败排查：上游后端不可用，非插件缺陷，无代码改动**：
+  - 用户报障（附截图）：面板测试账号 `ud5cdb65b` 的 `Kimi-K3.1-Pro` 返回 `upstream 200: provider_error: AI backends failed`。全仓 `grep` 该文案零命中，确认来自上游而非插件。
+  - **根因**：Qoder 上游对 `kmodel_latest` 返回 HTTP 200 + `provider_error: All backends failed`（Kimi 后端池全挂）；同期 `serviceAvailable:false` / `subCode:RESOURCE_LIMIT` 证明上游整体资源受限，`Qwen3.8-Flash` / `MiniMax-M3.1-Flash` 表现为排队帧、`GLM-5.3-Flash` 表现为 `112` 权益不足。
+  - **四项排除**：① 回译正常——官方名 `Kimi-K3.1-Pro` 与内部代号 `kmodel_latest` 同一秒同成同败；② 账号状态正常——18 号 `disabled=false`，物理 auth 文件无 `failover_disable` / `manual_disable` / `daily_cooling_until`；③ 换号链正常——真实请求轮转 9 个账号全部 `All backends failed` 后如实返回 `auth_unavailable`；④ 非账号无权益——同号 8 秒内曾成功。
+  - **插件行为符合设计**：`provider_error` 不含额度关键词、也命中不了 `isQueueFrame`，故不计冷却、不写盘禁用（与物理文件一致）。
+  - **独立旁证（未处理）**：`/v1/models` 中 `Kimi-K3.1-Pro` / `DeepSeek-Flash` / `GLM-5.3-Flash` 无 provider 归属，`DeepSeek-Flash` 真实请求报 `unknown provider`，与本次故障无关，待单独排查。
+  - **处置**：不改代码、不重启容器、不改配置；等上游恢复后复测 `serviceAvailable` 是否回到 true。文档 `doc/4-bugs/2026-10-25_011500_QoderWork生产KimiK31Pro测试失败上游后端不可用根因诊断.md`；知识库《Qoder上游降级时的四类错误语义判别》。
+
 - 当前会话（2026-10-25）：**qoderwork 0.10.1 修复模型清单漏模型（多场景并集 + 上游 display_name 权威），已发生产并验收**：
   - 用户报障（附截图）：对比官方客户端默认模型列表，生产的 qoderwork 模型表少了 `Kimi-K3.1-Pro` 与 `MiniMax-M3.1-Flash`，要求检查模型获取逻辑。
   - **根因两层**：① `callModelsAPI` 只读响应里的 `chat` 场景，而上游按场景切分（11 个场景，各场景模型集合不同：本机客户端目录样本 chat 15 / qwork 13 且不含 mmodel / experts 5）；② 对外模型名取自硬编码表 `internalKeyDisplayNames`，上游 `display_name` 字段虽被解析却从未使用——上游改名不改内部代号（实测 `kmodel_latest`→`Kimi-K3.1-Pro`、`mmodel`→`MiniMax-M3.1-Flash`），表名因此永久滞后。
@@ -117,16 +137,8 @@
   - **提交**：`34f6aa9`（129 文件 = 126 删 + 3 改），已推送 main。
   - **遗留待办**：① CI run `39796599752` 长时间 queued，未在本轮等到完成，需回查确认 11 插件测试矩阵全绿；② `README.md` 与 `项目设计.md` 的插件数表述仍是「9 个」（本轮之前就已滞后于实际 13 个），本轮未顺手改写，如需对齐当前 11 个应单独处理。
 
-- 当前会话（2026-10-21）：**coze 0.5.4：全池积分耗尽时快速失败，止血上游白打与错误风暴**：
-  - 用户报障（附截图）：生成一张图刷出 9 条 `Failed to generate image`（20:11 / 21:12 各一批）。**与 0.5.3 的晚到附件问题无关**，是另一条独立缺陷。
-  - **根因（生产日志实证）**：0.5.2 闸门兜底语义是「全池低额则放行」，本意别把最后一个残血号挡掉；但全池都是 0 分时「放行」等于把请求交回宿主逐个白打上游。四个时段的 request_id **每个都轮满 7 个号**、每条 1.2–3.2 秒才拿到上游 `1000521 该用户积分已耗尽`，闸门在这些时段**零拦截**（`低于路由红线` 计数为 0）；叠加 new-api `RetryTimes=5` 且自动重试码 `401-407,409-428,430-503` 恰好跳过 400，一次出图放大成 9 条错误。
-  - **修复**：新增「整池确定 0 分」快速失败通道，返回 **400**（`creditsPoolDepletedError`）——命中宿主请求级白名单 `clienterror.IsRequestFault`（400/409/413/422）立即终止换号轮转且不冷却账号，又不在 new-api 重试区间，两层重试一起止住、零上游消耗。判据只认 `remain` **恰好为 0**（残血非零仍按原语义放行让上游自己判），并要求本号与池内每个可用号的积分数据都在 `creditDepletedTrustWindow`（15 分钟，故意宽于 5 分钟缓存 TTL，免得刷新边界期把刚拿到的 0 分判成不可信而使快速失败失效）内新鲜；任一账号未知/过期、或快照为空（刚热重载未跑首轮）一律退回放行；红线配 0 时两条判据一并失效，无需额外开关。
-  - **机制实证（对照实验）**：用既有 413 分支（同走同步信封、同属请求级白名单）验证——客户端发 70000 字节 → `HTTP=413 41ms`，宿主侧该 request_id **只有 1 条执行日志**、未轮转到第二个号，413 原样透传调用方。⇒「同步信封带请求级 4xx」确实既终止轮转又到达客户端。**400 分支自身上线时尚未在生产触发过**（它要求整池确定 0 分，验收时池里有 2 个健康号），不得声称已生产实证。
-  - **验证**：cgo-shim build+vet+test 全绿；新增 9 用例（全池 0 分必须 400、有健康号仍走 403、快照为空放行、本号过期放行、他号过期放行、未知积分不判耗尽、残血非零放行、本号健康但快照滞后放行、穿过 `handleExecExecute` 的零上游断言）；**7 项变异反证全部 KILLED**，其中「池内不校验缓存新鲜度」与「忽略 kill switch」首轮**存活**——前者补 `TestVerifyAccountCreditsAllowsWhenPeerCreditCacheStale` 后捕获，后者暴露 `redline > 0` 是死代码（`remain < redline` 已隐含闸门开启），已删。
-  - **发布链**：提交 `2310041` + registry `320249d` → CI run `39622568217` **21 job 全 success**（本次 darwin/arm64 未被排队拖死）→ 6/6 assets `ALL CHECKSUMS OK` → 产物内嵌 `0.5.4`×2、`0.5.3` 归零、新文案「账号池积分已耗尽」命中 → 远端 6/6 assets 200 且字节数一致 → 生产 `plugin-store install` 热重载（`active_version=0.5.4 retired_version=0.5.3`，**零容器重启**）→ 落盘 `.so` sha256 `32217406a64be9e754eb1f1fb2d97f7d694a3e9fb36ff088bd3d13c02d69e4c5` 与本地逐字节一致。
-  - **生产回归（request_id 159372c8，23:15）**：0 分号 3ms 被 403 拦截 → 换健康号 → **30.3 秒 HTTP 200 出图**，确认未破坏 0.5.3 的晚到附件路径与既有换号语义。
-  - **遗留待办（仍未闭合）**：① token-usage-tracker 把管理密钥当 `source` 打印到日志（`source=Ld@588588`），属凭据回显违规，需在该插件侧修复；② coze 的 `min_routable_credits` 未写入生产配置，走默认 100。
-  - 文档：`coze/CHANGELOG.md` 0.5.4 章节；路由口径同步见 `PROJECT_MEMORY.md`。
+- 更早会话（2026-10-21，已按 51200 字节上限压缩，完整记录见 git log）：
+  - **coze 0.5.4 全池积分耗尽快速失败**：0.5.2 闸门「全池低额则放行」在整池 0 分时等于把请求交回宿主逐个白打上游（四个时段每个 request_id 轮满 7 个号）。新增「整池确定 0 分」通道返回 400（命中宿主请求级白名单，立即终止换号且不冷却），判据只认 `remain==0` 且要求本号与池内每号积分数据都在 15 分钟可信窗内。生产用 413 分支做同链路对照实证；400 分支自身上线时未在生产触发过。遗留待办：token-usage-tracker 把管理密钥当 source 打印到日志需修；coze 的 `min_routable_credits` 未写入生产配置，走默认 100。
 
 - 更早会话（2026-10-14 ~ 2026-10-20，已按 51200 字节上限压缩，完整记录见 git log 与 PROJECT_HISTORY.md）：
   - **coze 系列 0.4.6 → 0.5.4**：64KB content 超限返回 413（防整池 503）；0.5.2 积分路由红线（执行入口闸门，非 scheduler）；0.5.3 生图收口统一 `awaitImages` + 4 分钟上限 + 缺图返回 400（止血额度被烧）；0.5.4 整池确定 0 分快速失败 400（零上游消耗）。
@@ -153,7 +165,7 @@
 {
   "version": 5,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "2026-10-22T17:50:15.790173Z",
+  "registry_updated_at": "2026-10-24T16:43:21.498976Z",
   "projections": [
     {
       "projection_id": "SESSION/30608b3616fa2311bfb720a2776c09ac96b2738601ec3752b03a252c810cdb70",
@@ -227,44 +239,6 @@
       ]
     },
     {
-      "projection_id": "SESSION/4c4dab02fd732c0d17940754bc3095a8a25815699011645d49b517efc9cac1bb",
-      "session_id": "75082e35-bf34-49e3-8ec9-d8c884098190",
-      "projection_origin": "persisted",
-      "synthesis_mode": "none",
-      "state": "inactive",
-      "plan_key": "FIX-QODER-STREAM-READ-FAILOVER-20261017",
-      "source_document": "doc/3-实施/2026-10-17_203500_qoder三插件流式断流换号与冷却落盘修复实施总览.md",
-      "plan_fingerprint": "f9fba8f7e10ccf53f10814cc188a002c7c92165a7c6c4561909339e3c52a3b70",
-      "updated_at": "2026-10-17T13:26:54Z",
-      "steps": [
-        {
-          "id": "TASK-001",
-          "step": "[TASK-001] qoderwork 零泄漏断流换号：断流分支接入换号决策与重建请求",
-          "status": "completed"
-        },
-        {
-          "id": "TASK-002",
-          "step": "[TASK-002] qoderwork 断流错误信封补 http_status=502",
-          "status": "completed"
-        },
-        {
-          "id": "TASK-003",
-          "step": "[TASK-003] qoderwork 冷却落盘失败补日志并保留内存冷却兜底",
-          "status": "completed"
-        },
-        {
-          "id": "TASK-004",
-          "step": "[TASK-004] workbuddy 断流换号并新增信封状态码通道",
-          "status": "completed"
-        },
-        {
-          "id": "TASK-005",
-          "step": "[TASK-005] qoder-ai 断流换号与信封状态码扩展",
-          "status": "completed"
-        }
-      ]
-    },
-    {
       "projection_id": "SESSION/94dd522698a5cf6e0897452ab54a3907615603273c390609e7694e7501d16106",
       "session_id": "88d9095a-1953-4563-8fa7-28bc30f9b129",
       "projection_origin": "persisted",
@@ -299,6 +273,59 @@
           "id": "DIAG-05",
           "step": "[DIAG-05] 输出根因结论与可选修复方向，交用户裁定",
           "status": "completed"
+        }
+      ]
+    },
+    {
+      "projection_id": "SESSION/6ca9986cdc78bbad2f4d5aade087730561b431aaa0987d9882cc2d1577078be9",
+      "session_id": "6dbfcd84-d790-4a42-91df-8ead95031d6e",
+      "projection_origin": "synthesized",
+      "synthesis_mode": "fallback",
+      "state": "active",
+      "plan_key": "SYNTH-FALLBACK/20261024T164321Z",
+      "source_document": "",
+      "plan_fingerprint": "9b56b693aa310c501f3474e3a893700bd5397d43439963cba4351e1f2c456a27",
+      "updated_at": "2026-10-24T16:43:21.205445Z",
+      "steps": [
+        {
+          "id": "RECOVERY-01",
+          "step": "[RECOVERY-01] 核对“对 qoder-ai 插件做与 qoderwork 0.10.1 相同的模型发现修复”的目标与验收条件",
+          "status": "in_progress"
+        },
+        {
+          "id": "RECOVERY-02",
+          "step": "[RECOVERY-02] 确认“对 qoder-ai 插件做与 qoderwork 0.10.1 相同的模型发现修复”的来源与当前会话归属",
+          "status": "pending"
+        },
+        {
+          "id": "RECOVERY-03",
+          "step": "[RECOVERY-03] 对照“对 qoder-ai 插件做与 qoderwork 0.10.1 相同的模型发现修复”核实已完成与待处理事项",
+          "status": "pending"
+        },
+        {
+          "id": "RECOVERY-04",
+          "step": "[RECOVERY-04] 核对“对 qoder-ai 插件做与 qoderwork 0.10.1 相同的模型发现修复”的当前进度和中断位置",
+          "status": "pending"
+        },
+        {
+          "id": "RECOVERY-05",
+          "step": "[RECOVERY-05] 确认继续“对 qoder-ai 插件做与 qoderwork 0.10.1 相同的模型发现修复”所需的权限和安全边界",
+          "status": "pending"
+        },
+        {
+          "id": "RECOVERY-06",
+          "step": "[RECOVERY-06] 按已确认的下一项继续处理“对 qoder-ai 插件做与 qoderwork 0.10.1 相同的模型发现修复”",
+          "status": "pending"
+        },
+        {
+          "id": "RECOVERY-07",
+          "step": "[RECOVERY-07] 对照“对 qoder-ai 插件做与 qoderwork 0.10.1 相同的模型发现修复”的验收条件验证恢复结果",
+          "status": "pending"
+        },
+        {
+          "id": "RECOVERY-08",
+          "step": "[RECOVERY-08] 更新“对 qoder-ai 插件做与 qoderwork 0.10.1 相同的模型发现修复”的进度证据并完成收口",
+          "status": "pending"
         }
       ]
     }
