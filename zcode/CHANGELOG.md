@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+### Fix - 冷却到期日志重复刷屏
+
+- 缺陷: `recordSlowSample` 检测到冷却已过期后只打日志、不清零 `cooldownUntil`。该条件在后续每条成功请求上持续成立，同一账号到期后每次成功都再打一条「slow cooldown expired」。生产实证：同一账号 1 分钟内刷 8 条，日志被淹没。
+- 修复: 判定过期后立即 `st.cooldownUntil = time.Time{}`，让「已过期」成为一次性事件。到期判定仍必须先于「冷却中」判断——否则过期后第一条样本会被当成仍在冷却而提前返回，恢复事件永远不会被记录。
+- 验证: 新增 `TestSlowCooldownExpiryLogsOnce` 连续打两条样本断言只产生一条到期日志；变异「去掉清零」KILLED。
+
 ## 0.3.0
 
 ### Fix - 非流式 TTFT 采集补齐（阻断项，先于慢速冷却）
