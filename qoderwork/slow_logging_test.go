@@ -214,3 +214,33 @@ func TestSlowConfigUnchangedStaysQuiet(t *testing.T) {
 		t.Fatalf("参数未变化时不应打印配置日志，实际输出：%s", buf.String())
 	}
 }
+
+// TestSlowCooldownExpiryLogsOnce 守住到期日志只打一次。
+//
+// 生产实证：cooldownUntil 到期后若不清零，「已过期」条件在后续每条成功请求
+// 上都成立，同一账号 1 分钟内刷了 8 条重复日志。到期是一次性事件，
+// 必须在打点后把冷却状态清掉。
+func TestSlowCooldownExpiryLogsOnce(t *testing.T) {
+	withSlowConfig(t, true, 25, 5, 3000, 15*time.Minute, 10*time.Minute)
+
+	base := time.Now()
+	model := "deepseek-v4.1-flash"
+	feedSlowSamples("once-a", model, 20000, 5, base)
+	feedSlowSamples("once-fast", model, 4000, 5, base)
+
+	if !evaluateSlowAccount("once-a", model, base.Add(time.Minute)) {
+		t.Fatal("前置：once-a 必须被判慢")
+	}
+
+	buf, restore := captureSlowLog()
+	defer restore()
+
+	// 冷却 10 分钟，从 base+1min 起算即 base+11min 到期；之后连续三次成功。
+	for i := 0; i < 3; i++ {
+		recordSlowSample("once-a", model, 4200*uint64(time.Millisecond), base.Add(12*time.Minute+time.Duration(i)*time.Second))
+	}
+
+	if n := strings.Count(buf.String(), "slow cooldown expired"); n != 1 {
+		t.Fatalf("到期日志必须只打一次，实际 %d 次（重复刷屏说明 cooldownUntil 未清零）\n输出：%s", n, buf.String())
+	}
+}

@@ -328,9 +328,12 @@ func recordSlowSample(authID, model string, ttftNS uint64, now time.Time) int {
 	// 必须保持纯读；这里本就持有写锁且只在真实成功时走到。
 	// 必须先于「冷却中」判断执行：否则过期后第一条样本会被下面那个分支
 	// 当成仍在冷却而提前返回，恢复事件永远不会被记录。
+	// 打点后必须把 cooldownUntil 清零：否则「已过期」这个条件在后续每条成功
+	// 请求上都成立，日志会无限重复刷屏（生产实证：同一账号 1 分钟内刷 8 条）。
 	expiredAfter := time.Duration(0)
 	if !st.cooldownUntil.IsZero() && !now.Before(st.cooldownUntil) {
 		expiredAfter = now.Sub(st.cooldownUntil)
+		st.cooldownUntil = time.Time{}
 	}
 	// 冷却中的样本不参与判定，记进来只会让恢复后的基准失真。
 	if now.Before(st.cooldownUntil) {

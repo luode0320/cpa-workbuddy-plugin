@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.21.2
+
+### Fix - 慢速冷却到期日志重复刷屏
+
+- 缺陷: `recordSlowSample` 检测到冷却已过期时只记 `expiredAfter` 而**没有清零** `cooldownUntil`。于是「已过期」条件在后续每条成功请求上都成立，同一账号 1 分钟内刷了 8 条重复的 `slow cooldown expired` 日志。
+- 修复: 打点后立即把 `cooldownUntil` 清零——到期是一次性事件，恢复日志只应出现一次。
+- 验证: 新增 `TestSlowCooldownExpiryLogsOnce`（连续 3 次成功只允许 1 条日志）；变异「去掉清零」KILLED。
+- 说明: 该缺陷同时存在于本轮新移植的 traework / qoderwork / zcode，已一并修复并各加同款用例。
+
 ## 0.21.1
 
 ### Fix - 慢速冷却补判定日志（可观测性缺口）
