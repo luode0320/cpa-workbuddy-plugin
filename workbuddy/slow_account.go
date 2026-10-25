@@ -19,6 +19,7 @@
 package main
 
 import (
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -218,7 +219,7 @@ func slowStateLocked(authID, model string, create bool) *slowAccountState {
 //	ttftNS：本次首字延迟纳秒值；now：当前时间。
 //
 // [返回] 写入后该「账号×模型」的样本数。
-// 最近修改时间：2026-10-25；改动原因：新增，样本写入唯一入口。
+// 最近修改时间：2026-10-25；改动原因：新增样本写入入口，并补冷却到期恢复日志。
 func recordSlowSample(authID, model string, ttftNS uint64, now time.Time) int {
 	cfg := loadedSlowConfig()
 	if !cfg.enabled || ttftNS == 0 {
@@ -231,20 +232,38 @@ func recordSlowSample(authID, model string, ttftNS uint64, now time.Time) int {
 	}
 
 	slowMu.Lock()
-	defer slowMu.Unlock()
 	st := slowStateLocked(authID, model, true)
 	if st == nil {
+		slowMu.Unlock()
 		return 0
+	}
+	// 到期恢复留痕：冷却已过期而账号再次成功，说明它重新进入可选池。
+	// 放在这里而不是 slowCoolingDown 里，是因为该函数挂在每请求的路由热路径，
+	// 必须保持纯读；这里本就持有写锁且只在真实成功时走到。
+	// 必须先于「冷却中」判断执行：否则过期后第一条样本会被下面那个分支
+	// 当成仍在冷却而提前返回，恢复事件永远不会被记录。
+	expiredAfter := time.Duration(0)
+	if !st.cooldownUntil.IsZero() && !now.Before(st.cooldownUntil) {
+		expiredAfter = now.Sub(st.cooldownUntil)
 	}
 	// 冷却中的样本不参与判定，记进来只会让恢复后的基准失真。
 	if now.Before(st.cooldownUntil) {
-		return len(st.samples)
+		count := len(st.samples)
+		slowMu.Unlock()
+		return count
 	}
 	st.samples = append(st.samples, slowSample{at: now, ttftNS: ttftNS})
 	if len(st.samples) > slowSampleCap {
 		st.samples = st.samples[len(st.samples)-slowSampleCap:]
 	}
-	return len(st.samples)
+	count := len(st.samples)
+	slowMu.Unlock()
+
+	if expiredAfter > 0 {
+		log.Printf("[workbuddy] slow cooldown expired: auth=%s model=%s expired_after=%s ttft=%dms",
+			authID, model, expiredAfter.Truncate(time.Second), ttftNS/1e6)
+	}
+	return count
 }
 
 // slowMedian 返回样本的中位数；空切片返回 0。
@@ -333,7 +352,7 @@ func slowBaselineForModelLocked(model string, minSamples int, window time.Durati
 // 否则最后一次判定会把该模型的全部账号关掉，调度无号可选。
 // [参数] authID：账号标识；model：上游模型名；now：当前时间。
 // [返回] true 表示本次被置入慢速冷却。
-// 最近修改时间：2026-10-25；改动原因：新增，慢速判定与冷却唯一入口。
+// 最近修改时间：2026-10-25；改动原因：新增慢速判定入口，并补判定取证与防抽干放开日志。
 func evaluateSlowAccount(authID, model string, now time.Time) bool {
 	cfg := loadedSlowConfig()
 	if !cfg.enabled {
@@ -346,40 +365,60 @@ func evaluateSlowAccount(authID, model string, now time.Time) bool {
 	}
 
 	slowMu.Lock()
-	defer slowMu.Unlock()
 
 	st := slowStateLocked(authID, model, false)
 	if st == nil {
+		slowMu.Unlock()
 		return false
 	}
 	if now.Before(st.cooldownUntil) {
+		slowMu.Unlock()
 		return false
 	}
 
 	values := windowSamplesLocked(st, cfg.window, now, true)
 	if len(values) < cfg.minSamples {
+		slowMu.Unlock()
 		return false
 	}
 	median := slowMedian(values)
 	if median < cfg.minTTFTNano {
+		slowMu.Unlock()
 		return false
 	}
 	baseline := slowBaselineForModelLocked(model, cfg.minSamples, cfg.window, now)
 	if baseline == 0 {
+		slowMu.Unlock()
 		return false
 	}
 	// 用整数比较 median/baseline >= ratio/10，避免浮点误差。
 	if median*10 < baseline*uint64(cfg.ratioX10) {
+		slowMu.Unlock()
 		return false
 	}
 
 	// 全冷检查：同模型下除本账号外全部已冷却时，先放开一半。
-	releaseSharedSlowCooldownsLocked(model, authID, now)
+	released := releaseSharedSlowCooldownsLocked(model, authID, now)
 
 	st.cooldownUntil = now.Add(cfg.cooldown)
 	// 记录本轮冷却起点：解冷后只有这之后的样本参与判定，避免旧样本让它
 	// 一解冷就被再次判慢。样本本身保留，供面板继续展示平均延迟。
 	st.cooldownStartedAt = now
+	slowMu.Unlock()
+
+	// 判定取证：把判据的三个输入（中位数、基线、阈值）与冷却时长一次性记全，
+	// 否则线上只能看到「某号在冷却」，无法判断是真实慢还是参数配错。
+	// 日志必须在解锁之后写：log.Printf 会做 I/O，持 slowMu 期间阻塞会让所有
+	// 路由判定排队。
+	log.Printf("[workbuddy] slow cooldown entered: auth=%s model=%s median=%dms baseline=%dms ratio=%.1fx threshold=%.1fx samples=%d cooldown=%s released=%d",
+		authID, model, median/1e6, baseline/1e6, float64(median)/float64(baseline),
+		float64(cfg.ratioX10)/10, len(values), cfg.cooldown, len(released))
+	// 防抽干放开必须单独留痕：否则线上看到某号突然不再冷却，无法区分
+	// 「到期自然恢复」与「为腾出候选被强制放开」。
+	if len(released) > 0 {
+		log.Printf("[workbuddy] slow cooldown released to avoid pool drain: model=%s count=%d accounts=%s",
+			model, len(released), strings.Join(released, ","))
+	}
 	return true
 }
 
@@ -443,6 +482,11 @@ func releaseSharedSlowCooldownsLocked(model, excluding string, now time.Time) []
 //
 // 与 isAuthModelCoolingDown 并列而非合并：两者生命周期不同——失败冷却会被
 // 一次成功清零，慢速冷却必须稳定持续到窗口结束。
+//
+// 本函数保持纯读语义（只判断、不改状态）：它挂在每请求的路由热路径上，
+// 且被面板与换号候选过滤共同调用；在这里回收状态会让「查一次」变成写操作，
+// 与 slowCooldownSnapshot 的读取语义打架。到期恢复的可观测性改由
+// noteSlowObservation 的恢复检测负责（那里本来就持有写锁与时间基准）。
 // [参数] authID：账号标识；model：上游模型名；now：当前时间。
 // [返回] true 表示仍在慢速冷却期内。
 // 最近修改时间：2026-10-25；改动原因：新增，路由层排除的唯一判据。

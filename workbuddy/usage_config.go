@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -324,16 +325,33 @@ func configure(raw []byte) {
 	// 慢速冷却配置写回。窗口/样本数/冷却为 0 时 loadedSlowConfig 会把 enabled
 	// 降级为 false，因此这里只拦截非正值，避免两处判断分叉。
 	slowAccountEnabledMu.Lock()
+	prevSlowEnabled := slowAccountEnabled
 	slowAccountEnabled = nextSlowAccountEnabled
 	slowAccountEnabledMu.Unlock()
 
 	slowConfigMu.Lock()
+	prevSlowRatio := slowTTFTRatioX10
+	prevSlowWindow := slowWindowMinutes
+	prevSlowMinSamples := slowMinSamples
+	prevSlowCooldown := slowCooldownMinutes
+	prevSlowMinTTFT := slowMinTTFTMs
 	slowTTFTRatioX10 = nextSlowTTFTRatioX10
 	slowWindowMinutes = nextSlowWindowMinutes
 	slowMinSamples = nextSlowMinSamples
 	slowCooldownMinutes = nextSlowCooldownMinutes
 	slowMinTTFTMs = nextSlowMinTTFTMs
 	slowConfigMu.Unlock()
+
+	// 配置变更留痕：慢速判定参数直接决定「哪些号被判慢」，线上误判的第一
+	// 排查动作就是核对参数；没有这条日志时只能靠外部接口反推，且无法知道
+	// 是谁在什么时候把阈值改成了多少。只在真正变化时打印，避免重载刷屏。
+	if prevSlowEnabled != nextSlowAccountEnabled || prevSlowRatio != nextSlowTTFTRatioX10 ||
+		prevSlowWindow != nextSlowWindowMinutes || prevSlowMinSamples != nextSlowMinSamples ||
+		prevSlowCooldown != nextSlowCooldownMinutes || prevSlowMinTTFT != nextSlowMinTTFTMs {
+		log.Printf("[workbuddy] slow config applied: enabled=%v ratio=%.1fx window=%dm min_samples=%d cooldown=%dm min_ttft=%dms",
+			nextSlowAccountEnabled, float64(nextSlowTTFTRatioX10)/10, nextSlowWindowMinutes,
+			nextSlowMinSamples, nextSlowCooldownMinutes, nextSlowMinTTFTMs)
+	}
 
 	// management key: config_yaml > env > keep existing. Empty stays empty
 	// (plugin-layer auth disabled, host middleware still guards).
