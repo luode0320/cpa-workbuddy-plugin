@@ -56,6 +56,10 @@
     - **锁纪律**：三条日志全部移到 `slowMu` 解锁之后；`log.Printf` 会做 I/O，持锁写日志会让所有路由判定排队。
     - **新用例暴露的真实缺陷**：`recordSlowSample` 原先先判「冷却中」再判到期，导致过期后第一条样本被当作仍在冷却而提前返回，恢复事件永远不会被记录——已修正判定顺序。
     - **验证**：新增 `slow_logging_test.go` 6 用例；**5 项变异全部 KILLED**（删判定日志 / 删防抽干日志 / 替换到期日志文案 / 配置日志条件恒假 / `slowCoolingDown` 改写操作）。其中两项首轮被**编译期**拦截（删日志后变量未使用），据此改用可通过编译的语义变异重跑。cgo-shim build+vet+test 全绿，gofmt 干净。
+    - **发布链**：`c93d7bd`(fix, 7 文件) → CI `40196544940` success → 6/6 assets sha256 OK → `3a7e07a`(registry) → 远端 6/6 artifacts 200 且 size 全匹配、registry 零 `0.21.0` 残留。
+    - **生产部署（热重载零重启）**：`restart_required:false`；`hot reloaded active=0.21.1 retired=0.21.0`；落盘 `.so` sha256 `37c7454a…b57a` 与本地 zip 逐字节一致；二进制内置版本号**仅 `0.21.1`**（无旧版残留）且含 4 条新日志字符串。
+    - **生产验收**：插件 `enabled=true / effective=true / path=…v0.21.1.so`；37 账号、慢速冷却 0 个（此前残留已自然到期）；6 个 `slow_*` 配置为生产默认值（2.5x / 15m / 5 样本 / 10m / 3000ms）；面板 200（84078 字节）；真实入口 `deepseek-v4.1-flash` 流式 200、TTFT 1.36s、162 帧、NONCE 完整。
+    - **日志链路生产实证**：以可逆方式微调 `slow_cooldown_minutes` 10→11 后立即恢复 10（当前无冷却账号，不影响任何路由决策），生产日志真实打出 `[workbuddy] slow config applied: enabled=true ratio=2.5x window=15m min_samples=5 cooldown=11m min_ttft=3000ms`，证明配置留痕链路在宿主环境下可用。判定/到期/放开三类日志需真实判慢才会触发，本轮生产窗口内无判慢事件，故仅有单测 + 变异覆盖。
     - **边界**：只补日志与可观测性，未改判定算法与阈值；`slowCooldownSnapshot`（剩余冷却时长 + 窗口平均 TTFT）仍未暴露到 API。
   - **侦察结论**：TTFT 采集（`usage.go:266`）、上报（`usage_feed.go`）、面板聚合（`aggregate.go:194`、`api.go:516`）全部已有，**唯独路由层零引用**——缺的只是「观测 → 冷却」这根线。
   - **前置缺陷（阻断项，已修）**：`started` 在 executor 入口只取一次且跨 attempt 复用，`collector` 每轮新建 → 「A 失败耗时 10s → B 首帧 2s」被记成 12s，**A 的失败耗时算到健康号 B 头上**。改为 per-attempt 计时基准（`markAttemptStart`）。非流式路径同样补齐（`doExecuteOnce` 早已算出 `firstByteAt` 却丢弃）。
