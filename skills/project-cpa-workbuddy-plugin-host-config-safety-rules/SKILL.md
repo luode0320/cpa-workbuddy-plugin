@@ -12,7 +12,7 @@ description: 当生产 CPA 宿主（cpa.luode.vip / 45.207.222.65 的 cli-proxy-
   1. **讲清配置存储契约**（`config_store.content` 必须是什么形态），让「写配置」这一步不再踩坑；
   2. **故障特征速判 + 根因定位**（404 / 端口漂移 / 502 的真实链路）；
   3. **带回滚的恢复流程**（备份 → 修复 → 重启 → 验证，任一步失败可退）。
-- 边界：发布链路归 `project-cpa-workbuddy-plugin-release-rules`；本地编译验证归 `cgo-plugin-isolated-test`；插件代码缺陷归各插件自身域。本 skill 只处理「生产宿主配置」。
+- 边界：发布链路归 `project-cpa-workbuddy-plugin-release-rules`；本地编译验证归 `cgo-plugin-isolated-test`；插件代码缺陷归各插件自身域；**账号数据（`auth_store` / spool auths）的误删恢复归 `project-cpa-workbuddy-plugin-account-data-recovery-rules`**——本 skill 只管 `config_store` 配置层，不要拿配置层的写回手法去动账号表。本 skill 只处理「生产宿主配置」。
 - 通用可迁移部分（配置二次序列化损坏模式、故障时段写入源定位手法）见用户级 skill `config-persistence-safety-rules`，本 skill 只写本项目专属事实。
 
 ## 核心事实：配置存储契约（铁律，2026-10-11 实证）

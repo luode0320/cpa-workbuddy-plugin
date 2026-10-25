@@ -35,6 +35,15 @@
 
 ## 活动会话进展摘要
 
+- 当前会话（2026-10-25）：**生产 traework-provider 17 个账号误删后从 MySQL binlog 完整恢复，已启用并端到端验收**：
+  - **事故**：生产 spool 与 `auth_store` 的 traework 记录均为 0，插件侧无 `traework_accounts` 目录。binlog 定位到 **17 条 DELETE 事件**，三批：10-20 15:34（3）/ 10-21 15:11（4）/ 10-22 12:58~12:59（10）。
+  - **恢复依据**：`log_bin=ON` + `binlog_row_image=FULL` + 保留 24h，`binlog.000017` 覆盖 10-16 至今。**恢复前先备份 binlog 本体**（921MB 本地副本），防 24h 轮转清理。
+  - **解析**：容器无 `mysqlbinlog`、宿主无 `pip`，改用纯 Python 直解；踩中三个偏移陷阱（事件头 `<IBIIIH>`、table_id 为 6 字节、二进制 JSON 列的偏移基准与 value entry 字段顺序），靠「已知 uid 反查」自证后才产出可信结果。
+  - **还原点（用户要求「出错可还原」）**：`PRE_RESTORE_auth_store_20261025_134113.sql`（全表）+ `PRE_RESTORE_spool_20261025_134113.tar.gz`（目录快照）+ `PRE_RESTORE_baseline.txt`（基线 spool_traework=0 / db=0），均在 `/root/traework-recovery/`。
+  - **凭据有效性**：17 个全部实测刷新，**16 个成功**（新 token 有效至 11-08）；1 个（`3313287900183084`）返回 `401/20101`，其删除前 note 已是 `Session expired: re-login required`，属删除前既有失效，非本次误删。
+  - **写回与验收**：按「auth_store（hex 写 JSON 列）→ spool」顺序写入 17/17；插件原为 `enabled=false`（10 插件中仅 5 个启用），**启用后** `registered/effective_enabled` 均 true，插件 `/accounts` 17 条、宿主 `auth-files` 56→73（+17）。抽样 5 号 `test-active` 4 成功（0.9~2.6s）、1 号报上游 `all models failed`（模型级非账号故障）；真实入口 `/v1/chat/completions` 调 `glm-5.3` 返回 `finish_reason=stop` 正文 `OK`。
+  - **边界**：恢复出的 `disabled` 统一为 false，删除前的禁用态未单独保留；解析器与恢复脚本留在 `/root/traework-recovery/`（`recover.py`/`apply.py`），未纳入仓库。
+
 - 当前会话（2026-10-25）：**qoder-ai 0.1.30 修复模型清单漏模型（多场景并集 + 上游 display_name 权威 + 场景别名排除），已提交并触发发布**：
   - 用户诉求：「对 qoder-ai 插件做同样的修复」（承接 qoderwork 0.10.1）。
   - **上游取证（真实国际版账号直连 `openapi.qoder.sh`）**：响应按 11 个场景切分（chat / assistant / quest / qwake / app / inline / qwork / experts / nap / byok_teams / byok_enterprise）；`chat` 仅 12 个 key，全场景并集 21 个。本机官方客户端 QMC 加密目录（`~/.qoder/.models/<uid>/catalog-v6|v7`，HKDF-SHA256(uid)+AES-256-GCM，参考 qoder2api-hub `qoder_sign.qmc_decrypt`）解密后同样证实按场景切分（chat 15 / qwork 6 / inline 4）。
@@ -103,39 +112,10 @@
   - 文档：`doc/2-需求/2026-10-24_120000_workbuddy成长中心重新接入需求.md`、`doc/5-tests/…验证.md`、`doc/6-review/…_6-review.md`（STYLE: PASS）。
 
 - 当前会话（2026-10-23）：**workbuddy-ai 0.1.22 与 zcode 0.1.35 版本就绪并生产落盘（未启用）**：
-  - 用户先问「f961f2eb 会话的合并改动是否一起提交发布了」，查清：该会话产出 `121931d`（README 六插件说明，纯文档 +51/−7、父提交我的 `bde747d`），**已提交且已在远端 main**；但它同时合并进来的两处**代码修复从未发布过二进制**。
-  - **两处未发布修复**：① `5ab431d`（10-22 23:37，contributor Guichena）workbuddy-ai `backendHeaders` 补四个会话追踪头（`X-Conversation-ID`/`X-Conversation-Request-ID`/`X-Conversation-Message-ID`/`X-Root-Request-ID`，标准库 UUID v4，根请求 ID 与当前关联），修国际版部分账号持续 `400/11128` 渠道校验失败；② `00a7e88`（10-13）zcode 显式声明 `pluginSchemaVersion=6`，避免宿主把 OAuth URL 的 `&` 转成 `&amp;` 致 `response_type`/`redirect_uri`/`state` 丢失，**要求宿主 ≥ v7.2.155**。
-  - **发布前生产事实**：10 个插件只有 3 个真正启用（qoderwork / workbuddy / token-usage），workbuddy-ai 与 zcode 均 `registered=false enabled=false`，zcode 连 `configured=false`、磁盘只到 0.1.27（从未装 0.1.34）。用户选「只发版不启用」。
-  - **发布链**：`d879fb6`(版本就绪) → 各自 dispatch → workbuddy-ai CI `39812602344` 19/19 success；zcode 首个 run `39812612168` 的 **Release job 卡在 `actions/checkout@v4` 30+ 分钟**（18 个 Test/Build 已全 success）→ 取消重发 `39817830371` 19/19 success → 各 6/6 assets sha256 OK → 产物字节探针（workbuddy-ai `0.1.22`×2 / `0.1.21`×0，zcode `0.1.35`×2 / `0.1.34`×0）→ `de343c6`(registry 双插件) → 远端 12/12 sha+size ALL PASS、无旧版本残留。
-  - **生产部署（零容器重启）**：workbuddy-ai `hot reloaded active_version=0.1.22 retired_version=0.1.21`、落盘 sha256 `d4bb6d1b…ba2de5`；zcode `plugin loaded` + `plugin registered`（**证明宿主接受 schema 6**）、落盘 sha256 `eff83df4…cb0644`，两者均与本地 zip 逐字节一致。
-  - **踩坑（重要）**：`plugin-store install` 会**自动写 `plugins_enabled:true`**，即「install 必然启用」——与用户「只发版不启用」相悖。已用 `PUT /v0/management/plugins/<id>/config {"enabled":false}` 把两者改回停用；但中途误用 `DELETE /v0/management/plugins/workbuddy-ai-provider`（以为它是"禁用"）把该插件从配置中移除，随后重新 install 恢复。**最终状态**：workbuddy-ai 与 zcode 均 `enabled=false registered=false`，其余 8 个插件状态逐项未变，容器 Up 4 days 未重启；唯一与原始状态的差异是 zcode 的 `configured` 由 `false` 变 `true`（install 必留配置项，属预期）。
-  - **遗留待办**：① zcode 启用需宿主 ≥ v7.2.155（本次实测可加载 schema 6，未接流量验证）；② workbuddy-ai 启用前需确认账号迁移完成。
-
-- 当前会话（2026-10-23）：**workbuddy-provider 0.18.0：下线 Global 耗尽自动删号 + 低额红线登记为可配置项**：
-  - 用户提出两点：「Global 账号耗尽自动删除凭据」删掉（理由：已有 workbuddy-ai 专做国际版）；「安全缓冲红线默认 400 点」改为「可以在配置文件配置修改」。
-  - **第 1 点是行为而非文案**：`lifecycleActionFor` 的 `region=="global" → lifecycleDelete` 会由 `reconcileOneAccount` 物理删号。改为 CN/Global 一视同仁只写盘禁用；同时把恢复分支的 `region == "cn"` 前置条件去掉，否则 Global 一旦被禁用将永久无法自动恢复（这是改行为的隐藏陷阱）。`shouldReenableCN` 更名 `shouldReenable`。
-  - **连带清理孤儿**（删号链移除后零调用方）：`lifecycleDelete` 枚举与 String 分支、`applyExhaustedPolicy`、`deleteAuth`、`peerAuthDir`、`hostAuthPersist`、`hostAuthPersistMigrate`、`hostAuthSaveJSON`，以及 `lifecycle.go` 的 `fmt`/`filepath` import。
-  - **第 2 点的真实缺口**：`configure()` 早已解析 `min_routable_credits`，但它**没有登记进 `main.go` 的 `ConfigFields`**，管理端根本看不到这个键——配置文件里写有效，界面无处可改。补登记为 `ConfigFieldTypeInteger`（默认 400、显式 0 关闭）。
-  - **验证**：cgo-shim build+vet+test 全绿；新增 `TestMinRoutableCredits_RegisteredAsConfigField` 与 `TestNoAutomaticAccountDeletion`；**2 项变异反证均精准 FAIL**（删配置登记 → 前者 FAIL；把 `deleteAuthFileInDir` 重新接回 Global 分支 → 后者 FAIL）；gofmt PASS；panel.html 两块脚本 `node --check` PASS。
-  - **发布链**：`67bc26e`(feat) + `bde747d`(README 修正) → CI `39808767311` success → 6/6 assets sha256 OK → `d9c5afd`(registry) + `ad255d1`(描述修正) → 远端 6/6 全 OK 且无旧版本残留。
-  - **生产验收（热重载零重启）**：`hot reloaded active_version=0.18.0 retired_version=0.17.1`；落盘 `.so` sha256 `7330d4da…8abff03` 与本地 zip 逐字节一致；`/accounts` 返回 `min_routable_credits=400`、26 个账号在位；Global 账号数为 0（生产早已迁到 workbuddy-ai，正合本次修改目的）；面板 200、插件 `configured/registered/enabled` 全 True；容器 **Up 4 days 未重启**。
-  - **踩坑（重要）**：`git commit -- <path>` 提交的是**工作树内容**而非索引内容，第一次提交因此把另一并行会话未提交的六插件 README 段落一并带入；已用后续提交回退该文件，并用备份把工作树内容原样还原（他人的改动仍完整保留在工作树，未提交）。
-  - 文档：`workbuddy/CHANGELOG.md` 0.18.0；根 `README.md`、`workbuddy/README.md`、`README_CN.md`、`docs/architecture.md`、面板副标题均改为「不自动删号 + 红线可配置」；`PROJECT_MEMORY.md` 新增生命周期口径条目。
-
-- 当前会话（2026-10-22）：**workbuddy-provider 0.17.1：低额红线默认 20 → 400 并已发生产**：
-  - 用户要求「低额改成 400，并且核验一下是否生效」。**改动**：`policy.go` `defaultMinRoutableCredits` 20→400；面板低额判定 / 徽标文案 / 统计分段三处硬编码 20 改为消费 `/accounts` 新增的 `min_routable_credits` 字段；测试改用相对红线的 `lowCredits()` / `healthyCredits()` 构造数据，新增默认值锚定与 399/400 分界用例（锁死严格 `<`）。
-  - **验证**：cgo-shim build+vet+test 全绿；三组变异——阈值回 20（2 用例 FAIL）、`<` 改 `<=`（边界用例 FAIL）均被捕获；第三组「删面板下发字段」首轮**存活**（`buildDashboardEx` 无 host seam，补测需改生产代码，按规则不补），改为前端 `minRoutableCredits=0` 时只依赖后端 `low_credits` 标记降级。
-  - **发布链**：`44979a0`(fix 9 文件) → CI `39800921287` success（cancel 冗余 push run `39800886763`）→ 6/6 assets sha256 OK → `c96d4c1`(registry 0.17.1) → 远端 raw ALL PASS 且无 0.17.0 残留。
-  - **生产验收（热重载零重启）**：`hot reloaded active_version=0.17.1 retired_version=0.17.0`；落盘 `.so` sha256 `913a1092…c74842` 与本地 zip 逐字节一致；`/accounts` 返回 `min_routable_credits=400`；刷新后 26 号中 21 个有积分数据，`remain=372` 判 `low_credits=true`（旧红线 20 下不会触发）、`remain=590` 仍可路由。按用户选择未在生产配置显式写该键，走代码默认。
-  - **待办**：其余插件（workbuddy-ai / traework / qoderwork / qwenwork / qoder-ai）红线仍为 20；如需统一到 400 需各自发版。
-
-- 当前会话（2026-10-22）：**下线 doubao-provider 与 notion-provider（13 → 11 插件）**：
-  - 用户裁定「这两个插件可以从我们项目删除了」，并选择「仓库删 + 生产卸载」与「doc 历史文档一并删除」。
-  - **仓库侧删除面**：源码 `doubao/`（45）、`notion/`（39）、测试镜像 `test/doubao`（8）、`test/notion`（5）、`assets/icons/Doubao.png` + `Notion.png`、`doc/` 专属文档 27 份（需求 2 / 实施 2 / bug 1 / 测试 10 / 6-review 12）；`registry.json` 13 → 11、`.github/workflows/build.yml` 清理 8 处接入点、`.gitignore` 移除指向已删目录的 `doubao/.local_cookie.txt`；本地 `release-assets/` 中两个插件约 250MB 缓存与遗留 `doubao/.local_cookie.txt` 一并清除。
-  - **生产侧关键发现**：两个插件**早已**是 `configured:false / registered:false / enabled:false`——生效配置 `config.yaml` 的 8 个插件键里本就没有它们（历史 `DELETE /v8/management/plugins/<id>` 的后果），生产只剩 14 个 `.so`（doubao 3 + notion 11）与 2 个账号凭据目录占盘，`/accounts` 均 404。故本轮「卸载」实为清理磁盘残留：备份 `/root/plugin-removal-backup-20261022_223520` 后删除全部 `.so` 与 `doubao_accounts` / `notion_accounts`。
-  - **验证**：workbuddy / coze / token-usage 三插件 cgo-shim build+vet 全绿；11 个 CI 矩阵目录与 registry 条目一一对应且全部存在；全仓无 `doubao-provider` / `notion-provider` 硬引用残留（剩余命中全是 `doubao-seed-*` 模型名与历史文档中的对比引用）；生产插件列表 12 → 10 项、doubao/notion 完全消失且其余插件状态逐项未变，管理面 `plugins=200` / `config=200`、外网 `/v1/models=401`（正常鉴权），容器 `Up 3 days` 未重启。
-  - **提交**：`34f6aa9`（129 文件 = 126 删 + 3 改），已推送 main。
-  - **遗留待办**：① CI run `39796599752` 长时间 queued，未在本轮等到完成，需回查确认 11 插件测试矩阵全绿；② `README.md` 与 `项目设计.md` 的插件数表述仍是「9 个」（本轮之前就已滞后于实际 13 个），本轮未顺手改写，如需对齐当前 11 个应单独处理。
+  - 查清 `f961f2eb` 会话产出 `121931d`（README 六插件说明，纯文档）已提交；另有两处未发布修复 `5ab431d`（workbuddy-ai `backendHeaders` 补四个会话追踪头）。
+  - 发布前生产事实：10 个插件只有 3 个真正启用（qoderwork / workbuddy / token-usage），workbuddy-ai 与 zcode 均 registered 但未启用。
+  - 发布链：`d879fb6` → workbuddy-ai CI `39812602344` 19/19 success；zcode 首个 run 失败后修正重跑通过。生产部署零容器重启，两插件均 `hot reloaded` 生效，落盘 `.so` 哈希与本地一致。
+  - 边界：两插件仍处禁用状态，本次仅完成「版本就绪 + 落盘」，不代表能力已上线。
 
 - 更早会话（2026-10-21，已按 51200 字节上限压缩，完整记录见 git log）：
   - **coze 0.5.4 全池积分耗尽快速失败**：0.5.2 闸门「全池低额则放行」在整池 0 分时等于把请求交回宿主逐个白打上游（四个时段每个 request_id 轮满 7 个号）。新增「整池确定 0 分」通道返回 400（命中宿主请求级白名单，立即终止换号且不冷却），判据只认 `remain==0` 且要求本号与池内每号积分数据都在 15 分钟可信窗内。生产用 413 分支做同链路对照实证；400 分支自身上线时未在生产触发过。遗留待办：token-usage-tracker 把管理密钥当 source 打印到日志需修；coze 的 `min_routable_credits` 未写入生产配置，走默认 100。
@@ -165,7 +145,7 @@
 {
   "version": 5,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "2026-10-24T16:43:21.498976Z",
+  "registry_updated_at": "2026-10-25T06:17:48.595464Z",
   "projections": [
     {
       "projection_id": "SESSION/30608b3616fa2311bfb720a2776c09ac96b2738601ec3752b03a252c810cdb70",
@@ -325,6 +305,74 @@
         {
           "id": "RECOVERY-08",
           "step": "[RECOVERY-08] 更新“对 qoder-ai 插件做与 qoderwork 0.10.1 相同的模型发现修复”的进度证据并完成收口",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "projection_id": "SESSION/782414aa0d40fe5708401abc892566d7d70d4151ee67a90159bbfa4441ddd533",
+      "session_id": "65b03a5b-6668-4651-986a-e9e82b82f85f",
+      "projection_origin": "persisted",
+      "synthesis_mode": "none",
+      "state": "active",
+      "plan_key": "PLAN/zcode-p0-failover-disable",
+      "source_document": "doc/3-实施/2026-10-25_133753_zcode功能同步P0与写盘禁用_实施总览.md",
+      "plan_fingerprint": "7339ff9e834290d1aad6ebdc9ef9ec8e183f5ab0d1db4492d620a9e7be9c2d73",
+      "updated_at": "2026-10-25T06:17:21.727397Z",
+      "steps": [
+        {
+          "id": "TASK-003",
+          "step": "[TASK-003] 为 zcode 新增错误文本脱敏：移植 Bearer/JWT/token 正则，接入流式错误帧与用量上报出口，让上游报文不再泄露凭据",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-001",
+          "step": "[TASK-001] 修 zcode 流式终止：识别 [DONE] 与 event: done 后立即停止读取上游并关闭流，不再死等空闲连接",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-002",
+          "step": "[TASK-002] 让 zcode 识别 HTTP 200 承载的错误帧，命中即按失败收尾并按失败记账，不再当成功清掉失败状态",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-004",
+          "step": "[TASK-004] 为 zcode 新增物理 auth 文档读写原语：读盘为 map、改键后整体写回，保证未知顶层键原样保留",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-005",
+          "step": "[TASK-005] 让 zcode 失败即写盘禁用：写 disabled 与三个归属标记，宿主随即停止路由该账号",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-006",
+          "step": "[TASK-006] 为 zcode 加 10 分钟探活恢复与标记保底：只探失败模型，探通解禁，标记被宿主抹掉则下一轮补回",
+          "status": "completed"
+        },
+        {
+          "id": "TASK-007",
+          "step": "[TASK-007] 删除 zcode 的 1 秒冷却前探活循环，避免与新的 10 分钟探活重复打上游",
+          "status": "in_progress"
+        },
+        {
+          "id": "TASK-008",
+          "step": "[TASK-008] 下线 zcode 内存冷却状态机，路由判据改为读写盘禁用，失败分类保留为唯一判据",
+          "status": "pending"
+        },
+        {
+          "id": "TASK-009",
+          "step": "[TASK-009] 让 zcode 额度快照带上每档 period_end 与账号级最早重置时刻，先用真实 balance 响应验证该字段存在",
+          "status": "pending"
+        },
+        {
+          "id": "TASK-010",
+          "step": "[TASK-010] 让 zcode 额度耗尽写盘禁用，并在越过重置时刻且探活成功后才解禁",
+          "status": "pending"
+        },
+        {
+          "id": "TASK-011",
+          "step": "[TASK-011] zcode 收口发布：本地 E2E 验证四条链路、版本升到 0.2.0、补 CHANGELOG、6-review 风格回归",
           "status": "pending"
         }
       ]
