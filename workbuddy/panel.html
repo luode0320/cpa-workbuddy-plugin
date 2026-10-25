@@ -447,6 +447,11 @@ function progressHTML(c, a){
   if(isAccountLowCredits(a)){
     statSegments.push(`<span class="pb-segment" style="color:var(--warn)">保活(&lt;${minRoutableCredits})</span>`);
   }
+  // 慢速冷却：该号在列出的模型上首字延迟显著高于同池水平，已让位。
+  // 只影响这些模型，账号整体仍可用，因此必须逐模型列出而不是做成整体禁用观感。
+  if(a&&Array.isArray(a.slow_cooling_models)&&a.slow_cooling_models.length){
+    statSegments.push(`<span class="pb-segment" style="color:var(--warn)">慢速让位 · ${a.slow_cooling_models.map(esc).join(", ")}</span>`);
+  }
   const statHTML=statSegments.join('');
   const primaryHTML=`<span class="pb-primary"><span class="pb-segment">可用积分</span>${statHTML}</span>`;
   if(!c||(!(c.total_remain||0)&&!(c.total_used||0)&&!(c.total_size||0)))return `<div class="pb"><div class="pb-label">${primaryHTML}<span class="pb-used"><span class="spin"></span>加载中…</span></div><div class="pb-track"><div class="pb-bar" style="width:0%"></div></div></div>`;

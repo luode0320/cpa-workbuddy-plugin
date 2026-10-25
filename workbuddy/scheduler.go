@@ -101,7 +101,7 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
 
-	// 3. 排除「测试」标签、账号×模型冷却、轮换冷却、以及低于禁用线/已耗尽的账号。
+	// 3. 排除「测试」标签、账号×模型冷却、轮换冷却、慢速冷却、以及低于禁用线/已耗尽的账号。
 	// 全部被排除时延迟给宿主，让宿主切到其它 provider，而不是钉死在不可用账号上。
 	upstreamModel := resolveUpstreamModel(req.Model, nil)
 	rotationNow := time.Now()
@@ -114,6 +114,11 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		// 这里与 isAuthModelCoolingDown 并列而非合并，因为两者生命周期不同——
 		// 失败冷却会被一次成功清零，轮换冷却必须稳定持续到窗口结束。
 		if rotationCoolingDown(c.ID, rotationNow) {
+			continue
+		}
+		// 慢速冷却：该号在这个模型上显著慢于同池水平时让位。同为独立生命周期，
+		// 且只影响当前模型——该号在其它模型上仍可正常承流。
+		if slowCoolingDown(c.ID, upstreamModel, rotationNow) {
 			continue
 		}
 		// 三档语义（2026-10-23）：只有低于硬禁用线或已耗尽的号才真正摘出；

@@ -35,6 +35,18 @@
 
 ## 活动会话进展摘要
 
+- 当前会话（2026-10-25）：**workbuddy 慢速账号 TTFT 拥堵自动冷却（0.21.0，已实现未发布）**：
+  - **需求起点**：用户从生产用量面板看到同一模型 `deepseek-v4.1-flash` 的 TTFT 在 13s~21s 分层，慢的一批集中在固定账号；这类号每次仍返回 200，既有失败冷却完全抓不到。
+  - **关键判读（推翻了直觉方案）**：同一批请求 input 普遍 33 万 tokens，prefill 本身十几秒，**绝对阈值会把整池健康号一次禁光**。判据必须是同模型横向相对对比。
+  - **侦察结论**：TTFT 采集（`usage.go:266`）、上报（`usage_feed.go`）、面板聚合（`aggregate.go:194`、`api.go:516`）全部已有，**唯独路由层零引用**——缺的只是「观测 → 冷却」这根线。
+  - **前置缺陷（阻断项，已修）**：`started` 在 executor 入口只取一次且跨 attempt 复用，`collector` 每轮新建 → 「A 失败耗时 10s → B 首帧 2s」被记成 12s，**A 的失败耗时算到健康号 B 头上**。改为 per-attempt 计时基准（`markAttemptStart`）。非流式路径同样补齐（`doExecuteOnce` 早已算出 `firstByteAt` 却丢弃）。
+  - **实现**：新增 `workbuddy/slow_account.go`，与失败冷却/轮换冷却三分独立（三者生命周期不同：失败冷却每次成功清零、轮换冷却需持续到窗口结束、慢速冷却同理且不能跨模型）。四处过滤接入 + 成功路径打点 + 6 配置键登记 + 面板 `slow_cooling_models` 清单。
+  - **基准口径经两轮修正（重要）**：初版用「中位数的中位数」，变异验证**存活**——多账号池里慢号占多数时基准被抬到慢号水平，机制会静默失效。改为**下四分位 P25**，同时用 `slow_min_ttft_ms` 绝对下限挡住「单个超快号把基准压到地板」的另一端。两处各有用例锁定。
+  - **另外两个设计修正**（均由测试暴露）：① 判慢时清空样本会让面板立刻失去平均延迟、且防抽干再也看不到彼此的冷却状态 → 改为保留样本 + 记录 `cooldownStartedAt`，判定时只统计冷却起点之后的样本，避免「解冷即再冷却」死循环；② 同步路径换号后不回传实际账号 → 新增 `storedAuthID` 并上抛 `usedID`，否则样本会记到被换掉的号上。
+  - **验证**：4 个测试文件 20 用例；**5 项变异全部 KILLED**（去绝对下限 / 断调度过滤调用 / 去样本门槛 / 基准退化为最小值 / 基准改回中位数）。其中「断调度过滤」与「基准退化」首轮**存活**，据此补了调度路径用例与基准敏感性用例——这是本轮最有价值的两个发现。cgo-shim build+vet+test 全绿，`panel.html` 双脚本 `node --check` PASS，版本 0.21.0。
+  - **未闭环**：未发布、未部署生产；默认阈值（2.5 倍 / 15 分钟 / 5 样本 / 10 分钟冷却 / 3s 下限）未经生产数据校准。上线后需观察 `slow_cooling_models` 是否出现批量增长。
+  - **范围边界**：只在 workbuddy 落地，其它 provider 插件未同步；不做写盘禁用（慢是性能问题不是故障）。
+
 - 当前会话（2026-10-25）：**traework 向 workbuddy 同步能力并修掉两个真实缺陷，发布 0.4.0 并部署生产**：
   - **两个真实缺陷**：① 写盘禁用可能名义生效——宿主 fsnotify 不监听 mysqlstore spool（qoderwork 0.11.0 生产实证 48h 零 watcher 事件而 mtime 持续变化），「写盘 → 宿主毫秒级感知」前提不成立；改为插件自有 sidecar `data/traework-failover.json` 作为路由判据权威来源。② 模型级故障被记成账号级——HTTP 200 的 SSE 错误帧被无条件改写成 403，`All backends failed` 类后端池级故障走进账号级判据导致整池自禁（与 qoderwork 0.11.0 事故同机理）；在记账唯一漏斗与换号判据两处同时豁免，硬额度（402/额度标记）优先不被吞。
   - **同步的七项能力**：故障 sidecar 跨重启存活、宿主 persist 抹标记后补回、外部启用对账、轮换冷却（状态独立于失败复位，四处成功打点）、积分快照持久化 `data/traework-credits.json`（与故障 sidecar 分文件，避免高频替换冲掉低频状态）、积分双阈值分级、面板轮换/积分档位徽标、11 个配置键登记。
@@ -59,17 +71,7 @@
   - 还原点三层（表 dump + spool 快照 + 数量基线）在 `/root/traework-recovery/`；17 个凭据实测刷新 **16 成功**（1 个删除前即 `Session expired`，非本次误删）；按「auth_store → spool」写回 17/17，启用后 `/accounts` 17 条、宿主 `auth-files` 56→73。
   - **完整方法论已沉淀为项目 skill** `project-cpa-workbuddy-plugin-account-data-recovery-rules`；边界：恢复出的 `disabled` 统一 false，删除前禁用态未保留。
 
-- 当前会话（2026-10-25）：**zcode 功能同步 P0 已全部实现、发布 0.2.0 并部署生产**：
-  - **背景与裁定**：用户指出 zcode 落后 workbuddy 很远（53 文件/27,258 行 vs 20 文件/10,476 行）。三项裁定：① 只做 P0（签到/成长中心/会话亲和/轮换/计数/鉴权/客户端版本拉取全部剔除）；② 引入写盘禁用并**移除原内存冷却**；③ 额度耗尽落成写盘禁用 + 重置后探活恢复。
-  - **计划落盘**：`doc/3-实施/2026-10-25_133753_zcode功能同步P0与写盘禁用_实施总览.md`，4 周期 / 11 任务；执行顺序约束 `CYCLE-02` 先建新机制（TASK-004~006）再删旧机制（TASK-007~008），保证无能力真空。
-  - **CYCLE-01 三处流式缺陷**：`[DONE]`/`event: done` 后立即停止读取并关流（原实现只跳过用量提取、仍转发且死等 Keep-Alive）；识别 HTTP 200 承载的错误帧（原被当成功并清失败状态）；上游报文经 `redactSecrets` 脱敏后再落 `stream.emit` 与 usage feed。
-  - **CYCLE-02 写盘禁用**：失败即写 `disabled:true` + `failover_disable`/`_model`/`_at` 三标记，走宿主自身路由判据；10 分钟探活**只回放失败的那一个模型**；手动/额度禁用一律不接管；宿主 persist 抹标记时下一轮按「本进程写过 + 盘上确实 disabled」补回。内存阶梯冷却（60s×次数、上限 10 分钟）与账号×模型状态机整体下线。
-  - **CYCLE-03 额度禁用**：`FEAS-004` 用本机 zcode 客户端落盘的真实 `billing/balance` 响应验证（319 条 / 5 个自然日）——`period_end` 恒为当日 23:59:59 CST、跨度 86399s、相邻日 `start = 上一日 end + 1`，**按自然日重置成立**。恢复需「越过 `earliest_reset`」+「探活成功」双条件；`HasUsage=false` 时不动手（此时 `TotalRemain` 是授予量回退，据此判耗尽会把全部账号误禁）。
-  - **E2E 抓到的真实缺陷（单测盖不到）**：`writeAuthFileDirect` 按 `StoredAuth` 整篇重建文档 → 探活成功后 `saveAuthTestStatus` 把刚写好的 `disabled:false` 覆盖回内存旧值，并抹掉结构体未声明的宿主字段。改为「读旧文档 → 覆盖结构体已知键 → 写回」并补回归守卫（变异精确失败）。
-  - **验证**：12 个变异全部被测试检出（CYCLE-02 六个 / CYCLE-03 五个 / CYCLE-04 一个）；`cgo-shim` 全绿；WSL 真实 c-shared `.so` + ctypes 宿主桥 E2E 通过失败禁用 / 探活恢复 / 流式终止三条链路（额度端点硬编码不可注入，改由单测覆盖）。4 份 `6-review` 全 `STYLE: PASS`。
-  - **发布链**：`1ed4f28`(fix, 34 文件) → CI `40171590144` success → 6/6 assets sha256 OK → `f73068e`(registry) → 远端 6/6 ALL PASS 零残留。
-  - **生产部署（热重载零重启）**：install `restart_required:false`；落盘 `.so` sha256 `6d9b22db…bdbf` 与本地 zip 一致；`hot reloaded active=0.2.0 retired=0.1.35`；`registered/effective_enabled` 均 true；`/panel` 200、`/accounts` 正常、`/v1/models` 含 `glm-5.3`。
-  - **生产现状与边界**：部署前 zcode 为 `enabled=false`（池内 **0 个 zcode 账号**），按用户裁定「安装 0.2.0 并启用」处理后已启用，但**当前仍是空池**，实际承载流量前需导入账号。额度链路真实 E2E 未做（端点硬编码）；真实次日重置恢复留待生产灰度观察。
+- 当前会话（2026-10-25，已压缩）：**zcode 功能同步 P0 发布 0.2.0 并部署生产**：三项裁定（只做 P0 / 引入写盘禁用并移除内存冷却 / 额度耗尽落禁用 + 重置后探活恢复）；三处流式缺陷修复（`[DONE]` 与 `event: done` 立即停读、识别 HTTP 200 承载的错误帧、报文脱敏）；10 分钟探活只回放失败模型。**E2E 抓到的真实缺陷**：`writeAuthFileDirect` 按结构体整篇重建会抹掉宿主字段、且探活成功后把刚写的 `disabled:false` 覆盖回内存旧值 → 改为「读旧文档 → 覆盖已知键 → 写回」并补回归守卫。12 项变异全部 KILLED；生产热重载零重启，但**池内 0 个 zcode 账号**，额度链路真实 E2E 未做。完整细节见 git log 与 doc/3-实施。
 
 - 当前会话（2026-10-25）：**同一宿主 persist 抹除缺口同步到四个插件，已发生产并验收**：
   - **背景**：workbuddy-provider 0.20.2 修复「宿主每次请求结束用内存 Metadata 重建 auth 文件、抹掉插件直写归属字段」后，用户要求同步到 workbuddy-ai / qoderwork / qoder-ai / coze。

@@ -122,7 +122,11 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 
 	// 前置冷却拦截：如果宿主分配的初始账号当前正在冷却中（如上一请求刚失败 403），
 	// 绝对不要对它发起自杀式的上游调用！在 attempt=0 之前立即换号到可用的健康候选。
-	if isAuthModelCoolingDown(curAuthID, upstreamModel) || isAuthModelCoolingDown(curAuthUID, upstreamModel) {
+	// 慢速冷却同样走这条拦截：宿主的会话亲和命中时不会看插件状态，但请求进入插件后
+	// 由这里主动换号，已绑定会话也能切走。
+	earlyNow := time.Now()
+	if isAuthModelCoolingDown(curAuthID, upstreamModel) || isAuthModelCoolingDown(curAuthUID, upstreamModel) ||
+		slowCoolingDown(curAuthID, upstreamModel, earlyNow) || slowCoolingDown(curAuthUID, upstreamModel, earlyNow) {
 		if nextID, nextSA, hasNext := pickNextAuthForModel(curAuthID, upstreamModel); hasNext && nextSA != nil {
 			if nextReq, rebErr := rebuildRequestWithSA(curReq, nextSA); rebErr == nil {
 				curReq = nextReq
@@ -140,7 +144,11 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	// 路由层 isAuthModelCoolingDown 会跳过它们，本请求若仍落到这里说明上游
 	// 刚恢复或该组合尚未被标记，按正常流程发起即可。
 
+	var attemptStarted time.Time
 	for attempt := 0; attempt <= budget; attempt++ {
+		// 每次换号尝试单独计时：请求级 started 早于当前 attempt，直接用它算 TTFT
+		// 会把上一个账号的失败耗时算进当前账号。
+		attemptStarted = time.Now()
 		stream, statusCode, _, err := hostHTTPDoStream(curReq)
 		if err != nil {
 			publishUsage(requestedModel, upstreamModel, curAuthUID, started, usage.Detail{}, true, 0, err.Error(), reasoningEffort, 0, curAccountLabel, sessionKey)
@@ -216,6 +224,8 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		// still rotate accounts on the SAME request; once anything has
 		// reached the client the error is surfaced instead.
 		collector := &sseUsageCollector{}
+		// 把计时基准钉在本次尝试的发出时刻，而不是请求起点。
+		collector.markAttemptStart(attemptStarted)
 		scanner := bufio.NewScanner(newHostStreamReader(stream))
 		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		var sseErr string
@@ -353,6 +363,9 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		// 异步流式是生产主路径，轮换计时必须在这里推进，否则长流量的账号
 		// 永远不会被判定为「连续使用满 N 分钟」。
 		noteRotationUsage(curAuthID)
+		// 慢速观测：只记成功请求的首字延迟，样本达标时判定该账号在该模型上
+		// 是否显著慢于同池水平。与轮换并列，两者互不影响。
+		noteSlowObservation(curAuthID, upstreamModel, collector.ttftNS(started))
 		// 一次真实成功即证明该模型已恢复，清掉该模型上残留的冷却，
 		// 避免其它账号的旧记录让已恢复的模型继续被跳过。
 		resetModelBlockedState(upstreamModel)
@@ -378,7 +391,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 // [参数] body：上游请求体；sa：初始账号凭据；sseFramed：是否需自带 SSE 帧前缀；
 // collector：用量采集器；model：已归一化的上游模型名，用于模型级熔断判定。
 // 最近修改时间：2026-10-18 23:40:00；改动原因：新增 model 参数以支持模型级风控熔断。
-func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector, model string) ([]pluginapi.ExecutorStreamChunk, int, error) {
+func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector, model string) ([]pluginapi.ExecutorStreamChunk, int, string, error) {
 	budget := loadedRetryOn4xx()
 	curSA := sa
 	var lastStatus int
@@ -395,19 +408,29 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 		if isAuthModelCoolingDown(currentID, model) ||
 			(curSA.Account.UID != "" && isAuthModelCoolingDown(curSA.Account.UID, model)) ||
 			rotationCoolingDown(currentID, rotationNow) ||
-			(curSA.Account.UID != "" && rotationCoolingDown(curSA.Account.UID, rotationNow)) {
+			(curSA.Account.UID != "" && rotationCoolingDown(curSA.Account.UID, rotationNow)) ||
+			slowCoolingDown(currentID, model, rotationNow) ||
+			(curSA.Account.UID != "" && slowCoolingDown(curSA.Account.UID, model, rotationNow)) {
 			if _, nextSA, hasNext := pickNextAuthForModel(currentID, model); hasNext && nextSA != nil {
 				curSA = nextSA
 			}
 		}
 	}
 
+	// usedID 是最后一次尝试实际使用的账号标识，随返回值上抛：
+	// 换号后调用方必须用它做成功打点，否则慢速样本会记到初始账号头上。
+	usedID := storedAuthID(curSA)
+
 	for attempt := 0; attempt <= budget; attempt++ {
+		// 同异步路径：每次换号尝试重置 TTFT 计时基准，避免前一账号的失败耗时
+		// 叠加到当前账号的首字延迟上。
+		collector.markAttemptStart(time.Now())
 		chunks, statusCode, errOnce := collectUpstreamStreamOnce(body, curSA, sseFramed, collector, model)
+		usedID = storedAuthID(curSA)
 		if errOnce == nil {
 			// 真实成功即证明模型已恢复，清掉该模型上残留的冷却。
 			resetModelBlockedState(model)
-			return chunks, statusCode, nil
+			return chunks, statusCode, usedID, nil
 		}
 		lastStatus = statusCode
 		lastErr = errOnce
@@ -422,7 +445,7 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 				}
 				noteModelBlockedHit(currentID, model)
 			}
-			return chunks, statusCode, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(errOnce.Error(), 200))
+			return chunks, statusCode, usedID, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(errOnce.Error(), 200))
 		}
 
 		// 1. 已收集分片即视为已下发；其中是否含正文由 streamChunksHaveContent 判定
@@ -445,17 +468,17 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 				}
 			}
 			// 3. 不满足换号条件时透传错误
-			return chunks, statusCode, errOnce
+			return chunks, statusCode, usedID, errOnce
 		}
 
 		// Same retry policy as pumpUpstreamStream: account-level 4xx and
 		// (new) account-classified 200 in-stream error frames warrant a
 		// same-request account rotation; 5xx/0/402 stay cooldown-only.
 		if !shouldRotateOnUpstreamErr(statusCode, errOnce.Error()) {
-			return chunks, statusCode, errOnce
+			return chunks, statusCode, usedID, errOnce
 		}
 		if attempt >= budget {
-			return chunks, statusCode, errOnce
+			return chunks, statusCode, usedID, errOnce
 		}
 		// curSA.Account.UID is the host auth id; for pickNextAuth we
 		// key on the same scheduler-level ID that noteAccountFailure
@@ -467,15 +490,31 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 			currentID = strings.TrimSpace(curSA.Account.UID)
 		}
 		if currentID == "" {
-			return chunks, statusCode, errOnce
+			return chunks, statusCode, usedID, errOnce
 		}
 		_, nextSA, hasNext := pickNextAuthForModel(currentID, model)
 		if !hasNext || nextSA == nil {
-			return chunks, statusCode, errOnce
+			return chunks, statusCode, usedID, errOnce
 		}
 		curSA = nextSA
 	}
-	return nil, lastStatus, lastErr
+	return nil, lastStatus, usedID, lastErr
+}
+
+// storedAuthID 返回凭据对应的调度层账号标识：优先取 Auth.AccessToken，
+// 缺失时回退 Account.UID。调度、失败记账与慢速观测必须共用同一口径，
+// 否则同一账号会在不同状态表里落到不同键上。
+// [参数] sa：凭据；允许为 nil。
+// [返回] 账号标识；无法确定时返回空串。
+// 最近修改时间：2026-10-25；改动原因：新增，收敛三处重复的标识提取逻辑。
+func storedAuthID(sa *storedAuth) string {
+	if sa == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(sa.Auth.AccessToken); id != "" {
+		return id
+	}
+	return strings.TrimSpace(sa.Account.UID)
 }
 
 // collectUpstreamStreamOnce performs exactly one synchronous upstream call
@@ -515,15 +554,25 @@ func collectUpstreamStreamOnce(body []byte, sa *storedAuth, sseFramed bool, coll
 // request against a different account on failure. Returns a non-nil error
 // in the canonical "upstream N: ..." or "http_error: ..." shape that
 // parseUpstreamStatusFromErr understands.
-func doExecuteOnce(body []byte, sa *storedAuth, requestedModel, upstreamModel string) ([]byte, error) {
+//
+// ttftNS 是本次尝试的首字延迟（纳秒），0 表示未观察到首帧或该次尝试失败。
+// 计时基准取本次尝试发出请求的时刻，失败后换号不会把耗时算到下一个账号。
+// [参数] body：上游请求体；sa：本次尝试使用的凭据；
+//
+//	requestedModel / upstreamModel：请求模型名与归一化后的上游模型名。
+//
+// [返回] 聚合后的 completion、首字延迟纳秒值、错误。
+// 最近修改时间：2026-10-25；改动原因：上抛首字延迟，补齐非流式路径 TTFT 采集。
+func doExecuteOnce(body []byte, sa *storedAuth, requestedModel, upstreamModel string) ([]byte, uint64, error) {
+	attemptStarted := time.Now()
 	httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(sa), bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	backendHeaders(httpReq, sa)
 	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("http_error: %w", err)
+		return nil, 0, fmt.Errorf("http_error: %w", err)
 	}
 	defer stream.Close()
 	reader := newHostStreamReader(stream)
@@ -532,14 +581,29 @@ func doExecuteOnce(body []byte, sa *storedAuth, requestedModel, upstreamModel st
 		if sa != nil && sa.Account.UID != "" {
 			go reconcileByUIDForModel(sa.Account.UID, upstreamModel, statusCode, string(payload))
 		}
-		return nil, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200))
+		return nil, 0, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200))
 	}
 	var firstByteAt time.Time
 	completion, err := aggregateCompletion(reader, requestedModel, statusCode, &firstByteAt)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return completion, nil
+	return completion, ttftSince(attemptStarted, firstByteAt), nil
+}
+
+// ttftSince 计算首字延迟纳秒值，未观察到首帧或时钟异常时返回 0。
+// [参数] started：本次尝试发出请求的时刻；firstByteAt：首个数据帧到达时刻。
+// [返回] 首字延迟纳秒值；无法计算时为 0。
+// 最近修改时间：2026-10-25；改动原因：新增，非流式与流式共用的 TTFT 计算口径。
+func ttftSince(started, firstByteAt time.Time) uint64 {
+	if started.IsZero() || firstByteAt.IsZero() {
+		return 0
+	}
+	d := firstByteAt.Sub(started)
+	if d <= 0 {
+		return 0
+	}
+	return uint64(d)
 }
 
 // streamChunksHaveContent 判定已收集分片里是否含正文或工具调用。

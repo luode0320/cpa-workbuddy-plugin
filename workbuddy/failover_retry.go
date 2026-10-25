@@ -80,6 +80,11 @@ func pickNextAuthForModel(currentAuthID, model string) (nextAuthID string, nextS
 		if rotationCoolingDown(id, rotationNow) {
 			continue
 		}
+		// 慢速冷却中的号同理：换到一个刚被判定为慢的号，等于把慢请求换了个来源，
+		// 且只针对当前模型判定——它在别的模型上可能完全健康。
+		if slowCoolingDown(id, model, rotationNow) {
+			continue
+		}
 		// 「测试」accounts are unusable by product definition — they must not
 		// be picked up as an in-flight retry target either.
 		if isTestFailed(id) {

@@ -87,6 +87,14 @@ func configure(raw []byte) {
 	nextRotationCooldownMinutes := defaultRotationCooldownMinutes
 	nextRotationIdleResetMinutes := defaultRotationIdleResetMinutes
 
+	// slow_*: 慢速账号冷却。同为六键全缺回落默认值，存量配置无这些键时按默认生效。
+	nextSlowAccountEnabled := defaultSlowAccountEnabled
+	nextSlowTTFTRatioX10 := defaultSlowTTFTRatioX10
+	nextSlowWindowMinutes := defaultSlowWindowMinutes
+	nextSlowMinSamples := defaultSlowMinSamples
+	nextSlowCooldownMinutes := defaultSlowCooldownMinutes
+	nextSlowMinTTFTMs := defaultSlowMinTTFTMs
+
 	// retry_on_4xx: per-request account-failover budget. Applied ONLY when
 	// the key is present in config_yaml: a valid value is clamped to
 	// [0, 10] and applied; an unparseable value resets to the default 10.
@@ -190,6 +198,46 @@ func configure(raw []byte) {
 						nextRotationIdleResetMinutes = n
 					}
 				}
+				if strings.HasPrefix(line, "slow_account_enabled:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_account_enabled:"))
+					v = strings.Trim(v, "\"'")
+					nextSlowAccountEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "slow_ttft_ratio_x10:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_ttft_ratio_x10:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextSlowTTFTRatioX10 = n
+					}
+				}
+				if strings.HasPrefix(line, "slow_window_minutes:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_window_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextSlowWindowMinutes = n
+					}
+				}
+				if strings.HasPrefix(line, "slow_min_samples:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_min_samples:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextSlowMinSamples = n
+					}
+				}
+				if strings.HasPrefix(line, "slow_cooldown_minutes:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_cooldown_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextSlowCooldownMinutes = n
+					}
+				}
+				if strings.HasPrefix(line, "slow_min_ttft_ms:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_min_ttft_ms:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextSlowMinTTFTMs = n
+					}
+				}
 			if strings.HasPrefix(line, "retry_on_4xx:") {
 				retryOn4xxSeen = true
 				if n, ok := parseRetryOn4xxLine(line); ok {
@@ -272,6 +320,20 @@ func configure(raw []byte) {
 	rotationCooldownMinutes = nextRotationCooldownMinutes
 	rotationIdleResetMinutes = nextRotationIdleResetMinutes
 	rotationConfigMu.Unlock()
+
+	// 慢速冷却配置写回。窗口/样本数/冷却为 0 时 loadedSlowConfig 会把 enabled
+	// 降级为 false，因此这里只拦截非正值，避免两处判断分叉。
+	slowAccountEnabledMu.Lock()
+	slowAccountEnabled = nextSlowAccountEnabled
+	slowAccountEnabledMu.Unlock()
+
+	slowConfigMu.Lock()
+	slowTTFTRatioX10 = nextSlowTTFTRatioX10
+	slowWindowMinutes = nextSlowWindowMinutes
+	slowMinSamples = nextSlowMinSamples
+	slowCooldownMinutes = nextSlowCooldownMinutes
+	slowMinTTFTMs = nextSlowMinTTFTMs
+	slowConfigMu.Unlock()
 
 	// management key: config_yaml > env > keep existing. Empty stays empty
 	// (plugin-layer auth disabled, host middleware still guards).

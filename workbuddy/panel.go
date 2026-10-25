@@ -48,6 +48,9 @@ type wbAccount struct {
 	// FailoverUnconfirmed 表示盘上写着禁用但宿主列表仍为 enabled——写盘尚未被
 	// 宿主吸收，这个号此刻仍会被路由。它是「显示与实际不符」的唯一在线判据。
 	FailoverUnconfirmed bool `json:"failover_unconfirmed,omitempty"`
+	// SlowCoolingModels 列出该账号当前因「显著慢于同池同模型水平」而冷却的模型。
+	// 慢速冷却按「账号×模型」生效，不是账号整体停用，因此这里必须是清单而非布尔值。
+	SlowCoolingModels []string `json:"slow_cooling_models,omitempty"`
 }
 
 // failoverUnconfirmed 判定「盘上说已禁用、宿主仍在路由」这一不一致状态。
@@ -300,6 +303,9 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 			out[i].FailoverDisabled = true
 			out[i].FailoverModel = failoverProbeModelFor(out[i].AuthID)
 		}
+		// 慢速冷却按账号×模型生效：只列出该号当前判慢的模型，不影响该号
+		// 在其它模型上的可用性，因此不能折叠成一个布尔徽章。
+		out[i].SlowCoolingModels = slowCoolingModelsFor(out[i].AuthID, time.Now())
 	}
 	resp := map[string]any{
 		"accounts":       out,

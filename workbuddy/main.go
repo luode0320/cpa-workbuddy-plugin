@@ -345,7 +345,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.20.2"
+var version = "0.21.0"
 
 func wbRegistration() registration {
 	return registration{
@@ -369,6 +369,12 @@ func wbRegistration() registration {
 				{Name: "rotation_serve_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "单账号连续承流多少分钟后让位（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
 				{Name: "rotation_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "轮换让位后停留在冷却的时长（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
 				{Name: "rotation_idle_reset_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "连续使用的中断阈值（默认 10）：账号距上次使用超过该时长即视为新一轮，重新计时，避免零散流量被误判为持续负载。"},
+				{Name: "slow_account_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用慢速账号冷却（默认开启）：某账号在某个模型上的首字延迟中位数显著高于同池同模型水平时，在该模型上进入冷却并让出流量。慢是性能问题不是故障，只走内存冷却，到期自动恢复，不写盘禁用。"},
+				{Name: "slow_ttft_ratio_x10", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速判定倍数阈值 ×10（默认 25 即 2.5 倍）：账号首字延迟中位数达到同模型全池中位数的该倍数即判慢。必须大于 10。"},
+				{Name: "slow_window_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "首字延迟样本统计窗口（默认 15 分钟）：只统计窗口内的成功请求样本。"},
+				{Name: "slow_min_samples", Type: pluginapi.ConfigFieldTypeInteger, Description: "参与慢速判定所需的最小样本数（默认 5）：样本不足时不判定，避免单条毛刺误伤。"},
+				{Name: "slow_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速冷却时长（默认 10 分钟）：到期自动恢复，无需探活。"},
+				{Name: "slow_min_ttft_ms", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速判定的绝对下限毫秒（默认 3000）：低于该值一律不判慢，避免全池都很快时被相对倍数放大误判。填 0 表示不设下限。"},
 				{Name: "client_version", Type: pluginapi.ConfigFieldTypeString, Description: "可选：钉死 User-Agent 里上报给上游的产品版本号。留空时每天自动从官方发布源拉取最新版本；填如 2.174.0 则固定使用该值、不再自动更新。注意 X-IDE-Version 头固定为 0.0.0，不受此项影响。"},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 用量上报地址（默认 http://cpa-manager-plus:18317/v0/management/usage/import；也可用环境变量 USAGE_REPORT_URL）。"},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 管理密钥。优先从环境变量 CPAMP_ADMIN_KEY / USAGE_REPORT_KEY 或密钥文件 /run/secrets/cpamp_admin_key 自动探测。"},
@@ -768,6 +774,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		completion    []byte
 		completionErr error
 		usedAuthID    = req.AuthID
+		// completionTTFT 是「真正成功的那次尝试」的首字延迟。失败尝试的计时
+		// 不写入，避免把上一个账号的失败耗时记到最终承接的账号上。
+		completionTTFT uint64
 	)
 
 	// 前置冷却拦截：如果初始账号正处于冷却中，不要发送无效的上游请求，立即换号！
@@ -784,7 +793,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	if initID != "" && (isAuthModelCoolingDown(initID, upstreamModel) ||
 		(curSA != nil && curSA.Account.UID != "" && isAuthModelCoolingDown(curSA.Account.UID, upstreamModel)) ||
 		rotationCoolingDown(initID, rotationNow) ||
-		(curSA != nil && curSA.Account.UID != "" && rotationCoolingDown(curSA.Account.UID, rotationNow))) {
+		(curSA != nil && curSA.Account.UID != "" && rotationCoolingDown(curSA.Account.UID, rotationNow)) ||
+		slowCoolingDown(initID, upstreamModel, rotationNow) ||
+		(curSA != nil && curSA.Account.UID != "" && slowCoolingDown(curSA.Account.UID, upstreamModel, rotationNow))) {
 		if nextID, nextSA, hasNext := pickNextAuthForModel(initID, upstreamModel); hasNext && nextSA != nil {
 			curSA = nextSA
 			curBody = prepareUpstreamBody(req.Payload, req.OriginalRequest, curSA, upstreamModel)
@@ -799,8 +810,10 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	}
 
 	for attempt := 0; attempt <= budget; attempt++ {
-		completion, completionErr = doExecuteOnce(curBody, curSA, req.Model, upstreamModel)
+		var attemptTTFT uint64
+		completion, attemptTTFT, completionErr = doExecuteOnce(curBody, curSA, req.Model, upstreamModel)
 		if completionErr == nil {
+			completionTTFT = attemptTTFT
 			authUID = curSA.Account.UID
 			accountLabel = strings.TrimSpace(curSA.Account.Nickname)
 			if accountLabel == "" {
@@ -871,12 +884,15 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	}
 	// Success path: credit invalidation + failover counter reset use
 	// the actual account that served the request.
-	publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "", reasoningEffort, 0, accountLabel, sessionKey)
+	publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "", reasoningEffort, completionTTFT, accountLabel, sessionKey)
 	invalidateAccountCredits(usedAuthID, authUID)
 	resetAccountFailover(usedAuthID)
 	// 连续使用轮换：只在真实成功后推进计时；达到 serve 阈值时让位，
 	// 使长时间承流的账号主动退出，把后续请求交给其它账号。
 	noteRotationUsage(usedAuthID)
+	// 慢速观测：只记真实成功请求的首字延迟，样本达标时判定该账号在该模型上
+	// 是否显著慢于同池水平。失败尝试的耗时不计入，避免污染样本。
+	noteSlowObservation(usedAuthID, upstreamModel, completionTTFT)
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 }
 
@@ -927,7 +943,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// No async stream id → fall back to synchronous chunk collection.
 	if req.StreamID == "" {
 		collector := &sseUsageCollector{}
-		chunks, statusCode, errCollect := collectUpstreamStream(body, sa, sseFramed, collector, upstreamModel)
+		chunks, statusCode, servedAuthID, errCollect := collectUpstreamStream(body, sa, sseFramed, collector, upstreamModel)
 		if errCollect != nil {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error(), reasoningEffort, collector.ttftNS(started), accountLabel, sessionKey)
 			// statusCode >= 400 already went through reconcileByUID inside
@@ -942,10 +958,16 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			}
 			return nil, errCollect
 		}
-		publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), false, 0, "", reasoningEffort, collector.ttftNS(started), accountLabel, sessionKey)
+		// 换号后实际承流的是 servedAuthID：成功打点必须用它，否则慢速样本
+		// 会记到被换掉的初始账号头上。
+		ttftNS := collector.ttftNS(started)
+		publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), false, 0, "", reasoningEffort, ttftNS, accountLabel, sessionKey)
 		invalidateAccountCredits(req.AuthID, authUID)
 		resetAccountFailover(req.AuthID)
 		noteRotationUsage(req.AuthID)
+		if servedAuthID != "" {
+			noteSlowObservation(servedAuthID, upstreamModel, ttftNS)
+		}
 		return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
 	}
 

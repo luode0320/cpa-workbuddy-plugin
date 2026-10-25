@@ -266,6 +266,23 @@ func usageDetailFromCompletion(payload []byte) usage.Detail {
 type sseUsageCollector struct {
 	last        map[string]any
 	firstByteAt time.Time
+	// attemptStarted 是本次换号尝试的计时基准。请求级 started 不能直接用于
+	// TTFT：账号 A 失败耗时 10s 后换到 B，B 的首帧距请求起点已是 12s，
+	// 用请求级基准会把 A 的失败耗时算到健康账号 B 头上。
+	// 零值时 ttftNS 回退到调用方传入的 started，保持历史行为。
+	attemptStarted time.Time
+}
+
+// markAttemptStart 重置本次尝试的计时基准与首帧时刻。
+// [参数] now：本次尝试发出上游请求前的时间。
+// [返回] 无。
+// 最近修改时间：2026-10-25；改动原因：新增，避免换号后 TTFT 叠加前一账号耗时。
+func (c *sseUsageCollector) markAttemptStart(now time.Time) {
+	if c == nil {
+		return
+	}
+	c.attemptStarted = now
+	c.firstByteAt = time.Time{}
 }
 
 func (c *sseUsageCollector) feed(rawJSON string) {
@@ -288,11 +305,22 @@ func (c *sseUsageCollector) detail() usage.Detail {
 // ttftNS returns the time-to-first-token in nanoseconds: the wall-clock gap
 // between the request start and the first upstream SSE data chunk. Returns 0
 // when no chunk was observed or the clock skew would make it negative.
+//
+// 计时基准优先取 markAttemptStart 写入的「本次尝试」时刻：换号重试时请求级
+// started 早于当前 attempt，用它会把前一个账号的失败耗时算进来。未标记时
+// 回退到 started，兼容非重试场景与既有调用方。
 func (c *sseUsageCollector) ttftNS(started time.Time) uint64 {
-	if c.firstByteAt.IsZero() || started.IsZero() {
+	if c.firstByteAt.IsZero() {
 		return 0
 	}
-	d := c.firstByteAt.Sub(started)
+	base := c.attemptStarted
+	if base.IsZero() {
+		base = started
+	}
+	if base.IsZero() {
+		return 0
+	}
+	d := c.firstByteAt.Sub(base)
 	if d <= 0 {
 		return 0
 	}
