@@ -213,8 +213,9 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	}
 
 	// 前置冷却拦截：若初始账号在冷却中，直接切换到健康账号，不发送自杀式请求
-	if encodedBody != "" && (isAccountCoolingDown(curAuthID) || isAccountCoolingDown(curAuthUID)) {
-		if nextID, nextSA, hasNext := pickNextAuth(curAuthID); hasNext && nextSA != nil {
+	if encodedBody != "" && (isAccountCoolingDown(curAuthID) || isAccountCoolingDown(curAuthUID) ||
+		slowCoolingDown(curAuthID, upstreamModel, time.Now()) || slowCoolingDown(curAuthUID, upstreamModel, time.Now())) {
+		if nextID, nextSA, hasNext := pickNextAuth(curAuthID, upstreamModel); hasNext && nextSA != nil {
 			if nextReq, rebErr := rebuildRequestWithQoderAuth(nextSA, encodedBody, upstreamModel, curReq.Context()); rebErr == nil {
 				curReq = nextReq
 				curAuthID = nextID
@@ -228,6 +229,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	}
 
 	for attempt := 0; attempt <= budget; attempt++ {
+		attemptStarted := time.Now()
 		stream, statusCode, _, err := hostHTTPDoStream(curReq)
 		if err != nil {
 			publishUsage(requestedModel, upstreamModel, curAuthUID, started, usage.Detail{}, true, 0, err.Error(), reasoningEffort, 0, curAccountLabel, sessionKey)
@@ -264,7 +266,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			// COSY signature. If nothing else is usable, surface the
 			// original error.
 			evictSessionBindingsForAuth(curAuthID)
-			nextID, nextSA, hasNext := pickNextAuth(curAuthID)
+			nextID, nextSA, hasNext := pickNextAuth(curAuthID, upstreamModel)
 			if !hasNext || nextSA == nil {
 				streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(errPayload, 200)))
 				return
@@ -291,6 +293,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		// SAME request; once anything has reached the client the error is
 		// surfaced instead. （同步自 workbuddy 200 错误帧换号）
 		collector := &sseUsageCollector{}
+		collector.markAttemptStart(attemptStarted)
 		var sseErr string
 		emitted := false
 		contentEmitted := false
@@ -346,7 +349,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			// 2. 正文零泄漏且预算允许时换号重建请求
 			if !contentEmitted && attempt < budget && encodedBody != "" {
 				evictSessionBindingsForAuth(curAuthID)
-				nextID, nextSA, hasNext := pickNextAuth(curAuthID)
+				nextID, nextSA, hasNext := pickNextAuth(curAuthID, upstreamModel)
 				if shouldRotateOnStreamReadError(emitted, contentEmitted, attempt, budget, true, hasNext && nextSA != nil) {
 					nextReq, rebErr := rebuildRequestWithQoderAuth(nextSA, encodedBody, upstreamModel, curReq.Context())
 					if rebErr != nil {
@@ -403,7 +406,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 				return
 			}
 			evictSessionBindingsForAuth(curAuthID)
-			nextID, nextSA, hasNext := pickNextAuth(curAuthID)
+			nextID, nextSA, hasNext := pickNextAuth(curAuthID, upstreamModel)
 			if !hasNext || nextSA == nil {
 				streamEmitError(streamID, sseErr)
 				return
@@ -435,10 +438,14 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			noteAccountFailureForModel(curAuthID, upstreamModel, statusCode, emptyStreamErr)
 			return
 		}
-		publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), false, 0, "", reasoningEffort, collector.ttftNS(started), curAccountLabel, sessionKey)
+		successTTFT := collector.ttftNS(started)
+		publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), false, 0, "", reasoningEffort, successTTFT, curAccountLabel, sessionKey)
 		invalidateAccountCredits(curAuthID, curAuthUID)
 		resetAccountFailover(curAuthID)
 		noteRotationUsage(curAuthID)
+		// 慢速观测：只记真实成功请求的首字延迟，样本达标时判定该账号在该模型上
+		// 是否显著慢于同池水平。
+		noteSlowObservation(curAuthID, upstreamModel, successTTFT)
 		return
 	}
 }
@@ -462,8 +469,10 @@ func collectUpstreamStreamQoder(encodedBody string, sa *storedAuth, modelKey str
 		if currentID == "" {
 			currentID = strings.TrimSpace(curSA.Account.UID)
 		}
-		if isAccountCoolingDown(currentID) || (curSA.Account.UID != "" && isAccountCoolingDown(curSA.Account.UID)) {
-			if _, nextSA, hasNext := pickNextAuth(currentID); hasNext && nextSA != nil {
+		if isAccountCoolingDown(currentID) || (curSA.Account.UID != "" && isAccountCoolingDown(curSA.Account.UID)) ||
+			slowCoolingDown(currentID, modelKey, time.Now()) ||
+			(curSA.Account.UID != "" && slowCoolingDown(curSA.Account.UID, modelKey, time.Now())) {
+			if _, nextSA, hasNext := pickNextAuth(currentID, modelKey); hasNext && nextSA != nil {
 				curSA = nextSA
 			}
 		}
@@ -472,6 +481,9 @@ func collectUpstreamStreamQoder(encodedBody string, sa *storedAuth, modelKey str
 	for attempt := 0; attempt <= budget; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
+		// 每次尝试重设 TTFT 基准：collector 由调用方在循环外创建并跨 attempt 复用，
+		// 不重置就会把上一个账号的失败耗时算进当前账号。
+		collector.markAttemptStart(time.Now())
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointChat, strings.NewReader(encodedBody))
 		if err != nil {
 			return nil, 0, err
@@ -505,7 +517,7 @@ func collectUpstreamStreamQoder(encodedBody string, sa *storedAuth, modelKey str
 				logDailyCooldownPersistFailure(currentID, triggerDailyCooldown("", currentID))
 			}
 			evictSessionBindingsForAuth(currentID)
-			_, nextSA, hasNext := pickNextAuth(currentID)
+			_, nextSA, hasNext := pickNextAuth(currentID, modelKey)
 			if !hasNext || nextSA == nil {
 				return nil, statusCode, errResp
 			}
@@ -563,7 +575,7 @@ func collectUpstreamStreamQoder(encodedBody string, sa *storedAuth, modelKey str
 				currentID = strings.TrimSpace(curSA.Account.UID)
 			}
 			evictSessionBindingsForAuth(currentID)
-			_, nextSA, hasNext := pickNextAuth(currentID)
+			_, nextSA, hasNext := pickNextAuth(currentID, modelKey)
 			if !hasNext || nextSA == nil {
 				return chunks, http.StatusOK, errResp
 			}
@@ -580,7 +592,7 @@ func collectUpstreamStreamQoder(encodedBody string, sa *storedAuth, modelKey str
 					currentID = strings.TrimSpace(curSA.Account.UID)
 				}
 				evictSessionBindingsForAuth(currentID)
-				_, nextSA, hasNext := pickNextAuth(currentID)
+				_, nextSA, hasNext := pickNextAuth(currentID, modelKey)
 				if shouldRotateOnStreamReadError(emitted, contentEmitted, attempt, budget, encodedBody != "", hasNext && nextSA != nil) {
 					curSA = nextSA
 					continue

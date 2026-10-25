@@ -1,5 +1,24 @@
 # TraeWork Plugin Changelog
 
+## 0.5.0
+
+### Fix - per-attempt TTFT 计时隔离（阻断项，先于慢速冷却）
+
+- 缺陷: `ttftNSBetween(ctx.Started, result.FirstOutputAt)` 的首参是**请求级**时间戳，跨重试 attempt 复用。账号 A 失败耗时 10s 后换到 B、B 首帧 2s，被记成 **12s**——A 的失败耗时算到健康号 B 头上。
+- 影响: 慢速判据直接吃这个样本会误禁健康账号，比不加该机制更糟。故先修计时再加冷却。
+- 修复: 新增 `attemptTTFTNS(attemptStarted, requestStarted, firstOutputAt)`，每个 attempt 起点记录 `attemptStarted`；异步流经 `traeStreamPumpContext.AttemptStarted` 传入，同步流直接用局部变量。
+- 验证: 新增 `ttft_attempt_test.go` 4 用例锁定「A 失败 10s → B 首帧 2s 应记 2s」；变异「退回请求级基准」KILLED。
+
+### Feat - 慢速账号 TTFT 拥堵自动冷却（账号 × 模型级）
+
+- 背景: workbuddy-provider 0.21.0 上线的慢速冷却机制横向铺开。同一模型下首字延迟显著高于同池水平的账号，在该模型上让出流量；这类账号每次都能返回 200，既有失败冷却完全抓不到。
+- 判据: 同模型、窗口内样本达标的账号，其 TTFT 中位数达到「全池基准 × 倍数阈值」且高于绝对下限时判慢。基准取各账号中位数的**下四分位（P25）**——用中位数会在「慢号占多数」的池子里被抬到慢号水平、一个也判不出来。
+- 状态: 独立 `slow_account.go`，与失败冷却、轮换冷却三者互不干扰。慢速冷却**只走内存、不写盘禁用**——慢是性能问题不是故障，写盘禁用要求探活恢复，对慢账号过重。到期自动恢复。
+- 配置: 6 个键全部登记进 `ConfigFields`（`slow_account_enabled` / `slow_ttft_ratio_x10` / `slow_window_minutes` / `slow_min_samples` / `slow_cooldown_minutes` / `slow_min_ttft_ms`），默认 2.5 倍 / 15 分钟窗 / 5 样本 / 10 分钟冷却 / 3s 下限。
+- 面板: 新增 `slow_cooling_models` 清单字段与「慢速让位 · <模型>」徽标。慢速冷却按账号×模型生效，不是账号整体停用，因此必须逐模型列出。
+- 可观测性: 四类日志——判定取证（中位数/基线/倍数/阈值/样本数）、防抽干放开清单、到期恢复、配置变更生效值。日志全部在解锁后写，避免持锁 I/O 阻塞路由判定。
+- 验证: cgo-shim build+vet+test 全绿；变异验证全部 KILLED。
+
 ## 0.4.0
 
 ### Fix - 失败禁用真正生效（sidecar 为权威源）+ 模型级故障不再误伤账号

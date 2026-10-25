@@ -235,4 +235,6 @@ func pumpUpstreamStream(
 	resetAccountFailover(authID)
 	// 一次真实成功即证明该模型已恢复，清掉该模型上残留的冷却。
 	resetModelBlockedState(upstreamModel)
+	// 慢速观测：流式是主要成功路径，漏接会让绝大多数流量不参与慢速判定。
+	noteSlowObservation(authID, upstreamModel, ttftNS)
 }

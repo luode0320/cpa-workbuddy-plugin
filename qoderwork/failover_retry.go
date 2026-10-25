@@ -43,8 +43,14 @@ const failoverBackoff = 50 * time.Millisecond
 //
 // ok=false means no alternate account was usable; the caller should stop
 // retrying and propagate the last upstream error.
-func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *storedAuth, ok bool) {
+// 变参 model 让带模型的调用点（流式/非流式主路径）额外过滤「该模型上正慢速
+// 冷却」的候选；不传时退化为纯账号维度，与历史行为完全一致。
+func pickNextAuth(currentAuthID string, model ...string) (nextAuthID string, nextSA *storedAuth, ok bool) {
 	currentAuthID = strings.TrimSpace(currentAuthID)
+	slowModel := ""
+	if len(model) > 0 {
+		slowModel = strings.TrimSpace(model[0])
+	}
 	files, err := hostAuthList()
 	if err != nil || len(files) == 0 {
 		return "", nil, false
@@ -72,6 +78,11 @@ func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *storedAuth, 
 		// 轮换冷却的账号同样不承接换号流量：它被让位的原因是「用得太久」，
 		// 不是「坏了」，但继续给它加压会让轮换目标落空。
 		if rotationCoolingDown(id, time.Now()) {
+			continue
+		}
+		// 慢速冷却：换到刚被判慢的号等于把慢请求换个来源。只有调用方给了模型
+		// 才判定——该判据本身是「账号×模型」粒度，无模型时无从比较。
+		if slowModel != "" && slowCoolingDown(id, slowModel, time.Now()) {
 			continue
 		}
 		// 跳过残血账号（正积分低于安全红线）；0 积分账号可继续走免费模型

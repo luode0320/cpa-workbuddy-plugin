@@ -272,6 +272,9 @@ func handleAccounts() map[string]any {
 				view.RotationUntil = until.Unix()
 			}
 		}
+		// 慢速侧同理：按账号×模型生效，只列出该号当前判慢的模型，
+		// 不影响该号在其它模型上的可用性，因此不能折叠成一个布尔徽章。
+		view.SlowCoolingModels = slowCoolingModelsFor(f.ID, now)
 		// 积分档位：未知积分为空串（不显示徽章），避免把「没测到」显示成「正常」。
 		if cr != nil {
 			view.CreditTier = creditTierFor(cr.TotalRemain, loadedLowCreditDisableBelow(), loadedMinRoutableCredits()).String()

@@ -43,6 +43,8 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	var lastErr error
 	var finalRespBytes []byte
 	var finalStatusCode int
+	// finalTTFTNS 保留最终成功尝试的首字节时延，供 publishUsage 与慢速冷却使用。
+	var finalTTFTNS uint64
 
 	// 模型级拦截不再有独立的全局闸门：被拦截的账号×模型已写入冷却，
 	// 路由层会跳过它们；本请求若仍落到这里说明上游刚恢复或该组合尚未被
@@ -55,8 +57,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			break
 		}
 
-		respBytes, status, err := executeOnce(curPayload, sa, cfg)
+		respBytes, status, attemptTTFT, err := executeOnceTimed(curPayload, sa, cfg)
 		finalStatusCode = status
+		finalTTFTNS = attemptTTFT
 		if err == nil {
 			finalRespBytes = respBytes
 			lastErr = nil
@@ -114,8 +117,11 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		OutputTokens: outTokens,
 		TotalTokens:  inTokens + outTokens,
 	}
-	publishUsage(authID, accountLabel, req.Model, upstreamModel, startTime, detail, durationMS, finalStatusCode, false, "", 0)
+	publishUsage(authID, accountLabel, req.Model, upstreamModel, startTime, detail, durationMS, finalStatusCode, false, "", finalTTFTNS)
 	resetAccountFailover(authID)
+	// 慢速观测：只记真实成功请求的首字延迟，样本达标时判定该账号在该模型上
+	// 是否显著慢于同池水平。失败尝试的耗时不计入，避免污染样本。
+	noteSlowObservation(authID, upstreamModel, finalTTFTNS)
 
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: finalRespBytes})
 }
@@ -314,30 +320,73 @@ func prepareUpstreamRequest(ctx context.Context, payload []byte, sa *StoredAuth,
 // [返回] 响应体字节、HTTP 状态码与错误；状态码非 2xx 时错误携带上游响应体。
 // 最近修改时间：2026-10-14 02:30:00 上游请求改用无整体超时的推理客户端，避免长思考输出被掐断
 func executeOnce(payload []byte, sa *StoredAuth, cfg Config) ([]byte, int, error) {
+	body, status, _, err := executeOnceTimed(payload, sa, cfg)
+	return body, status, err
+}
+
+// executeOnceTimed 与 executeOnce 相同，额外返回本次尝试的首字节时延（纳秒）。
+//
+// 非流式路径原先恒把 TTFT 记成 0，慢速冷却因此完全没有样本可判。这里用
+// firstByteReader 在第一次 Read 有空字节返回时打点——它等价于「上游开始回
+// 数据」的时刻，而不是读完全部正文的时刻。
+// [参数] payload：上游请求体；sa：账号凭据；cfg：插件配置。
+// [返回] 响应正文、HTTP 状态码、首字节时延纳秒（未观测到时为 0）、错误。
+// 最近修改时间：2026-10-25；改动原因：新增慢速冷却所需的非流式 TTFT 采集。
+func executeOnceTimed(payload []byte, sa *StoredAuth, cfg Config) ([]byte, int, uint64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.TimeoutSeconds)*time.Second)
 	defer cancel()
 
 	httpReq, err := prepareUpstreamRequest(ctx, payload, sa, cfg)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 
+	attemptStarted := time.Now()
 	resp, err := inferenceHTTPClient.Do(httpReq)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	defer resp.Body.Close()
 
-	body, errRead := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	tracker := &firstByteReader{inner: io.LimitReader(resp.Body, 64<<20), started: attemptStarted}
+	body, errRead := io.ReadAll(tracker)
 	if errRead != nil {
-		return nil, resp.StatusCode, errRead
+		return nil, resp.StatusCode, tracker.ttftNS(), errRead
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, resp.StatusCode, fmt.Errorf("upstream error %d: %s", resp.StatusCode, string(body))
+		return nil, resp.StatusCode, tracker.ttftNS(), fmt.Errorf("upstream error %d: %s", resp.StatusCode, string(body))
 	}
 
-	return body, resp.StatusCode, nil
+	return body, resp.StatusCode, tracker.ttftNS(), nil
+}
+
+// firstByteReader 包装上游响应体，在第一次读到非空字节时记录首字节时延。
+type firstByteReader struct {
+	inner   io.Reader
+	started time.Time
+	at      time.Time
+}
+
+func (r *firstByteReader) Read(p []byte) (int, error) {
+	n, err := r.inner.Read(p)
+	// 只有真正拿到字节才算首字节：空读（n==0）可能只是缓冲区未就绪。
+	if n > 0 && r.at.IsZero() {
+		r.at = time.Now()
+	}
+	return n, err
+}
+
+// ttftNS 返回首字节时延纳秒值；未观测到时返回 0。
+func (r *firstByteReader) ttftNS() uint64 {
+	if r.at.IsZero() || r.started.IsZero() {
+		return 0
+	}
+	d := r.at.Sub(r.started)
+	if d <= 0 {
+		return 0
+	}
+	return uint64(d.Nanoseconds())
 }
 
 func mutateModel(raw []byte, model string) []byte {

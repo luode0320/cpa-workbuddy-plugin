@@ -56,6 +56,9 @@ type wbAccount struct {
 	RotationCooling bool  `json:"rotation_cooling,omitempty"`
 	RotationUntil   int64 `json:"rotation_until,omitempty"`      // 轮换冷却截止（unix 秒）
 	RotationServedM int   `json:"rotation_served_min,omitempty"` // 本轮已连续承流分钟数
+	// SlowCoolingModels 列出该账号当前因「显著慢于同池同模型水平」而冷却的模型。
+	// 慢速冷却按「账号×模型」生效，不是账号整体停用，因此这里必须是清单而非布尔值。
+	SlowCoolingModels []string `json:"slow_cooling_models,omitempty"`
 }
 
 // credits/checkin/plan fields are left empty — the panel renders skeletons
@@ -293,6 +296,9 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 			rotationMu.Unlock()
 		}
 		out[i].RotationServedM = rotationServingMinutes(out[i].AuthID, time.Now())
+		// 慢速侧：按账号×模型生效，只列出该号当前判慢的模型，不影响它在其它
+		// 模型上的可用性，因此不能折叠成一个布尔徽章。
+		out[i].SlowCoolingModels = slowCoolingModelsFor(out[i].AuthID, time.Now())
 		if isAccountDailyCooling(out[i].AuthID) {
 			out[i].DailyCooling = true
 			until := getAccountDailyCoolingUntil(out[i].AuthID)

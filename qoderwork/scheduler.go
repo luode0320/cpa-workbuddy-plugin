@@ -104,6 +104,9 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	// candidate is excluded we defer (Handled: false) so the host's built-in
 	// scheduler can fail over to OTHER providers instead of pinning the request
 	// to an account we just declared unusable.
+	// 慢速冷却判定带模型维度：账号×模型级冷却只挡同一模型，不能把整个账号摘掉。
+	// 调度请求带的是客户端模型名，需与记账侧一样归一化后再比对。
+	upstreamModel := resolveUpstreamModel(req.Model, nil)
 	available := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
 	rotationNow := time.Now()
 	for _, c := range wbCandidates {
@@ -113,6 +116,11 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		// 轮换冷却：账号连续承流到阈值后被主动让位，与失败冷却分表存储，
 		// 因此不会被成功请求的 resetAccountFailover 抹掉。
 		if rotationCoolingDown(c.ID, rotationNow) {
+			continue
+		}
+		// 慢速冷却：该号在这个模型上显著慢于同池水平时让位。只影响当前模型，
+		// 该号在其它模型上仍可正常承流。
+		if slowCoolingDown(c.ID, upstreamModel, rotationNow) {
 			continue
 		}
 		_, lowCredits := cachedCreditsScore(c.ID)

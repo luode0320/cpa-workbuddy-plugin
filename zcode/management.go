@@ -98,6 +98,9 @@ type accountSummary struct {
 	CreatedAt        string   `json:"created_at"`
 	UpdatedAt        string   `json:"updated_at"`
 	Models           []string `json:"models"`
+	// SlowCoolingModels 列出该账号当前因「显著慢于同池同模型水平」而冷却的模型。
+	// 慢速冷却按「账号×模型」生效，不是账号整体停用，因此必须是清单而非布尔值。
+	SlowCoolingModels []string `json:"slow_cooling_models,omitempty"`
 	// QuotaDisabled 标记该账号因额度耗尽被写盘禁用；QuotaResetAt 是预期重置时刻
 	// （Unix 秒），供面板展示恢复时间。两者都由 quota_disable.go 的三标记派生。
 	QuotaDisabled bool   `json:"quota_disabled,omitempty"`
@@ -287,14 +290,16 @@ func handleListAccounts() ([]byte, error) {
 			Disabled:         acc.Disabled,
 			TestFailed:       acc.TestFailed,
 			FailoverDisabled: isFailoverDisabled(acc.AuthID),
-			QuotaDisabled:    quotaDisabled,
-			QuotaResetAt:     quotaResetAt,
-			QuotaResetTxt:    quotaResetText(quotaResetAt),
-			CreatedAt:        acc.CreatedAt,
-			UpdatedAt:        acc.UpdatedAt,
-			Models:           models,
-			ProviderFamily:   providerFamilyOf(acc),
-			Quota:            cachedQuota(acc.AuthID),
+			// 慢速侧：只列出该号当前判慢的模型，不影响它在其它模型上的可用性。
+			SlowCoolingModels: slowCoolingModelsFor(acc.AuthID, time.Now()),
+			QuotaDisabled:     quotaDisabled,
+			QuotaResetAt:      quotaResetAt,
+			QuotaResetTxt:     quotaResetText(quotaResetAt),
+			CreatedAt:         acc.CreatedAt,
+			UpdatedAt:         acc.UpdatedAt,
+			Models:            models,
+			ProviderFamily:    providerFamilyOf(acc),
+			Quota:             cachedQuota(acc.AuthID),
 		})
 	}
 

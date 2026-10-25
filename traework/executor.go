@@ -404,7 +404,8 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 
 	// 前置冷却拦截：若宿主指定的初始账号已处于冷却中，直接切换到健康账号，不发送自杀式网络调用。
 	// 判定带模型维度：账号×模型级冷却只挡同一模型，不能把整个账号摘掉。
-	if isAuthModelCoolingDown(curAuthID, circuitKeyModel) || isAuthModelCoolingDown(curAuthUID, circuitKeyModel) {
+	if isAuthModelCoolingDown(curAuthID, circuitKeyModel) || isAuthModelCoolingDown(curAuthUID, circuitKeyModel) ||
+		slowCoolingDown(curAuthID, circuitKeyModel, time.Now()) || slowCoolingDown(curAuthUID, circuitKeyModel, time.Now()) {
 		if nextAuthID, nextSA, hasNext := deps.pickCandidate(curAuthID, circuitKeyModel); hasNext && nextSA != nil {
 			curSA = nextSA
 			curAuthID = nextAuthID
@@ -422,6 +423,9 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 	}()
 	for attempt := 0; attempt <= ctx.Budget; attempt++ {
 		attemptsMade = attempt + 1
+		// 每次账号尝试单独计时：请求级 ctx.Started 早于当前 attempt，直接用它算
+		// TTFT 会把上一个账号的失败耗时算进当前账号。
+		attemptStarted := time.Now()
 		// 1. 每次账号尝试复用同一 payload 和 HostCallbackID，但拥有独立、及时关闭的上游句柄。
 		//    伪完成是上游对账号的窗口性限流信号；先核算 + 换号，仅当池中已无其它可用
 		//    候选（单号池或他号全冷却）时才对当前账号同号退避重试——生产实证 2351：
@@ -481,15 +485,16 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 				defer upstream.Close()
 			}
 			return pumpTraeStreamAttempt(upstream.Reader, traeStreamPumpContext{
-				StreamID:      ctx.StreamID,
-				Model:         ctx.Model,
-				UpstreamModel: ctx.UpstreamModel,
-				StatusCode:    statusCode,
-				AuthID:        curAuthID,
-				AuthUID:       curAuthUID,
-				Started:       ctx.Started,
-				InputChars:    ctx.InputChars,
-				SessionKey:    ctx.SessionKey,
+				StreamID:       ctx.StreamID,
+				Model:          ctx.Model,
+				UpstreamModel:  ctx.UpstreamModel,
+				StatusCode:     statusCode,
+				AuthID:         curAuthID,
+				AuthUID:        curAuthUID,
+				Started:        ctx.Started,
+				AttemptStarted: attemptStarted,
+				InputChars:     ctx.InputChars,
+				SessionKey:     ctx.SessionKey,
 			}, requestID, func(payload []byte) error {
 				return deps.Emit(ctx.StreamID, payload)
 			})
@@ -502,7 +507,7 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 				requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, len(result.Chunks))
 			noteForcedAccountFailureForModel(curAuthID, circuitKeyModel, reason)
 			evictSessionBindingsForAuth(curAuthID)
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, statusCode, reason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, statusCode, reason, "", attemptTTFTNS(attemptStarted, ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 			if attempt >= ctx.Budget {
 				break
 			}
@@ -533,7 +538,7 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 			reconcileAfterExecutorErrorForModel(curAuthID, circuitKeyModel, statusCode, result.Err.Error())
 			// 每个 attempt 的用量先按实际账号记失败（与 openErr / pseudo 分支同款），
 			// 再决定透传错误还是换号续试。
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, statusCode, result.Err.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, statusCode, result.Err.Error(), "", attemptTTFTNS(attemptStarted, ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 			// 11128（含 200 承载的 event:error 帧）：双写记账后返回，
 			// 恢复由 10 分钟禁用探活裁决。
 			if isModelBlockedError(statusCode, result.Err.Error()) {
@@ -587,12 +592,12 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 		if finishErr != nil {
 			reconcileAfterExecutorErrorForModel(curAuthID, circuitKeyModel, statusCode, finishErr.Error())
 			emitTraeAsyncError(ctx.StreamID, finishErr.Error(), deps)
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, statusCode, finishErr.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, statusCode, finishErr.Error(), "", attemptTTFTNS(attemptStarted, ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 			return
 		}
 		deps.Close(ctx.StreamID)
 		if failed {
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, statusCode, failureReason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, statusCode, failureReason, "", attemptTTFTNS(attemptStarted, ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 			return
 		}
 		resetAccountFailover(curAuthID)
@@ -600,7 +605,11 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 		resetModelBlockedState(circuitKeyModel)
 		// 轮换打点：异步流成功路径。漏接这里会让长时间流式会话永远不触发轮换。
 		noteRotationUsage(curAuthID)
-		publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), false, 0, "", "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
+		attemptTTFT := attemptTTFTNS(attemptStarted, ctx.Started, result.FirstOutputAt)
+		publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), false, 0, "", "", attemptTTFT, curAuthUID, ctx.SessionKey)
+		// 慢速观测：只记真实成功请求的首字延迟，样本达标时判定该账号在该模型上
+		// 是否显著慢于同池水平。失败尝试的耗时不计入，避免污染样本。
+		noteSlowObservation(curAuthID, circuitKeyModel, attemptTTFT)
 		log.Printf("[traework] exec stream async done: request_id=%s stream_id=%s model=%s auth_hash=%s attempt=%d chunks=%d",
 			requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, len(result.Chunks))
 		return
@@ -644,7 +653,8 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 
 	// 前置冷却拦截：若宿主指定的初始账号已处于冷却中，直接换号到健康候选。
 	// 判定带模型维度：账号×模型级冷却只挡同一模型，不能把整个账号摘掉。
-	if isAuthModelCoolingDown(curAuthID, circuitKeyModel) || isAuthModelCoolingDown(curAuthUID, circuitKeyModel) {
+	if isAuthModelCoolingDown(curAuthID, circuitKeyModel) || isAuthModelCoolingDown(curAuthUID, circuitKeyModel) ||
+		slowCoolingDown(curAuthID, circuitKeyModel, time.Now()) || slowCoolingDown(curAuthUID, circuitKeyModel, time.Now()) {
 		if nextAuthID, nextSA, hasNext := deps.pickCandidate(curAuthID, circuitKeyModel); hasNext && nextSA != nil {
 			curSA = nextSA
 			curAuthID = nextAuthID
@@ -656,6 +666,9 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 	for attempt := 0; attempt <= ctx.Budget; attempt++ {
 		attemptsMade = attempt + 1
 		lastFailurePublished = false
+		// 每次尝试单独计时：请求级 ctx.Started 跨 attempt 复用会把上一个账号的
+		// 失败耗时算进当前账号的首字延迟。
+		attemptStarted := time.Now()
 		// 1. 每次尝试重新调用上游；普通账号级错误沿用既有同请求换号契约。
 		//    伪完成仅在池中已无其它候选时同号退避重试（见下方伪完成分支）。
 		pseudoTries := 0
@@ -708,7 +721,7 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 				log.Printf("[traework] exec stream collect pseudo-done: model=%s auth_hash=%s attempt=%d chunks=%d", ctx.Model, authLogHash(curAuthID), attempt+1, len(chunks))
 				noteForcedAccountFailureForModel(curAuthID, circuitKeyModel, reason)
 				evictSessionBindingsForAuth(curAuthID)
-				publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(detail, chunks), true, resp.StatusCode, reason, "", ttftNSBetween(ctx.Started, firstOutputAt), curAuthUID, ctx.SessionKey)
+				publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(detail, chunks), true, resp.StatusCode, reason, "", ttftNSBetween(attemptStarted, firstOutputAt), curAuthUID, ctx.SessionKey)
 				lastFailurePublished = true
 				if attempt >= ctx.Budget {
 					break
@@ -740,7 +753,11 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 			// 各有独立的成功返回点，漏一处就会漏掉对应模式的全部流量。
 			noteRotationUsage(curAuthID)
 			log.Printf("[traework] exec stream collect ok: model=%s auth_hash=%s attempt=%d chunks=%d", ctx.Model, authLogHash(curAuthID), attempt+1, len(chunks))
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(detail, chunks), false, 0, "", "", ttftNSBetween(ctx.Started, firstOutputAt), curAuthUID, ctx.SessionKey)
+			collectTTFT := ttftNSBetween(attemptStarted, firstOutputAt)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(detail, chunks), false, 0, "", "", collectTTFT, curAuthUID, ctx.SessionKey)
+			// 慢速观测：同步 collect 成功路径。与异步 pump 是互斥的成功返回点，
+			// 漏接会让该模式的流量完全不参与慢速判定。
+			noteSlowObservation(curAuthID, circuitKeyModel, collectTTFT)
 			return chunks, nil
 		}
 
@@ -750,12 +767,12 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 		if isModelBlockedError(resp.StatusCode, collectErr.Error()) {
 			noteModelBlockedHit(curAuthID, circuitKeyModel)
 			reconcileAfterExecutorErrorForModel(curAuthID, circuitKeyModel, resp.StatusCode, collectErr.Error())
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, resp.StatusCode, collectErr.Error(), "", ttftNSBetween(ctx.Started, firstOutputAt), curAuthUID, ctx.SessionKey)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, resp.StatusCode, collectErr.Error(), "", ttftNSBetween(attemptStarted, firstOutputAt), curAuthUID, ctx.SessionKey)
 			return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, truncateRedacted(collectErr.Error(), 200))
 		}
 		if !isAccountFailure(resp.StatusCode, collectErr.Error()) || attempt >= ctx.Budget || curSA == nil {
 			reconcileAfterExecutorErrorForModel(curAuthID, circuitKeyModel, resp.StatusCode, collectErr.Error())
-			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, resp.StatusCode, collectErr.Error(), "", ttftNSBetween(ctx.Started, firstOutputAt), curAuthUID, ctx.SessionKey)
+			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, resp.StatusCode, collectErr.Error(), "", ttftNSBetween(attemptStarted, firstOutputAt), curAuthUID, ctx.SessionKey)
 			return nil, collectErr
 		}
 		reconcileAfterExecutorErrorForModel(curAuthID, circuitKeyModel, resp.StatusCode, collectErr.Error())

@@ -85,6 +85,15 @@ func configure(raw []byte) {
 	nextRotationIdle := defaultRotationIdleResetMinutes
 	rotationSeen := false
 
+	// 慢速冷却同理：只在键真实出现时覆盖，避免无关 reconfigure 冲掉显式关闭。
+	nextSlowEnabled := defaultSlowAccountEnabled
+	nextSlowRatio := defaultSlowTTFTRatioX10
+	nextSlowWindow := defaultSlowWindowMinutes
+	nextSlowMinSamples := defaultSlowMinSamples
+	nextSlowCooldown := defaultSlowCooldownMinutes
+	nextSlowMinTTFT := defaultSlowMinTTFTMs
+	slowSeen := false
+
 	cfgURL, cfgKey := "", ""
 	if len(raw) > 0 {
 		var req struct {
@@ -176,6 +185,52 @@ func configure(raw []byte) {
 						nextRotationIdle = n
 					}
 				}
+				if strings.HasPrefix(line, "slow_account_enabled:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_account_enabled:"))
+					v = strings.Trim(v, "\"'")
+					nextSlowEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "slow_ttft_ratio_x10:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_ttft_ratio_x10:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextSlowRatio = n
+					}
+				}
+				if strings.HasPrefix(line, "slow_window_minutes:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_window_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextSlowWindow = n
+					}
+				}
+				if strings.HasPrefix(line, "slow_min_samples:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_min_samples:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextSlowMinSamples = n
+					}
+				}
+				if strings.HasPrefix(line, "slow_cooldown_minutes:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_cooldown_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextSlowCooldown = n
+					}
+				}
+				if strings.HasPrefix(line, "slow_min_ttft_ms:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_min_ttft_ms:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextSlowMinTTFT = n
+					}
+				}
 				if strings.HasPrefix(line, "models:") {
 					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
 					// 交给 parseModelsConfig（显式配置优先于动态获取与
@@ -206,6 +261,11 @@ func configure(raw []byte) {
 
 	if rotationSeen {
 		setLoadedRotationConfig(nextRotationEnabled, nextRotationServe, nextRotationCooldown, nextRotationIdle)
+	}
+	// 慢速冷却六个键共同决定判定结果，整套写入避免「阈值改了、窗口还是旧值」
+	// 的中间态；未出现任何 slow 键时跳过，防止无关 reconfigure 冲掉显式关闭。
+	if slowSeen {
+		setLoadedSlowConfig(nextSlowEnabled, nextSlowRatio, nextSlowWindow, nextSlowMinSamples, nextSlowCooldown, nextSlowMinTTFT)
 	}
 
 	schedulerModeMu.Lock()

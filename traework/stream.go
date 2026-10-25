@@ -618,14 +618,19 @@ type traeStreamPumpContext struct {
 	AuthID        string    // 调度与故障核算使用的账号标识。
 	AuthUID       string    // 用量维度使用的 Trae 账号 UID。
 	Started       time.Time // 请求开始时间。
-	InputChars    int       // 请求输入估算字符数，用于伪完成检测的输入长度判据。
-	SessionKey    string    // 会话亲和键，写入 usage feed 的 session_key 列（空表示无会话信号）。
+	// AttemptStarted 是本次账号尝试的发出时刻，TTFT 必须用它作基准。
+	// Started 是请求级时间戳，跨重试 attempt 复用：账号 A 失败耗时 10s 后换到 B、
+	// B 首帧 2s，用 Started 会被记成 12s，把 A 的失败耗时算到健康号 B 头上。
+	// 慢速冷却判据直接吃这个样本会误禁健康账号，故单独记录。
+	AttemptStarted time.Time
+	InputChars     int    // 请求输入估算字符数，用于伪完成检测的输入长度判据。
+	SessionKey     string // 会话亲和键，写入 usage feed 的 session_key 列（空表示无会话信号）。
 }
 
 // ttftNSBetween 返回 started → firstOutputAt 的纳秒差（首字延迟 TTFT）。
 // 任一时间零值或差值为负（时钟抖动）时返回 0，与 workbuddy 的
 // sseUsageCollector.ttftNS 语义一致。
-// [参数] started: 请求开始时间；firstOutputAt: 首个有效输出事件到达时间。
+// [参数] started: 本次尝试的发出时刻；firstOutputAt: 首个有效输出事件到达时间。
 // [返回] 首字延迟纳秒数；不可观测时为 0。
 // 最近修改时间：2026-09-03；改动原因：token-usage-tracker dashboard 的首字延迟列需要 traework 侧真实 ttft_ns。
 func ttftNSBetween(started, firstOutputAt time.Time) uint64 {
@@ -637,6 +642,25 @@ func ttftNSBetween(started, firstOutputAt time.Time) uint64 {
 		return 0
 	}
 	return uint64(d)
+}
+
+// attemptTTFTNS 用「本次尝试发出时刻」计算首字延迟，回退到请求起点。
+//
+// attemptStarted 是每次账号尝试的发出时刻，requestStarted 是请求起点。重试发生后
+// 两者相差整段前序耗时，用 requestStarted 会把上一个账号的失败耗时算进当前账号；
+// 因此优先取 attemptStarted，仅在它未被注入（历史调用点）时回退到 requestStarted。
+// [参数] attemptStarted：本次尝试发出时刻；requestStarted：请求起点；
+//
+//	firstOutputAt：本次尝试首个有效输出事件到达时间。
+//
+// [返回] 首字延迟纳秒数；不可观测时为 0。
+// 最近修改时间：2026-10-25；改动原因：新增 per-attempt 计时基准，阻断慢速冷却的样本污染。
+func attemptTTFTNS(attemptStarted, requestStarted, firstOutputAt time.Time) uint64 {
+	base := attemptStarted
+	if base.IsZero() {
+		base = requestStarted
+	}
+	return ttftNSBetween(base, firstOutputAt)
 }
 
 // pumpTraeStream 读取 Trae 上游 SSE，向宿主推送分片，并在流结束时发布一次用量结果。
@@ -886,7 +910,7 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 			requestID, ctx.StreamID, ctx.Model, ctx.StatusCode, truncateRedacted(result.Err.Error(), 200), time.Since(started).Milliseconds())
 		reconcileAfterExecutorErrorForModel(ctx.AuthID, ctx.UpstreamModel, ctx.StatusCode, result.Err.Error())
 		streamEmitError(ctx.StreamID, result.Err.Error())
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, ctx.StatusCode, result.Err.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, ctx.StatusCode, result.Err.Error(), "", attemptTTFTNS(ctx.AttemptStarted, ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 		return
 	}
 	if result.Pseudo {
@@ -896,7 +920,7 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 		noteForcedAccountFailureForModel(ctx.AuthID, ctx.UpstreamModel, reason)
 		evictSessionBindingsForAuth(ctx.AuthID)
 		streamEmitError(ctx.StreamID, reason)
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, ctx.StatusCode, reason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, ctx.StatusCode, reason, "", attemptTTFTNS(ctx.AttemptStarted, ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 		return
 	}
 
@@ -920,19 +944,23 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	if err != nil {
 		reconcileAfterExecutorErrorForModel(ctx.AuthID, ctx.UpstreamModel, ctx.StatusCode, err.Error())
 		streamEmitError(ctx.StreamID, err.Error())
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, ctx.StatusCode, err.Error(), "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, ctx.StatusCode, err.Error(), "", attemptTTFTNS(ctx.AttemptStarted, ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 		return
 	}
 	streamClose(ctx.StreamID)
 	if failed {
-		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, ctx.StatusCode, failureReason, "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
+		publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), true, ctx.StatusCode, failureReason, "", attemptTTFTNS(ctx.AttemptStarted, ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 		return
 	}
 	resetAccountFailover(ctx.AuthID)
 	// 轮换打点：直通流式收尾路径。此处与 executor 的 collect/aggregate 是三个
 	// 互斥的成功返回点，任何一处漏接都会让该模式的流量不计入连续承流。
 	noteRotationUsage(ctx.AuthID)
-	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), false, 0, "", "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
+	pumpTTFT := attemptTTFTNS(ctx.AttemptStarted, ctx.Started, result.FirstOutputAt)
+	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), false, 0, "", "", pumpTTFT, ctx.AuthUID, ctx.SessionKey)
+	// 慢速观测：直通流式收尾路径。此处与 executor 的 collect/async 是三个互斥的
+	// 成功返回点，任何一处漏接都会让该模式的流量不计入慢速判定。
+	noteSlowObservation(ctx.AuthID, ctx.UpstreamModel, pumpTTFT)
 }
 
 // clientNeedsSSEFrame reports whether the client expects raw SSE framing in

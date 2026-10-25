@@ -548,6 +548,13 @@ function stateBadge(a){
   if(st==="failover") return '<span class="badge failover-disabled" title="上游失败已写盘禁用；每 10 分钟只探失败模型，探通即恢复">失败禁用</span>';
   return '<span class="badge">可用</span>';
 }
+// slowBadge 渲染慢速让位徽标。慢速冷却按账号×模型生效，必须逐模型列出；
+// 它是性能问题而非故障，与该号整体是否可用无关，故与状态徽标分开呈现。
+function slowBadge(a){
+  const ms=Array.isArray(a.slow_cooling_models)?a.slow_cooling_models:[];
+  if(!ms.length) return '';
+  return '<span class="badge slow-cooling" title="该账号在这些模型上的首字延迟显著高于同池水平，暂时让出流量；到期自动恢复，不写盘禁用">慢速让位 · '+ms.map(esc).join(', ')+'</span>';
+}
 function displayName(a){return a.label||a.username||a.email||a.api_key_masked||a.auth_id||"未命名"}
 // providerBadge 渲染账号授权站点归属徽标：区分国际站（chat.z.ai）与中国区（bigmodel.cn）。
 // [参数] a: 账号对象，读取其 provider_family 字段。
@@ -624,7 +631,7 @@ function card(a){
     ? `<button class="sec btn-act" data-action="claim" data-auth-index="${esc(a.auth_id)}" title="通过官方无感验证自动领取 Start Plan 每日额度">🎁 领取额度</button>`
     : "";
   return `<div class="card" data-state="${st}" data-auth="${esc(a.auth_id)}" data-name="${esc(titleName)}" data-quota="${quotaTotal(a)}" data-search="${esc(((a.label||"")+" "+(a.username||"")+" "+(a.email||"")+" "+(a.user_id||"")+" "+(a.api_key_masked||"")+" "+(a.auth_id||"")+" "+(a.provider_family||"zai")).toLowerCase())}">
-  <h2><span class="name" title="${esc(titleName)}">${esc(titleName)}</span> <span style="display:flex;gap:6px;align-items:center;flex:none">${providerBadge(a)}${stateBadge(a)}${planBadge}<button type="button" class="card-del" data-action="delete" data-auth-index="${esc(a.auth_id)}" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>
+  <h2><span class="name" title="${esc(titleName)}">${esc(titleName)}</span> <span style="display:flex;gap:6px;align-items:center;flex:none">${providerBadge(a)}${stateBadge(a)}${slowBadge(a)}${planBadge}<button type="button" class="card-del" data-action="delete" data-auth-index="${esc(a.auth_id)}" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>
   <div class="uid" title="${esc(a.auth_id||"")}">${esc(a.auth_id||"")}</div>
   <div class="row"><span class="k">访问令牌</span><span class="v mono" title="已脱敏">${esc(a.api_key_masked||"-")}</span></div>
   ${a.user_id?`<div class="row"><span class="k">用户ID</span><span class="v mono">${esc(a.user_id)}</span></div>`:""}

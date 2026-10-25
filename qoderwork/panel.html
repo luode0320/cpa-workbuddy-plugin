@@ -462,6 +462,12 @@ function card(a){
   const rotationBadge=rotationCooling
     ? `<span class="badge cooling" data-rotation-until="${Number(a.rotation_until)||0}" title="连续承流已达设定时长，主动让位给其它账号以摊薄单号负载；到期自动恢复路由">轮换让位(${rotationRemain}s)</span>`
     : "";
+  // 慢速让位：按账号×模型生效，必须逐模型列出。慢是性能问题不是故障，
+  // 与账号整体可用性无关，因此单独成像，不能与禁用类徽标混为一谈。
+  const slowModels=Array.isArray(a.slow_cooling_models)?a.slow_cooling_models:[];
+  const slowBadge=slowModels.length
+    ? `<span class="badge cooling" title="该账号在这些模型上的首字延迟显著高于同池水平，暂时让出流量；到期自动恢复，不写盘禁用">慢速让位 · ${slowModels.map(esc).join(", ")}</span>`
+    : "";
   const region=a.region||"cn";
   
   const disabled=!!a.disabled;
@@ -485,7 +491,7 @@ function card(a){
     : (disabled?``:`<button class="sec" data-action="select" data-auth-index="${esc(a.auth_index)}">选用</button>`);
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
   const clearCooldownBtn=dailyCooling?`<button class="sec" data-action="clear-cooldown" data-auth-index="${esc(a.auth_index)}" title="手动解除 110 日调用上限冷却">解冷</button>`:"";
-  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+failoverBadge+(exhausted?`<span class="badge exhausted" title="积分为 0，仍可调用免费模型">0积分</span>`:lowCreditsBadge)+coolingBadge+failCoolBadge+rotationBadge+regionBadge+`<span class="badge ${esc(plan)}">${esc(a.plan||"-")}</span>`;
+  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+failoverBadge+(exhausted?`<span class="badge exhausted" title="积分为 0，仍可调用免费模型">0积分</span>`:lowCreditsBadge)+coolingBadge+failCoolBadge+rotationBadge+slowBadge+regionBadge+`<span class="badge ${esc(plan)}">${esc(a.plan||"-")}</span>`;
   const display=(a.nickname||a.label||a.name||"").replace(/^qoderwork-?/i,"");
   const nick=display||("u"+(a.uid||"").slice(-8));
   return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-refresh-state="${a._refreshState||""}" data-nickname="${esc(display)}" data-uid="${esc(a.uid||"")}" data-name="${esc(a.name||"")}">

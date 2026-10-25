@@ -81,6 +81,11 @@ func pickNextAuthForModel(currentAuthID, model string) (nextAuthID string, nextS
 		if rotationCoolingDown(id, time.Now()) {
 			continue
 		}
+		// 慢速冷却同理：换到一个刚被判慢的号，等于把慢请求换了个来源，
+		// 且只针对当前模型判定——它在别的模型上可能完全健康。
+		if slowCoolingDown(id, model, time.Now()) {
+			continue
+		}
 		if strings.TrimSpace(f.AuthIndex) == "" {
 			continue
 		}

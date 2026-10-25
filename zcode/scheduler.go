@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -27,6 +28,11 @@ func accountRoutable(sa *StoredAuth, model string) bool {
 	// 失败禁用是账号级的：宿主侧已禁用，插件这里只需判内存镜像与盘上标记。
 	// 原「账号×模型冷却」判据已随冷却状态下线移除。
 	if isFailoverDisabled(sa.AuthID) {
+		return false
+	}
+	// 慢速冷却：该号在这个模型上显著慢于同池水平时让位。只影响当前模型，
+	// 该号在其它模型上仍可正常承流；与写盘失败禁用是两套独立机制。
+	if slowCoolingDown(sa.AuthID, model, time.Now()) {
 		return false
 	}
 	if q := cachedQuota(sa.AuthID); q != nil {

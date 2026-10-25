@@ -121,6 +121,9 @@ type traeAccountView struct {
 	RotationCooling bool  `json:"rotation_cooling,omitempty"`
 	RotationUntil   int64 `json:"rotation_until,omitempty"`
 	RotationServedM int   `json:"rotation_served_m,omitempty"`
+	// SlowCoolingModels 列出该账号当前因「显著慢于同池同模型水平」而冷却的模型。
+	// 慢速冷却按「账号×模型」生效，不是账号整体停用，因此这里必须是清单而非布尔值。
+	SlowCoolingModels []string `json:"slow_cooling_models,omitempty"`
 	// 积分档位：disabled 表示低于禁用线（已被本机制停用），preserve 表示
 	// 仍在路由但排序靠后。空串表示未知或不适用。
 	CreditTier       string `json:"credit_tier,omitempty"`

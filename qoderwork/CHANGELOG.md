@@ -1,5 +1,23 @@
 # QoderWork Plugin Changelog
 
+## 0.12.0
+
+### Fix - per-attempt TTFT 计时隔离（阻断项，先于慢速冷却）
+
+- 缺陷: `sseUsageCollector.ttftNS(started)` 用请求级 `started`，跨重试 attempt 复用会把上一个账号的失败耗时算进当前账号。
+- 修复: collector 新增 `attemptStarted` 与 `markAttemptStart`；异步流每个 attempt 起点调用，同步 collect 路径在循环内重设（collector 由调用方跨 attempt 复用，不重设就会累积）。
+- 验证: 新增 `ttft_attempt_test.go` 3 用例；变异「退回请求级基准」KILLED。
+
+### Feat - 慢速账号 TTFT 拥堵自动冷却（账号 × 模型级）
+
+- 背景: workbuddy-provider 0.21.0 上线的慢速冷却机制横向铺开。同一模型下首字延迟显著高于同池水平的账号，在该模型上让出流量；这类账号每次都能返回 200，既有失败冷却完全抓不到。
+- 判据: 同模型、窗口内样本达标的账号，其 TTFT 中位数达到「全池基准 × 倍数阈值」且高于绝对下限时判慢。基准取各账号中位数的**下四分位（P25）**——用中位数会在「慢号占多数」的池子里被抬到慢号水平、一个也判不出来。
+- 状态: 独立 `slow_account.go`，与失败冷却、轮换冷却三者互不干扰。慢速冷却**只走内存、不写盘禁用**——慢是性能问题不是故障，写盘禁用要求探活恢复，对慢账号过重。到期自动恢复。
+- 配置: 6 个键全部登记进 `ConfigFields`（`slow_account_enabled` / `slow_ttft_ratio_x10` / `slow_window_minutes` / `slow_min_samples` / `slow_cooldown_minutes` / `slow_min_ttft_ms`），默认 2.5 倍 / 15 分钟窗 / 5 样本 / 10 分钟冷却 / 3s 下限。
+- 面板: 新增 `slow_cooling_models` 清单字段与「慢速让位 · <模型>」徽标。慢速冷却按账号×模型生效，不是账号整体停用，因此必须逐模型列出。
+- 可观测性: 四类日志——判定取证（中位数/基线/倍数/阈值/样本数）、防抽干放开清单、到期恢复、配置变更生效值。日志全部在解锁后写，避免持锁 I/O 阻塞路由判定。
+- 验证: cgo-shim build+vet+test 全绿；变异验证全部 KILLED。
+
 ## 0.11.1
 
 ### Fix - 失败禁用标记被宿主 persist 抹掉后自动补回

@@ -556,6 +556,11 @@ function progressHTML(a){
   } else if((Number(a.rotation_served_m)||0)>0){
     statSegments.push('<span class="pb-segment">承流 '+(Number(a.rotation_served_m)||0)+"m</span>");
   }
+  // 慢速让位：按账号×模型生效，必须逐模型列出。慢是性能问题不是故障，
+  // 与该号整体是否可用无关，因此不能和禁用类徽标混在一起表述。
+  if(a.slow_cooling_models&&a.slow_cooling_models.length){
+    statSegments.push('<span class="pb-segment" style="color:var(--warn)">慢速让位 · '+a.slow_cooling_models.map(esc).join(", ")+"</span>");
+  }
   const statHTML=statSegments.join("");
   const primaryHTML='<span class="pb-primary"><span class="pb-segment">可用积分</span>'+statHTML+"</span>";
   const remain=cr?Number(cr.total_remain)||0:0;
@@ -584,6 +589,7 @@ function card(a){
   if(a.credit_tier==="disabled"&&a.low_credit_disable)badges.push(tag("exhausted","积分停用"));
   else if(a.credit_tier==="preserve")badges.push(tag("low-credits","保活档"));
   if(a.rotation_cooling)badges.push(tag("stat","轮换让位"));
+  if(a.slow_cooling_models&&a.slow_cooling_models.length)badges.push(tag("stat","慢速让位"));
   if(a.test_failed)badges.push(tag("test-failed","测试"));
   if(!badges.length)badges.push(tag("stat","正常"));
   const cool=(!a.cooling_down&&(Number(a.fail_count)||0)>0)?tag("stat","失败"+a.fail_count+"次"):"";

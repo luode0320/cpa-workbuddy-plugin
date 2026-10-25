@@ -74,7 +74,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.2.0"
+	version      = "0.3.0"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -99,6 +99,14 @@ type Config struct {
 	ModelCacheSecs int               `yaml:"model_cache_seconds" json:"model_cache_seconds"`
 	TimeoutSeconds int               `yaml:"timeout_seconds" json:"timeout_seconds"`
 	Mimic          mimic.Config      `yaml:"mimic" json:"mimic"`
+	// 慢速账号冷却：字段用指针类型区分「未配置」与「显式填 0/true」。
+	// 未配置时保持包级默认值，显式关闭（false / 0）才覆盖，避免重载冲掉人工关闭。
+	SlowAccountEnabled *bool `yaml:"slow_account_enabled" json:"slow_account_enabled"`
+	SlowTTFTRatioX10   *int  `yaml:"slow_ttft_ratio_x10" json:"slow_ttft_ratio_x10"`
+	SlowWindowMinutes  *int  `yaml:"slow_window_minutes" json:"slow_window_minutes"`
+	SlowMinSamples     *int  `yaml:"slow_min_samples" json:"slow_min_samples"`
+	SlowCooldownMin    *int  `yaml:"slow_cooldown_minutes" json:"slow_cooldown_minutes"`
+	SlowMinTTFTMs      *int  `yaml:"slow_min_ttft_ms" json:"slow_min_ttft_ms"`
 }
 
 func defaultConfig() Config {
@@ -260,6 +268,12 @@ func zcodeRegistration() registration {
 				{Name: "model_cache_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Model cache TTL in seconds."},
 				{Name: "timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Request timeout in seconds."},
 				{Name: "mimic", Type: pluginapi.ConfigFieldTypeObject, Description: "ZCode client fingerprint settings."},
+				{Name: "slow_account_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用慢速账号冷却（默认开启）：某账号在某个模型上的首字延迟中位数显著高于同池同模型水平时，在该模型上进入冷却并让出流量。慢是性能问题不是故障，只走内存冷却，到期自动恢复，不写盘禁用。"},
+				{Name: "slow_ttft_ratio_x10", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速判定倍数阈值 ×10（默认 25 即 2.5 倍）：账号首字延迟中位数达到同模型全池基准的该倍数即判慢。必须大于 10。"},
+				{Name: "slow_window_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "首字延迟样本统计窗口（默认 15 分钟）：只统计窗口内的成功请求样本。"},
+				{Name: "slow_min_samples", Type: pluginapi.ConfigFieldTypeInteger, Description: "参与慢速判定所需的最小样本数（默认 5）：样本不足时不判定，避免单条毛刺误伤。"},
+				{Name: "slow_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速冷却时长（默认 10 分钟）：到期自动恢复，无需探活。"},
+				{Name: "slow_min_ttft_ms", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速判定的绝对下限毫秒（默认 3000）：低于该值一律不判慢；填 0 表示不设下限。"},
 				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
 				{Name: "usage_feed_path", Type: pluginapi.ConfigFieldTypeString, Description: "可选：共享用量数据流路径（默认 <CLIProxyAPI 根目录>/data/token-usage-feed.ndjson）。"},
 			},
@@ -404,6 +418,7 @@ func configurePlugin(raw []byte) error {
 		if decoded.Mimic.AppVersion != "" {
 			cfg.Mimic.AppVersion = decoded.Mimic.AppVersion
 		}
+		applySlowConfig(decoded)
 	}
 	activeConfig.Store(cfg)
 	configureUsageFeed(req.ConfigYAML)

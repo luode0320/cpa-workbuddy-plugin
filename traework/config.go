@@ -145,6 +145,15 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 	nextRotationIdle := defaultRotationIdleResetMinutes
 	rotationSeen := false
 
+	// 慢速冷却同理：只在键真实出现时覆盖，避免无关 reconfigure 冲掉显式关闭。
+	nextSlowEnabled := defaultSlowAccountEnabled
+	nextSlowRatio := defaultSlowTTFTRatioX10
+	nextSlowWindow := defaultSlowWindowMinutes
+	nextSlowMinSamples := defaultSlowMinSamples
+	nextSlowCooldown := defaultSlowCooldownMinutes
+	nextSlowMinTTFT := defaultSlowMinTTFTMs
+	slowSeen := false
+
 	for i, ln := range lines {
 		key, val, ok := splitYAMLKey(ln)
 		if !ok {
@@ -262,6 +271,36 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 {
 				nextRotationIdle = n
 			}
+		case "slow_account_enabled":
+			slowSeen = true
+			if b, ok := parseYAMLBool(val); ok {
+				nextSlowEnabled = b
+			}
+		case "slow_ttft_ratio_x10":
+			slowSeen = true
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n > 0 {
+				nextSlowRatio = n
+			}
+		case "slow_window_minutes":
+			slowSeen = true
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n > 0 {
+				nextSlowWindow = n
+			}
+		case "slow_min_samples":
+			slowSeen = true
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n > 0 {
+				nextSlowMinSamples = n
+			}
+		case "slow_cooldown_minutes":
+			slowSeen = true
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n > 0 {
+				nextSlowCooldown = n
+			}
+		case "slow_min_ttft_ms":
+			slowSeen = true
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 {
+				nextSlowMinTTFT = n
+			}
 		}
 	}
 	// 每次 configure 都整套写入：四个键互为配套，分开写会让「serve 改了、
@@ -269,6 +308,12 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 	// 保住 reconfigure 不冲掉显式关闭的语义（见函数头 nextRotation* 注释）。
 	if rotationSeen {
 		setLoadedRotationConfig(nextRotationEnabled, nextRotationServe, nextRotationCooldown, nextRotationIdle)
+	}
+	// 慢速冷却同理整套写入：六个键共同决定判定结果，分开写会留下
+	// 「阈值改了、窗口还是旧值」的中间态。未出现任何 slow 键时跳过，
+	// 避免一次无关 reconfigure 把显式关闭冲回默认开启。
+	if slowSeen {
+		setLoadedSlowConfig(nextSlowEnabled, nextSlowRatio, nextSlowWindow, nextSlowMinSamples, nextSlowCooldown, nextSlowMinTTFT)
 	}
 }
 
