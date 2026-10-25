@@ -25,7 +25,7 @@
   - `cursor-provider`: **0.1.6**（修复 Query 参数反序列化丢失导致真实发现模型被屏蔽、建立点号模型别名归一化根治上游 not_found、测试弹窗支持实时搜索过滤与秒开交互）
   - `qoderwork-provider`: **0.10.1**（0.10.1 模型清单改为全场景并集 + 以上游 `display_name` 为准 + 补齐改名后的请求回译 + 静态兜底对齐可用集合；0.10.0 账号故障改写盘禁用 + 每 10 分钟只探失败模型；0.9.44 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502`；0.9.40 重建上游 messages 保留工具调用结构；0.9.49 模型对外 ID 改用官方展示名并补齐执行链回译；0.9.48 模型清单按账号分片 + 额度优先）
   - `qoder-ai-provider`: **0.1.24**（0.1.24 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502`；0.1.20 重建上游 messages 时保留工具调用结构修复 agent 多轮往返工具结果失配对；0.1.18 签到节奏恢复每 4 小时六槽 + 移除冗余门控；0.1.17 tools 对齐修复；0.1.15 max_tokens 统一 32768 最低输出底线；0.1.14 上游 110 日调用上限 24 小时持久化冷却 + 补齐 /clear-cooldown 路由注册）
-  - `traework-provider`: **0.2.13**（面板签到时刻文案漂移修正为 00/04/08/12/16/20；0.2.12 定时探活降频至 4 小时 + 失败也刷新节流时间戳；0.2.11 max_tokens 32768 底线 + payload 层同步，探活改全量模型按序测试）
+  - `traework-provider`: **0.4.0**（0.4.0 失败禁用改 sidecar 三层分离（宿主 fsnotify 不监听 spool，写盘不能作真相源）+ 模型级故障豁免（200 的 SSE 错误帧曾被无条件改写 403 导致整池自禁），同步 workbuddy 七项：故障 sidecar / 标记补回 / 外部启用对账 / 轮换冷却 / 积分快照 / 双阈值分级 / 面板徽标；`low_credit_disable_below` 默认 0 关闭；0.2.13 面板签到时刻文案漂移修正为 00/04/08/12/16/20；0.2.12 定时探活降频至 4 小时 + 失败也刷新节流时间戳；0.2.11 max_tokens 32768 底线 + payload 层同步，探活改全量模型按序测试）
   - `workbuddy-provider`: **0.20.2**（0.20.2 失败禁用标记保底补回：宿主每次请求结束用内存 Metadata 重建 auth 文件会抹掉本机制三个顶层键，改由 watchdog 的计数器落盘前补齐，并新增面板 `failover_unconfirmed` 暴露「写盘未生效」；0.20.0 新增连续使用轮换：单账号连续承流满 60 分钟让位、冷却 60 分钟，默认开启，含全冷放开一半防抽干；0.19.0 重新接入成长中心 7 段，修复旧版「任务永远完不成」的两个根因：从未调用 `buddy/first` 领养 + 完全没有 `POST /v2/report` 行为上报；0.18.2 面板单卡刷新补写积分快照；0.18.1 积分三档分级 + 每小时串行扫描 + 低于 100 硬禁用；0.18.0 下线 Global 耗尽自动删号 + 低额红线可配置；0.16.5 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502`）
   - `workbuddy-ai-provider`: **0.1.28**（0.1.28 面板不再自动刷新：打开只渲染内存缓存/盘上积分快照，最新积分由卡片「刷新」显式触发；连带修复手动刷新与签到不落盘、缓存 3 分钟过期 GC 掏空活账号 plan/签到态、默认渲染对无 plan 账号查上游注册态三处缺陷。0.1.27 积分快照并入白名单搬运路径修复备注刷新抹快照；0.1.26 积分快照持久化 `credits_snapshot`；0.1.25 移除耗尽标签与按额度排除；0.1.16 授权后自动补注册地）
   - `copilot-provider`: **0.1.2**（0.1.2 调度器对齐宿主候选集语义修复越界缺陷，已发布 `0054c28`→`ba471b0`→`bca1264`→`78b4069` 并生产验收：热重载前 5 分钟 50/50 请求告警、热重载后 0/57；0.1.1 宿主 OAuth 弹窗改开插件桥接页展示设备码；0.1.0 首发：Device Flow 登录 + 内部令牌 80% 提前保活 + VS Code Copilot Chat 指纹模拟 + 动态模型发现 + 多账号池换号重试 + 流式/非流式转发 + 额度与面板）
@@ -34,6 +34,16 @@
 - 当前时间：2026-10-17 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 当前会话（2026-10-25）：**traework 向 workbuddy 同步能力并修掉两个真实缺陷，发布 0.4.0 并部署生产**：
+  - **两个真实缺陷**：① 写盘禁用可能名义生效——宿主 fsnotify 不监听 mysqlstore spool（qoderwork 0.11.0 生产实证 48h 零 watcher 事件而 mtime 持续变化），「写盘 → 宿主毫秒级感知」前提不成立；改为插件自有 sidecar `data/traework-failover.json` 作为路由判据权威来源。② 模型级故障被记成账号级——HTTP 200 的 SSE 错误帧被无条件改写成 403，`All backends failed` 类后端池级故障走进账号级判据导致整池自禁（与 qoderwork 0.11.0 事故同机理）；在记账唯一漏斗与换号判据两处同时豁免，硬额度（402/额度标记）优先不被吞。
+  - **同步的七项能力**：故障 sidecar 跨重启存活、宿主 persist 抹标记后补回、外部启用对账、轮换冷却（状态独立于失败复位，四处成功打点）、积分快照持久化 `data/traework-credits.json`（与故障 sidecar 分文件，避免高频替换冲掉低频状态）、积分双阈值分级、面板轮换/积分档位徽标、11 个配置键登记。
+  - **关键裁定（放宽而非收紧）**：`low_credit_disable_below` 默认 **0（关闭）**，刻意不同于 workbuddy 的 100——直接照搬会让现网 remain 20–99 的账号在首轮扫描被批量禁用；保活线 `min_routable_credits` 从「硬排除」降级为「排序降级」。
+  - **验证**：10 条变异全部被测试检出（含「调度层过滤行没接上」的经典存活形态；`TestLowCreditDisableBelowZeroKeepsLegacyBehavior` 锁定 remain=50 仍可路由）；cgo-shim build+vet+test 全绿；panel.html 两个 script 块 `node --check` 通过。
+  - **发布链**：`37f1d17`(fix, 35 文件) → CI `40172655622` success → 6/6 assets sha256 OK → `4e02b36`(registry) → 远端 6/6 artifacts 正确。
+  - **生产部署（热重载零重启）**：`restart_required:false`；`hot reloaded active=0.4.0 retired=0.3.0`；`.so` sha256 `0c953f74…ed33dee` 与本地 CI 产物逐字节一致。
+  - **生产验收**：`/accounts` 与 `/panel` 双 200；16 账号 `normal:14 / preserve:2 / disabled:0`——**禁用线默认 0 的红线在生产坐实**（remain=0 的号未被误禁）；`traework-credits.json` version:1、4716 字节、明细含 total_used/total_size/pack_count；配置字段 25 条全部注册（11 个新键在内）；真实请求 `kimi-k3.1-pro` HTTP 200 耗时 3.9s。
+  - **未闭环项（如实记录）**：① 轮换需真实长流量（1 小时）才能观察到让位，本轮未跑满；② 模型级豁免的正文形态 grep 近 5 小时生产日志无样本，标记表按后端池语义最小集落地（`RESOURCE_LIMIT`/`10605` 等 Qoder 专属文案刻意未加，避免吞掉真实账号故障）。
 
 - 当前会话（2026-10-25）：**coze 低额自动禁用未同步宿主状态修复（0.6.2），已发生产并验收**：
   - **根因**：宿主 `pluginAuthDataToCoreAuth` **只用 `AuthData` 顶层 `Disabled` 推导 `Status`**，Metadata 里的 `"disabled"` 在该路径上不参与判定。coze 的 `authDataForLogin` 只补了 Metadata、漏设顶层字段 → 插件写盘禁用对宿主不可见。**全项目 7 个插件只有 coze 漏了这一行**。0.6.1 的「Metadata 回传」只覆盖文件重建路径（`synthesizer/file.go:107`），漏掉状态判定路径。
@@ -94,37 +104,13 @@
   - **未在本轮闭环（如实记录）**：① 成功链路因上游随后整体排队，未能稳定跑满「完整流式到 `[DONE]` + 轮换 `承流` 计时可见」的端到端样本；② 账号级故障触发侧车 `failover-failover.json` 写禁用的正向路径未在生产复现（需真实账号级错误，当前上游只有排队帧）；两项均有本地 cgo-shim 单测 + 变异验证覆盖，生产侧待下个窗口补证。
   - **旁证（非本轮回归）**：部署后 3 条 `upstream served model "auto"` 警告，与部署前 02:12 的同类警告同形，属上游排队降级期的既有现象，非 0.11.0 引入。
 
-- 当前会话（2026-10-25）：**qoderwork 失败禁用两层根因诊断（已被 0.11.0 重构取代，保留结论）**：
-  - **第一层（写盘被覆盖）**：18 号 `disabled` 全 false、DB `auth_store` 中 `failover_disable=true` 的 qoderwork 账号 0 个（workbuddy 有 2 个）；两小时内 `failover disabled account` 27 次而 `failover state NOT confirmed by host` 也是 27 次。决定性实验：宿主机直给 spool 写 `disabled:true` → 12 秒存活；一次 `test-active` 后标记消失、被 `buildAuthFileJSON` 白名单重建。根因：宿主以 `auth_store` 为真相源、spool 为单向投影，插件搬标记唯一的通道是 `AuthData.Metadata` → `handleParseAuth`，而 DB 回写 spool 不走该回调。
-  - **第二层（watcher 未监听，才是真根因）**：SDK v7.2.129 的 `buildAuthFromFileData` 不读 `disabled`、`Status` 硬编码 `StatusActive`，故 `host.auth.save` 会强制启用账号（方案 A 不可行）；而 `auth.parse` 通道本身完全正确（`Disabled: data.Disabled`，`Metadata` 整体落盘 + 原样 upsert）。真问题：容器 `auth-dir` 下 qoderwork 文件 0 个，18 个全在 `mysqlstore/mysqlstore/auths/`，三项实测（改 note / `os.Rename` / 删除重建）warner 均零事件，48h 零事件而 spool mtime 持续在变。
-  - **处置**：结论直接促成 0.11.0 三层分离重构——放弃依赖宿主写盘禁用，改由插件自有 sidecar + `scheduler.pick` 路由排除。文档 `doc/4-bugs/2026-10-25_014500_*` 与 `..._021000_*`。
+- 更早会话（2026-10-25，已压缩）：**qoderwork 失败禁用两层根因诊断（已被 0.11.0 重构取代，结论仍有效）**：① 宿主以 `auth_store` 为真相源、spool 为单向投影，插件搬标记唯一通道是 `AuthData.Metadata` → `handleParseAuth`，而 DB 回写 spool 不走该回调；② 真根因是 watcher 未监听——容器 `auth-dir` 下 qoderwork 文件 0 个、18 个全在 `mysqlstore/mysqlstore/auths/`，改 note / `os.Rename` / 删除重建三项实测零事件，48h 零事件而 spool mtime 持续在变。该结论直接促成 0.11.0 三层分离重构，也是 traework 0.4.0 采用 sidecar 的依据。
 
-- 更早会话（2026-10-25，已压缩）：**qoder-ai 0.1.30 模型清单修复的上游取证细节**：真实国际版账号直连 `openapi.qoder.sh` 证实响应按 11 场景切分（chat 仅 12 个 key、全场景并集 21 个）；本机官方客户端 QMC 加密目录（`~/.qoder/.models/<uid>/catalog-v6|v7`，HKDF-SHA256(uid)+AES-256-GCM）解密后同样证实按场景切分。国际版把档位嵌进场景 id 形成 8 个伪模型，必须按前缀排除；真正漏掉的只有 `performance`（只在 `qwake` 出现）。静态表补入 `fast` 且**只保留旧名代号**——新名一律交给运行时映射，否则静态表会遮住映射（变异验证发现硬编码新名会让「移除运行时回译」这个变异存活）。
+- 更早会话（2026-10-25，已压缩）：**qoder-ai 0.1.30 模型清单修复的上游取证**：真实国际版账号直连证实响应按 11 场景切分（chat 仅 12 个 key、并集 21 个）；QMC 加密目录解密同样证实按场景切分。国际版把档位嵌进场景 id 形成 8 个伪模型必须按前缀排除；真正漏掉的只有 `performance`。静态表只保留旧名代号，新名交给运行时映射（否则会遮住映射，变异存活）。
 
-- 当前会话（2026-10-25）：**qoderwork 生产 Kimi-K3.1-Pro 测试失败排查：上游后端不可用，非插件缺陷，无代码改动**：
-  - 现象：面板测试 `ud5cdb65b` 的 `Kimi-K3.1-Pro` 返回 `upstream 200: provider_error: AI backends failed`。全仓 grep 该文案零命中，确认来自上游。
-  - 根因：Qoder 上游对 `kmodel_latest` 返回 HTTP 200 + `All backends failed`（Kimi 后端池全挂）；同期 `serviceAvailable:false` / `subCode:RESOURCE_LIMIT` 证明上游整体资源受限。
-  - 四项排除：回译正常（官方名与内部代号同成同败）、账号状态正常（18 号 disabled=false 且无三类禁用标记）、换号链正常（轮转 9 号后如实返回 `auth_unavailable`）、非账号无权益（同号 8 秒内曾成功）。
-  - 插件行为符合设计：`provider_error` 不含额度关键词、不命中 `isQueueFrame`，故不计冷却、不写盘禁用。
-  - 处置：不改代码、不重启容器；文档 `doc/4-bugs/2026-10-25_011500_*`；知识库《Qoder上游降级时的四类错误语义判别》。
-  - 独立旁证（未处理）：`/v1/models` 中 `Kimi-K3.1-Pro` / `DeepSeek-Flash` / `GLM-5.3-Flash` 无 provider 归属，与本次故障无关。
+- 更早会话（2026-10-25，已压缩）：**qoderwork 生产 Kimi-K3.1-Pro 测试失败排查：上游后端不可用，非插件缺陷**。Qoder 上游返回 HTTP 200 + `All backends failed`（Kimi 后端池全挂），同期 `serviceAvailable:false` / `subCode:RESOURCE_LIMIT`；四项排除（回译 / 账号状态 / 换号链 / 权益）均正常。**该案例正是 traework 0.4.0 模型级豁免的动机来源之一**——同类文案在 traework 会被判账号级并整池自禁。
 
-- 更早会话（2026-10-25，已压缩）：**qoderwork 0.10.1 / qoder-ai 0.1.30 模型清单漏模型修复（多场景并集 + 上游 display_name 权威），均已发生产**：
-  - 根因三层：① `callModelsAPI` 只读响应里的 `chat` 场景，而上游按 11 个场景切分（各场景集合不同）；② 对外模型名取自硬编码表，上游 `display_name` 解析后从未使用，上游改名不改内部代号（`kmodel_latest`→`Kimi-K3.1-Pro`、`mmodel`→`MiniMax-M3.1-Flash`）导致表名永久滞后；③ 只改命名不改回译，客户端按新名请求会透传给上游并**静默落到 `auto`**（HTTP 200、无报错、参数与计费全错）。
-  - 实现：`exposeModelIDs` 主条目改用上游 `display_name`（硬编码表降为兜底）；`parseModelsResponse` 遍历全部场景取并集；新增运行时映射 `upstreamModelNames` 供回译。国际版额外按前缀排除场景内嵌档位别名（`quest-`/`qwork-`/`experts-`/`nap-` 共 8 个伪模型），国内版取全集即可。
-  - 验证：各 12 用例、变异全 KILLED、cgo-shim 全绿；真实上游直连验收（国内 10 models/11 scenes、国际 13 models/11 scenes），对外 ID 全部回译通过。发布 `5f3cc57`→CI `40111458460`→`937d1d1`；`3b9596c`→CI `40116130945`。qoderwork 生产热重载零重启并实测回带 `modelKey` 证明回译生效；qoder-ai 生产 `configured=true / registered=false / enabled=false`，只做发版与资产校验。
-
-- 更早会话（2026-10-24，已压缩）：**coze 0.5.5/0.5.6 每日登录积分自动领取 + 历史账号补注册宿主，已发生产验收**：
-  - 上游契约（九账号实证）：每日 1500 分「每日登录」有效期仅 1 天，唯一触发器是 `GET .../credit/balance/check`（token beat / `/home` / `activity/info` 都不发）；`pass` 字段描述余额是否够用、与发放无关，到账判据只能是「明细里有当天且 `remaining>0` 的每日登录条目」。
-  - 0.5.5 新增 `daily_credit.go` + `daily_credit_manage.go`（领取必须先于余额查询；跨日固定 UTC+8；禁用号不领；面板加今日三态）。0.5.6 新增 `POST /register-host`——历史账号只在首次授权时进宿主 spool，插件能读能刷但请求必 503 `auth_not_found`，补注册后 9/9 回归。
-  - 验证：15 用例、8 项变异全 KILLED、cgo-shim 全绿；发布 `1b4990b`/`c46ec70` + registry `37db359`/`dad3e94`；生产热重载零重启，9/9 账号 `remain=1500`，端到端推理 HTTP 200。
-
-- 当前会话（2026-10-24）：**workbuddy-provider 0.20.0 连续使用轮换已发生产并完成验收**：
-  - 需求：单账号长时间承流会触发上游频率限制（单号 1000 次量级即被限流），需要把负载摊到全池。
-  - 方案：新增 `usage_rotation.go`，连续承流满 60 分钟让位、冷却 60 分钟、中断 10 分钟重新计时；状态只存内存不写盘；含「全池同时冷却则放开一半」的防抽干逻辑。
-  - 关键点：本机制不依赖宿主 selector，在请求入口主动换号，因此对已绑定会话同样生效（宿主的 priority 降级对绑定会话无效）。
-  - 验证：cgo-shim 全绿 + 变异验证；生产热重载后 `hot reloaded` 生效，实测单号承流时长明显下降。
-  - 边界：轮换状态进程重启即清空，与失败冷却同口径。
+- 更早会话（2026-10-24 ~ 2026-10-25，已压缩）：**qoderwork 0.10.1 / qoder-ai 0.1.30 模型清单漏模型修复**（多场景并集 + 上游 `display_name` 权威 + 运行时回译映射，均已发生产）；**coze 0.5.5/0.5.6 每日登录积分自动领取 + 历史账号补注册宿主**（唯一触发器 `GET .../credit/balance/check`，补注册修复请求必 503）；**workbuddy 0.20.0 连续使用轮换**（满 60 分钟让位、冷却 60 分钟、中断 10 分钟重计时、全冷放开一半）。完整细节见 git log 与 PROJECT_HISTORY.md。
 
 - 当前会话（2026-10-23）：**workbuddy-ai 0.1.22 与 zcode 0.1.35 版本就绪并生产落盘（未启用）**：
   - 查清 `f961f2eb` 会话产出 `121931d`（README 六插件说明，纯文档）已提交；另有两处未发布修复 `5ab431d`（workbuddy-ai `backendHeaders` 补四个会话追踪头）。
