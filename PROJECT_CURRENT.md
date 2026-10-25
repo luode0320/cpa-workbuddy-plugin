@@ -45,23 +45,21 @@
   - **文档**：`doc/4-bugs/2026-10-25_144500_coze低额自动禁用未同步宿主认证文件状态根因诊断.md`（含三层生产铁证与 workbuddy 对照）。
 
 - 当前会话（2026-10-25）：**生产 traework-provider 17 个账号误删后从 MySQL binlog 完整恢复，已启用并端到端验收**：
-  - **事故**：生产 spool 与 `auth_store` 的 traework 记录均为 0，插件侧无 `traework_accounts` 目录。binlog 定位到 **17 条 DELETE 事件**，三批：10-20 15:34（3）/ 10-21 15:11（4）/ 10-22 12:58~12:59（10）。
-  - **恢复依据**：`log_bin=ON` + `binlog_row_image=FULL` + 保留 24h，`binlog.000017` 覆盖 10-16 至今。**恢复前先备份 binlog 本体**（921MB 本地副本），防 24h 轮转清理。
-  - **解析**：容器无 `mysqlbinlog`、宿主无 `pip`，改用纯 Python 直解；踩中三个偏移陷阱（事件头 `<IBIIIH>`、table_id 为 6 字节、二进制 JSON 列的偏移基准与 value entry 字段顺序），靠「已知 uid 反查」自证后才产出可信结果。
-  - **还原点（用户要求「出错可还原」）**：`PRE_RESTORE_auth_store_20261025_134113.sql`（全表）+ `PRE_RESTORE_spool_20261025_134113.tar.gz`（目录快照）+ `PRE_RESTORE_baseline.txt`（基线 spool_traework=0 / db=0），均在 `/root/traework-recovery/`。
-  - **凭据有效性**：17 个全部实测刷新，**16 个成功**（新 token 有效至 11-08）；1 个（`3313287900183084`）返回 `401/20101`，其删除前 note 已是 `Session expired: re-login required`，属删除前既有失效，非本次误删。
-  - **写回与验收**：按「auth_store（hex 写 JSON 列）→ spool」顺序写入 17/17；插件原为 `enabled=false`（10 插件中仅 5 个启用），**启用后** `registered/effective_enabled` 均 true，插件 `/accounts` 17 条、宿主 `auth-files` 56→73（+17）。抽样 5 号 `test-active` 4 成功（0.9~2.6s）、1 号报上游 `all models failed`（模型级非账号故障）；真实入口 `/v1/chat/completions` 调 `glm-5.3` 返回 `finish_reason=stop` 正文 `OK`。
-  - **边界**：恢复出的 `disabled` 统一为 false，删除前的禁用态未单独保留；解析器与恢复脚本留在 `/root/traework-recovery/`（`recover.py`/`apply.py`），未纳入仓库。
+  - binlog 定位到 17 条 DELETE（10-20/10-21/10-22 三批）；恢复前先备份 binlog 本体（921MB）防 24h 轮转；容器无 `mysqlbinlog` 改用纯 Python 直解（踩事件头/table_id/二进制 JSON 偏移三个陷阱，靠已知 uid 反查自证）。
+  - 还原点三层（表 dump + spool 快照 + 数量基线）在 `/root/traework-recovery/`；17 个凭据实测刷新 **16 成功**（1 个删除前即 `Session expired`，非本次误删）；按「auth_store → spool」写回 17/17，启用后 `/accounts` 17 条、宿主 `auth-files` 56→73。
+  - **完整方法论已沉淀为项目 skill** `project-cpa-workbuddy-plugin-account-data-recovery-rules`；边界：恢复出的 `disabled` 统一 false，删除前禁用态未保留。
 
-- 当前会话（2026-10-25）：**zcode 功能同步计划已定稿（只做 P0 + 写盘禁用 + 额度禁用），尚未开工**：
-  - **背景**：用户指出 zcode 功能已落后 workbuddy 很远，要求给出同步计划。盘点结论：workbuddy 53 个非测试 Go 文件 / 27,258 行，zcode 20 个 / 10,476 行。
-  - **用户三项裁定**：① 口径 = 只做 P0（签到、成长中心、会话亲和、轮换、计数、鉴权、客户端版本拉取全部剔除）；② 引入写盘禁用，**并移除原内存冷却**；③ 额度耗尽落成写盘禁用 + 次日 `period_end` 重置后探活恢复。
-  - **盘点出的 3 处真实缺陷**（非能力差距，是缺陷）：`stream.go:92-120` 遇 `[DONE]` 只跳过用量提取、仍转发且不终止（死等空闲连接）；全文无 SSE 错误帧识别（200 承载 `{"error":...}` 被当成功并清失败状态）；全文无脱敏（上游报文含 Bearer/JWT 原样进 `stream.emit` 与 usage feed）。
-  - **一处结构性障碍**：`authfile.go:221` 写盘用 `json.MarshalIndent(auth)` 从 `StoredAuth` 结构体重建，会丢掉所有不在结构体里的顶层键 —— 不换实现则禁用标记写进去立刻被下一次插件写盘抹掉（`DEC-004`）。
-  - **计划落盘**：`doc/3-实施/2026-10-25_133753_zcode功能同步P0与写盘禁用_实施总览.md`，4 个周期 / 11 个最小任务 / 3 张 Mermaid / 6 条 `FEAS-*`；结构校验通过（11 任务必填字段齐全、占位词零命中、UTF-8）。
-  - **关键排序约束**：`CYCLE-02` 内部必须先建新机制（TASK-004~006）再删旧机制（TASK-007~008），保证移除内存冷却不产生能力真空（`FEAS-006`）。
-  - **两项待执行期验证**：`FEAS-004`（`billing/balance` 是否返回 `period_end`）与 `FEAS-005`（重置后探活能否成功）均为任务级未验证，已写入 `TASK-009`/`TASK-010` 的「执行期第一动作」，不成立即停止并回写计划。
-  - **未开工**：本轮只产出计划，未改任何 `zcode/` 代码。
+- 当前会话（2026-10-25）：**zcode 功能同步 P0 已全部实现、发布 0.2.0 并部署生产**：
+  - **背景与裁定**：用户指出 zcode 落后 workbuddy 很远（53 文件/27,258 行 vs 20 文件/10,476 行）。三项裁定：① 只做 P0（签到/成长中心/会话亲和/轮换/计数/鉴权/客户端版本拉取全部剔除）；② 引入写盘禁用并**移除原内存冷却**；③ 额度耗尽落成写盘禁用 + 重置后探活恢复。
+  - **计划落盘**：`doc/3-实施/2026-10-25_133753_zcode功能同步P0与写盘禁用_实施总览.md`，4 周期 / 11 任务；执行顺序约束 `CYCLE-02` 先建新机制（TASK-004~006）再删旧机制（TASK-007~008），保证无能力真空。
+  - **CYCLE-01 三处流式缺陷**：`[DONE]`/`event: done` 后立即停止读取并关流（原实现只跳过用量提取、仍转发且死等 Keep-Alive）；识别 HTTP 200 承载的错误帧（原被当成功并清失败状态）；上游报文经 `redactSecrets` 脱敏后再落 `stream.emit` 与 usage feed。
+  - **CYCLE-02 写盘禁用**：失败即写 `disabled:true` + `failover_disable`/`_model`/`_at` 三标记，走宿主自身路由判据；10 分钟探活**只回放失败的那一个模型**；手动/额度禁用一律不接管；宿主 persist 抹标记时下一轮按「本进程写过 + 盘上确实 disabled」补回。内存阶梯冷却（60s×次数、上限 10 分钟）与账号×模型状态机整体下线。
+  - **CYCLE-03 额度禁用**：`FEAS-004` 用本机 zcode 客户端落盘的真实 `billing/balance` 响应验证（319 条 / 5 个自然日）——`period_end` 恒为当日 23:59:59 CST、跨度 86399s、相邻日 `start = 上一日 end + 1`，**按自然日重置成立**。恢复需「越过 `earliest_reset`」+「探活成功」双条件；`HasUsage=false` 时不动手（此时 `TotalRemain` 是授予量回退，据此判耗尽会把全部账号误禁）。
+  - **E2E 抓到的真实缺陷（单测盖不到）**：`writeAuthFileDirect` 按 `StoredAuth` 整篇重建文档 → 探活成功后 `saveAuthTestStatus` 把刚写好的 `disabled:false` 覆盖回内存旧值，并抹掉结构体未声明的宿主字段。改为「读旧文档 → 覆盖结构体已知键 → 写回」并补回归守卫（变异精确失败）。
+  - **验证**：12 个变异全部被测试检出（CYCLE-02 六个 / CYCLE-03 五个 / CYCLE-04 一个）；`cgo-shim` 全绿；WSL 真实 c-shared `.so` + ctypes 宿主桥 E2E 通过失败禁用 / 探活恢复 / 流式终止三条链路（额度端点硬编码不可注入，改由单测覆盖）。4 份 `6-review` 全 `STYLE: PASS`。
+  - **发布链**：`1ed4f28`(fix, 34 文件) → CI `40171590144` success → 6/6 assets sha256 OK → `f73068e`(registry) → 远端 6/6 ALL PASS 零残留。
+  - **生产部署（热重载零重启）**：install `restart_required:false`；落盘 `.so` sha256 `6d9b22db…bdbf` 与本地 zip 一致；`hot reloaded active=0.2.0 retired=0.1.35`；`registered/effective_enabled` 均 true；`/panel` 200、`/accounts` 正常、`/v1/models` 含 `glm-5.3`。
+  - **生产现状与边界**：部署前 zcode 为 `enabled=false`（池内 **0 个 zcode 账号**），按用户裁定「安装 0.2.0 并启用」处理后已启用，但**当前仍是空池**，实际承载流量前需导入账号。额度链路真实 E2E 未做（端点硬编码）；真实次日重置恢复留待生产灰度观察。
 
 - 当前会话（2026-10-25）：**同一宿主 persist 抹除缺口同步到四个插件，已发生产并验收**：
   - **背景**：workbuddy-provider 0.20.2 修复「宿主每次请求结束用内存 Metadata 重建 auth 文件、抹掉插件直写归属字段」后，用户要求同步到 workbuddy-ai / qoderwork / qoder-ai / coze。
@@ -161,7 +159,7 @@
 {
   "version": 5,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "2026-10-25T06:47:30.902209Z",
+  "registry_updated_at": "2026-10-25T07:01:22.732382Z",
   "projections": [
     {
       "projection_id": "SESSION/30608b3616fa2311bfb720a2776c09ac96b2738601ec3752b03a252c810cdb70",
@@ -330,7 +328,7 @@
       "session_id": "65b03a5b-6668-4651-986a-e9e82b82f85f",
       "projection_origin": "persisted",
       "synthesis_mode": "none",
-      "state": "active",
+      "state": "inactive",
       "plan_key": "PLAN/zcode-p0-failover-disable",
       "source_document": "doc/3-实施/2026-10-25_133753_zcode功能同步P0与写盘禁用_实施总览.md",
       "plan_fingerprint": "7339ff9e834290d1aad6ebdc9ef9ec8e183f5ab0d1db4492d620a9e7be9c2d73",
@@ -389,7 +387,7 @@
         {
           "id": "TASK-011",
           "step": "[TASK-011] zcode 收口发布：本地 E2E 验证四条链路、版本升到 0.2.0、补 CHANGELOG、6-review 风格回归",
-          "status": "in_progress"
+          "status": "completed"
         }
       ]
     }
