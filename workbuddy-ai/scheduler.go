@@ -131,6 +131,10 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		if rotationCoolingDown(c.ID, rotationNow) {
 			continue
 		}
+		// 慢速冷却：该号在这个模型上显著慢于同池水平时让位，只影响当前模型。
+		if slowCoolingDown(c.ID, upstreamModel, rotationNow) {
+			continue
+		}
 		available = append(available, c)
 	}
 	if len(available) == 0 {

@@ -329,7 +329,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.2.9"
+var version = "0.2.10"
 
 func wbRegistration() registration {
 	return registration{
@@ -349,6 +349,13 @@ func wbRegistration() registration {
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 管理密钥。优先从环境变量 CPAMP_ADMIN_KEY / USAGE_REPORT_KEY 或密钥文件 /run/secrets/cpamp_admin_key 自动探测。"},
 				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
 				{Name: "usage_feed_path", Type: pluginapi.ConfigFieldTypeString, Description: "可选：共享用量数据流路径（默认 <CLIProxyAPI 根目录>/data/token-usage-feed.ndjson）。必须与 token-usage-tracker 的 usage_feed_path 保持一致。"},
+				{Name: "slow_account_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用慢速账号冷却（默认开启）：某账号在某个模型上的首字延迟中位数显著高于同池同模型水平时，在该模型上进入冷却并让出流量。慢是性能问题不是故障，只走内存冷却，到期自动恢复，不写盘禁用。"},
+				{Name: "slow_ttft_ratio_x10", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速判定倍数阈值 ×10（默认 25 即 2.5 倍）：账号首字延迟中位数达到同池基准的该倍数即判慢。必须大于 10。"},
+				{Name: "slow_window_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "首字延迟样本统计窗口（默认 15 分钟）：只统计窗口内的成功请求样本。"},
+				{Name: "slow_min_samples", Type: pluginapi.ConfigFieldTypeInteger, Description: "参与慢速判定所需的最小样本数（默认 5）：样本不足时不判定，避免单条毛刺误伤。"},
+				{Name: "slow_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速冷却时长（默认 10 分钟）：到期自动恢复，无需探活。"},
+				{Name: "slow_min_ttft_ms", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速判定的绝对下限毫秒（默认 3000）：低于该值一律不判慢，避免全池都快时相对放大误伤；填 0 表示不设下限。"},
+				{Name: "slow_min_pool_size", Type: pluginapi.ConfigFieldTypeInteger, Description: "账号池准入下限（默认 20）：账号总数（启用 + 停用）须严格大于该值才触发慢速判定。池子太小时下四分位基线退化，两个账号里任一次抖动就会让其中一个被判慢、互相顶替。"},
 			},
 		},
 		Capabilities: registrationCapability{
@@ -723,8 +730,13 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		}
 	}
 
+	// nonStreamTTFTNS 由 doExecuteOnceQwenWork 带出：非流式路径的首字延迟，
+	// 成功分支需要它上报慢速冷却样本。
+	nonStreamTTFTNS := uint64(0)
 	for attempt := 0; attempt <= budget; attempt++ {
-		completion, completionErr = doExecuteOnceQwenWork(body, curSA, req.Model, sessionKey)
+		var attemptTTFT uint64
+		completion, attemptTTFT, completionErr = doExecuteOnceQwenWork(body, curSA, req.Model, sessionKey)
+		nonStreamTTFTNS = attemptTTFT
 		if completionErr == nil {
 			// The account that actually served the request may differ from the
 			// initial one after failover; keep counter/feed bookkeeping in
@@ -787,9 +799,11 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	}
 	// Success path: credit invalidation + failover counter reset use
 	// the actual account that served the request.
-	publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "", reasoningEffort, 0, accountLabel, sessionKey)
+	publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "", reasoningEffort, nonStreamTTFTNS, accountLabel, sessionKey)
 	invalidateAccountCredits(usedAuthID, authUID)
 	resetAccountFailover(usedAuthID)
+	// 慢速打点：真实成功才记样本，失败换号不计（错误耗时不是首字延迟）。
+	noteSlowObservation(usedAuthID, upstreamModel, nonStreamTTFTNS)
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 }
 
@@ -802,24 +816,25 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 // [参数] bodyRaw 客户端原始请求体；sa 账号凭据；requestedModel CPA 侧模型名。
 // [返回] 折叠后的 chat.completion 负载；上游 4xx/5xx 时返回 "upstream N: ..."。
 // 最近修改时间：2026-10-17 23:50:00；改动原因：切换 QwenWork MaaS 推理链路。
-func doExecuteOnceQwenWork(bodyRaw []byte, sa *storedAuth, requestedModel, sessionKey string) ([]byte, error) {
+func doExecuteOnceQwenWork(bodyRaw []byte, sa *storedAuth, requestedModel, sessionKey string) ([]byte, uint64, error) {
+	attemptStarted := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	sess, err := ensureMaasSession(sa, sessionKey)
 	if err != nil {
-		return nil, fmt.Errorf("maas: %w", err)
+		return nil, 0, fmt.Errorf("maas: %w", err)
 	}
 	url := maasInferenceURL(sess, "/v1/chat/completions")
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyRaw))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	applyMaasHeaders(httpReq, sess)
 	// Compliance: route via host.http.do_stream so request-log captures the
 	// outbound call. Read entire body via the bridge, then fold SSE → completion.
 	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("http_error: %w", err)
+		return nil, 0, fmt.Errorf("http_error: %w", err)
 	}
 	defer stream.Close()
 	reader := newHostStreamReader(stream)
@@ -831,9 +846,16 @@ func doExecuteOnceQwenWork(bodyRaw []byte, sa *storedAuth, requestedModel, sessi
 		if sa != nil && sa.Account.UID != "" {
 			go reconcileByUID(sa.Account.UID, statusCode, payload)
 		}
-		return nil, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(payload, 200))
+		return nil, 0, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(payload, 200))
 	}
-	return aggregateOpenAISSE(reader, requestedModel, statusCode)
+	var firstByteAt time.Time
+	completion, errAgg := aggregateOpenAISSE(reader, requestedModel, statusCode, &firstByteAt)
+	if errAgg != nil {
+		return nil, 0, errAgg
+	}
+	// 非流式路径也要上报 TTFT：慢速冷却的样本池需要覆盖这条路径，
+	// 否则纯非流式流量永远达不到样本门槛，机制对它们等同不存在。
+	return completion, ttftNSBetween(attemptStarted, firstByteAt), nil
 }
 
 // applyMaasHeaders 给推理请求加 MaaS 鉴权与内容类型头。
@@ -965,9 +987,12 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			}
 			return nil, errCollect
 		}
-		publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), false, 0, "", reasoningEffort, collector.ttftNS(started), accountLabel, sessionKey)
+		syncTTFTNS := collector.ttftNS(started)
+		publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), false, 0, "", reasoningEffort, syncTTFTNS, accountLabel, sessionKey)
 		invalidateAccountCredits(req.AuthID, authUID)
 		resetAccountFailover(req.AuthID)
+		// 慢速打点：真实成功才记样本，失败换号不计（错误耗时不是首字延迟）。
+		noteSlowObservation(req.AuthID, upstreamModel, syncTTFTNS)
 		return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
 	}
 

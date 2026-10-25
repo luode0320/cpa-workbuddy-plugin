@@ -203,6 +203,8 @@ func usageDetailFromCompletion(payload []byte) usage.Detail {
 type sseUsageCollector struct {
 	last        map[string]any
 	firstByteAt time.Time
+	// attemptStarted 是本次账号尝试的发出时刻：TTFT 必须以它为基准，见 ttftNS。
+	attemptStarted time.Time
 }
 
 func (c *sseUsageCollector) feed(rawJSON string) {
@@ -222,11 +224,29 @@ func (c *sseUsageCollector) detail() usage.Detail {
 	return usageDetailFromMap(c.last)
 }
 
+// markAttemptStart 记录本次账号尝试的发出时刻，作为 TTFT 的计时基准。
+//
+// 必须每轮重试都调用一次：请求级 started 跨 attempt 复用，用它算会把上一个
+// 账号的失败耗时算进当前账号（账号 A 失败 10s → 换到 B、B 首帧 2s 被记成 12s），
+// 慢速冷却判据吃这个样本会误禁健康号。
+// [参数] t：本次尝试的发出时刻。
+// [返回] 无。
+// 最近修改时间：2026-10-26；改动原因：新增 per-attempt 计时基准，阻断慢速判定样本污染。
+func (c *sseUsageCollector) markAttemptStart(t time.Time) {
+	c.attemptStarted = t
+}
+
 func (c *sseUsageCollector) ttftNS(started time.Time) uint64 {
-	if c.firstByteAt.IsZero() || started.IsZero() {
+	// 优先用本次尝试的发出时刻：started 是请求级时间戳，跨重试复用会把前序
+	// 账号的失败耗时算进来。未注入时回退到 started，保持历史调用点行为不变。
+	base := c.attemptStarted
+	if base.IsZero() {
+		base = started
+	}
+	if c.firstByteAt.IsZero() || base.IsZero() {
 		return 0
 	}
-	d := c.firstByteAt.Sub(started)
+	d := c.firstByteAt.Sub(base)
 	if d <= 0 {
 		return 0
 	}

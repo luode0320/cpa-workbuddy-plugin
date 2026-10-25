@@ -132,7 +132,7 @@ func TestAggregateQoderSSE_QueueFrameFailsFast(t *testing.T) {
 	r := &hangingReader{prefix: []byte(body), blockFor: 10 * time.Second}
 
 	start := time.Now()
-	_, err := aggregateQoderSSE(r, "qwen3.8-flash", 200)
+	_, err := aggregateQoderSSE(r, "qwen3.8-flash", 200, nil)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -151,7 +151,7 @@ func TestAggregateQoderSSE_QueueFrameFailsFast(t *testing.T) {
 func TestAggregateQoderSSE_HealthyStreamUnaffected(t *testing.T) {
 	sse := `data: {"id":"1","choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n" +
 		"data: [DONE]\n\n"
-	out, err := aggregateQoderSSE(strings.NewReader(sse), "m", 200)
+	out, err := aggregateQoderSSE(strings.NewReader(sse), "m", 200, nil)
 	if err != nil {
 		t.Fatalf("healthy stream must not error: %v", err)
 	}

@@ -605,3 +605,33 @@ func saveZaiAccount(token, accessToken, businessToken string, user *ZaiUserInfo,
 	}
 	return sa, nil
 }
+
+// countHostAuthFiles 统计宿主侧 zcode 账号总数（启用 + 停用）。
+//
+// 与 listHostAuthFiles 的区别：只数文件名匹配的条目，不逐个拉取凭据 JSON。
+// 慢速冷却的准入闸门每 10 分钟刷新一次，不需要账号内容，逐号拉取会让一次
+// 刷新变成 N 次跨进程 RPC。
+// [参数] 无。
+// [返回] 账号总数与是否成功；宿主 RPC 失败时 ok=false（调用方保留旧值）。
+// 最近修改时间：2026-10-26；改动原因：新增，账号池准入闸门的轻量取数入口。
+func countHostAuthFiles() (int, bool) {
+	raw, err := hostCall(pluginabi.MethodHostAuthList, nil)
+	if err != nil {
+		return 0, false
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
+		return 0, false
+	}
+	var resp rpcHostAuthListResponse
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		return 0, false
+	}
+	count := 0
+	for _, f := range resp.Files {
+		if isZCodeAuthFileName(f.Name) {
+			count++
+		}
+	}
+	return count, true
+}

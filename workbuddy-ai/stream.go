@@ -210,6 +210,9 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		// still rotate accounts on the SAME request; once anything has
 		// reached the client the error is surfaced instead.
 		collector := &sseUsageCollector{}
+		// TTFT 计时基准取本次尝试的发出时刻，而不是请求级 started：
+		// 后者跨重试复用，会把上一个账号的失败耗时算到当前账号头上。
+		collector.markAttemptStart(time.Now())
 		scanner := bufio.NewScanner(newHostStreamReader(stream))
 		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		var sseErr string
@@ -341,9 +344,12 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			noteAccountFailureForModel(curAuthID, upstreamModel, statusCode, emptyStreamErr)
 			return
 		}
-		publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), false, 0, "", reasoningEffort, collector.ttftNS(started), curAccountLabel, sessionKey)
+		successTTFTNS := collector.ttftNS(started)
+		publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), false, 0, "", reasoningEffort, successTTFTNS, curAccountLabel, sessionKey)
 		invalidateAccountCredits(curAuthID, curAuthUID)
 		resetAccountFailover(curAuthID)
+		// 慢速打点：真实成功才记样本，失败换号不计（错误耗时不是首字延迟）。
+		noteSlowObservation(curAuthID, upstreamModel, successTTFTNS)
 		// 异步流式是生产主路径，轮换计时必须在这里推进，否则长流量的账号
 		// 永远不会被判定为「连续使用满 N 分钟」。
 		noteRotationUsage(curAuthID)
@@ -398,6 +404,11 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 	}
 
 	for attempt := 0; attempt <= budget; attempt++ {
+		// collector 由调用方跨 attempt 复用，每轮必须重设计时基准，
+		// 否则上一轮的失败耗时会累积进本轮的 TTFT。
+		if collector != nil {
+			collector.markAttemptStart(time.Now())
+		}
 		chunks, statusCode, errOnce := collectUpstreamStreamOnce(body, curSA, sseFramed, collector, model)
 		if errOnce == nil {
 			// 真实成功即证明模型已恢复，清掉该模型上残留的冷却。
@@ -508,15 +519,16 @@ func collectUpstreamStreamOnce(body []byte, sa *storedAuth, sseFramed bool, coll
 // request against a different account on failure. Returns a non-nil error
 // in the canonical "upstream N: ..." or "http_error: ..." shape that
 // parseUpstreamStatusFromErr understands.
-func doExecuteOnce(body []byte, sa *storedAuth, requestedModel string) ([]byte, error) {
+func doExecuteOnce(body []byte, sa *storedAuth, requestedModel string) ([]byte, uint64, error) {
+	attemptStarted := time.Now()
 	httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(sa), bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	backendHeaders(httpReq, sa)
 	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("http_error: %w", err)
+		return nil, 0, fmt.Errorf("http_error: %w", err)
 	}
 	defer stream.Close()
 	reader := newHostStreamReader(stream)
@@ -525,14 +537,16 @@ func doExecuteOnce(body []byte, sa *storedAuth, requestedModel string) ([]byte, 
 		if sa != nil && sa.Account.UID != "" {
 			go reconcileByUID(sa.Account.UID, statusCode, string(payload))
 		}
-		return nil, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200))
+		return nil, 0, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200))
 	}
 	var firstByteAt time.Time
 	completion, err := aggregateCompletion(reader, requestedModel, statusCode, &firstByteAt)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return completion, nil
+	// 非流式路径也要上报 TTFT：慢速冷却的样本池需要覆盖这条路径，
+	// 否则纯非流式流量永远达不到样本门槛，机制对它们等同不存在。
+	return completion, ttftNSBetween(attemptStarted, firstByteAt), nil
 }
 
 // parseUpstreamStatusFromErr recovers the upstream HTTP status code from a
@@ -890,4 +904,19 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// ttftNSBetween 计算两个时刻之间的纳秒差，任一为零或差值非正时返回 0。
+// [参数] started：计时起点；firstOutputAt：首个有效输出到达时刻。
+// [返回] 纳秒差值。
+// 最近修改时间：2026-10-26；改动原因：新增，非流式路径复用统一的首字延迟口径。
+func ttftNSBetween(started, firstOutputAt time.Time) uint64 {
+	if started.IsZero() || firstOutputAt.IsZero() {
+		return 0
+	}
+	d := firstOutputAt.Sub(started)
+	if d <= 0 {
+		return 0
+	}
+	return uint64(d)
 }

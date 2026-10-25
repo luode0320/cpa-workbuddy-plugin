@@ -95,6 +95,7 @@ func configure(raw []byte) {
 	nextSlowMinSamples := defaultSlowMinSamples
 	nextSlowCooldownMinutes := defaultSlowCooldownMinutes
 	nextSlowMinTTFTMs := defaultSlowMinTTFTMs
+	nextSlowMinPoolSize := defaultSlowMinPoolSize
 
 	// retry_on_4xx: per-request account-failover budget. Applied ONLY when
 	// the key is present in config_yaml: a valid value is clamped to
@@ -239,6 +240,13 @@ func configure(raw []byte) {
 						nextSlowMinTTFTMs = n
 					}
 				}
+				if strings.HasPrefix(line, "slow_min_pool_size:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_min_pool_size:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextSlowMinPoolSize = n
+					}
+				}
 			if strings.HasPrefix(line, "retry_on_4xx:") {
 				retryOn4xxSeen = true
 				if n, ok := parseRetryOn4xxLine(line); ok {
@@ -335,11 +343,13 @@ func configure(raw []byte) {
 	prevSlowMinSamples := slowMinSamples
 	prevSlowCooldown := slowCooldownMinutes
 	prevSlowMinTTFT := slowMinTTFTMs
+	prevSlowMinPool := slowMinPoolSize
 	slowTTFTRatioX10 = nextSlowTTFTRatioX10
 	slowWindowMinutes = nextSlowWindowMinutes
 	slowMinSamples = nextSlowMinSamples
 	slowCooldownMinutes = nextSlowCooldownMinutes
 	slowMinTTFTMs = nextSlowMinTTFTMs
+	slowMinPoolSize = nextSlowMinPoolSize
 	slowConfigMu.Unlock()
 
 	// 配置变更留痕：慢速判定参数直接决定「哪些号被判慢」，线上误判的第一
@@ -347,10 +357,11 @@ func configure(raw []byte) {
 	// 是谁在什么时候把阈值改成了多少。只在真正变化时打印，避免重载刷屏。
 	if prevSlowEnabled != nextSlowAccountEnabled || prevSlowRatio != nextSlowTTFTRatioX10 ||
 		prevSlowWindow != nextSlowWindowMinutes || prevSlowMinSamples != nextSlowMinSamples ||
-		prevSlowCooldown != nextSlowCooldownMinutes || prevSlowMinTTFT != nextSlowMinTTFTMs {
-		log.Printf("[workbuddy] slow config applied: enabled=%v ratio=%.1fx window=%dm min_samples=%d cooldown=%dm min_ttft=%dms",
+		prevSlowCooldown != nextSlowCooldownMinutes || prevSlowMinTTFT != nextSlowMinTTFTMs ||
+		prevSlowMinPool != nextSlowMinPoolSize {
+		log.Printf("[workbuddy] slow config applied: enabled=%v ratio=%.1fx window=%dm min_samples=%d cooldown=%dm min_ttft=%dms min_pool=%d",
 			nextSlowAccountEnabled, float64(nextSlowTTFTRatioX10)/10, nextSlowWindowMinutes,
-			nextSlowMinSamples, nextSlowCooldownMinutes, nextSlowMinTTFTMs)
+			nextSlowMinSamples, nextSlowCooldownMinutes, nextSlowMinTTFTMs, nextSlowMinPoolSize)
 	}
 
 	// management key: config_yaml > env > keep existing. Empty stays empty

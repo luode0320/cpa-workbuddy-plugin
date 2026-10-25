@@ -42,12 +42,23 @@ const (
 	// defaultSlowMinTTFTMs 是绝对下限（毫秒）：低于该值一律不判慢。
 	// 它挡住的是「全池都很快时，1.2s 对 400ms 也被算成 3 倍」这类相对放大。
 	defaultSlowMinTTFTMs = 3000
+	// defaultSlowMinPoolSize 是账号池准入下限：账号总数（启用+停用）超过它才允许判定。
+	// 判据基准是各账号中位数的下四分位（P25），池子太小时该统计量退化成
+	// 「取较小值」：两个账号里任一次抖动就会让其中一个被判慢、两号互相顶替；
+	// 池内出现单个毛刺账号即可拉低基准。2026-10-25 生产实证——激进参数下
+	// 池内 TTFT 仅 1.26 倍差却持续判慢、冷却主体在两号间反复跳变。
+	// 账号数不足时相对判据只是在放大噪声，故以硬闸门挡住。
+	defaultSlowMinPoolSize = 20
 	// slowSampleCap 是每个「账号×模型」保留的样本上限，超出丢弃最早样本。
 	slowSampleCap = 32
 	// slowBaselineQuantile 是基准分位点：取各账号中位数的下四分位。
 	// 用中位数的中位数会让「慢号占多数」的池子把基准抬到慢号水平，
 	// 结果一个也判不出来；取 P25 让少数健康号仍能定义基准。
 	slowBaselineQuantile = 0.25
+	// slowPoolSizeRefreshInterval 是账号池规模的刷新周期。
+	// 账号枚举走宿主 RPC（host.auth.list），是跨进程调用，绝不能放在每请求
+	// 热路径上——判定入口只读内存缓存，这里由独立 ticker 定期刷新。
+	slowPoolSizeRefreshInterval = 10 * time.Minute
 )
 
 var (
@@ -65,11 +76,19 @@ var (
 	slowCooldownMinutes = defaultSlowCooldownMinutes
 	// slowMinTTFTMs 对应 slow_min_ttft_ms。
 	slowMinTTFTMs = defaultSlowMinTTFTMs
-	slowConfigMu  sync.RWMutex
+	// slowMinPoolSize 对应 slow_min_pool_size：账号总数超过该值才判定。
+	slowMinPoolSize = defaultSlowMinPoolSize
+	slowConfigMu    sync.RWMutex
 
 	// slowMu guards slowStates.
 	slowMu     sync.Mutex
 	slowStates = make(map[string]*slowAccountState)
+
+	// slowPoolSize 是最近一次探测到的账号总数（启用 + 停用），零值表示尚未探测成功。
+	// 之所以要缓存而不是每次判定都查：账号枚举走宿主 RPC（跨进程），
+	// 而判定入口挂在每次成功请求的成功路径上，同步调 RPC 会直接抬高响应延迟。
+	slowPoolSize   int
+	slowPoolSizeMu sync.RWMutex
 )
 
 // slowSample 是一次成功请求的首字延迟样本。
@@ -134,6 +153,8 @@ type slowConfig struct {
 	minSamples  int
 	cooldown    time.Duration
 	minTTFTNano uint64
+	// minPoolSize 是账号池准入下限：账号总数须严格大于它才允许判定。
+	minPoolSize int
 }
 
 // loadedSlowConfig 读取当前配置快照。
@@ -151,6 +172,7 @@ func loadedSlowConfig() slowConfig {
 	minSamples := slowMinSamples
 	cooldown := slowCooldownMinutes
 	minTTFTMs := slowMinTTFTMs
+	minPoolSize := slowMinPoolSize
 	slowConfigMu.RUnlock()
 
 	cfg := slowConfig{
@@ -160,6 +182,7 @@ func loadedSlowConfig() slowConfig {
 		minSamples:  minSamples,
 		cooldown:    time.Duration(cooldown) * time.Minute,
 		minTTFTNano: uint64(minTTFTMs) * uint64(time.Millisecond),
+		minPoolSize: minPoolSize,
 	}
 	if cfg.ratioX10 <= 10 || cfg.window <= 0 || cfg.minSamples <= 0 || cfg.cooldown <= 0 {
 		cfg.enabled = false
@@ -178,7 +201,7 @@ func loadedSlowConfig() slowConfig {
 //
 // [返回] 无。
 // 最近修改时间：2026-10-25；改动原因：新增，慢速冷却配置的唯一写入口与变更留痕。
-func setLoadedSlowConfig(enabled bool, ratioX10, window, minSamples, cooldown, minTTFTMs int) {
+func setLoadedSlowConfig(enabled bool, ratioX10, window, minSamples, cooldown, minTTFTMs, minPoolSize int) {
 	slowAccountEnabledMu.Lock()
 	prevEnabled := slowAccountEnabled
 	slowAccountEnabled = enabled
@@ -190,17 +213,20 @@ func setLoadedSlowConfig(enabled bool, ratioX10, window, minSamples, cooldown, m
 	prevMinSamples := slowMinSamples
 	prevCooldown := slowCooldownMinutes
 	prevMinTTFT := slowMinTTFTMs
+	prevMinPool := slowMinPoolSize
 	slowTTFTRatioX10 = ratioX10
 	slowWindowMinutes = window
 	slowMinSamples = minSamples
 	slowCooldownMinutes = cooldown
 	slowMinTTFTMs = minTTFTMs
+	slowMinPoolSize = minPoolSize
 	slowConfigMu.Unlock()
 
 	if prevEnabled != enabled || prevRatio != ratioX10 || prevWindow != window ||
-		prevMinSamples != minSamples || prevCooldown != cooldown || prevMinTTFT != minTTFTMs {
-		log.Printf("[zcode] slow config applied: enabled=%v ratio=%.1fx window=%dm min_samples=%d cooldown=%dm min_ttft=%dms",
-			enabled, float64(ratioX10)/10, window, minSamples, cooldown, minTTFTMs)
+		prevMinSamples != minSamples || prevCooldown != cooldown || prevMinTTFT != minTTFTMs ||
+		prevMinPool != minPoolSize {
+		log.Printf("[zcode] slow config applied: enabled=%v ratio=%.1fx window=%dm min_samples=%d cooldown=%dm min_ttft=%dms min_pool=%d",
+			enabled, float64(ratioX10)/10, window, minSamples, cooldown, minTTFTMs, minPoolSize)
 	}
 }
 
@@ -215,7 +241,8 @@ func applySlowConfig(decoded Config) {
 	// 任一键出现即视为「本插件关心慢速配置」，整套写入；全为 nil 时直接跳过。
 	if decoded.SlowAccountEnabled == nil && decoded.SlowTTFTRatioX10 == nil &&
 		decoded.SlowWindowMinutes == nil && decoded.SlowMinSamples == nil &&
-		decoded.SlowCooldownMin == nil && decoded.SlowMinTTFTMs == nil {
+		decoded.SlowCooldownMin == nil && decoded.SlowMinTTFTMs == nil &&
+		decoded.SlowMinPoolSize == nil {
 		return
 	}
 
@@ -229,6 +256,7 @@ func applySlowConfig(decoded Config) {
 	minSamples := slowMinSamples
 	cooldown := slowCooldownMinutes
 	minTTFTMs := slowMinTTFTMs
+	minPoolSize := slowMinPoolSize
 	slowConfigMu.RUnlock()
 
 	if decoded.SlowAccountEnabled != nil {
@@ -249,8 +277,11 @@ func applySlowConfig(decoded Config) {
 	if decoded.SlowMinTTFTMs != nil && *decoded.SlowMinTTFTMs >= 0 {
 		minTTFTMs = *decoded.SlowMinTTFTMs
 	}
+	if decoded.SlowMinPoolSize != nil && *decoded.SlowMinPoolSize >= 0 {
+		minPoolSize = *decoded.SlowMinPoolSize
+	}
 
-	setLoadedSlowConfig(enabled, ratioX10, window, minSamples, cooldown, minTTFTMs)
+	setLoadedSlowConfig(enabled, ratioX10, window, minSamples, cooldown, minTTFTMs, minPoolSize)
 }
 
 // slowKeysFor 返回该账号在慢速表里可能出现的全部键（账号×模型）。
@@ -447,6 +478,10 @@ func evaluateSlowAccount(authID, model string, now time.Time) bool {
 	if !cfg.enabled {
 		return false
 	}
+	// 准入闸门：账号池太小（≤ minPoolSize）时 P25 基线不成立，直接不判。
+	if !slowPoolAdmitted(cfg.minPoolSize) {
+		return false
+	}
 	authID = strings.TrimSpace(authID)
 	model = strings.TrimSpace(model)
 	if authID == "" || model == "" {
@@ -609,6 +644,11 @@ func noteSlowObservation(authID, model string, ttftNS uint64) {
 	if !cfg.enabled || ttftNS == 0 {
 		return
 	}
+	// 准入闸门放在打点之前而不是只在判定里：账号数不足时连样本都不该记。
+	// 池子长大后若拿着欠账的陈旧样本立刻判一轮，等于用不成立的历史数据误判。
+	if !slowPoolAdmitted(cfg.minPoolSize) {
+		return
+	}
 	now := time.Now()
 	if recordSlowSample(authID, model, ttftNS, now) < cfg.minSamples {
 		return
@@ -704,4 +744,74 @@ func slowCooldownSnapshot(authID, model string, now time.Time) (time.Duration, u
 		return 0, avg, false
 	}
 	return st.cooldownUntil.Sub(now), avg, true
+}
+
+// refreshSlowPoolSize 重新探测账号总数（启用 + 停用）并写入缓存。
+//
+// 由独立 ticker 周期调用，不参与请求热路径。探测失败时保留上一次已知值：
+// 宿主 RPC 偶发失败不应让准入闸门忽开忽关。
+// [参数] 无。
+// [返回] 本次探测到的账号数；失败时返回上一次已知值（首次失败返回 0）。
+// 最近修改时间：2026-10-25；改动原因：新增，账号池准入闸门的唯一取数入口。
+func refreshSlowPoolSize() int {
+	size, ok := countHostAuthFiles()
+	if !ok {
+		slowPoolSizeMu.RLock()
+		prev := slowPoolSize
+		slowPoolSizeMu.RUnlock()
+		return prev
+	}
+	slowPoolSizeMu.Lock()
+	prev := slowPoolSize
+	slowPoolSize = size
+	slowPoolSizeMu.Unlock()
+	// 只在规模变化时留痕：该值 10 分钟刷新一次，每次都打会淹没日志。
+	if prev != size {
+		log.Printf("[zcode] slow pool size updated: prev=%d now=%d", prev, size)
+	}
+	return size
+}
+
+// currentSlowPoolSize 返回缓存的账号总数；零值表示尚未探测成功。
+// [参数] 无。
+// [返回] 账号总数。
+// 最近修改时间：2026-10-25；改动原因：新增，判定入口读取缓存（热路径只读内存）。
+func currentSlowPoolSize() int {
+	slowPoolSizeMu.RLock()
+	defer slowPoolSizeMu.RUnlock()
+	return slowPoolSize
+}
+
+// slowPoolAdmitted 判断账号池规模是否达到准入下限。
+//
+// 零值（尚未探测成功）一律视为不达标：宁可晚一个刷新周期生效，
+// 也不能在未知状态下用退化基准误判账号。
+// [参数] minPoolSize：账号总数须严格大于该值。
+// [返回] true 表示允许慢速判定。
+// 最近修改时间：2026-10-25；改动原因：新增，准入闸门判定的唯一实现。
+func slowPoolAdmitted(minPoolSize int) bool {
+	size := currentSlowPoolSize()
+	return size > minPoolSize
+}
+
+// slowPoolSizeLoop 周期刷新账号池规模，供准入闸门读取。
+//
+// 首轮立即探测（不留 10 分钟盲区），之后按 slowPoolSizeRefreshInterval 周期刷新。
+// [参数] 无。
+// [返回] 无；本函数在独立 goroutine 中常驻。
+// 最近修改时间：2026-10-25；改动原因：新增，账号池规模的唯一刷新入口。
+func slowPoolSizeLoop() {
+	refreshSlowPoolSize()
+	ticker := time.NewTicker(slowPoolSizeRefreshInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		refreshSlowPoolSize()
+	}
+}
+
+func init() {
+	// 账号池规模刷新：慢速冷却的准入闸门需要「启用 + 停用」的账号总数，
+	// 而账号枚举是宿主 RPC（跨进程）。放到独立循环里周期探测，判定入口
+	// 只读内存缓存，避免每次成功请求都付一次 RPC 往返。
+	go slowPoolSizeLoop()
 }

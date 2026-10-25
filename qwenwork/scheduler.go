@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"time"
 )
 
 // Legacy config values kept for configure() compatibility; pick always uses
@@ -106,6 +107,10 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	available := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
 		if isAccountCoolingDown(c.ID) {
+			continue
+		}
+		// 慢速冷却：该号在这个模型上显著慢于同池水平时让位，只影响当前模型。
+		if slowCoolingDownForRequest(c.ID, req.Model) {
 			continue
 		}
 		_, lowOrExhausted := cachedCreditsScore(c.ID)
@@ -209,4 +214,19 @@ func cachedCreditsScore(authID string) (int64, bool) {
 		return -1, false
 	}
 	return entry.credits.TotalRemain, isCreditsLowOrExhausted(entry.credits)
+}
+
+// slowCoolingDownForRequest 判断调度阶段该账号是否应在当前请求的模型上让位。
+//
+// 调度请求给的是客户端模型名，而慢速状态按上游模型名记账；两者必须先按
+// 与执行链相同的规则归一化，否则「客户端叫 A、上游叫 B」时判定永远不命中。
+// [参数] authID：账号标识；clientModel：客户端请求的模型名。
+// [返回] true 表示该账号在该模型上处于慢速冷却。
+// 最近修改时间：2026-10-26；改动原因：新增，调度入口的模型归一化封装。
+func slowCoolingDownForRequest(authID, clientModel string) bool {
+	model := strings.TrimSpace(resolveUpstreamModel(clientModel, nil))
+	if model == "" {
+		return false
+	}
+	return slowCoolingDown(authID, model, time.Now())
 }

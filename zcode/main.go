@@ -74,7 +74,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.3.1"
+	version      = "0.3.2"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -107,6 +107,7 @@ type Config struct {
 	SlowMinSamples     *int  `yaml:"slow_min_samples" json:"slow_min_samples"`
 	SlowCooldownMin    *int  `yaml:"slow_cooldown_minutes" json:"slow_cooldown_minutes"`
 	SlowMinTTFTMs      *int  `yaml:"slow_min_ttft_ms" json:"slow_min_ttft_ms"`
+	SlowMinPoolSize    *int  `yaml:"slow_min_pool_size" json:"slow_min_pool_size"`
 }
 
 func defaultConfig() Config {
@@ -274,6 +275,7 @@ func zcodeRegistration() registration {
 				{Name: "slow_min_samples", Type: pluginapi.ConfigFieldTypeInteger, Description: "参与慢速判定所需的最小样本数（默认 5）：样本不足时不判定，避免单条毛刺误伤。"},
 				{Name: "slow_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速冷却时长（默认 10 分钟）：到期自动恢复，无需探活。"},
 				{Name: "slow_min_ttft_ms", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速判定的绝对下限毫秒（默认 3000）：低于该值一律不判慢；填 0 表示不设下限。"},
+				{Name: "slow_min_pool_size", Type: pluginapi.ConfigFieldTypeInteger, Description: "账号池准入下限（默认 20）：账号总数（启用 + 停用）须严格大于该值才触发慢速判定。池子太小时下四分位基线退化，两个账号里任一次抖动就会让其中一个被判慢、互相顶替。"},
 				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
 				{Name: "usage_feed_path", Type: pluginapi.ConfigFieldTypeString, Description: "可选：共享用量数据流路径（默认 <CLIProxyAPI 根目录>/data/token-usage-feed.ndjson）。"},
 			},

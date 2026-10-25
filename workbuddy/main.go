@@ -138,6 +138,10 @@ func init() {
 	// 禁用探活：每 10 分钟串行遍历被本机制禁用的账号，回放失败模型，成功即解除禁用。
 	// 冷却本身不再探测（cooldown_probe.go 已移除），见 failover_disable.go。
 	go failoverProbeLoop()
+	// 账号池规模刷新：慢速冷却的准入闸门需要「启用 + 停用」的账号总数，
+	// 而账号枚举是宿主 RPC（跨进程）。放到独立循环里周期探测，判定入口
+	// 只读内存缓存，避免每次成功请求都付一次 RPC 往返。
+	go slowPoolSizeLoop()
 	go func() {
 		ticker := time.NewTicker(loginStatesPruneInterval)
 		defer ticker.Stop()
@@ -345,7 +349,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.21.2"
+var version = "0.21.3"
 
 func wbRegistration() registration {
 	return registration{
@@ -375,6 +379,7 @@ func wbRegistration() registration {
 				{Name: "slow_min_samples", Type: pluginapi.ConfigFieldTypeInteger, Description: "参与慢速判定所需的最小样本数（默认 5）：样本不足时不判定，避免单条毛刺误伤。"},
 				{Name: "slow_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速冷却时长（默认 10 分钟）：到期自动恢复，无需探活。"},
 				{Name: "slow_min_ttft_ms", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速判定的绝对下限毫秒（默认 3000）：低于该值一律不判慢，避免全池都很快时被相对倍数放大误判。填 0 表示不设下限。"},
+				{Name: "slow_min_pool_size", Type: pluginapi.ConfigFieldTypeInteger, Description: "账号池准入下限（默认 20）：账号总数（启用 + 停用）须严格大于该值才触发慢速判定。池子太小时下四分位基线退化，两个账号里任一次抖动就会让其中一个被判慢、互相顶替。"},
 				{Name: "client_version", Type: pluginapi.ConfigFieldTypeString, Description: "可选：钉死 User-Agent 里上报给上游的产品版本号。留空时每天自动从官方发布源拉取最新版本；填如 2.174.0 则固定使用该值、不再自动更新。注意 X-IDE-Version 头固定为 0.0.0，不受此项影响。"},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 用量上报地址（默认 http://cpa-manager-plus:18317/v0/management/usage/import；也可用环境变量 USAGE_REPORT_URL）。"},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 管理密钥。优先从环境变量 CPAMP_ADMIN_KEY / USAGE_REPORT_KEY 或密钥文件 /run/secrets/cpamp_admin_key 自动探测。"},

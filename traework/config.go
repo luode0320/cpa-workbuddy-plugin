@@ -152,6 +152,7 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 	nextSlowMinSamples := defaultSlowMinSamples
 	nextSlowCooldown := defaultSlowCooldownMinutes
 	nextSlowMinTTFT := defaultSlowMinTTFTMs
+	nextSlowMinPool := defaultSlowMinPoolSize
 	slowSeen := false
 
 	for i, ln := range lines {
@@ -301,6 +302,11 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 {
 				nextSlowMinTTFT = n
 			}
+		case "slow_min_pool_size":
+			slowSeen = true
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 {
+				nextSlowMinPool = n
+			}
 		}
 	}
 	// 每次 configure 都整套写入：四个键互为配套，分开写会让「serve 改了、
@@ -313,7 +319,7 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 	// 「阈值改了、窗口还是旧值」的中间态。未出现任何 slow 键时跳过，
 	// 避免一次无关 reconfigure 把显式关闭冲回默认开启。
 	if slowSeen {
-		setLoadedSlowConfig(nextSlowEnabled, nextSlowRatio, nextSlowWindow, nextSlowMinSamples, nextSlowCooldown, nextSlowMinTTFT)
+		setLoadedSlowConfig(nextSlowEnabled, nextSlowRatio, nextSlowWindow, nextSlowMinSamples, nextSlowCooldown, nextSlowMinTTFT, nextSlowMinPool)
 	}
 }
 

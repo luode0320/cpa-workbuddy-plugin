@@ -9,6 +9,7 @@ package main
 import (
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -188,7 +189,7 @@ func ensureDefaultActiveAuth(accounts []wbAccount) string {
 // cooling down (failover). Shared by the panel-selection rules and documented
 // as the same predicate family scheduler.pick applies before ordering
 // candidates.
-func accountRoutable(authID string) bool {
+func accountRoutable(authID string, model ...string) bool {
 	if isAccountCoolingDown(authID) {
 		return false
 	}
@@ -196,7 +197,23 @@ func accountRoutable(authID string) bool {
 	if lowOrExhausted || (remain >= 0 && remain < loadedMinRoutableCredits()) {
 		return false
 	}
+	// 慢速冷却：该号在这个模型上显著慢于同池水平时让位。只影响当前模型，
+	// 不能因为一个模型慢就把整个账号摘掉（账号在别的模型上可能完全正常）。
+	if slowModel := firstSlowModel(model); slowModel != "" && slowCoolingDown(authID, slowModel, time.Now()) {
+		return false
+	}
 	return true
+}
+
+// firstSlowModel 取出变参里的模型名，未传时返回空串（调用方未带模型上下文）。
+// [参数] model：可选模型名。
+// [返回] 模型名或空串。
+// 最近修改时间：2026-10-26；改动原因：新增，避免每个调用点都做长度判断。
+func firstSlowModel(model []string) string {
+	if len(model) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(model[0])
 }
 
 // accountHigherCredits 比较两个健康账号的充裕度，积分更多者排在前面；未测 (-1) 排最后。

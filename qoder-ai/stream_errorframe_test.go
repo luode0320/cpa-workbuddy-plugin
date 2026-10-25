@@ -79,7 +79,7 @@ func TestShouldRotateOnUpstreamErr(t *testing.T) {
 // canonical 错误而不是拼出一个静默空 completion。
 func TestAggregateCompletionErrorFrame(t *testing.T) {
 	sse := "data: {\"error\":{\"message\":\"Your requests have exceeded the quota.\"}}\n\ndata: [DONE]\n\n"
-	_, err := aggregateCompletion(strings.NewReader(sse), "m", 200)
+	_, err := aggregateCompletion(strings.NewReader(sse), "m", 200, nil)
 	if err == nil {
 		t.Fatal("expected error frame to fail the completion")
 	}
@@ -92,7 +92,7 @@ func TestAggregateCompletionErrorFrame(t *testing.T) {
 // delta 中含 "error" 字样的正文内容不会被误判为错误帧。
 func TestAggregateCompletionHealthyWithoutErrorFrame(t *testing.T) {
 	sse := "data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"the word error appears here\"}}]}\n\ndata: [DONE]\n\n"
-	out, err := aggregateCompletion(strings.NewReader(sse), "m", 200)
+	out, err := aggregateCompletion(strings.NewReader(sse), "m", 200, nil)
 	if err != nil {
 		t.Fatalf("healthy stream must not error: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestAggregateQoderSSEErrorFrame(t *testing.T) {
 	sse := "data:" + string(envErr) + "\n\n" +
 		"data:" + string(envAfter) + "\n\n" +
 		"data:{\"body\":\"[DONE]\"}\n\n"
-	_, err := aggregateQoderSSE(strings.NewReader(sse), "m", 200)
+	_, err := aggregateQoderSSE(strings.NewReader(sse), "m", 200, nil)
 	if err == nil {
 		t.Fatal("expected nested error frame to fail the completion")
 	}
@@ -127,7 +127,7 @@ func TestAggregateQoderSSEHealthyWithoutErrorFrame(t *testing.T) {
 	inner, _ := json.Marshal(map[string]any{"id": "1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "the word error appears here"}}}})
 	env, _ := json.Marshal(map[string]any{"body": string(inner)})
 	sse := "data:" + string(env) + "\n\n" + "data:{\"body\":\"[DONE]\"}\n\n"
-	out, err := aggregateQoderSSE(strings.NewReader(sse), "m", 200)
+	out, err := aggregateQoderSSE(strings.NewReader(sse), "m", 200, nil)
 	if err != nil {
 		t.Fatalf("healthy nested stream must not error: %v", err)
 	}

@@ -92,6 +92,7 @@ func configure(raw []byte) {
 	nextSlowMinSamples := defaultSlowMinSamples
 	nextSlowCooldown := defaultSlowCooldownMinutes
 	nextSlowMinTTFT := defaultSlowMinTTFTMs
+	nextSlowMinPool := defaultSlowMinPoolSize
 	slowSeen := false
 
 	cfgURL, cfgKey := "", ""
@@ -231,6 +232,14 @@ func configure(raw []byte) {
 						nextSlowMinTTFT = n
 					}
 				}
+				if strings.HasPrefix(line, "slow_min_pool_size:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_min_pool_size:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextSlowMinPool = n
+					}
+				}
 				if strings.HasPrefix(line, "models:") {
 					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
 					// 交给 parseModelsConfig（显式配置优先于动态获取与
@@ -265,7 +274,7 @@ func configure(raw []byte) {
 	// 慢速冷却六个键共同决定判定结果，整套写入避免「阈值改了、窗口还是旧值」
 	// 的中间态；未出现任何 slow 键时跳过，防止无关 reconfigure 冲掉显式关闭。
 	if slowSeen {
-		setLoadedSlowConfig(nextSlowEnabled, nextSlowRatio, nextSlowWindow, nextSlowMinSamples, nextSlowCooldown, nextSlowMinTTFT)
+		setLoadedSlowConfig(nextSlowEnabled, nextSlowRatio, nextSlowWindow, nextSlowMinSamples, nextSlowCooldown, nextSlowMinTTFT, nextSlowMinPool)
 	}
 
 	schedulerModeMu.Lock()

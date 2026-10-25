@@ -76,6 +76,16 @@ func configure(raw []byte) {
 	// [0, 10] and applied; an unparseable value resets to the default 10.
 	// An absent key keeps the current budget so an unrelated reconfigure
 	// never silently lifts a `retry_on_4xx: 0` kill switch.
+	// slow_*: 慢速账号冷却，六键全缺时保持当前值（存量配置无这些键）。
+	nextSlowEnabled := defaultSlowAccountEnabled
+	nextSlowRatio := defaultSlowTTFTRatioX10
+	nextSlowWindow := defaultSlowWindowMinutes
+	nextSlowMinSamples := defaultSlowMinSamples
+	nextSlowCooldown := defaultSlowCooldownMinutes
+	nextSlowMinTTFT := defaultSlowMinTTFTMs
+	nextSlowMinPool := defaultSlowMinPoolSize
+	slowSeen := false
+
 	nextRetryOn4xx := retryOn4xxDefault
 	retryOn4xxSeen := false
 
@@ -134,13 +144,69 @@ func configure(raw []byte) {
 						nextMinRoutableCredits = n
 					}
 				}
-			if strings.HasPrefix(line, "retry_on_4xx:") {
-				retryOn4xxSeen = true
-				if n, ok := parseRetryOn4xxLine(line); ok {
-					nextRetryOn4xx = clampRetryOn4xx(n)
+				if strings.HasPrefix(line, "retry_on_4xx:") {
+					retryOn4xxSeen = true
+					if n, ok := parseRetryOn4xxLine(line); ok {
+						nextRetryOn4xx = clampRetryOn4xx(n)
+					}
 				}
-			}
-			if strings.HasPrefix(line, "models:") {
+				// slow_*: 慢速账号冷却。七个键共同决定判定结果，任一出现即整套写入；
+				// 全缺时保持当前值，避免一次无关 reconfigure 把显式关闭冲回默认开启。
+				if strings.HasPrefix(line, "slow_account_enabled:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_account_enabled:"))
+					v = strings.Trim(v, "\"'")
+					nextSlowEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "slow_ttft_ratio_x10:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_ttft_ratio_x10:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextSlowRatio = n
+					}
+				}
+				if strings.HasPrefix(line, "slow_window_minutes:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_window_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextSlowWindow = n
+					}
+				}
+				if strings.HasPrefix(line, "slow_min_samples:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_min_samples:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextSlowMinSamples = n
+					}
+				}
+				if strings.HasPrefix(line, "slow_cooldown_minutes:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_cooldown_minutes:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextSlowCooldown = n
+					}
+				}
+				if strings.HasPrefix(line, "slow_min_ttft_ms:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_min_ttft_ms:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextSlowMinTTFT = n
+					}
+				}
+				if strings.HasPrefix(line, "slow_min_pool_size:") {
+					slowSeen = true
+					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_min_pool_size:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						nextSlowMinPool = n
+					}
+				}
+				if strings.HasPrefix(line, "models:") {
 					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
 					// 交给 parseModelsConfig（显式配置优先于动态获取与
 					// 静态默认，见 models.go；同步自 workbuddy-provider
@@ -168,6 +234,13 @@ func configure(raw []byte) {
 
 	setFailoverEnabled(nextFailoverEnabled)
 
+	// 慢速冷却配置整套写入：七个键共同决定判定结果，分开写会留下
+	// 「阈值改了、窗口还是旧值」的中间态。未出现任何 slow 键时跳过，
+	// 避免一次无关 reconfigure 把显式关闭冲回默认开启。
+	if slowSeen {
+		setLoadedSlowConfig(nextSlowEnabled, nextSlowRatio, nextSlowWindow, nextSlowMinSamples, nextSlowCooldown, nextSlowMinTTFT, nextSlowMinPool)
+	}
+
 	schedulerModeMu.Lock()
 	schedulerMode = nextSchedulerMode
 	schedulerModeMu.Unlock()
@@ -179,7 +252,6 @@ func configure(raw []byte) {
 	minRoutableCreditsMu.Lock()
 	minRoutableCredits = nextMinRoutableCredits
 	minRoutableCreditsMu.Unlock()
-
 
 	// Reconfigure storms collapse onto one tick via requestWatchdogTick's buffered chan cap 1.
 	requestWatchdogTick()

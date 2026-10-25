@@ -32,12 +32,21 @@ func withSlowConfig(t *testing.T, enabled bool, ratioX10, minSamples, minTTFTMs 
 	oldMinSamples := slowMinSamples
 	oldCooldown := slowCooldownMinutes
 	oldMinTTFT := slowMinTTFTMs
+	oldMinPool := slowMinPoolSize
 	slowTTFTRatioX10 = ratioX10
 	slowWindowMinutes = int(window.Minutes())
 	slowMinSamples = minSamples
 	slowCooldownMinutes = int(cooldown.Minutes())
 	slowMinTTFTMs = minTTFTMs
+	slowMinPoolSize = defaultSlowMinPoolSize
 	slowConfigMu.Unlock()
+
+	// 判定算法的用例不应被准入闸门干扰：把池子规模设到闸门之上，
+	// 闸门语义由 withSlowPoolSize 与专门用例覆盖。
+	slowPoolSizeMu.Lock()
+	oldPoolSize := slowPoolSize
+	slowPoolSize = defaultSlowMinPoolSize + 1
+	slowPoolSizeMu.Unlock()
 
 	resetSlowStates()
 
@@ -51,7 +60,11 @@ func withSlowConfig(t *testing.T, enabled bool, ratioX10, minSamples, minTTFTMs 
 		slowMinSamples = oldMinSamples
 		slowCooldownMinutes = oldCooldown
 		slowMinTTFTMs = oldMinTTFT
+		slowMinPoolSize = oldMinPool
 		slowConfigMu.Unlock()
+		slowPoolSizeMu.Lock()
+		slowPoolSize = oldPoolSize
+		slowPoolSizeMu.Unlock()
 		resetSlowStates()
 	})
 }
@@ -458,4 +471,120 @@ func buildConfigYAML(lines ...string) []byte {
 	}
 	raw, _ := json.Marshal(map[string]any{"config_yaml": []byte(yaml)})
 	return raw
+}
+
+// withSlowPoolSize 临时改写缓存中的账号池规模，并在测试结束后恢复。
+// [参数] t：测试上下文；size：账号总数（启用 + 停用）。
+// 最近修改时间：2026-10-25；改动原因：新增，准入闸门用例的唯一注入点。
+func withSlowPoolSize(t *testing.T, size int) {
+	t.Helper()
+	slowPoolSizeMu.Lock()
+	old := slowPoolSize
+	slowPoolSize = size
+	slowPoolSizeMu.Unlock()
+	t.Cleanup(func() {
+		slowPoolSizeMu.Lock()
+		slowPoolSize = old
+		slowPoolSizeMu.Unlock()
+	})
+}
+
+// TestSlowAccount_PoolSizeGateBlocksJudgement 锁定准入闸门：账号数不足时不判慢。
+//
+// 判据是 P25 相对基线，池子太小时该统计量退化成「取较小值」，
+// 两个账号里任一次抖动就会让其中一个被判慢、互相顶替。
+// [参数] t：测试上下文。
+// 最近修改时间：2026-10-25；改动原因：新增，覆盖账号池准入闸门的核心语义。
+func TestSlowAccount_PoolSizeGateBlocksJudgement(t *testing.T) {
+	withSlowConfig(t, true, 25, 2, 500, 60*time.Minute, 10*time.Minute)
+	base := time.Now()
+
+	// 池子只有 20 个账号：闸门要求严格大于 20，此时必须完全不判。
+	withSlowPoolSize(t, 20)
+	feedSlowSamples("slow-a", "m", 20000, 5, base)
+	feedSlowSamples("fast-a", "m", 2000, 5, base)
+	if evaluateSlowAccount("slow-a", "m", base.Add(time.Minute)) {
+		t.Fatal("账号数 = 20 时不应判定：闸门要求严格大于 20")
+	}
+
+	// 涨到 21 个账号：闸门放行，同一个慢号必须被判出来。
+	withSlowPoolSize(t, 21)
+	if !evaluateSlowAccount("slow-a", "m", base.Add(2*time.Minute)) {
+		t.Fatal("账号数 = 21 时应放行判定，慢号必须被判慢")
+	}
+}
+
+// TestSlowAccount_PoolSizeGateSkipsSampling 锁定闸门位置：账号不足时连样本都不记。
+//
+// 只在判定里拦而放任打点继续，会在池子长大后立刻拿陈旧样本判一轮，
+// 等于用不成立的历史数据误判账号。
+// [参数] t：测试上下文。
+// 最近修改时间：2026-10-25；改动原因：新增，防止闸门只拦判定不拦打点。
+func TestSlowAccount_PoolSizeGateSkipsSampling(t *testing.T) {
+	withSlowConfig(t, true, 25, 2, 500, 60*time.Minute, 10*time.Minute)
+
+	withSlowPoolSize(t, 5)
+	noteSlowObservation("slow-a", "m", uint64(20000*time.Millisecond))
+	noteSlowObservation("slow-a", "m", uint64(20000*time.Millisecond))
+
+	slowMu.Lock()
+	count := 0
+	if st := slowStates[slowSlowKeyForTest()]; st != nil {
+		count = len(st.samples)
+	}
+	slowMu.Unlock()
+	if count != 0 {
+		t.Fatalf("账号数不足时不应记录样本，实际记了 %d 条", count)
+	}
+}
+
+// TestSlowAccount_PoolSizeUnknownStaysClosed 锁定「尚未探测成功」的保守语义。
+//
+// 缓存零值表示从未探测成功。此时宁可晚一个刷新周期生效，
+// 也不能在未知规模下用退化基准误判账号。
+// [参数] t：测试上下文。
+// 最近修改时间：2026-10-25；改动原因：新增，覆盖未探测状态的兜底语义。
+func TestSlowAccount_PoolSizeUnknownStaysClosed(t *testing.T) {
+	withSlowConfig(t, true, 25, 2, 500, 60*time.Minute, 10*time.Minute)
+	base := time.Now()
+
+	withSlowPoolSize(t, 0)
+	feedSlowSamples("slow-a", "m", 20000, 5, base)
+	feedSlowSamples("fast-a", "m", 2000, 5, base)
+	if evaluateSlowAccount("slow-a", "m", base.Add(time.Minute)) {
+		t.Fatal("账号池规模未知（0）时必须保守不判")
+	}
+}
+
+// TestSlowAccount_PoolSizeGateConfigurable 锁定闸门阈值可配置。
+//
+// 用户明确要求默认 20，同时保留配置覆盖能力（测试用小值便于验证边界）。
+// [参数] t：测试上下文。
+// 最近修改时间：2026-10-25；改动原因：新增，验证配置项而非硬编码。
+func TestSlowAccount_PoolSizeGateConfigurable(t *testing.T) {
+	withSlowConfig(t, true, 25, 2, 500, 60*time.Minute, 10*time.Minute)
+	base := time.Now()
+
+	// 把闸门下调到 2：3 个账号即达标。
+	slowConfigMu.Lock()
+	slowMinPoolSize = 2
+	slowConfigMu.Unlock()
+
+	withSlowPoolSize(t, 3)
+	feedSlowSamples("slow-a", "m", 20000, 5, base)
+	feedSlowSamples("fast-a", "m", 2000, 5, base)
+	feedSlowSamples("fast-b", "m", 2000, 5, base)
+	if !evaluateSlowAccount("slow-a", "m", base.Add(time.Minute)) {
+		t.Fatal("闸门下调到 2 后，3 个账号应放行判定")
+	}
+}
+
+// slowSlowKeyForTest 返回测试用状态键（账号 + NUL 分隔符 + 模型）。
+// 状态键含 NUL，直接写进源码字面量会被部分工具链当成非法字符，
+// 故用常量拼接构造。
+// [参数] 无。
+// [返回] 状态键。
+// 最近修改时间：2026-10-25；改动原因：新增，规避源码内嵌 NUL 字节。
+func slowSlowKeyForTest() string {
+	return "slow-a" + string(rune(0)) + "m"
 }

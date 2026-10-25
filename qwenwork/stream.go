@@ -294,6 +294,9 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		// SAME request; once anything has reached the client the error is
 		// surfaced instead. （同步自 workbuddy 200 错误帧换号）
 		collector := &sseUsageCollector{}
+		// TTFT 计时基准取本次尝试的发出时刻，而不是请求级 started：
+		// 后者跨重试复用，会把上一个账号的失败耗时算到当前账号头上。
+		collector.markAttemptStart(time.Now())
 		var sseErr string
 		emitted := false
 		contentEmitted := false
@@ -431,9 +434,12 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			noteAccountFailure(curAuthID, statusCode, emptyStreamErr)
 			return
 		}
-		publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), false, 0, "", reasoningEffort, collector.ttftNS(started), curAccountLabel, sessionKey)
+		successTTFTNS := collector.ttftNS(started)
+		publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), false, 0, "", reasoningEffort, successTTFTNS, curAccountLabel, sessionKey)
 		invalidateAccountCredits(curAuthID, curAuthUID)
 		resetAccountFailover(curAuthID)
+		// 慢速打点：真实成功才记样本，失败换号不计（错误耗时不是首字延迟）。
+		noteSlowObservation(curAuthID, upstreamModel, successTTFTNS)
 		return
 	}
 }
@@ -683,7 +689,7 @@ func cleanChunkJSON(s string) string {
 // an in-stream OpenAI error frame is detected — a business failure inside a
 // 200 body must fail fast instead of folding a bogus completion.
 // （同步自 workbuddy 200 错误帧 fail-fast）
-func aggregateCompletion(r io.Reader, model string, statusCode int) ([]byte, error) {
+func aggregateCompletion(r io.Reader, model string, statusCode int, firstByteAt *time.Time) ([]byte, error) {
 	var content, reasoning, role, respModel, respID, finish string
 	var created int64
 	var usage map[string]any
@@ -713,6 +719,10 @@ func aggregateCompletion(r io.Reader, model string, statusCode int) ([]byte, err
 		var chunk map[string]any
 		if json.Unmarshal([]byte(data), &chunk) != nil {
 			continue
+		}
+		// 首个可解析分片即视为「上游开始回数据」，作为非流式路径的 TTFT 观测点。
+		if firstByteAt != nil && firstByteAt.IsZero() {
+			*firstByteAt = time.Now()
 		}
 		if v, ok := chunk["id"].(string); ok && v != "" {
 			respID = v
@@ -829,7 +839,7 @@ func aggregateCompletion(r io.Reader, model string, statusCode int) ([]byte, err
 //
 // Terminal frames: data:{"body":"[DONE]"} followed by an event:finish line
 // with timing metadata (ignored).
-func aggregateQoderSSE(r io.Reader, model string, statusCode int) ([]byte, error) {
+func aggregateQoderSSE(r io.Reader, model string, statusCode int, firstByteAt *time.Time) ([]byte, error) {
 	var inner strings.Builder
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -856,7 +866,7 @@ func aggregateQoderSSE(r io.Reader, model string, statusCode int) ([]byte, error
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("qwenwork SSE read: %w", err)
 	}
-	return aggregateCompletion(strings.NewReader(inner.String()), model, statusCode)
+	return aggregateCompletion(strings.NewReader(inner.String()), model, statusCode, firstByteAt)
 }
 
 // aggregateOpenAISSE 把标准 OpenAI SSE 折叠成 chat.completion 负载。
@@ -868,7 +878,7 @@ func aggregateQoderSSE(r io.Reader, model string, statusCode int) ([]byte, error
 // [参数] r 上游响应体；model 客户端请求的模型名；statusCode 上游状态码。
 // [返回] 折叠后的 completion JSON；流内错误帧或读取失败时返回错误。
 // 最近修改时间：2026-10-17 23:57:00；改动原因：新建 MaaS 标准 SSE 聚合。
-func aggregateOpenAISSE(r io.Reader, model string, statusCode int) ([]byte, error) {
+func aggregateOpenAISSE(r io.Reader, model string, statusCode int, firstByteAt *time.Time) ([]byte, error) {
 	var inner strings.Builder
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -897,7 +907,7 @@ func aggregateOpenAISSE(r io.Reader, model string, statusCode int) ([]byte, erro
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("openai SSE read: %w", err)
 	}
-	return aggregateCompletion(strings.NewReader(inner.String()), model, statusCode)
+	return aggregateCompletion(strings.NewReader(inner.String()), model, statusCode, firstByteAt)
 }
 
 // sseErrorFrame extracts the message from an OpenAI-convention in-stream
@@ -1052,4 +1062,19 @@ func isEmptyValue(v any) bool {
 		return true
 	}
 	return false
+}
+
+// ttftNSBetween 计算两个时刻之间的纳秒差，任一为零或差值非正时返回 0。
+// [参数] started：计时起点；firstOutputAt：首个有效输出到达时刻。
+// [返回] 纳秒差值。
+// 最近修改时间：2026-10-26；改动原因：新增，非流式路径复用统一的首字延迟口径。
+func ttftNSBetween(started, firstOutputAt time.Time) uint64 {
+	if started.IsZero() || firstOutputAt.IsZero() {
+		return 0
+	}
+	d := firstOutputAt.Sub(started)
+	if d <= 0 {
+		return 0
+	}
+	return uint64(d)
 }
