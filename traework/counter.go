@@ -221,6 +221,10 @@ func persistCounterDelta(uid string, addSuccess, addFailed int64) error {
 		return errAuthMissing()
 	}
 	raw := foldCounterIntoDoc(phys.JSON, addSuccess, addFailed)
+	// 借这次周期性落盘把本机制的三个顶层键补回：宿主 persist 会按内存 Status +
+	// 白名单重建文档，把 failover_disable / _model / _at 丢掉，只留 disabled。
+	// 标记没了探活就枚举不到候选，这个号会永远卡在「盘上禁用、插件不知情」。
+	raw = restoreFailoverMarkersIntoJSON(raw, uid, failoverLocalDisabledModel(uid))
 	name := phys.Name
 	if name == "" {
 		name = authFilePrefix + uid + ".json"

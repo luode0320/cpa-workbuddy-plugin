@@ -7,14 +7,23 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// TestMinRoutableCredits_TraeWork 验证 TraeWork 安全缓冲额度红线默认 20、可配置、
-// 调度排除 remain < 20、平摊轮询。
+// TestMinRoutableCredits_TraeWork 验证 TraeWork 保活线（min_routable_credits）
+// 默认 20、可配置，并且在 0.4.0 里**只降级排序、不再硬排除**。
+//
+// 语义变更说明（2026-10-25，积分双阈值分级）：保活线原本是硬排除，remain 低于
+// 它的账号直接被踢出路由。这与「放宽而非收紧」的 0.4.0 目标冲突——现有生产账号
+// 有不少落在 20–99 区间，全部踢出会让可用池骤减。现在它是**排序降级**：
+// 保活档排在健康档之后，但仍然可以承接请求。硬禁用改由独立的
+// low_credit_disable_below 承担（默认 0 = 关闭）。
 func TestMinRoutableCredits_TraeWork(t *testing.T) {
 	resetActiveAuth(t)
 	resetTestFailed(t)
 	resetFailover(t)
 	restoreMin := setMinRoutableCredits(defaultMinRoutableCredits)
 	defer restoreMin()
+	// 禁用线必须是关闭状态，否则下面的低积分号会被硬禁用，测不到排序语义。
+	restoreBelow := setLowCreditDisableBelow(defaultLowCreditDisableBelow)
+	defer restoreBelow()
 
 	// 1. 默认阈值为 20
 	if got := loadedMinRoutableCredits(); got != 20 {
@@ -30,8 +39,12 @@ func TestMinRoutableCredits_TraeWork(t *testing.T) {
 		t.Fatalf("configured minRoutableCredits = %d, want 50", got)
 	}
 	setMinRoutableCredits(20)
+	// configure 会按默认值重写禁用线；这里显式确认它仍是关闭态。
+	if got := loadedLowCreditDisableBelow(); got != 0 {
+		t.Fatalf("low_credit_disable_below 默认应为 0（关闭），got %d", got)
+	}
 
-	// 3. 调度器硬排除 remain < 20 账号，并在健康账号间平摊轮询
+	// 3. 保活档不再硬排除：remain=15 仍可被选中，只是排在健康号之后。
 	accountCache.Store("tr-low", &accountCacheEntry{
 		credits: &traeCredits{TotalRemain: 15},
 	})
@@ -43,7 +56,7 @@ func TestMinRoutableCredits_TraeWork(t *testing.T) {
 		accountCache.Delete("tr-ok2")
 	}()
 
-	setActiveAuthID("tr-low")
+	setActiveAuthID("")
 	raw1, err := handleSchedulerPick(mustMarshal(t, pluginapi.SchedulerPickRequest{
 		Provider: providerName,
 		Candidates: []pluginapi.SchedulerAuthCandidate{
@@ -56,14 +69,17 @@ func TestMinRoutableCredits_TraeWork(t *testing.T) {
 		t.Fatalf("pick1 err: %v", err)
 	}
 	resp1 := parsePickResponse(t, raw1)
-	if !resp1.Handled || resp1.AuthID == "tr-low" {
-		t.Fatalf("expected tr-low (<20) to be excluded, got %+v", resp1)
+	if !resp1.Handled {
+		t.Fatal("有可用候选时必须 handled")
+	}
+	if resp1.AuthID == "tr-low" {
+		t.Fatalf("健康号存在时保活档应排在后面，不应被优先选中，got %+v", resp1)
 	}
 	if resp1.AuthID != "tr-ok1" && resp1.AuthID != "tr-ok2" {
 		t.Fatalf("expected a healthy candidate (tr-ok1 or tr-ok2), got %+v", resp1)
 	}
 
-	// 4. 所有候选均 < 20 时，必须全灭 defer (Handled: false)
+	// 4. 全部候选都落在保活档时，必须仍能选中（这就是「放宽」的核心断言）。
 	rawAllLow, err := handleSchedulerPick(mustMarshal(t, pluginapi.SchedulerPickRequest{
 		Provider: providerName,
 		Candidates: []pluginapi.SchedulerAuthCandidate{
@@ -74,15 +90,15 @@ func TestMinRoutableCredits_TraeWork(t *testing.T) {
 		t.Fatalf("pickAllLow err: %v", err)
 	}
 	respAllLow := parsePickResponse(t, rawAllLow)
-	if respAllLow.Handled {
-		t.Fatalf("expected all low-credit candidates to defer (Handled: false), got %+v", respAllLow)
+	if !respAllLow.Handled || respAllLow.AuthID != "tr-low" {
+		t.Fatalf("保活档不再硬排除，唯一候选必须被选中，got %+v", respAllLow)
 	}
 
-	// 5. accountRoutable 对 remain < 20 判定为 false
-	if accountRoutable("tr-low") {
-		t.Fatal("expected accountRoutable(tr-low) == false for remain=15 < 20")
+	// 5. accountRoutable 同样不再因保活线判 false（面板与调度必须同口径）。
+	if !accountRoutable("tr-low") {
+		t.Fatal("remain=15 属于保活档，仍应可路由（硬排除已降级为排序降级）")
 	}
 	if !accountRoutable("tr-ok1") {
-		t.Fatal("expected accountRoutable(tr-ok1) == true for remain=100 >= 20")
+		t.Fatal("expected accountRoutable(tr-ok1) == true for remain=100")
 	}
 }

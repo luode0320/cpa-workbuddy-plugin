@@ -54,27 +54,38 @@ func (s failureScope) String() string {
 // [返回] 该失败应记入的冷却维度。
 // 最近修改时间：2026-10-18 23:40:00；改动原因：新增，按历史判据固化分类。
 func classifyUpstreamFailure(status int, body string) failureScope {
-	// 1. 硬额度与凭据/端点问题属账号级：换模型也不可用。
-	//    硬额度优先，避免 429 + 额度标记被误判成限流。
-	if isHardCreditError(status, body) || isAccountLevel4xxExcludingRateLimit(status) {
+	// 1. 硬额度属账号级且优先级最高：账号确实没额度了，不能被正文里可能同时
+	//    出现的模型级文案覆盖掉。
+	if isHardCreditError(status, body) {
 		return failureScopeAccount
 	}
-	// 2. 传输错误与 5xx 属账号级。
+	// 2. 模型级/后端池级故障与账号无关，换号同样失败，一律不记账。
+	//    必须早于凭据类 4xx 与 5xx 判据：上游常用 403/503 承载
+	//    「All backends failed」，按状态码判会把整池账号逐个记成故障
+	//    （qoderwork 0.11.0 生产事故同形）。
+	if isModelLevelFailure(body) {
+		return failureScopeNone
+	}
+	// 3. 凭据/端点类 4xx 属账号级：换模型也不可用。
+	if isAccountLevel4xxExcludingRateLimit(status) {
+		return failureScopeAccount
+	}
+	// 4. 传输错误与 5xx 属账号级。
 	if status == 0 || status >= 500 {
 		return failureScopeAccount
 	}
-	// 3. 请求被拦截（11128）按账号×模型冷却：禁用探活会把该模型排在回放序列首位，
+	// 5. 请求被拦截（11128）按账号×模型冷却：禁用探活会把该模型排在回放序列首位，
 	//    验证该账号在这个模型上是否真的恢复。先于限流文案判定，因为 11128
 	//    的 displayMsg 可能带「请重新发送」这类无关文案。
 	if isModelBlockedError(status, body) {
 		return failureScopeAuthModel
 	}
-	// 4. 限流文案与零字节断流按账号×模型处理：这类信号通常随模型变化。
+	// 6. 限流文案与零字节断流按账号×模型处理：这类信号通常随模型变化。
 	//    顺序与历史一致——先判文案再判状态，故 400 携带限流文案时仍会记账。
 	if isSoftRateLimit(status, body) || isEmptyStreamBody(body) {
 		return failureScopeAuthModel
 	}
-	// 5. 其余不记账：400/422 等请求形状问题换账号同样失败。
+	// 7. 其余不记账：400/422 等请求形状问题换账号同样失败。
 	return failureScopeNone
 }
 

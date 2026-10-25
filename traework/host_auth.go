@@ -66,8 +66,12 @@ func hostAuthGet(authIndex string) (*traeAuth, error) {
 
 // hostAuthGetBundle is one host.auth.get for both the parsed credential and
 // the physical metadata (avoids a double RPC in the dashboard).
+//
+// 走 hostAuthGetPhysicalFn 而不是直接调 hostAuthGetPhysical：面板行构建是唯一
+// 需要「同一份假宿主同时提供列表与物理文档」的链路，没有注入点就没有任何
+// 单测能覆盖行字段（见 panel_rotation_badge_test.go）。
 func hostAuthGetBundle(authIndex string) (*traeAuth, *hostAuthPhysical, error) {
-	phys, err := hostAuthGetPhysical(authIndex)
+	phys, err := hostAuthGetPhysicalFn(authIndex)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -249,6 +249,11 @@ func (r *refreshRunner) drainBatch(gen int) {
 
 	wg.Wait()
 
+	// 轮末统一落盘：中途崩溃时磁盘保留上一轮完整快照，读者不会读到残缺文件。
+	if err := persistCreditSnapshot(); err != nil {
+		log.Printf("[traework] persist credits snapshot: %v", err)
+	}
+
 	r.mu.Lock()
 	if r.generation == gen {
 		r.finishedAt = time.Now()
@@ -297,9 +302,16 @@ func doFetchOne(authIndex, authID string) error {
 		return err
 	}
 	cacheCredits(authID, cr)
+	// 同时记录到 sidecar 内存镜像：轮末由 persistCreditSnapshot 统一落盘，
+	// 让积分在插件热重载/宿主重启后仍然可用（面板冷加载与调度排序都读它）。
+	recordCreditSnapshot(authID, cr)
 	// Panel refresh doubles as the lifecycle reconcile trigger: the fresh
 	// snapshot drives both the exhausted-disable and the recovery direction.
 	reconcileAfterCreditsRefresh(authIndex, authID)
+	// 积分三档分级：与 lifecycle 分工明确——lifecycle 只管「耗尽（<=0）」，
+	// 这里只管「0 < remain < 禁用线」。两者各解各的标记，互不接管
+	// manual_disable / failover_disable。禁用线默认 0（关闭），未配置时本行不动作。
+	gradeCreditsForAuth(authIndex, authID, sa, cr)
 	if pingErr := triggerActivePing(authIndex, authID, sa); pingErr != nil {
 		log.Printf("[traework] active ping account %s warning: %v", authID, pingErr)
 	}

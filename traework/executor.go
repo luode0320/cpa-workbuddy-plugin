@@ -224,6 +224,8 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 				resetAccountFailover(usedAuthID)
 				// 一次真实成功即证明该模型已恢复，清掉该模型上残留的冷却。
 				resetModelBlockedState(circuitKeyModel)
+				// 轮换打点：只有真正由该账号服务完成的成功请求才推进「连续承流」计时。
+				noteRotationUsage(usedAuthID)
 				publishUsage(req.Model, upstreamModel, authUID, started, usageDetailForCompletion(aggDetail, completion), false, 0, "", "", 0, authUID, sessionKey)
 				return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 			}
@@ -596,6 +598,8 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 		resetAccountFailover(curAuthID)
 		// 一次真实成功即证明该模型已恢复，清掉该模型上残留的冷却。
 		resetModelBlockedState(circuitKeyModel)
+		// 轮换打点：异步流成功路径。漏接这里会让长时间流式会话永远不触发轮换。
+		noteRotationUsage(curAuthID)
 		publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), false, 0, "", "", ttftNSBetween(ctx.Started, result.FirstOutputAt), curAuthUID, ctx.SessionKey)
 		log.Printf("[traework] exec stream async done: request_id=%s stream_id=%s model=%s auth_hash=%s attempt=%d chunks=%d",
 			requestID, ctx.StreamID, ctx.Model, authLogHash(curAuthID), attempt+1, len(result.Chunks))
@@ -732,6 +736,9 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 			resetAccountFailover(curAuthID)
 			// 一次真实成功即证明该模型已恢复，清掉该模型上残留的冷却。
 			resetModelBlockedState(circuitKeyModel)
+			// 轮换打点：同步流式 collect 成功路径。与异步路径分开接，两条路径
+			// 各有独立的成功返回点，漏一处就会漏掉对应模式的全部流量。
+			noteRotationUsage(curAuthID)
 			log.Printf("[traework] exec stream collect ok: model=%s auth_hash=%s attempt=%d chunks=%d", ctx.Model, authLogHash(curAuthID), attempt+1, len(chunks))
 			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usageDetailForAttempt(detail, chunks), false, 0, "", "", ttftNSBetween(ctx.Started, firstOutputAt), curAuthUID, ctx.SessionKey)
 			return chunks, nil

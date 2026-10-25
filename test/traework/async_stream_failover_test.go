@@ -148,6 +148,9 @@ func TestRunTraeAsyncStreamPseudoPoolExhaustionClosesWithError(t *testing.T) {
 // TestRunTraeAsyncStreamDoesNotRetryAfterEmitFailure 验证客户端下发失败后不会再开备用账号。
 func TestRunTraeAsyncStreamDoesNotRetryAfterEmitFailure(t *testing.T) {
 	disableUsageOutputs(t)
+	// 必须显式清场：初始账号若残留在故障 sidecar 里，协调器的前置冷却拦截会
+	// 先换号再发请求，本用例「下发失败后不得再选号」的前提就不成立了。
+	resetFailover(t)
 	authA := &traeAuth{Token: "token-a", UserID: "uid-a"}
 	openCount := 0
 	clientCloses := 0
@@ -231,6 +234,9 @@ func (panicReader) Read([]byte) (int, error) {
 // TestRunTraeAsyncStreamClosesUpstreamOnPanic 验证 attempt 内 panic 关闭上游并由协调器统一结束客户端流。
 func TestRunTraeAsyncStreamClosesUpstreamOnPanic(t *testing.T) {
 	disableUsageOutputs(t)
+	// 本用例不注入 PickNextAuth：初始账号若残留在 sidecar 里，前置冷却拦截会
+	// 走到 nil 的候选选择函数上 panic，掩盖真正要验证的尝试内 panic 收尾。
+	resetFailover(t)
 	authA := &traeAuth{Token: "token-a", UserID: "uid-a"}
 	upstreamCloses := 0
 	clientCloses := 0

@@ -15,9 +15,19 @@ const httpStatusPaymentRequired = 402
 // 剩余额度低于该阈值的账号不再承载新请求，防止推理中途断开。
 const defaultMinRoutableCredits int64 = 20
 
+// defaultLowCreditDisableBelow 是积分硬禁用线的默认值：0 表示关闭。
+//
+// 刻意与 workbuddy 的默认 100 不同：traework 现有生产账号的 remain 落在 20–99
+// 区间的不在少数，直接照搬会在首轮扫描时把它们全部写盘禁用，可用池骤减。
+// 0 = kill switch，行为与 0.3.0 完全一致；需要硬禁用时显式配置该键。
+const defaultLowCreditDisableBelow int64 = 0
+
 var (
 	minRoutableCredits   int64 = defaultMinRoutableCredits
 	minRoutableCreditsMu sync.RWMutex
+
+	lowCreditDisableBelow   int64 = defaultLowCreditDisableBelow
+	lowCreditDisableBelowMu sync.RWMutex
 )
 
 // loadedMinRoutableCredits 返回当前生效的安全缓冲额度红线。
@@ -25,6 +35,78 @@ func loadedMinRoutableCredits() int64 {
 	minRoutableCreditsMu.RLock()
 	defer minRoutableCreditsMu.RUnlock()
 	return minRoutableCredits
+}
+
+// loadedLowCreditDisableBelow 返回当前生效的积分硬禁用线；0 表示关闭。
+// [参数] 无。
+// [返回] 禁用线阈值。
+// 最近修改时间：2026-10-25；改动原因：新增，积分三档分级的配置入口。
+func loadedLowCreditDisableBelow() int64 {
+	lowCreditDisableBelowMu.RLock()
+	defer lowCreditDisableBelowMu.RUnlock()
+	return lowCreditDisableBelow
+}
+
+// setLowCreditDisableBelow 设置积分硬禁用线并返回清理函数。
+// [参数] n：阈值，负值按 0（关闭）处理。
+// [返回] 恢复原值的函数。
+// 最近修改时间：2026-10-25；改动原因：新增，供 configure 与单测使用。
+func setLowCreditDisableBelow(n int64) func() {
+	if n < 0 {
+		n = 0
+	}
+	lowCreditDisableBelowMu.Lock()
+	old := lowCreditDisableBelow
+	lowCreditDisableBelow = n
+	lowCreditDisableBelowMu.Unlock()
+	return func() {
+		lowCreditDisableBelowMu.Lock()
+		lowCreditDisableBelow = old
+		lowCreditDisableBelowMu.Unlock()
+	}
+}
+
+// creditTier 是积分三档分级的档位标识。
+type creditTier string
+
+const (
+	// creditTierDisabled 低于硬禁用线：写盘 disabled，宿主级停用。
+	creditTierDisabled creditTier = "disabled"
+	// creditTierPreserve 低于保活线但高于禁用线：可路由，但排在健康号之后。
+	creditTierPreserve creditTier = "preserve"
+	// creditTierNormal 高于保活线：正常参与路由。
+	creditTierNormal creditTier = "normal"
+)
+
+// String 返回档位的字符串形式，便于日志与 JSON 直接使用。
+// [参数] 无。
+// [返回] 档位名。
+// 最近修改时间：2026-10-25；改动原因：新增。
+func (t creditTier) String() string { return string(t) }
+
+// creditTierFor 判定积分余量所属档位。
+//
+// 判定顺序必须先判禁用线：禁用一个号远比把它排到后面严重，阈值配反
+// （禁用线 >= 保活线）时也应当优先保证「不会把有余额的号误禁」。
+// [参数] remain：积分余量，负数表示未知；disableBelow：硬禁用线；preserveBelow：保活线。
+// [返回] 该余量所属档位；未知余量返回 creditTierNormal（不参与任何降级）。
+// 最近修改时间：2026-10-25；改动原因：新增，三档分级的唯一判定点。
+func creditTierFor(remain, disableBelow, preserveBelow int64) creditTier {
+	// 1. 未知积分不降级：没有数据不等于没钱，误判会把健康号踢出路由。
+	if remain < 0 {
+		return creditTierNormal
+	}
+	// 2. 低于硬禁用线：宿主级停用。必须与 isCreditsLowOrExhausted 同侧边界，
+	// 否则分级判停用、路由判可用，落盘结果与实际行为互相打架。
+	if disableBelow > 0 && remain < disableBelow {
+		return creditTierDisabled
+	}
+	// 3. 低于保活线：保留可路由，仅降级排序。
+	if preserveBelow > 0 && remain < preserveBelow {
+		return creditTierPreserve
+	}
+	// 4. 其余正常。
+	return creditTierNormal
 }
 
 // setMinRoutableCredits 设置安全缓冲额度红线并返回清理函数，供单测或动态配置使用。
@@ -111,6 +193,43 @@ func DeviceBlocked(body string) bool {
 	return strings.Contains(body, "设备") ||
 		strings.Contains(lower, "device") ||
 		strings.Contains(lower, "machine")
+}
+
+// modelLevelFailureMarkers 匹配「上游模型/后端池整体不可用」的正文。
+//
+// 这类失败的成因在服务端模型侧，与具体账号无关：换号只会把同一个错误在池里
+// 逐个重放一遍，最后既白烧额度又把整池账号禁用。workbuddy/qoderwork 的
+// 「All backends failed」生产事故就是这个形态（单请求连禁 9 个号）。
+//
+// 刻意不含 Qoder 专属的 RESOURCE_LIMIT / 10605：Trae 上游没有排队帧概念，
+// 误加会把真实的账号级资源受限一并吞掉。
+var modelLevelFailureMarkers = []string{
+	"all backends failed",
+	"no available backend",
+	"no backend available",
+	"backend pool unavailable",
+	"model not available",
+	"model unavailable",
+}
+
+// isModelLevelFailure 判定失败是否属于模型级/后端池级故障。
+//
+// 调用方必须把它放在账号级判据之前：硬额度（402 / 额度标记）与凭据类 4xx
+// 优先由 isHardCreditError / isAccountLevel4xx 认领，本函数只看正文语义。
+// [参数] body：上游响应正文或错误文本。
+// [返回] true 表示该失败与账号无关，不应计入账号故障，也不应换号重试。
+// 最近修改时间：2026-10-25；改动原因：新增，堵住模型级故障被记成账号级、整池自禁。
+func isModelLevelFailure(body string) bool {
+	if body == "" {
+		return false
+	}
+	lower := strings.ToLower(body)
+	for _, m := range modelLevelFailureMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // AlreadyCheckedIn reports whether the body indicates the account already

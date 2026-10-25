@@ -1,5 +1,24 @@
 # TraeWork Plugin Changelog
 
+## 0.4.0
+
+### Fix - 失败禁用真正生效（sidecar 为权威源）+ 模型级故障不再误伤账号
+
+- 两个真实缺陷:
+  1. 写盘禁用可能是名义生效：生产实证宿主 fsnotify 不监听 mysqlstore spool（qoderwork 48 小时零 watcher 事件而 mtime 持续变化），「写盘 disabled → 宿主毫秒级感知」这个前提不成立。现改为插件自有 sidecar `data/traework-failover.json` 作为路由判据的权威来源，宿主写盘降级为尽力而为。
+  2. 模型级故障被记成账号级故障：HTTP 200 的 SSE 错误帧被无条件改写成 403，`All backends failed` 这类后端池级故障因此走进账号级判据 → 整池自禁（与 qoderwork 0.11.0 生产事故同机理）。现于记账唯一漏斗与换号判据两处同时豁免，且硬额度（402/额度标记）优先级最高不被吞。
+- 同步 workbuddy 的能力:
+  3. 故障 sidecar：跨重启存活、损坏容错、只动目标；判据接进 `isAccountCoolingDown` / `isAuthModelCoolingDown`，路由与换号都直读它。
+  4. 宿主 persist 抹标记后补回：周期落盘（counter）时按「本地记录 + 盘上仍 disabled + 缺标记」三条件补回三键；探活候选改以 sidecar 为准，不再依赖盘上标记。
+  5. 外部启用对账：sidecar 记禁用但盘上明确 enabled（无本机制标记）时清 sidecar，防止外部启用后账号永久卡在排除集合。
+  6. 轮换冷却：单账号连续承流满 60 分钟主动让位，冷却 60 分钟（中断 10 分钟重新计时、全池将冷时先放开一半防抽干）。状态独立于失败冷却——`resetAccountFailover` 每次成功都清零失败计数，复用会让轮换被第一次成功立刻抹掉。四处成功打点（非流式聚合 / 异步流 / 同步 collect / 直通 stream）缺一不可。
+  7. 积分快照持久化：`data/traework-credits.json`，插件热重载后面板首屏不再是整片「未知」。与故障 sidecar 分文件——高频积分替换会冲掉低频禁用状态。
+  8. 积分双阈值分级：保活线 `min_routable_credits`（默认 20）从「硬排除」降级为「排序降级」；新增硬禁用线 `low_credit_disable_below`（默认 0 = 关闭，刻意不同于 workbuddy 的 100，避免现网 remain 20–99 的账号首轮被批量禁用）。
+  9. 积分扫描并入既有 10 分钟刷新链（不新建 1 小时扫描器，避免同一账号一轮被刷两遍）；禁用号同样刷新，否则「积分回升 → 自动启用」等不到数据。
+  10. 面板新增徽章：轮换让位倒计时 / 承流 Nm / 积分档位（积分停用、保活档），筛选口径加入「轮换」并让可用计数与实际可路由数一致。
+  11. 配置登记：新增 11 个 `ConfigFields` 条目（6 个原隐藏键 + 5 个新键），管理端可见可改。
+- 涉及文件: 新增 `failover_state.go` `credits_snapshot.go` `usage_rotation.go` `credit_disable.go`；修改 `accountFailover.go` `active_auth.go` `cache.go` `config.go` `counter.go` `executor.go` `failover_disable.go` `failover_retry.go` `failure_class.go` `host_auth.go` `main.go` `management.go` `panel.html` `policy.go` `refresh_runner.go` `scheduler.go` `stream.go` `min_routable_credits_test.go` `VERSION`；新增测试 `test/traework/` 下 9 个文件
+
 ## 0.3.0
 
 ### Feat - 账号故障改为写盘禁用 + 每 10 分钟只探失败模型

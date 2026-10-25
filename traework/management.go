@@ -36,6 +36,11 @@ type managementRegistrationResponse struct {
 var (
 	managementBasePathCache   = "/v0/management"
 	managementBasePathCacheMu sync.RWMutex
+
+	// panelListFn 是面板账号列表的来源，生产走宿主 RPC，单测可注入。
+	// 抽出注入点是为了让「面板行是否带新徽章字段」能被真实测试覆盖——
+	// 只能读 hostCall 的话，行构建逻辑在单测里根本跑不到。
+	panelListFn = hostAuthList
 )
 
 func loadedManagementBasePath() string {
@@ -184,7 +189,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 // it merges the physical record (disabled), cached or live credits, and the
 // failover snapshot. Also refreshes the active-auth pin.
 func handleAccounts() map[string]any {
-	files, err := hostAuthList()
+	files, err := panelListFn()
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
@@ -238,7 +243,10 @@ func handleAccounts() map[string]any {
 			view.Remain = cr.TotalRemain
 			view.Credits = cr
 			view.Exhausted = isCreditsExhausted(cr)
-			view.LowCredits = !view.Exhausted && cr.TotalRemain < loadedMinRoutableCredits()
+			// LowCredits 语义收窄为「低于禁用线」：保活档不再算低积分告警，
+			// 它只是排序靠后，仍然可路由。
+			below := loadedLowCreditDisableBelow()
+			view.LowCredits = !view.Exhausted && below > 0 && cr.TotalRemain < below
 		}
 		// Failover snapshot. cool_until is Unix seconds (panel countdown ticker).
 		if count, until, ok := failoverStateSnapshot(f.ID); ok {
@@ -253,6 +261,21 @@ func handleAccounts() map[string]any {
 		if !view.FailoverDisabled && isFailoverDisabledLocal(f.ID) {
 			view.FailoverDisabled = true
 			view.FailoverModel = failoverProbeModelFor(f.ID)
+		}
+		// 轮换侧的可见性：轮换状态只存内存、不写盘，面板是用户唯一能看见「这个号
+		// 为什么被跳过」的地方。承流时长与故障冷却分开呈现，两者成因不同。
+		now := time.Now()
+		view.RotationServedM = rotationServingMinutes(f.ID, now)
+		if rotationCoolingDown(f.ID, now) {
+			view.RotationCooling = true
+			if until, ok := rotationCooldownUntil(f.ID); ok {
+				view.RotationUntil = until.Unix()
+			}
+		}
+		// 积分档位：未知积分为空串（不显示徽章），避免把「没测到」显示成「正常」。
+		if cr != nil {
+			view.CreditTier = creditTierFor(cr.TotalRemain, loadedLowCreditDisableBelow(), loadedMinRoutableCredits()).String()
+			view.LowCreditDisable = lowCreditDisableFromAuthJSON(phys.JSON) && phys.Disabled
 		}
 		view.CheckinToday = checkinDoneToday(f.AuthIndex)
 		view.Active = strings.TrimSpace(f.ID) == getActiveAuthID()

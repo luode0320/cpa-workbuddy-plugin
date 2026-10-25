@@ -42,16 +42,22 @@ func cacheCredits(authID string, cr *traeCredits) {
 }
 
 // cachedCredits returns (credits, ok). ok=false when nothing cached.
+//
+// 内存未命中时回落 sidecar 快照：插件热重载/宿主重启会清空 sync.Map，而面板
+// 冷加载与调度排序都读这里。没有回落的话首屏每个账号都要现查一次上游，且在
+// 查回来之前排序里全是「未知」。快照只读，不回写内存——写入方仍是真实拉取。
 func cachedCredits(authID string) (*traeCredits, bool) {
-	v, ok := accountCache.Load(authID)
-	if !ok {
-		return nil, false
+	if v, ok := accountCache.Load(authID); ok {
+		entry, ok := v.(*accountCacheEntry)
+		if !ok {
+			return nil, false
+		}
+		return entry.credits, true
 	}
-	entry, ok := v.(*accountCacheEntry)
-	if !ok {
-		return nil, false
+	if snap, ok := creditSnapshotGet(authID); ok && snap.Credits != nil {
+		return snap.Credits, true
 	}
-	return entry.credits, true
+	return nil, false
 }
 
 // isCreditsExhausted reports whether a cached credits snapshot is empty or
@@ -60,12 +66,19 @@ func isCreditsExhausted(cr *traeCredits) bool {
 	return cr == nil || cr.TotalRemain <= 0
 }
 
-// isCreditsLowOrExhausted 判定账号是否额度耗尽或已低于安全缓冲额度红线。
+// isCreditsLowOrExhausted 判定账号是否额度耗尽或已低于硬禁用线。
+//
+// 语义收窄（0.4.0）：这里只表达「不可路由」，因此必须与 creditTierFor 的
+// creditTierDisabled 同边界——低于禁用线或耗尽。保活线（min_routable_credits）
+// 只管排序降级，不再在这里硬排除：把它留在硬判据里会让 remain 在 20–99 的
+// 现有生产账号继续被踢出路由，与「放宽而非收紧」的目标相反。
+// 禁用线默认 0（关闭），因此未配置时本函数等价于「仅判耗尽」，与 0.3.0 一致。
 func isCreditsLowOrExhausted(cr *traeCredits) bool {
 	if cr == nil || isCreditsExhausted(cr) {
 		return true
 	}
-	return cr.TotalRemain < loadedMinRoutableCredits()
+	below := loadedLowCreditDisableBelow()
+	return below > 0 && cr.TotalRemain < below
 }
 
 // cachedCreditsScore returns (remain, exhaustedOrLow). remain is -1 when unknown.

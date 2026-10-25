@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // pickNextAuth returns the next traework account to retry on after
@@ -69,9 +70,15 @@ func pickNextAuthForModel(currentAuthID, model string) (nextAuthID string, nextS
 		if isTestFailed(id) {
 			continue
 		}
-		// 跳过已耗尽或额度低于安全红线的残血账号，防止同请求换号再次中断
-		remain, lowOrExhausted := cachedCreditsScore(id)
-		if lowOrExhausted || (remain >= 0 && remain < loadedMinRoutableCredits()) {
+		// 跳过已耗尽或低于硬禁用线的账号，防止同请求换号再次中断。
+		// 保活线不在这里过滤：它只降级排序，换号目标是「能接住这次请求」，
+		// 一个 remain=19 的号仍远好过直接放弃整次请求。
+		if _, lowOrExhausted := cachedCreditsScore(id); lowOrExhausted {
+			continue
+		}
+		// 轮换冷却与故障冷却同属「暂时不该接流量」：换号若选到刚让位的号，
+		// 轮换立刻被同一次重试抵消。
+		if rotationCoolingDown(id, time.Now()) {
 			continue
 		}
 		if strings.TrimSpace(f.AuthIndex) == "" {

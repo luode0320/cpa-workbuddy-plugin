@@ -7,6 +7,7 @@ package main
 import (
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -115,6 +116,15 @@ type traeAccountView struct {
 	// 不会让账号回来，所以面板必须把它和冷却分开显示。
 	FailoverDisabled bool   `json:"failover_disabled,omitempty"`
 	FailoverModel    string `json:"failover_model,omitempty"` // 探活回放的模型（唯一目标）
+	// 轮换侧：与失败冷却完全独立的状态（resetAccountFailover 不清它），
+	// 面板必须分开显示，否则用户看到「没有冷却却被跳过」会无法理解。
+	RotationCooling bool  `json:"rotation_cooling,omitempty"`
+	RotationUntil   int64 `json:"rotation_until,omitempty"`
+	RotationServedM int   `json:"rotation_served_m,omitempty"`
+	// 积分档位：disabled 表示低于禁用线（已被本机制停用），preserve 表示
+	// 仍在路由但排序靠后。空串表示未知或不适用。
+	CreditTier       string `json:"credit_tier,omitempty"`
+	LowCreditDisable bool   `json:"low_credit_disable,omitempty"`
 	Active           bool   `json:"active"`
 	Error            string `json:"error,omitempty"`
 }
@@ -177,18 +187,22 @@ func ensureDefaultActiveAuth(accounts []traeAccountView) string {
 }
 
 // accountRoutable reports whether an auth ID may carry traffic at all: not
-// cooling down (failover), not test-failed (「测试」标签). Shared by the
-// panel-selection rules and documented as the same predicate family
+// cooling down (failover/rotation), not test-failed (「测试」标签). Shared by
+// the panel-selection rules and documented as the same predicate family
 // scheduler.pick applies before ordering candidates.
+//
+// 保活线不在这里硬排除：它只影响排序（见 scheduler.go 的 preserveRank）。
+// 保留在硬判据里会让 remain 在 20–99 的账号被面板判为「不可用」，与调度层
+// 实际会选它们的行为互相矛盾。
 func accountRoutable(authID string) bool {
 	if isAccountCoolingDown(authID) || isTestFailed(authID) {
 		return false
 	}
-	remain, lowOrExhausted := cachedCreditsScore(authID)
-	if lowOrExhausted || (remain >= 0 && remain < loadedMinRoutableCredits()) {
+	if rotationCoolingDown(authID, time.Now()) {
 		return false
 	}
-	return true
+	_, lowOrExhausted := cachedCreditsScore(authID)
+	return !lowOrExhausted
 }
 
 // accountHigherCredits 比较两个健康账号的充裕度，积分更多者排在前面；未测 (-1) 排最后。

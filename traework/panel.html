@@ -245,6 +245,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button type="button" class="ftag active" data-f="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
     <button type="button" class="ftag" data-f="available" onclick="filterRegion('available',this)" title="未禁用 · 未打「测试」标签 · 未耗尽，可正常路由">可用 <span class="cnt" id="cntAvailable">0</span></button>
     <button type="button" class="ftag" data-f="exhausted" onclick="filterRegion('exhausted',this)" title="积分耗尽（remain &lt;= 0），lifecycle 自动停用">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
+    <button type="button" class="ftag" data-f="rotation" onclick="filterRegion('rotation',this)" title="连续承流达到 rotation_serve_minutes 后主动让位，冷却 rotation_cooldown_minutes 期间不接新请求">轮换 <span class="cnt" id="cntRotation">0</span></button>
     <button type="button" class="ftag" data-f="failed" onclick="filterRegion('failed',this)" title="累计失败 &gt; 0 或连败中（fail_count &gt; 0）的账号">失败 <span class="cnt" id="cntFailed">0</span></button>
     <button type="button" class="ftag" data-f="disabled" onclick="filterRegion('disabled',this)" title="手动停用、耗尽自动停用（积分恢复后签到自动启用）或 refresh token 失效被标记的账号">停用 <span class="cnt" id="cntDisabled">0</span></button>
     <button type="button" class="ftag" data-f="test" onclick="filterRegion('test',this)" title="定时活跃测试失败且仍有积分的账号；建议人工复核后清理">测试 <span class="cnt" id="cntTest">0</span></button>
@@ -548,6 +549,13 @@ function progressHTML(a){
       statSegments.push('<span class="pb-segment cooling-text" data-cool-until="'+(Number(a.cool_until)||0)+'" data-cool-count="'+(Number(a.fail_count)||0)+'">冷却 '+Math.max(0,(Number(a.cool_until)||0)-Math.floor(Date.now()/1000))+"s</span>");
     }
   }
+  // 轮换让位：与故障冷却并列显示，但成因完全不同（负载均衡策略 vs 故障隔离），
+  // 用独立的 data 属性驱动同一个倒计时 ticker。
+  if(a.rotation_cooling){
+    statSegments.push('<span class="pb-segment rotation-text" data-rot-until="'+(Number(a.rotation_until)||0)+'">轮换让位 '+Math.max(0,(Number(a.rotation_until)||0)-Math.floor(Date.now()/1000))+"s</span>");
+  } else if((Number(a.rotation_served_m)||0)>0){
+    statSegments.push('<span class="pb-segment">承流 '+(Number(a.rotation_served_m)||0)+"m</span>");
+  }
   const statHTML=statSegments.join("");
   const primaryHTML='<span class="pb-primary"><span class="pb-segment">可用积分</span>'+statHTML+"</span>";
   const remain=cr?Number(cr.total_remain)||0:0;
@@ -571,6 +579,11 @@ function card(a){
   if(a.failover_disabled)badges.push(tag("test-failed","禁用探活中"));
   if(a.exhausted)badges.push(tag("exhausted","耗尽"));
   else if(a.low_credits)badges.push(tag("low-credits","低额保护"));
+  // 积分档位：disabled = 低于禁用线且已停用（与「耗尽」区分开——那是 remain<=0，
+  // 这是「还够但低于人工设的线」）；preserve = 仍可路由但排序靠后。
+  if(a.credit_tier==="disabled"&&a.low_credit_disable)badges.push(tag("exhausted","积分停用"));
+  else if(a.credit_tier==="preserve")badges.push(tag("low-credits","保活档"));
+  if(a.rotation_cooling)badges.push(tag("stat","轮换让位"));
   if(a.test_failed)badges.push(tag("test-failed","测试"));
   if(!badges.length)badges.push(tag("stat","正常"));
   const cool=(!a.cooling_down&&(Number(a.fail_count)||0)>0)?tag("stat","失败"+a.fail_count+"次"):"";
@@ -597,6 +610,8 @@ function filterClass(a){
   if(a.disabled)return "disabled";
   if(a.test_failed)return "test";
   if(a.exhausted)return "exhausted";
+  // 轮换让位中的号仍会被调度跳过，若计入「可用」会让计数与实际可路由数不符。
+  if(a.rotation_cooling)return "rotation";
   return "available";
 }
 /* ---------- 排序 / 搜索 / 筛选（随筛选联动汇总卡） ---------- */
@@ -674,17 +689,19 @@ function onSearchChange(v){
   renderSummary();
 }
 function updateFilterCounts(accounts){
-  const cnt={all:accounts.length,available:0,exhausted:0,failed:0,disabled:0,test:0};
+  const cnt={all:accounts.length,available:0,exhausted:0,failed:0,disabled:0,test:0,rotation:0};
   accounts.forEach(a=>{
     // 测试失败账号不算可用（与可用过滤口径一致）。
     if(a.test_failed){ cnt.test++; }
     else if(a.disabled)cnt.disabled++;
     else if(a.exhausted)cnt.exhausted++;
     else if(a.low_credits){} // 低额保护不计入可用
+    // 轮换让位期间调度会跳过它，与 filterClass 同口径不计入可用。
+    else if(a.rotation_cooling){ cnt.rotation++; }
     else cnt.available++;
     if((a.failed_count||0)>0||(a.fail_count||0)>0||a.failover_disabled)cnt.failed++;
   });
-  ["all","available","exhausted","failed","disabled","test"].forEach(k=>{
+  ["all","available","exhausted","failed","disabled","test","rotation"].forEach(k=>{
     const el=document.getElementById("cnt"+k.charAt(0).toUpperCase()+k.slice(1));
     if(el)el.textContent=cnt[k];
   });
@@ -702,7 +719,7 @@ function accountsForFilter(list){
     return accounts.filter(a=>!!a.test_failed);
   }
   return accounts.filter(a=>{
-    const f=a.disabled?"disabled":(a.test_failed?"test":(a.exhausted?"exhausted":"available"));
+    const f=a.disabled?"disabled":(a.test_failed?"test":(a.exhausted?"exhausted":(a.rotation_cooling?"rotation":"available")));
     return f===currentFilter;
   });
 }
@@ -1052,6 +1069,12 @@ setInterval(()=>{
     const until=Number(el.dataset.coolUntil)||0;
     if(until<=0||until<=now){el.remove();return}
     el.textContent="冷却 "+(until-now)+"s";
+  });
+  // 轮换让位倒计时与故障冷却并列但独立：两者同时存在时各自倒计时，不互相覆盖。
+  document.querySelectorAll("[data-rot-until]").forEach(el=>{
+    const until=Number(el.dataset.rotUntil)||0;
+    if(until<=0||until<=now){el.remove();return}
+    el.textContent="轮换让位 "+(until-now)+"s";
   });
 },1000);
 

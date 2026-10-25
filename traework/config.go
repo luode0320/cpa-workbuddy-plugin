@@ -135,6 +135,16 @@ func yamlLines(raw []byte) []string {
 // Unknown keys are ignored (forward compatibility); a parse failure for a
 // known key logs once and keeps the previous value.
 func applyConfigLines(cfg *traeConfig, lines []string) {
+	// rotation 默认沿用包级默认值；只在键真实出现时才覆盖。
+	// 这不是多余的布尔标志：缺少它时，任何一次不含轮换键的 reconfigure（例如
+	// 用户只改了 scheduler_mode）都会把显式配置的 rotation_enabled: false
+	// 用默认值 true 冲回去，等于开关失效。
+	nextRotationEnabled := defaultRotationEnabled
+	nextRotationServe := defaultRotationServeMinutes
+	nextRotationCooldown := defaultRotationCooldownMinutes
+	nextRotationIdle := defaultRotationIdleResetMinutes
+	rotationSeen := false
+
 	for i, ln := range lines {
 		key, val, ok := splitYAMLKey(ln)
 		if !ok {
@@ -172,6 +182,12 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 		case "min_routable_credits":
 			if n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil && n >= 0 {
 				setMinRoutableCredits(n)
+			}
+		case "low_credit_disable_below":
+			// 0 = 关闭（默认）。负值同样按 0 处理：这是笔误，不能当成「不配置」
+			// 保留上一次的值（那会让用户以为已经关掉、实际仍在按旧阈值禁用）。
+			if n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+				setLowCreditDisableBelow(n)
 			}
 		case "scheduler_mode":
 			v := strings.TrimSpace(val)
@@ -226,7 +242,33 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 			if b, ok := parseYAMLBool(val); ok {
 				setGuardEnabled(b)
 			}
+		case "rotation_enabled":
+			rotationSeen = true
+			if b, ok := parseYAMLBool(val); ok {
+				nextRotationEnabled = b
+			}
+		case "rotation_serve_minutes":
+			rotationSeen = true
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 {
+				nextRotationServe = n
+			}
+		case "rotation_cooldown_minutes":
+			rotationSeen = true
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 {
+				nextRotationCooldown = n
+			}
+		case "rotation_idle_reset_minutes":
+			rotationSeen = true
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 {
+				nextRotationIdle = n
+			}
 		}
+	}
+	// 每次 configure 都整套写入：四个键互为配套，分开写会让「serve 改了、
+	// cooldown 还是旧值」的中间态出现在判定里。未出现任何轮换键时跳过，
+	// 保住 reconfigure 不冲掉显式关闭的语义（见函数头 nextRotation* 注释）。
+	if rotationSeen {
+		setLoadedRotationConfig(nextRotationEnabled, nextRotationServe, nextRotationCooldown, nextRotationIdle)
 	}
 }
 

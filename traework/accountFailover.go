@@ -121,10 +121,20 @@ func failoverCooldownFor(count int) time.Duration {
 // method not available for THIS account) all count. Business 4xx (400) is
 // excluded: it reflects the request, not the account.
 func isAccountFailure(status int, body string) bool {
+	// 硬额度（402 / 额度标记）优先级最高：账号确实没额度了，必须记账号级，
+	// 不能被正文里可能同时出现的模型级文案覆盖掉。
+	if isHardCreditError(status, body) {
+		return true
+	}
+	// 模型级/后端池级故障与账号无关：换号结果相同，判断为「需换号」只会把
+	// 同一个错误在池里逐个重放（单请求轮满整池）。必须先于其余状态码判据短路。
+	if isModelLevelFailure(body) {
+		return false
+	}
 	if status == 0 || status >= 500 {
 		return true
 	}
-	if isSoftRateLimit(status, body) || isHardCreditError(status, body) {
+	if isSoftRateLimit(status, body) {
 		return true
 	}
 	return isAccountLevel4xx(status)
@@ -242,11 +252,15 @@ func recordAccountFailureForModel(authID, model string, status int, body string)
 // [参数] authID：账号唯一标识；model：已归一化的上游模型名，可为空；
 // scope：记账维度。
 // [返回] true 表示已写入；scope 为 none 时返回 false。
-// 最近修改时间：2026-10-22；改动原因：失败双写——冷却阶梯 + 盘上禁用。
+// 最近修改时间：2026-10-25；改动原因：sidecar 写入下沉到 disableAccountForFailover，
+// 避免在「解析不到 auth_index」或「账号已被他人禁用」时留下无人认领的禁用条目。
 func recordFailureScoped(authID, model string, scope failureScope) bool {
 	if !recordCooldownScoped(authID, model, scope) {
 		return false
 	}
+	// 禁用写盘内部同时落 sidecar（路由判据的权威来源）。写在这里会绕过该函数的
+	// 认领规则：宿主查不到账号或盘上已是别人的禁用时，sidecar 会记下一个永远
+	// 没有本地标记、也没有探活候选的禁用状态——任何成功请求都解不掉它。
 	disableAccountForFailover(authID, model)
 	return true
 }
@@ -377,6 +391,11 @@ func isAccountCoolingDown(authID string) bool {
 	if isFailoverDisabledLocal(authID) {
 		return true
 	}
+	// 第二层：插件自有 sidecar。它是跨重启与宿主回写的唯一真相源——宿主 persist
+	// 会抹掉盘上标记、fsnotify 也可能静默失效，只有这里不受影响。
+	if failoverStateIsDisabled(authID) {
+		return true
+	}
 	failoverMu.Lock()
 	defer failoverMu.Unlock()
 	now := time.Now()
@@ -459,6 +478,9 @@ func resetCooldownState(authID string) {
 			st.modelStates = nil
 		}
 	}
+	// sidecar 同步清冷却与计数，但保留 Disabled：成功一次不等于探活已确认
+	// 这个号的故障解除。Disabled 只能由探活恢复或外部启用对账清除。
+	failoverStateReset(authID)
 }
 
 // resetAccountFailover clears the failure counter and cooldown after a
@@ -485,6 +507,9 @@ func resetAccountFailover(authID string) {
 	// 而盘上根本没禁它（宿主仍会路由过来），等于自造静默遗忘。
 	clearFailoverDisabledLocal(authID, "")
 	forgetFailoverProbeModel(authID)
+	// sidecar 同步解除。它能走到这里说明本进程确认写过禁用，而成功请求已经
+	// 证明这个号现在可用；不一起清会让 scheduler.pick 继续排除它。
+	failoverStateClearDisabled(authID)
 	authIndex, _ := failoverResolveIndexFn(strings.TrimSpace(authID))
 	if strings.TrimSpace(authIndex) == "" {
 		return
@@ -614,10 +639,16 @@ func lastFailoverModel(authID string) string {
 
 // clearFailoverStates wipes all failover state. Test helper; never called in
 // production paths.
+//
+// 同时清空 sidecar（内存镜像 + 磁盘文件）与本地禁用表：这两者都是判据来源，
+// 只清内存冷却会让上一个用例留下的禁用条目继续影响下一个用例（进程级共享
+// 状态），表现为「单跑绿、整套跑红」的随机 FAIL。
 func clearFailoverStates() {
 	failoverMu.Lock()
 	failoverStates = make(map[string]*authFailoverState)
 	failoverMu.Unlock()
+	clearFailoverStateForTest()
+	clearFailoverDisabledLocalAll()
 }
 
 // setFailoverCooldownUntil overrides the cooldown deadline for an account.

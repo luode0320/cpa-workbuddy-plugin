@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -95,13 +96,21 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	// 否则一次限流就会把该账号从其它模型上一并摘掉。调度请求的 Model 是
 	// 客户端模型名，需与记账侧一样归一化后再比对。
 	upstreamModel := circuitModel(stripProviderPrefix(req.Model))
+	// 轮换冷却在循环外取一次时钟：同一次调度里所有候选必须用同一个「现在」，
+	// 否则逐个取时间会让先判的候选与后判的候选处在不同时刻，短窗口判定抖动。
+	rotationNow := time.Now()
 	available := make([]pluginapi.SchedulerAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
 		if isTestFailed(c.ID) || isAuthModelCoolingDown(c.ID, upstreamModel) {
 			continue
 		}
-		remain, lowOrExhausted := cachedCreditsScore(c.ID)
-		if lowOrExhausted || (remain >= 0 && remain < loadedMinRoutableCredits()) {
+		// 轮换让位与故障冷却同属「暂时不该接流量」，但成因完全不同：前者是
+		// 负载均衡策略（用满 N 分钟主动让位），后者是故障隔离。两者都必须被
+		// 调度层跳过，否则轮换只写状态却仍被派流量，机制等于没接上。
+		if rotationCoolingDown(c.ID, rotationNow) {
+			continue
+		}
+		if _, lowOrExhausted := cachedCreditsScore(c.ID); lowOrExhausted {
 			continue
 		}
 		available = append(available, c)
@@ -113,7 +122,23 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 
 	// 健康平摊轮询：废除残血优先（Low-Credit-First）反模式。
 	// 健康可用账号按高积分优先排序（未测 -1 排最后），并在同一健康阶梯内平摊负载。
+	//
+	// 保活档（低于 min_routable_credits 但高于禁用线）不再硬排除，只是排在
+	// normal 之后：这是放宽而不是收紧——0.3.0 时期这些号会被直接踢出池子，
+	// 现在它们仍有承接机会，只是不优先。
+	preserveBelow := loadedMinRoutableCredits()
+	preserveRank := func(id string) int {
+		remain, _ := cachedCreditsScore(id)
+		if creditTierFor(remain, loadedLowCreditDisableBelow(), preserveBelow) == creditTierPreserve {
+			return 1
+		}
+		return 0
+	}
 	sort.SliceStable(wbCandidates, func(i, j int) bool {
+		leftRank, rightRank := preserveRank(wbCandidates[i].ID), preserveRank(wbCandidates[j].ID)
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
 		left, _ := cachedCreditsScore(wbCandidates[i].ID)
 		right, _ := cachedCreditsScore(wbCandidates[j].ID)
 		if (left < 0) != (right < 0) {

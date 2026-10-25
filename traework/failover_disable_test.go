@@ -152,19 +152,16 @@ func (h *failoverFakeHost) writeCount() int {
 	return h.writes
 }
 
-// clearFailoverProbeModels / clearFailoverDisabledLocalAll 是本机制两张内存表的
-// 测试清场入口。它们刻意放在测试侧而不是生产文件里：生产代码没有任何「清空全部」
-// 的合理时机（禁用状态的真相源在盘上，进程重启后本就该从空集合开始）。
-// 最近修改时间：2026-10-22；改动原因：新增，把测试辅助从生产代码移出来。
+// clearFailoverProbeModels 是本机制探活模型表的测试清场入口。它刻意放在测试侧
+// 而不是生产文件里：生产代码没有任何「清空全部」的合理时机（禁用状态的真相源在
+// 盘上，进程重启后本就该从空集合开始）。
+//
+// clearFailoverDisabledLocalAll 已移入生产文件 failover_disable.go：clearFailoverStates
+// 需要调用它，而那个函数位于生产文件，非测试构建必须能解析，无法留在测试侧。
+// 最近修改时间：2026-10-25；改动原因：禁用集合清场函数因生产构建依赖迁出测试文件。
 func clearFailoverProbeModels() {
 	failoverProbeModelMu.Lock()
 	failoverProbeModels = make(map[string]string)
-	failoverProbeModelMu.Unlock()
-}
-
-func clearFailoverDisabledLocalAll() {
-	failoverProbeModelMu.Lock()
-	failoverDisabledLocal = make(map[string]struct{})
 	failoverProbeModelMu.Unlock()
 }
 

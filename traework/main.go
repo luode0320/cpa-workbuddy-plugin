@@ -278,7 +278,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.3.0"
+var version = "0.4.0"
 
 func wbRegistration() registration {
 	return registration{
@@ -304,6 +304,17 @@ func wbRegistration() registration {
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每4小时 token 保号刷新（默认开启）：access token 临近过期时通过 ExchangeToken 自动续期；刷新令牌失效的账号仅记录过期备注不停用（停用需面板手动操作），路由层靠失败冷却自动避开。"},
 				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用积分生命周期巡检（默认关闭）：账号积分耗尽（remain<=0）自动停用并标记 exhausted_disable；每 4 小时签到刷新积分，恢复>0 自动重新启用；手动停用（manual_disable）永不自动覆盖。"},
 				{Name: "auth_flag_guard", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用禁用标记守护（默认开启）：每 5 分钟核对已停用账号的物理文件，若宿主自动刷新重建时抹掉了 disabled 标记则自动写回，防止停用账号悄悄回到路由池。"},
+				{Name: "device_model", Type: pluginapi.ConfigFieldTypeString, Description: "设备指纹-机型（x-device-brand）。一般无需修改；仅在账号频繁触发设备风控时才考虑调整。"},
+				{Name: "os_version", Type: pluginapi.ConfigFieldTypeString, Description: "设备指纹-系统版本（x-os-version）。一般无需修改。"},
+				{Name: "os_name", Type: pluginapi.ConfigFieldTypeString, Description: "设备指纹-系统类型（x-device-type）。一般无需修改。"},
+				{Name: "ide_version", Type: pluginapi.ConfigFieldTypeString, Description: "客户端版本（x-ide-version）。一般无需修改；留空时自动读取已安装版本。"},
+				{Name: "ide_version_code", Type: pluginapi.ConfigFieldTypeString, Description: "客户端版本号（YYYYMMDD 形态）。一般无需修改；留空时自动生成当日值。"},
+				{Name: "min_routable_credits", Type: pluginapi.ConfigFieldTypeInteger, Description: "保活线（默认 20 点）：剩余积分低于该值但高于禁用线的账号打「保活」标，仍可路由但排在正常号之后。填 0 关闭保活降级。"},
+				{Name: "low_credit_disable_below", Type: pluginapi.ConfigFieldTypeInteger, Description: "硬禁用线（默认 0 = 关闭）：刷新积分时发现剩余低于该值就写盘停用该账号；积分回升到线上自动解禁。填 0 关闭该机制，行为与 0.3.0 完全一致。"},
+				{Name: "rotation_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用连续使用轮换（默认开启）：单个账号连续承流达到 rotation_serve_minutes 后主动让位，进入 rotation_cooldown_minutes 冷却，后续请求改由其它账号承接。已在会话粘性绑定中的会话同样生效；关闭填 false。"},
+				{Name: "rotation_serve_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "单账号连续承流多少分钟后让位（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
+				{Name: "rotation_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "轮换让位后停留在冷却的时长（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
+				{Name: "rotation_idle_reset_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "连续使用的中断阈值（默认 10）：账号距上次使用超过该时长即视为新一轮，重新计时，避免零散流量被误判为持续负载。"},
 			},
 		},
 		Capabilities: registrationCapability{

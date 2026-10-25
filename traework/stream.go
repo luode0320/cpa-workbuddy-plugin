@@ -929,6 +929,9 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 		return
 	}
 	resetAccountFailover(ctx.AuthID)
+	// 轮换打点：直通流式收尾路径。此处与 executor 的 collect/aggregate 是三个
+	// 互斥的成功返回点，任何一处漏接都会让该模式的流量不计入连续承流。
+	noteRotationUsage(ctx.AuthID)
 	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), false, 0, "", "", ttftNSBetween(ctx.Started, result.FirstOutputAt), ctx.AuthUID, ctx.SessionKey)
 }
 
