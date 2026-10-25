@@ -454,7 +454,7 @@
       "name": "ZCode Provider",
       "description": "ZCode (BigModel Coding Plan) Anthropic-compatible provider for CLIProxyAPI: ZCode desktop client fingerprint mimic, multi-account management, dynamic models, active-ping test picker, failover scheduler, and web panel.",
       "author": "Sliverkiss",
-      "version": "0.1.35",
+      "version": "0.2.0",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
       "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/ZCode.png",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/zcode",
@@ -472,44 +472,44 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/zcode-provider-v0.1.35/zcode-provider_0.1.35_darwin_amd64.zip",
-            "sha256": "1f19bca000b0918d5e0b852c83e3445c3276cee8a470c54232cf4ef33b005d5b",
-            "size": 3143310
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/zcode-provider-v0.2.0/zcode-provider_0.2.0_darwin_amd64.zip",
+            "sha256": "43aff48e0f1be58e56cd080a0679ae0a75ce27b6488485ba1adbc53d59a3171b",
+            "size": 3157465
           },
           {
             "goos": "darwin",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/zcode-provider-v0.1.35/zcode-provider_0.1.35_darwin_arm64.zip",
-            "sha256": "bb8d2b996177a358d8a073386ad164914e359438d16baa360e9a7b00c5d6d01f",
-            "size": 2905766
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/zcode-provider-v0.2.0/zcode-provider_0.2.0_darwin_arm64.zip",
+            "sha256": "edc0a56138e6a0645be3d24b3f918e079a234a537417b8f723789a4bca00aaa6",
+            "size": 2916883
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/zcode-provider-v0.1.35/zcode-provider_0.1.35_linux_amd64.zip",
-            "sha256": "2df98bc88be5cd7107dba384c0cfb186b05b429511adf844b4126175f0bfab66",
-            "size": 3308806
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/zcode-provider-v0.2.0/zcode-provider_0.2.0_linux_amd64.zip",
+            "sha256": "7c978bb8590cd009c2a18116456449f10bebb364939572dbd8075b70850e94ad",
+            "size": 3321402
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/zcode-provider-v0.1.35/zcode-provider_0.1.35_linux_arm64.zip",
-            "sha256": "e0cc57214ff0c16e336402539ca2232c240c52b1eda140030c6d71089920e68e",
-            "size": 3008327
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/zcode-provider-v0.2.0/zcode-provider_0.2.0_linux_arm64.zip",
+            "sha256": "34bd96721072da6bdd398394ec2bd7131a69dc1b9fec1ea98d3356c51092f6f5",
+            "size": 3020751
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/zcode-provider-v0.1.35/zcode-provider_0.1.35_windows_amd64.zip",
-            "sha256": "47d7e11f81a4298acab7a1d95310697186132cbe606c55437267eee862d4a406",
-            "size": 3215334
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/zcode-provider-v0.2.0/zcode-provider_0.2.0_windows_amd64.zip",
+            "sha256": "fc74695240d3f757ab38acf3c9268a9a6c21bc1acf51c37039c15d763cfa67b1",
+            "size": 3228720
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/zcode-provider-v0.1.35/zcode-provider_0.1.35_windows_arm64.zip",
-            "sha256": "c4480f304caadfd8725b3802038b980b142b8b785b211314620d6bffe71c45de",
-            "size": 2978894
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/zcode-provider-v0.2.0/zcode-provider_0.2.0_windows_arm64.zip",
+            "sha256": "91888a1259fcf56921eb143967dc49a2afe47a1b94d3e6a71f71609172faf63a",
+            "size": 2991234
           }
         ]
       }
