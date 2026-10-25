@@ -299,15 +299,20 @@ func pruneExpiredLoginSessionsLocked() {
 // （2026-10-18 生产实测：24 小时内 0 条 auto-refresh 日志）。
 // [参数] sa: 账号。
 // [返回] AuthData。
-// 最近修改时间：2026-10-18；改动原因：新增，宿主注册结构；补刷新间隔驱动定时续期。
+// 最近修改时间：2026-10-25；改动原因：补顶层 Disabled，宿主只认它判账号状态。
 func authDataForLogin(sa *StoredAuth) pluginapi.AuthData {
 	storage, _ := json.Marshal(sa)
 	fileName := authFileNameOf(sa.AuthID)
 	return pluginapi.AuthData{
-		Provider:    providerName,
-		ID:          fileName,
-		FileName:    fileName,
-		Label:       sa.Label,
+		Provider: providerName,
+		ID:       fileName,
+		FileName: fileName,
+		Label:    sa.Label,
+		// 宿主的 pluginAuthDataToCoreAuth 只用顶层 Disabled 推导 Status，
+		// Metadata 里的同名键在该路径上不参与判定。漏设会让「插件写盘禁用」
+		// 在宿主侧仍算 active：认证文件页按启用统计、按停用筛选查不到，
+		// 宿主调度器也继续把它当作候选（2026-10-25 生产实证）。
+		Disabled:    sa.Disabled,
 		StorageJSON: storage,
 		Metadata: map[string]any{
 			"type":                     providerName,

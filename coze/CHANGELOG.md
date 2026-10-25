@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.2 (2026-10-25)
+
+### Fix - 低额自动禁用补顶层 Disabled，宿主认证文件页不再显示为启用
+
+- 背景: 宿主的 `pluginAuthDataToCoreAuth` 只用 `AuthData` **顶层 `Disabled`** 推导 `Status`；
+  `Metadata` 里的同名键在该路径上不参与判定。0.6.1 只补了 Metadata，因此「插件写盘禁用」
+  在宿主侧仍然算 active。
+- 生产实证（2026-10-25）: 4 个低额号在 spool 上是 `disabled:true` + 三个归属标记齐全，
+  MySQL `auth_store` 也保存了 `low_credit_disable=true`，但 `GET /v0/management/auth-files`
+  里 14 条 coze 全部 `disabled=false / status=active`；认证文件页按「停用」筛选为空。
+  同宿主 workbuddy 的 2 个禁用号显示正常，排除宿主能力问题。
+- 修复: `authDataForLogin` 补设顶层 `Disabled: sa.Disabled`，一处覆盖三个调用点
+  （`auth.parse` / 登录成功 / `auth.refresh`）。
+- 影响面: 真实流量无变化（`publishCreditPool` 早就按 `!acc.Disabled` 排除低额号，
+  6 小时日志中「转由宿主换号」0 次）；本次修复的是宿主可见性与候选池口径。
+- 验证: 新增 `TestAuthDataForLogin_CarriesDisabledField`，并在 `TestAuthParse_RoundTripsDisableState`
+  与健康账号反向用例中补顶层字段断言；变异验证（删掉 `Disabled:` 行）被 2 条用例同时 KILLED；
+  cgo-shim 全绿。
+- 涉及文件: `login.go`、`disable_metadata_test.go`
+
 ## 0.6.1 (2026-10-25)
 
 ### Fix - 禁用状态随 auth.parse Metadata 回传，避免宿主 persist 抹掉

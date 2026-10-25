@@ -64,6 +64,34 @@ func TestAuthDataForLogin_HealthyAccountNotDisabled(t *testing.T) {
 	if flag, _ := data.Metadata["low_credit_disable"].(bool); flag {
 		t.Fatal("健康账号回传 low_credit_disable 必须为 false")
 	}
+	if data.Disabled {
+		t.Fatal("健康账号回传顶层 Disabled 必须为 false，否则宿主会把所有账号停用")
+	}
+}
+
+// TestAuthDataForLogin_CarriesDisabledField 覆盖宿主状态判定的唯一来源。
+//
+// 为什么必须有这条用例：宿主的 pluginAuthDataToCoreAuth 只用 AuthData 顶层
+// Disabled 推导 Status，Metadata 里的 "disabled" 在该路径上不参与判定。只回传
+// Metadata 会让插件侧的写盘禁用在宿主侧继续算 active——认证文件页按启用统计、
+// 按「停用」筛选查不到，宿主调度器也继续把它当候选（2026-10-25 生产实证）。
+//
+// 变异验证：删掉 authDataForLogin 里的 Disabled 赋值行，本用例立即失败。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-10-25；改动原因：新增，锁死宿主状态判定字段。
+func TestAuthDataForLogin_CarriesDisabledField(t *testing.T) {
+	disabledAccount := &StoredAuth{
+		AuthID:                "coze-d2",
+		Label:                 "低额禁用账号",
+		Disabled:              true,
+		LowCreditDisable:      true,
+		LowCreditDisableBelow: 200,
+		LowCreditDisableAt:    "2026-10-25T14:16:13+08:00",
+	}
+	if data := authDataForLogin(disabledAccount); !data.Disabled {
+		t.Fatal("禁用账号必须回传顶层 Disabled=true，否则宿主仍按 active 统计与调度")
+	}
 }
 
 // TestAuthParse_RoundTripsDisableState 覆盖端到端闭环：宿主 persist 重建后的
@@ -109,6 +137,7 @@ func TestAuthParse_RoundTripsDisableState(t *testing.T) {
 	var resp struct {
 		Handled bool `json:"handled"`
 		Auth    struct {
+			Disabled bool           `json:"disabled"`
 			Metadata map[string]any `json:"metadata"`
 		} `json:"auth"`
 	}
@@ -117,6 +146,10 @@ func TestAuthParse_RoundTripsDisableState(t *testing.T) {
 	}
 	if !resp.Handled {
 		t.Fatal("coze 文件必须被认领")
+	}
+	// 顶层字段是宿主判定 Status 的唯一来源，缺失即等于「禁用对宿主不可见」。
+	if !resp.Auth.Disabled {
+		t.Fatal("parse 回传的顶层 disabled 丢了，宿主会把该号算成 active 并继续调度")
 	}
 	if disabled, _ := resp.Auth.Metadata["disabled"].(bool); !disabled {
 		t.Fatal("parse 回传的 metadata 丢了 disabled，宿主 persist 会解禁该号")
