@@ -26,7 +26,7 @@
   - `qoderwork-provider`: **0.10.1**（0.10.1 模型清单改为全场景并集 + 以上游 `display_name` 为准 + 补齐改名后的请求回译 + 静态兜底对齐可用集合；0.10.0 账号故障改写盘禁用 + 每 10 分钟只探失败模型；0.9.44 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502`；0.9.40 重建上游 messages 保留工具调用结构；0.9.49 模型对外 ID 改用官方展示名并补齐执行链回译；0.9.48 模型清单按账号分片 + 额度优先）
   - `qoder-ai-provider`: **0.1.24**（0.1.24 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502`；0.1.20 重建上游 messages 时保留工具调用结构修复 agent 多轮往返工具结果失配对；0.1.18 签到节奏恢复每 4 小时六槽 + 移除冗余门控；0.1.17 tools 对齐修复；0.1.15 max_tokens 统一 32768 最低输出底线；0.1.14 上游 110 日调用上限 24 小时持久化冷却 + 补齐 /clear-cooldown 路由注册）
   - `traework-provider`: **0.2.13**（面板签到时刻文案漂移修正为 00/04/08/12/16/20；0.2.12 定时探活降频至 4 小时 + 失败也刷新节流时间戳；0.2.11 max_tokens 32768 底线 + payload 层同步，探活改全量模型按序测试）
-  - `workbuddy-provider`: **0.20.0**（0.20.0 新增连续使用轮换：单账号连续承流满 60 分钟让位、冷却 60 分钟，默认开启，含全冷放开一半防抽干；0.19.0 重新接入成长中心 7 段，修复旧版「任务永远完不成」的两个根因：从未调用 `buddy/first` 领养 + 完全没有 `POST /v2/report` 行为上报；0.18.2 面板单卡刷新补写积分快照；0.18.1 积分三档分级 + 每小时串行扫描 + 低于 100 硬禁用；0.18.0 下线 Global 耗尽自动删号 + 低额红线可配置；0.16.5 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502`）
+  - `workbuddy-provider`: **0.20.2**（0.20.2 失败禁用标记保底补回：宿主每次请求结束用内存 Metadata 重建 auth 文件会抹掉本机制三个顶层键，改由 watchdog 的计数器落盘前补齐，并新增面板 `failover_unconfirmed` 暴露「写盘未生效」；0.20.0 新增连续使用轮换：单账号连续承流满 60 分钟让位、冷却 60 分钟，默认开启，含全冷放开一半防抽干；0.19.0 重新接入成长中心 7 段，修复旧版「任务永远完不成」的两个根因：从未调用 `buddy/first` 领养 + 完全没有 `POST /v2/report` 行为上报；0.18.2 面板单卡刷新补写积分快照；0.18.1 积分三档分级 + 每小时串行扫描 + 低于 100 硬禁用；0.18.0 下线 Global 耗尽自动删号 + 低额红线可配置；0.16.5 流式中途断流零泄漏换号重试 + 断流信封补 `http_status=502`）
   - `workbuddy-ai-provider`: **0.1.28**（0.1.28 面板不再自动刷新：打开只渲染内存缓存/盘上积分快照，最新积分由卡片「刷新」显式触发；连带修复手动刷新与签到不落盘、缓存 3 分钟过期 GC 掏空活账号 plan/签到态、默认渲染对无 plan 账号查上游注册态三处缺陷。0.1.27 积分快照并入白名单搬运路径修复备注刷新抹快照；0.1.26 积分快照持久化 `credits_snapshot`；0.1.25 移除耗尽标签与按额度排除；0.1.16 授权后自动补注册地）
   - `copilot-provider`: **0.1.2**（0.1.2 调度器对齐宿主候选集语义修复越界缺陷，已发布 `0054c28`→`ba471b0`→`bca1264`→`78b4069` 并生产验收：热重载前 5 分钟 50/50 请求告警、热重载后 0/57；0.1.1 宿主 OAuth 弹窗改开插件桥接页展示设备码；0.1.0 首发：Device Flow 登录 + 内部令牌 80% 提前保活 + VS Code Copilot Chat 指纹模拟 + 动态模型发现 + 多账号池换号重试 + 流式/非流式转发 + 额度与面板）
   - `workbuddy-token-usage`: **0.2.8**（0.2.8 让退役实例的 feed 导入协程在连续 3 轮关闭句柄后自行退出；0.2.7 修复宿主配置重载换句柄窗口导致的用量记录丢失；0.2.6 移除四个图表与导出图片、下线 `/stats/trends` 及序列聚合以省算力与响应体积；0.2.5 起请求明细与维度汇总展示原始 provider id）
@@ -34,6 +34,15 @@
 - 当前时间：2026-10-17 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 当前会话（2026-10-25）：**coze 低额自动禁用未同步宿主状态修复（0.6.2），已发生产并验收**：
+  - **根因**：宿主 `pluginAuthDataToCoreAuth` **只用 `AuthData` 顶层 `Disabled` 推导 `Status`**，Metadata 里的 `"disabled"` 在该路径上不参与判定。coze 的 `authDataForLogin` 只补了 Metadata、漏设顶层字段 → 插件写盘禁用对宿主不可见。**全项目 7 个插件只有 coze 漏了这一行**。0.6.1 的「Metadata 回传」只覆盖文件重建路径（`synthesizer/file.go:107`），漏掉状态判定路径。
+  - **影响面**：真实流量**无影响**（`publishCreditPool` 按 `!acc.Disabled` 排除低额号，6 小时日志「转由宿主换号」0 次、「已自动禁用」24 次）；受损的是宿主可见性与调度候选池口径。
+  - **修复**：`authDataForLogin` 补 `Disabled: sa.Disabled`，一处覆盖 `auth.parse` / 登录成功 / `auth.refresh` 三个调用点。新增 1 用例 + 2 处补顶层断言，变异验证 KILLED，cgo-shim 全绿。
+  - **发布链**：`0e8620a`(fix, 6 文件) → CI `40170584547` success → 6/6 assets sha256 OK → `2adc70c`(registry) → 远端 6/6 artifacts 200。
+  - **生产部署（热重载零重启）**：`restart_required:false`；`.so` sha256 `81a51f97…e28229` 与本地一致；`hot reloaded active=0.6.2 retired=0.6.1`。
+  - **生产验收**：宿主 `auth-files` 从「14 全 active」变为 **10 active / 4 disabled**（`status=disabled`，ID 与插件侧逐一对应）；插件 `/accounts` `normal:10 / disabled:4`、`auto_disabled` 4 条；`test-active` 上游 `ok:true`。
+  - **文档**：`doc/4-bugs/2026-10-25_144500_coze低额自动禁用未同步宿主认证文件状态根因诊断.md`（含三层生产铁证与 workbuddy 对照）。
 
 - 当前会话（2026-10-25）：**生产 traework-provider 17 个账号误删后从 MySQL binlog 完整恢复，已启用并端到端验收**：
   - **事故**：生产 spool 与 `auth_store` 的 traework 记录均为 0，插件侧无 `traework_accounts` 目录。binlog 定位到 **17 条 DELETE 事件**，三批：10-20 15:34（3）/ 10-21 15:11（4）/ 10-22 12:58~12:59（10）。
@@ -44,90 +53,97 @@
   - **写回与验收**：按「auth_store（hex 写 JSON 列）→ spool」顺序写入 17/17；插件原为 `enabled=false`（10 插件中仅 5 个启用），**启用后** `registered/effective_enabled` 均 true，插件 `/accounts` 17 条、宿主 `auth-files` 56→73（+17）。抽样 5 号 `test-active` 4 成功（0.9~2.6s）、1 号报上游 `all models failed`（模型级非账号故障）；真实入口 `/v1/chat/completions` 调 `glm-5.3` 返回 `finish_reason=stop` 正文 `OK`。
   - **边界**：恢复出的 `disabled` 统一为 false，删除前的禁用态未单独保留；解析器与恢复脚本留在 `/root/traework-recovery/`（`recover.py`/`apply.py`），未纳入仓库。
 
-- 当前会话（2026-10-25）：**qoder-ai 0.1.30 修复模型清单漏模型（多场景并集 + 上游 display_name 权威 + 场景别名排除），已提交并触发发布**：
-  - 用户诉求：「对 qoder-ai 插件做同样的修复」（承接 qoderwork 0.10.1）。
-  - **上游取证（真实国际版账号直连 `openapi.qoder.sh`）**：响应按 11 个场景切分（chat / assistant / quest / qwake / app / inline / qwork / experts / nap / byok_teams / byok_enterprise）；`chat` 仅 12 个 key，全场景并集 21 个。本机官方客户端 QMC 加密目录（`~/.qoder/.models/<uid>/catalog-v6|v7`，HKDF-SHA256(uid)+AES-256-GCM，参考 qoder2api-hub `qoder_sign.qmc_decrypt`）解密后同样证实按场景切分（chat 15 / qwork 6 / inline 4）。
-  - **与 qoderwork 的关键差异（不能照搬）**：国际版把档位嵌进场景 id（`quest-auto` / `quest-ultimate` / `qwork-auto` / `qwork-advanced` / `qwork-ultimate` / `experts-auto` / `experts-ultimate` / `nap-auto`，display 分别只是 Auto/Standard/Premium/Advanced），共 8 个伪模型。国内版实测 chat 与并集完全一致（各 11 个），故 qoderwork 直接取全集即可；国际版必须 `isSceneScopedAlias` 按前缀排除。真正漏掉的只有 `performance`（只在 `qwake` 出现）。
-  - **命名与回译**：上游 `display_name` 已改名（`kmodel_latest`→`Kimi-K3.1-Pro`、`mmodel`→`MiniMax-M3.1-Flash`）而硬编码表仍是旧名。主条目改用上游 display_name；新增 `upstreamModelNames` 运行时映射供 `cpaToUpstreamKey` / `resolveUpstreamModel` 回译（先到先得，账号级 alias 最高优先）。
-  - **静态表**：补入双区客户端目录都有、插件此前完全没收录的 `fast`；静态表**只保留旧名代号**——新名一律交给运行时映射，否则静态表会遮住运行时映射（变异验证发现：硬编码新名会让「移除运行时回译」这个变异存活）。
-  - **验证**：新增 `models_scene_union_test.go`（12 用例）；**5 项变异全部 KILLED**（退回只读 chat / 主条目忽略 display_name / 移除场景别名过滤 / 移除运行时回译 / 静态表加回上游已无代号）；cgo-shim build+vet+test 全绿；gofmt 干净。
-  - **真实上游验收（改后代码）**：`13 models in 11 scenes`（改造前 12 个且只读 chat）；对外展开 26 条 ID 全部回译通过；`performance` 首次进入清单；两个改名模型由上游 display_name 驱动；静态兜底 36/36 回译通过。
-  - **发布链**：`3b9596c`（fix，7 文件）已推 main（`2757f14..3b9596c`）；CI dispatch `qoder-ai-provider 0.1.30` → run `40116130945`。
-  - **生产状态**：qoder-ai 当前 `configured=true / registered=false / enabled=false`，且 spool 无 `qoderai-` 前缀账号（生产从未启用该插件），故本轮只做发版与资产校验，无法做生产流量验收。
-  - **未闭环**：qoder-ai 启用前的账号导入与真实推理验证；`/v1/models` 中部分模型无 provider 归属的旁证线索（见上一条会话记录）。
+- 当前会话（2026-10-25）：**zcode 功能同步计划已定稿（只做 P0 + 写盘禁用 + 额度禁用），尚未开工**：
+  - **背景**：用户指出 zcode 功能已落后 workbuddy 很远，要求给出同步计划。盘点结论：workbuddy 53 个非测试 Go 文件 / 27,258 行，zcode 20 个 / 10,476 行。
+  - **用户三项裁定**：① 口径 = 只做 P0（签到、成长中心、会话亲和、轮换、计数、鉴权、客户端版本拉取全部剔除）；② 引入写盘禁用，**并移除原内存冷却**；③ 额度耗尽落成写盘禁用 + 次日 `period_end` 重置后探活恢复。
+  - **盘点出的 3 处真实缺陷**（非能力差距，是缺陷）：`stream.go:92-120` 遇 `[DONE]` 只跳过用量提取、仍转发且不终止（死等空闲连接）；全文无 SSE 错误帧识别（200 承载 `{"error":...}` 被当成功并清失败状态）；全文无脱敏（上游报文含 Bearer/JWT 原样进 `stream.emit` 与 usage feed）。
+  - **一处结构性障碍**：`authfile.go:221` 写盘用 `json.MarshalIndent(auth)` 从 `StoredAuth` 结构体重建，会丢掉所有不在结构体里的顶层键 —— 不换实现则禁用标记写进去立刻被下一次插件写盘抹掉（`DEC-004`）。
+  - **计划落盘**：`doc/3-实施/2026-10-25_133753_zcode功能同步P0与写盘禁用_实施总览.md`，4 个周期 / 11 个最小任务 / 3 张 Mermaid / 6 条 `FEAS-*`；结构校验通过（11 任务必填字段齐全、占位词零命中、UTF-8）。
+  - **关键排序约束**：`CYCLE-02` 内部必须先建新机制（TASK-004~006）再删旧机制（TASK-007~008），保证移除内存冷却不产生能力真空（`FEAS-006`）。
+  - **两项待执行期验证**：`FEAS-004`（`billing/balance` 是否返回 `period_end`）与 `FEAS-005`（重置后探活能否成功）均为任务级未验证，已写入 `TASK-009`/`TASK-010` 的「执行期第一动作」，不成立即停止并回写计划。
+  - **未开工**：本轮只产出计划，未改任何 `zcode/` 代码。
+
+- 当前会话（2026-10-25）：**同一宿主 persist 抹除缺口同步到四个插件，已发生产并验收**：
+  - **背景**：workbuddy-provider 0.20.2 修复「宿主每次请求结束用内存 Metadata 重建 auth 文件、抹掉插件直写归属字段」后，用户要求同步到 workbuddy-ai / qoderwork / qoder-ai / coze。
+  - **侦察结论（四插件三种形态，不能照搬）**：workbuddy-ai 与 qoderwork 与 workbuddy 完全同构（`failover_disable` 三键 + `counter.go` 周期性落盘）；qoder-ai 用的是 `daily_cooling_until`（24h 冷却截止时间，非 disabled 标记）；coze 的标记在 `StoredAuth` 结构体内、且**没有计数器落盘通道**，且其 `auth.parse` 的 Metadata 原先连 `disabled` 都没有（只有 5 个键），宿主一次 persist 会把整文件压成那 5 个键。
+  - **修复**：workbuddy-ai 0.1.30 / qoderwork 0.11.1 —— `persistCounterDelta` 落盘前补齐三键，条件限定「本进程写过禁用」+「盘上确实 disabled」，`at` 取内存原始时刻；qoder-ai 0.1.31 —— 同路径补齐 `daily_cooling_until`，只补仍在冷却期内的账号（避免把该恢复的号重新冻结）；coze 0.6.1 —— 正解是让 `auth.parse` 的 Metadata 带上 `disabled` + 三个低额禁用归属键，宿主重建时原样写回，形成闭环。三插件面板同步新增 `failover_unconfirmed`。
+  - **验证**：新增 4 个测试文件共 13 用例；变异验证全部 KILLED —— workbuddy-ai/qoderwork（去归属判据、断开调用点）、qoder-ai（断开补字段调用、去掉「字段已存在」判据）、coze（`disabled` 写死 false，被 2 条用例同时捕获）。五插件 cgo-shim 全绿；gofmt 干净（修正了本轮引入的多余空行与字段对齐）。
+  - **发布链**：`cfe116b`(fix, 27 文件) → 四 CI 并行全部 success（`40132792599`/`40132787644`/`40132783125`/`40132778231`）→ 四组 6/6 assets sha256 OK + 二进制内置新版本号且含新符号 → `6e9a1dd`(registry) → 远端四插件 version + 24/24 artifacts ALL PASS。
+  - **生产部署（热重载零重启）**：四次 install 均 `restart_required:false`；四个落盘 `.so` sha256 与本地 zip 逐字节一致（`0471956f…`/`92434314…`/`12019342…`/`bb748fea…`）；`hot reloaded` 四条全部 `active=新版 retired=旧版`。
+  - **生产验收**：四插件 `/accounts` 与 `/panel` 全部 200（workbuddy-ai 2 号 / qoderwork 18 号 / qoder-ai 0 号 / coze 14 号）；三插件当前无禁用账号，`failover_unconfirmed` 计数 0（无分叉）；真实入口流式 `deepseek-v4.1-flash` 1.8s、含 nonce、无断流。
+  - **边界（如实记录）**：本轮与 workbuddy 0.20.2 一样只做「补字段 + 暴露分叉」，宿主 persist 与插件写盘的竞态窗口未消除；彻底消除需改走 `PATCH /v0/management/auth-files/status` 宿主禁用通道。coze 走的是 Metadata 回传路线，理论上比补标记更彻底（宿主重建时自带正确值），但同样未消除并发写入竞态。
+
+- 当前会话（2026-10-25）：**workbuddy-provider 0.20.2 失败禁用标记保底补回，已发生产并验收**：
+  - **根因**：宿主在每个请求结束后 `m.persist(ctx, auth)`（`conductor_cooldown.go:994/1085`），用内存 `Auth.Metadata` 重建 auth 文件；该 Metadata 只含插件 `auth.parse` 白名单键，本机制 `failover_disable`/`_model`/`_at` 三键不在其中，于是「插件写禁 → 宿主 persist」后盘上只剩 `disabled:true`。标记一丢，10 分钟探活按标记挑候选就再也找不到该号。
+  - **生产铁证**：3 个账号（2ca400e3/5e6050ba/242e1dde）带 `failover_disable_at` 存活且 DB `disabled=true`（证明写盘链路本身可用）；另 3 个（700fd592/59667798/7b251fe4）在 03:33:55.74~.765 的 24ms 内被批量重写为 `disabled:false` 且标记全无，DB updated_at 分别停在 03:28:23/03:31:08/03:33:52 —— 文件 mtime 晚于 DB，证明最后一笔不经 MySQL，是插件自身周期性落盘写回了已被宿主重建过的脏文档（写入者 = `flushCounters`）。
+  - **修复**：`persistCounterDelta` 落盘前调 `restoreFailoverMarkersIntoDoc` 补齐三键；条件严格限定「本进程写过禁用」+「盘上确实 disabled」，防止替手动/耗尽禁用伪造归属、防止把已恢复账号重新标禁用；`at` 从内存 `failoverDisableAtLocal` 取原始时刻。
+  - **面板**：新增 `failover_unconfirmed`，盘上禁用而宿主仍 enabled 时显示「写盘未生效·仍在接流量」，这是 6 vs 3 显示分叉的直接来源。
+  - **验证**：新增 `failover_marker_restore_test.go` 6 用例；**5 项变异全部 KILLED**（去本地归属判据/去 disabled 判据/断开 persistCounterDelta 补标记调用/丢弃原始时刻/面板判据忽略宿主态）。其中「断开调用」首轮存活 → 暴露纯函数测试不覆盖调用点，据此给 `counter.go` 补宿主注入点并加 `TestPersistCounterDelta_RestoresMarkersOnDisk`。cgo-shim 全绿、gofmt 干净、panel.html 双脚本语法通过。
+  - **发布链**：`94a0dcc`(fix, 8 文件) → CI `40130552239` success → 6/6 assets sha256 OK + 二进制内置 0.20.2×2 / 0.20.1×0 且含 `failover_unconfirmed`×3 + `restoreFailoverMarkers`×2 → `8eca911`(registry) → 远端 6/6 sha+size ALL PASS、零旧版残留。
+  - **生产部署（热重载零重启）**：install 返回 `restart_required:false`；落盘 `.so` sha256 `c7904d88…4c6bda` 与本地 zip 逐字节一致；`hot reloaded active_version=0.20.2 retired_version=0.20.1`。
+  - **生产验收**：`/accounts` 200（13 账号，`failover_disabled=3` / `disabled=3` / `failover_unconfirmed=0`，三者对齐证明当前 3 个禁用号写盘均被宿主正常吸收、无分叉）；`/panel` 200（83636 字节，含「写盘未生效」文案）；真实入口流式 `deepseek-v4.1-flash` 返回 200、1382 字符、6 章节 + nonce 完整、4.2s 无断流。
+  - **边界（如实记录）**：本轮只做「补标记 + 暴露分叉」，宿主 persist 与插件写盘的竞态窗口未消除（补标记只保证最后一笔不丢）；彻底消除需改走 `PATCH /v0/management/auth-files/status` 宿主禁用通道，属后续独立改动。新版本运行窗口内无 failover 事件（无账号失败），故 `NOT confirmed` 归零只能证明「无失败」，不能单独证明修复在生产正向路径生效。
+
+- 当前会话（2026-10-25）：**qoderwork 0.11.0 失败禁用链路重构已发生产并完成验收（含管理密钥落 .ssh 元信息）**：
+  - 用户裁定「直接把有问题的去掉、重新实现」，本轮完成三层分离重构：故障分类 → 插件自有 sidecar 状态 → 路由排除（`scheduler.pick` + `pickNextAuth`），并以熔断器兜住分类错误。
+  - **发布链**：`e7cc87f`(refactor, 25 文件) + `ac3cd2e`(registry) → CI `40124679285` success → 6/6 assets sha256 OK → 远端 registry ALL PASS 且零旧版残留。
+  - **管理密钥已落 `.ssh` 元信息**（用户授权明文持久化）：`C:\Users\luode\.ssh\servers.json` 新增 `managementKey` + `managementKeyNote` 字段，标注为 CPA 生产管理密钥明文；本轮及后续取值全部经文件读取，未在任何回复/输出中回显。生产 `config.yaml` 中该键已被宿主启动时 bcrypt 哈希（不可逆），明文仅此一处留存。
+  - **生产部署（热重载零重启）**：`POST plugin-store/qoderwork-provider/install?version=0.11.0` → `200 {"status":"installed","restart_required":false}`；`hot reloaded active_version=0.11.0 retired_version=0.10.1`；落盘 `.so` sha256 `d87abf7c…d3ce`（8134976 字节）与本地 release zip 逐字节一致；容器未重启。
+  - **接口验收**：`/accounts` 200（18 账号）、`/panel` 200（75812 字节，含三类新徽标钩子）；`/v1/models` 返回 20 条 qoderwork 模型。
+  - **排队帧零误判实证**：验收窗口内上游整体 `RESOURCE_LIMIT` 排队，18 个账号被逐个打到 `403:10605 isQueued`，随后核对 `disabled=0 / cooling=0 / failover_disabled=0 / rotation_cooling=0`，`data/qoderwork-failover.json` **未生成**（无任何禁用记录），`failover disable` 日志 qoderwork 侧 0 条。**口径务必准确**：排队帧不判账号故障是 0.10.1 时代已有的红线，本轮验证的是重构没有破坏它；本轮新增的模型级故障分类（`All backends failed` 那条路径）在该窗口内上游未复现，因此只有单测 + 变异覆盖，**生产正向证据仍待补**。
+  - **积分快照侧车实证**：`GET /credits` 全量拉取 18/18 成功 → `data/qoderwork-credits.json` 12200 字节落盘，v1 schema、中文正常、18 个账号条目齐全；侧车目录可写性单独验证通过。
+  - **成功链路**：`GLM-5.3` / `DeepSeek-V4-Pro` / `Kimi-K2.8-Preview` 三模型流式均返回真实 `reasoning_content` 帧（非空完成）。
+  - **未在本轮闭环（如实记录）**：① 成功链路因上游随后整体排队，未能稳定跑满「完整流式到 `[DONE]` + 轮换 `承流` 计时可见」的端到端样本；② 账号级故障触发侧车 `failover-failover.json` 写禁用的正向路径未在生产复现（需真实账号级错误，当前上游只有排队帧）；两项均有本地 cgo-shim 单测 + 变异验证覆盖，生产侧待下个窗口补证。
+  - **旁证（非本轮回归）**：部署后 3 条 `upstream served model "auto"` 警告，与部署前 02:12 的同类警告同形，属上游排队降级期的既有现象，非 0.11.0 引入。
+
+- 当前会话（2026-10-25）：**qoderwork 失败禁用两层根因诊断（已被 0.11.0 重构取代，保留结论）**：
+  - **第一层（写盘被覆盖）**：18 号 `disabled` 全 false、DB `auth_store` 中 `failover_disable=true` 的 qoderwork 账号 0 个（workbuddy 有 2 个）；两小时内 `failover disabled account` 27 次而 `failover state NOT confirmed by host` 也是 27 次。决定性实验：宿主机直给 spool 写 `disabled:true` → 12 秒存活；一次 `test-active` 后标记消失、被 `buildAuthFileJSON` 白名单重建。根因：宿主以 `auth_store` 为真相源、spool 为单向投影，插件搬标记唯一的通道是 `AuthData.Metadata` → `handleParseAuth`，而 DB 回写 spool 不走该回调。
+  - **第二层（watcher 未监听，才是真根因）**：SDK v7.2.129 的 `buildAuthFromFileData` 不读 `disabled`、`Status` 硬编码 `StatusActive`，故 `host.auth.save` 会强制启用账号（方案 A 不可行）；而 `auth.parse` 通道本身完全正确（`Disabled: data.Disabled`，`Metadata` 整体落盘 + 原样 upsert）。真问题：容器 `auth-dir` 下 qoderwork 文件 0 个，18 个全在 `mysqlstore/mysqlstore/auths/`，三项实测（改 note / `os.Rename` / 删除重建）warner 均零事件，48h 零事件而 spool mtime 持续在变。
+  - **处置**：结论直接促成 0.11.0 三层分离重构——放弃依赖宿主写盘禁用，改由插件自有 sidecar + `scheduler.pick` 路由排除。文档 `doc/4-bugs/2026-10-25_014500_*` 与 `..._021000_*`。
+
+- 更早会话（2026-10-25，已压缩）：**qoder-ai 0.1.30 模型清单修复的上游取证细节**：真实国际版账号直连 `openapi.qoder.sh` 证实响应按 11 场景切分（chat 仅 12 个 key、全场景并集 21 个）；本机官方客户端 QMC 加密目录（`~/.qoder/.models/<uid>/catalog-v6|v7`，HKDF-SHA256(uid)+AES-256-GCM）解密后同样证实按场景切分。国际版把档位嵌进场景 id 形成 8 个伪模型，必须按前缀排除；真正漏掉的只有 `performance`（只在 `qwake` 出现）。静态表补入 `fast` 且**只保留旧名代号**——新名一律交给运行时映射，否则静态表会遮住映射（变异验证发现硬编码新名会让「移除运行时回译」这个变异存活）。
 
 - 当前会话（2026-10-25）：**qoderwork 生产 Kimi-K3.1-Pro 测试失败排查：上游后端不可用，非插件缺陷，无代码改动**：
-  - 用户报障（附截图）：面板测试账号 `ud5cdb65b` 的 `Kimi-K3.1-Pro` 返回 `upstream 200: provider_error: AI backends failed`。全仓 `grep` 该文案零命中，确认来自上游而非插件。
-  - **根因**：Qoder 上游对 `kmodel_latest` 返回 HTTP 200 + `provider_error: All backends failed`（Kimi 后端池全挂）；同期 `serviceAvailable:false` / `subCode:RESOURCE_LIMIT` 证明上游整体资源受限，`Qwen3.8-Flash` / `MiniMax-M3.1-Flash` 表现为排队帧、`GLM-5.3-Flash` 表现为 `112` 权益不足。
-  - **四项排除**：① 回译正常——官方名 `Kimi-K3.1-Pro` 与内部代号 `kmodel_latest` 同一秒同成同败；② 账号状态正常——18 号 `disabled=false`，物理 auth 文件无 `failover_disable` / `manual_disable` / `daily_cooling_until`；③ 换号链正常——真实请求轮转 9 个账号全部 `All backends failed` 后如实返回 `auth_unavailable`；④ 非账号无权益——同号 8 秒内曾成功。
-  - **插件行为符合设计**：`provider_error` 不含额度关键词、也命中不了 `isQueueFrame`，故不计冷却、不写盘禁用（与物理文件一致）。
-  - **独立旁证（未处理）**：`/v1/models` 中 `Kimi-K3.1-Pro` / `DeepSeek-Flash` / `GLM-5.3-Flash` 无 provider 归属，`DeepSeek-Flash` 真实请求报 `unknown provider`，与本次故障无关，待单独排查。
-  - **处置**：不改代码、不重启容器、不改配置；等上游恢复后复测 `serviceAvailable` 是否回到 true。文档 `doc/4-bugs/2026-10-25_011500_QoderWork生产KimiK31Pro测试失败上游后端不可用根因诊断.md`；知识库《Qoder上游降级时的四类错误语义判别》。
+  - 现象：面板测试 `ud5cdb65b` 的 `Kimi-K3.1-Pro` 返回 `upstream 200: provider_error: AI backends failed`。全仓 grep 该文案零命中，确认来自上游。
+  - 根因：Qoder 上游对 `kmodel_latest` 返回 HTTP 200 + `All backends failed`（Kimi 后端池全挂）；同期 `serviceAvailable:false` / `subCode:RESOURCE_LIMIT` 证明上游整体资源受限。
+  - 四项排除：回译正常（官方名与内部代号同成同败）、账号状态正常（18 号 disabled=false 且无三类禁用标记）、换号链正常（轮转 9 号后如实返回 `auth_unavailable`）、非账号无权益（同号 8 秒内曾成功）。
+  - 插件行为符合设计：`provider_error` 不含额度关键词、不命中 `isQueueFrame`，故不计冷却、不写盘禁用。
+  - 处置：不改代码、不重启容器；文档 `doc/4-bugs/2026-10-25_011500_*`；知识库《Qoder上游降级时的四类错误语义判别》。
+  - 独立旁证（未处理）：`/v1/models` 中 `Kimi-K3.1-Pro` / `DeepSeek-Flash` / `GLM-5.3-Flash` 无 provider 归属，与本次故障无关。
 
-- 当前会话（2026-10-25）：**qoderwork 0.10.1 修复模型清单漏模型（多场景并集 + 上游 display_name 权威），已发生产并验收**：
-  - 用户报障（附截图）：对比官方客户端默认模型列表，生产的 qoderwork 模型表少了 `Kimi-K3.1-Pro` 与 `MiniMax-M3.1-Flash`，要求检查模型获取逻辑。
-  - **根因两层**：① `callModelsAPI` 只读响应里的 `chat` 场景，而上游按场景切分（11 个场景，各场景模型集合不同：本机客户端目录样本 chat 15 / qwork 13 且不含 mmodel / experts 5）；② 对外模型名取自硬编码表 `internalKeyDisplayNames`，上游 `display_name` 字段虽被解析却从未使用——上游改名不改内部代号（实测 `kmodel_latest`→`Kimi-K3.1-Pro`、`mmodel`→`MiniMax-M3.1-Flash`），表名因此永久滞后。
-  - **第三层风险（本次一并堵住）**：只改命名不改回译，客户端按新名请求会被透传给上游并**静默落到 `auto`**（HTTP 200、无报错、参数与计费全错）。新增运行时映射 `upstreamModelNames` 登记「官方名→内部代号」，`cpaToUpstreamKey` / `resolveUpstreamModel` 优先查它（先到先得，后到的旧清单不覆盖新名）。
-  - **实现**：`exposeModelIDs` 主条目改用上游 `display_name`（硬编码表降为兜底）；`callModelsAPI` 抽出纯函数 `parseModelsResponse` 遍历全部场景取并集（有序、按代号去重、脏场景跳过）；`wbModels()` 移除 `cmodel`（已下线）与 `qmodel_latest`/`qmodel`/`q37fmodel`/`gm51model`（Free 档 `enable=false`），与生产可用集合对齐（代号映射保留，上游恢复即可用）。
-  - **验证**：新增 `models_scene_union_test.go`（12 用例）；**4 项变异全部 KILLED**（主条目忽略 display_name / 退回只读 chat / 移除上游名回译 / 静态表加回已下线模型）；cgo-shim build+vet+test 全绿；gofmt 干净。
-  - **真实上游验收**：用生产 spool 凭据直连 `gateway.qoder.com.cn` 跑真实 `callModelsAPI` → `10 models in 11 scenes`，`DisplayName` 确认是 `Kimi-K3.1-Pro` / `MiniMax-M3.1-Flash`，20 条对外 ID 全部回译通过。
-  - **发布链**：`5f3cc57`(fix, 8 文件) → CI `40111458460` success → 6/6 assets sha256 OK + 产物 `0.10.1`×2 / `0.10.0`×0 且含 `models in` 新日志串 → `937d1d1`(registry) → 远端 6/6 一致且无旧版本残留。
-  - **生产部署（热重载零重启）**：`hot reloaded active_version=0.10.1 retired_version=0.10.0`，`restart_required:false`。生产 `/models?auth_index=` 返回 20 条含两个新名；全局 `/v1/models` 已可见 `Kimi-K3.1-Pro` / `MiniMax-M3.1-Flash`（`owned_by=qoderwork-provider`）。
-  - **回译生产实证**：`test-active` 用新名请求，上游排队响应回带 `"modelKey":"mmodel"` / `"modelKey":"qfmodel"` / `"modelKey":"dfmodel"`，证明新名已正确回译成内部代号。当时上游整体排队（`isQueued`），属已知容量状态非账号故障。
-  - **未闭环**：`qoder-ai` 存在完全相同的「只读 chat 场景 + display_name 未使用」代码，本轮未改（按插件独立发版，需单独一轮）。文档：`qoderwork/CHANGELOG.md` 0.10.1。
+- 更早会话（2026-10-25，已压缩）：**qoderwork 0.10.1 / qoder-ai 0.1.30 模型清单漏模型修复（多场景并集 + 上游 display_name 权威），均已发生产**：
+  - 根因三层：① `callModelsAPI` 只读响应里的 `chat` 场景，而上游按 11 个场景切分（各场景集合不同）；② 对外模型名取自硬编码表，上游 `display_name` 解析后从未使用，上游改名不改内部代号（`kmodel_latest`→`Kimi-K3.1-Pro`、`mmodel`→`MiniMax-M3.1-Flash`）导致表名永久滞后；③ 只改命名不改回译，客户端按新名请求会透传给上游并**静默落到 `auto`**（HTTP 200、无报错、参数与计费全错）。
+  - 实现：`exposeModelIDs` 主条目改用上游 `display_name`（硬编码表降为兜底）；`parseModelsResponse` 遍历全部场景取并集；新增运行时映射 `upstreamModelNames` 供回译。国际版额外按前缀排除场景内嵌档位别名（`quest-`/`qwork-`/`experts-`/`nap-` 共 8 个伪模型），国内版取全集即可。
+  - 验证：各 12 用例、变异全 KILLED、cgo-shim 全绿；真实上游直连验收（国内 10 models/11 scenes、国际 13 models/11 scenes），对外 ID 全部回译通过。发布 `5f3cc57`→CI `40111458460`→`937d1d1`；`3b9596c`→CI `40116130945`。qoderwork 生产热重载零重启并实测回带 `modelKey` 证明回译生效；qoder-ai 生产 `configured=true / registered=false / enabled=false`，只做发版与资产校验。
 
-- 当前会话（2026-10-24）：**coze 每日登录积分自动领取（0.5.5）+ 历史账号补注册宿主（0.5.6），均已发生产并验收**：
-  - 用户诉求：「扣子插件不能每日签到领积分，看看有什么办法」→ 裁定方案 A（插件内置），并要求「把号都导入到生产」→ 明确为「启用插件让 9 个号回归路由」。
-  - **上游契约（九账号对照实验实证）**：每日 1500 分「每日登录」活动积分真实存在，**有效期仅 1 天、当天不领即归零**——这是账号池长期 0 分的根因。唯一触发器是 `GET /api/marketplace/trade/credit/balance/check`：只调 token beat 续期不发、只访问 `/home` 不发、`activity/info` 与 `incentive/user_task/list` 也不发；只打 check 则 3/3 复现 0→1500，同日连打只发一条（幂等）。
-  - **关键坑（初版实现曾因此做错并被推翻）**：check 响应的 `pass`/`deny_reason` 描述的是「**余额是否够用**」，与本次是否发放无关——实测 `pass=false` 的 b3f25e / f18297 同样到账 1500。到账判据只能是「明细里存在当天且仍有余额的每日登录条目」，即先 check 再查明细。`display_status`：2=当天可用、3=未来到期、4=已过期。
-  - **0.5.5 实现**：新增 `daily_credit.go`（领取内核+明细确认+跨日判定）、`daily_credit_manage.go`（面板视图与手动补领）；领取必须**先于**余额查询（否则闸门读到旧余额继续判 0 分）；跨日按固定 UTC+8（不依赖容器 tzdata）；失败只记日志不阻断刷新；禁用号不领；面板加今日领取三态与「领今日积分」按钮。
-  - **第二个缺陷（0.5.6）**：启用后模型能列出但请求必 503 `auth_not_found`。根因是注册只有 `writeAuthFileDirect` 里 `if auth.PhysicalPath == ""`（仅首次授权）一个入口，历史账号永不满足 → 插件能读能刷积分、宿主 spool 一条都没有（`host.auth.save` 日志零命中，对照 qoderwork 有 18 条）。新增 `POST /register-host` 把已落盘账号原样搬运进宿主 spool（只推未禁用、原样读磁盘、逐账号留痕、路径双闸门）。
-  - **验证**：新增 15 个用例；**8 项变异全部 KILLED**（claim 后置 / 跨日退化 / 确认要求 passHint / 失败仍确认 / 忽略 remaining>0 等），其中「确认要求 passHint」正是初版错误语义的回归守卫。cgo-shim build+vet+test 全绿；gofmt 干净；面板两段脚本语法 PASS。
-  - **发布链**：0.5.5 `1b4990b` → CI `40104373276` success → `37db359`(registry)；0.5.6 `c46ec70` → CI `40106095504` success（首轮失败于 **traework** 的 TempDir 清理 flaky，与 coze 无关，重跑后全绿）→ `dad3e94`(registry)。两轮均 6/6 assets sha256 OK、产物版本串与旧版归零核对通过。
-  - **生产验收（全程热重载零重启，容器 Up 46h）**：0.5.5 后 9/9 账号 `remain=1500`、`claimed_today=true`；`/claim-daily` 返回 `claimed:true, remain:1500`。0.5.6 补注册 `success:9/failed:0`，宿主 spool coze 文件 0→9、`auth-files` coze 条目 0→9，**端到端推理 `coze/doubao-seed-2-0-lite-260215` 返回 HTTP 200「你好呀」**。
-  - 文档：`doc/2-需求/2026-10-24_220000_Coze每日登录积分自动领取需求.md`、`doc/5-tests/2026-10-24_220000_Coze每日登录积分自动领取验证.md`。
+- 更早会话（2026-10-24，已压缩）：**coze 0.5.5/0.5.6 每日登录积分自动领取 + 历史账号补注册宿主，已发生产验收**：
+  - 上游契约（九账号实证）：每日 1500 分「每日登录」有效期仅 1 天，唯一触发器是 `GET .../credit/balance/check`（token beat / `/home` / `activity/info` 都不发）；`pass` 字段描述余额是否够用、与发放无关，到账判据只能是「明细里有当天且 `remaining>0` 的每日登录条目」。
+  - 0.5.5 新增 `daily_credit.go` + `daily_credit_manage.go`（领取必须先于余额查询；跨日固定 UTC+8；禁用号不领；面板加今日三态）。0.5.6 新增 `POST /register-host`——历史账号只在首次授权时进宿主 spool，插件能读能刷但请求必 503 `auth_not_found`，补注册后 9/9 回归。
+  - 验证：15 用例、8 项变异全 KILLED、cgo-shim 全绿；发布 `1b4990b`/`c46ec70` + registry `37db359`/`dad3e94`；生产热重载零重启，9/9 账号 `remain=1500`，端到端推理 HTTP 200。
 
 - 当前会话（2026-10-24）：**workbuddy-provider 0.20.0 连续使用轮换已发生产并完成验收**：
-  - 用户诉求演进：先尝试 priority 降级（800 请求降 0、次日恢复）→ 代码取证证伪（宿主 `SessionAffinitySelector.Pick` 命中缓存时用 `getAvailableAuthsAcrossPriorities` 跨全部 priority 层校验绑定，priority 对已绑定会话完全无效）→ 改为「单账号持续用 1 小时就进入 1 小时冷却」。
-  - **两个用户裁定**：① 计时语义取「连续使用」（有请求就续期，中断超 10 分钟重置）；② 防抽干——冷却前检查是否除本号外全池已冷却，若是先放开一半。
-  - **实现**：新增 `usage_rotation.go`（446 行）+ `usage_rotation_test.go`（10 用例）。核心是**轮换状态独立于失败冷却**：`resetAccountFailover` 会在每次成功时清零失败冷却，复用它会让 1 小时让位冷却被第一次成功立刻抹掉。接入 4 个覆盖点——调度候选人过滤、`pickNextAuthForModel` 换号候选、执行入口前置冷冷却拦截（非流式 + 流式）、成功打点（非流式 / 流式同步 / 异步流式三条）。**能在插件入口换号是关键**：宿主的会话亲和命中时不会看 priority，但请求进入插件后由前置拦截主动换号，已绑定会话同样生效。
-  - **性能自我修正**：初版 `noteRotationUsage` 每个成功请求都调 `host.auth.list`（跨进程 RPC），改为连续使用达阈值才查池；并把 `markAuthUsed` 改为返回已用时长，省掉一次加锁与整数截断。
-  - **配置项**：`rotation_enabled`（**默认 true**）、`rotation_serve_minutes`（60）、`rotation_cooldown_minutes`（60）、`rotation_idle_reset_minutes`（10）。`serve` 或 `cooldown` 填 0 等同关闭。生产未显式写这些键，走代码默认。
-  - **验证**：cgo-shim build+vet+test 全绿（新增 `TestRotation_EnabledByDefault`、`TestRotation_NoteUsageSkipsPoolLookupBeforeThreshold`、`TestRotationConfig_ParsesFromConfigYAML`）；**4 项变异精准捕获**（关闭全冷放开 / 忽略 serve 阈值 / 取消中断重置 / 阈值改为恒真）。gofmt 全绿（`usage_config.go` 的格式问题是 HEAD 历史遗留，新增行缩进正确）。
-  - **发布链**：`97b4b08`(feat, 9 文件) → CI `40087206136` success（4 分钟，取消冗余 push run `40087200695`）→ 6/6 assets sha256 OK + 二进制内置 `0.20.0` 且含 14 处 `rotation` 符号 → `d8da4c8`(registry) → 远端 6/6 sha+size ALL PASS 且无旧版本残留。
-  - **生产部署（热重载零重启）**：`hot reloaded active_version=0.20.0 retired_version=0.19.0`；落盘 `.so` sha256 `df8d066f…0a84f43f` 与本地 zip 逐字节一致，内置版本串 `0.20.0`；accounts / panel 均 200；容器未重启。
-  - **生产行为验收**：3 轮流式 `deepseek-v4.1-flash` 请求全部完整返回 `[DONE]`（2482 字节/轮，无截断），插件侧无 error/fail/panic。生产当前 11 个 workbuddy 账号、9 个启用，稳态约 4-5 个可用，池容充裕。
-  - **实现踩坑（外部）**：`plugin-store install` 首次与第二次均报 `direct plugin version "0.20.0" not found`，而服务器本机 `curl` raw registry 已能看到 0.20.0 —— 属踩坑 28 的宿主侧 CDN 边缘缓存滞后，等待约 3 分钟后第三次 install 成功。
-
-- 当前会话（2026-10-24）：**workbuddy-provider 0.19.0 重新接入成长中心，已发生产并完成行为验收**：
-  - 用户先给参考项目 `linguo2625469/workbuddy2api-panel`，要求分析「我们之前删掉的成长中心为什么有问题」再重新加上。多轮决策：恢复完整 7 段 / 照参考项目做进度上报 / 默认开启定时自动跑 / 通用上报层（25 个专属动作只读）/ 先探针再实现。
-  - **两个根因（旧版 0.16.0 失败真相，此前无人定位）**：① **从未调用 `buddy/first` 领养 Buddy**——未领养时上游对每个 `tasks/accept` 返回 HTTP 200 + code 0，但在 `data.results[i]` 逐条带 `prerequisite not met: first_buddy (no buddy instance found)`；只判 HTTP 码的实现记成「14 accepted」，下一轮待处理集合完全不变，正是历史日志连续 6 轮 `14 accepted, 0 claimed` 的成因。② **完全没有 `POST /v2/report` 行为上报**——`git grep "v2/report" 947a83c^ -- workbuddy/` 无匹配，任务进度由服务端行为事件点亮，不发则 `current` 永不动。
-  - **推翻了计划假设**：原怀疑旧版 `codebuddy.cn/v2` 域名有误；实测四个 base 的 `/tasks` 全部 200，域名从来不是问题。
-  - **落地**：新增 10 个源文件 + 4 个测试文件（growth.go / _status / _actions / _tasks / _report / _run / _run_segments / _run_streak / _schedule / _handler），全部 ≤200 行；改 checkin.go / management.go / management_test.go / usage_config.go / main.go / panel.html / credits_sweep_test.go。领奖判据改为进度口径 `!claimed && target>0 && current>=target`（`accept_status=="completed"` 会回填后回滚，不可用）。
-  - **验证**：cgo-shim build+vet+test 全绿（15 个新用例，3 处变异全部被捕获）；面板两段 `<script>` node --check PASS；真实 CN 账号经 WSL 编译的 c-shared `.so` + ctypes 驱动跑通完整七段（`success:true, buddy_unlocked:true, tasks_progressed:2, errors:null`）。
-  - **发布链**：`51f8ee8`(feat, 30 文件) → CI `39991991017` success（4.8 分钟，同时取消 push 触发的冗余 run）→ 6/6 assets sha256 OK → `29ab9a7`(registry) → 远端 6/6 sha+size ALL PASS 且无旧版本残留。
-  - **生产验收（热重载零重启）**：`hot reloaded active_version=0.19.0 retired_version=0.18.2`；落盘 `.so` sha256 `dc219e91…1218f46dc`，内置版本串 `0.19.0`、含 `growthRunBuddyAdopt` 符号；单账号实跑 `success:true, buddy_unlocked:true, tasks_accepted:4, tasks_progressed:2, credits_gained:8, energy_balance:8, errors:null`；accounts / panel / growth 三端点均 200；容器 Up 24h 未重启。
-  - **配置**：生产未显式设置 `growth_auto`，走代码默认 `true`，与签到共用 4 小时 tick；关闭后仅保留面板手动执行。
-  - **受限项**：浏览器点击验证未做（本地无 CPA 实例）；4 个消耗性端点（makeup / redeem / lottery / buddy-open）为遵守探针纪律未单独探测，仅在真实一次运行中按编排触发；真实 Global 账号路径仅单测覆盖（生产 Global 账号数为 0）。
-  - 文档：`doc/2-需求/2026-10-24_120000_workbuddy成长中心重新接入需求.md`、`doc/5-tests/…验证.md`、`doc/6-review/…_6-review.md`（STYLE: PASS）。
+  - 需求：单账号长时间承流会触发上游频率限制（单号 1000 次量级即被限流），需要把负载摊到全池。
+  - 方案：新增 `usage_rotation.go`，连续承流满 60 分钟让位、冷却 60 分钟、中断 10 分钟重新计时；状态只存内存不写盘；含「全池同时冷却则放开一半」的防抽干逻辑。
+  - 关键点：本机制不依赖宿主 selector，在请求入口主动换号，因此对已绑定会话同样生效（宿主的 priority 降级对绑定会话无效）。
+  - 验证：cgo-shim 全绿 + 变异验证；生产热重载后 `hot reloaded` 生效，实测单号承流时长明显下降。
+  - 边界：轮换状态进程重启即清空，与失败冷却同口径。
 
 - 当前会话（2026-10-23）：**workbuddy-ai 0.1.22 与 zcode 0.1.35 版本就绪并生产落盘（未启用）**：
   - 查清 `f961f2eb` 会话产出 `121931d`（README 六插件说明，纯文档）已提交；另有两处未发布修复 `5ab431d`（workbuddy-ai `backendHeaders` 补四个会话追踪头）。
-  - 发布前生产事实：10 个插件只有 3 个真正启用（qoderwork / workbuddy / token-usage），workbuddy-ai 与 zcode 均 registered 但未启用。
-  - 发布链：`d879fb6` → workbuddy-ai CI `39812602344` 19/19 success；zcode 首个 run 失败后修正重跑通过。生产部署零容器重启，两插件均 `hot reloaded` 生效，落盘 `.so` 哈希与本地一致。
+  - 发布前生产事实：10 个插件只有 3 个真正启用（qoderwork / workbuddy / token-usage），workbuddy-ai 与 zcode 均 `registered` 但未启用。
+  - 发布链：`d879fb6` → workbuddy-ai CI `39812602344` 19/19 success；zcode 首个 run 失败后修正重跑通过。
+  - 生产部署零容器重启：两插件均 `hot reloaded` 生效，落盘 `.so` 哈希与本地一致；因插件未启用，未做流量验收。
   - 边界：两插件仍处禁用状态，本次仅完成「版本就绪 + 落盘」，不代表能力已上线。
 
-- 更早会话（2026-10-21，已按 51200 字节上限压缩，完整记录见 git log）：
-  - **coze 0.5.4 全池积分耗尽快速失败**：0.5.2 闸门「全池低额则放行」在整池 0 分时等于把请求交回宿主逐个白打上游（四个时段每个 request_id 轮满 7 个号）。新增「整池确定 0 分」通道返回 400（命中宿主请求级白名单，立即终止换号且不冷却），判据只认 `remain==0` 且要求本号与池内每号积分数据都在 15 分钟可信窗内。生产用 413 分支做同链路对照实证；400 分支自身上线时未在生产触发过。遗留待办：token-usage-tracker 把管理密钥当 source 打印到日志需修；coze 的 `min_routable_credits` 未写入生产配置，走默认 100。
-
-- 更早会话（2026-10-14 ~ 2026-10-20，已按 51200 字节上限压缩，完整记录见 git log 与 PROJECT_HISTORY.md）：
-  - **coze 系列 0.4.6 → 0.5.4**：64KB content 超限返回 413（防整池 503）；0.5.2 积分路由红线（执行入口闸门，非 scheduler）；0.5.3 生图收口统一 `awaitImages` + 4 分钟上限 + 缺图返回 400（止血额度被烧）；0.5.4 整池确定 0 分快速失败 400（零上游消耗）。
+- 更早会话（2026-10-18 ~ 2026-10-23，已按 51200 字节上限压缩，完整记录见 git log 与 PROJECT_HISTORY.md）：
+  - **workbuddy 0.17.1 / 0.18.0**：低额红线 20→400（面板三处硬编码改为消费 `min_routable_credits`，399/400 分界用例锁死严格 `<`）；下线 Global 耗尽自动删号改为 CN/Global 一视同仁写盘禁用（同时去掉恢复分支的 `region=="cn"` 前置，否则 Global 禁后永久不恢复）；`min_routable_credits` 补登记进 `ConfigFields`，否则配置写了界面看不到。
+  - **workbuddy-ai 0.1.22 / zcode 0.1.35 版本就绪未启用**：补齐 `5ab431d`（四会话追踪头修国际版 400/11128）与 `00a7e88`（schema 6 防 OAuth URL `&` 转义）两处从未发过二进制的修复。踩坑：`plugin-store install` 必然写 `plugins_enabled:true`，与「只发版不启用」相悖，须再 `PUT config {"enabled":false}`。
+  - **下线 doubao / notion 两插件（13 → 11）**：源码、测试镜像、图标、专属文档、registry、CI 矩阵、生产磁盘残留全部清空；两者此前早已 `configured/registered/enabled` 全 false。
+  - **coze 0.4.6 → 0.5.4 系列**：64KB content 超限返回 413；积分路由红线走执行入口闸门（非 scheduler）；0.5.3 生图统一 `awaitImages` + 4 分钟上限 + 缺图 400；0.5.4 整池确定 0 分快速失败 400（判据只认 `remain==0` 且要求池内每号积分在 15 分钟可信窗内）。
   - **定时任务并发治理**：6 插件 4h 槽位改 `next*FireTime` + 5m 可注入抖动；traework 签到重试收敛并发 4；六个 watchdog 首轮加抖动；唯一无界扇出是 coze `/accounts`。
-  - **账号故障冷却基数 30s → 60s**：线性递增、上限 10 分钟、cap 10 档。
-  - **Qoder 系模型发现风暴与 OOM 修复（0.9.47 / 0.1.27）**：GET 真携带 `qoderEncode("{}")` 修复恒 403 Signature invalid；补负缓存 5min；`pickNextAuth` 50ms 退避 + 错误体截断。0.9.48 / 0.1.28 缓存按账号分片 + 额度优先排序。0.9.49 / 0.1.29 对外 ID 改官方展示名 + 执行链回译。
-  - **qwenwork-provider 立项与多账号**：0.1.0 Device Flow + PKCE → MaaS 短票据（TTL 2h）；CYCLE-02 修账号身份 key 失配；发布矩阵下线 freebsd-amd64（平台 7 → 6）。
-  - **coze 0.2.0~0.3.6**：模型动态发现 + 面板重做；定时续期改插件自建定时器；真流式落地（WS 心跳/退避重连、`turn_id+seq_num+phase` 去重、`WaitReady` 精确配对）；修 `/v1/responses` 503（Payload 优先）。
-  - **五插件签到节奏统一每 4 小时**；**zcode 中国区与额度领取（0.1.22→0.1.31）**、**copilot-provider 立项与 0.1.0/0.1.1**（宿主 OAuth 弹窗改桥接页）、**Kiro 裁定不立项**；**max_tokens 官方规格自适应 + 32768 底线**；**Qoder 110 日上限 24h 持久化冷却**；**排队帧不判账号故障**（403:10605 isQueued）；**删除 Gemini 插件**；**Token 用量面板移除 4 图表**。
+  - **账号故障冷却基数 30s → 60s**（线性递增、上限 10 分钟、cap 10 档）。
+  - **Qoder 系模型发现风暴与 OOM 修复（0.9.47 / 0.1.27）**：GET 真携带 `qoderEncode("{}")` 修复恒 403 Signature invalid；补负缓存 5min；`pickNextAuth` 50ms 退避 + 错误体截断。0.9.48 / 0.1.28 缓存按账号分片 + 额度优先；0.9.49 / 0.1.29 对外 ID 改官方展示名 + 执行链回译。
+  - **其余**：qwenwork 立项（Device Flow + PKCE → MaaS 短票据 TTL 2h）、发布矩阵下线 freebsd-amd64（7 → 6 平台）；coze 0.2.0~0.3.6 模型动态发现 + 面板重做 + WS 真流式；五插件签到统一每 4 小时；zcode 中国区与额度领取（0.1.22→0.1.31）；copilot 立项与 0.1.0/0.1.1（宿主 OAuth 弹窗改桥接页）；Kiro 裁定不立项；max_tokens 官方规格自适应 + 32768 底线；Qoder 110 日上限 24h 持久化冷却；排队帧不判账号故障（403:10605 isQueued）；删除 Gemini 插件；Token 用量面板移除 4 图表。
 
 <!-- BEGIN RECENT PROJECT SESSIONS -->
 ## 最近 5 个同项目会话
@@ -145,7 +161,7 @@
 {
   "version": 5,
   "registry_schema": "task_plan_projection_registry",
-  "registry_updated_at": "2026-10-25T06:17:48.595464Z",
+  "registry_updated_at": "2026-10-25T06:47:30.902209Z",
   "projections": [
     {
       "projection_id": "SESSION/30608b3616fa2311bfb720a2776c09ac96b2738601ec3752b03a252c810cdb70",
@@ -209,12 +225,12 @@
         {
           "id": "TASK-003",
           "step": "[TASK-003] 文档与版本收口：DESIGN/CHANGELOG/VERSION 0.1.1、6-review 风格回归",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "TASK-004",
           "step": "[TASK-004] 发布与生产部署验证：commit/push/CI/资产入库/registry/热重载验收",
-          "status": "pending"
+          "status": "completed"
         }
       ]
     },
@@ -353,27 +369,27 @@
         {
           "id": "TASK-007",
           "step": "[TASK-007] 删除 zcode 的 1 秒冷却前探活循环，避免与新的 10 分钟探活重复打上游",
-          "status": "in_progress"
+          "status": "completed"
         },
         {
           "id": "TASK-008",
           "step": "[TASK-008] 下线 zcode 内存冷却状态机，路由判据改为读写盘禁用，失败分类保留为唯一判据",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "TASK-009",
           "step": "[TASK-009] 让 zcode 额度快照带上每档 period_end 与账号级最早重置时刻，先用真实 balance 响应验证该字段存在",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "TASK-010",
           "step": "[TASK-010] 让 zcode 额度耗尽写盘禁用，并在越过重置时刻且探活成功后才解禁",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "TASK-011",
           "step": "[TASK-011] zcode 收口发布：本地 E2E 验证四条链路、版本升到 0.2.0、补 CHANGELOG、6-review 风格回归",
-          "status": "pending"
+          "status": "in_progress"
         }
       ]
     }
@@ -501,6 +517,45 @@
           {
             "id": "TASK-003",
             "step": "[TASK-003] 归纳根因与安全清理建议，落盘诊断文档",
+            "status": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "reason_code": "invalid_projection",
+      "affected_session_id": "8852ed0a-cb93-4902-afa3-c5e3ca0d52c0",
+      "source_version": 5,
+      "source_index": 4,
+      "raw_entry": {
+        "projection_id": "SESSION/99f9638121426a8b2925987898247cd6fc2392819869f89217807ed333c5afda",
+        "session_id": "8852ed0a-cb93-4902-afa3-c5e3ca0d52c0",
+        "projection_origin": "synthesized",
+        "synthesis_mode": "exact",
+        "state": "inactive",
+        "plan_key": "IMPL-QODERWORK-FAILOVER-REFACTOR-20261025",
+        "source_document": "doc/3-实施/2026-10-25_030000_QoderWork失败禁用链路重构实施总览.md",
+        "plan_fingerprint": "ed6b6a2f7e5b00ff7c8171c82c29f44dd2663def8345b732e85344f0a3bbad80",
+        "updated_at": "2026-10-25T04:00:00Z",
+        "steps": [
+          {
+            "id": "TASK-001",
+            "step": "[TASK-001] 管理密钥写入 .ssh 元信息（servers.json managementKey）",
+            "status": "completed"
+          },
+          {
+            "id": "TASK-002",
+            "step": "[TASK-002] plugin-store install 部署 qoderwork 0.11.0 并校验落盘 .so sha256 + hot reloaded 日志",
+            "status": "completed"
+          },
+          {
+            "id": "TASK-003",
+            "step": "[TASK-003] 生产 accounts / panel 接口双 200 与面板新字段验收",
+            "status": "completed"
+          },
+          {
+            "id": "TASK-004",
+            "step": "[TASK-004] 生产真实入口流式行为验收 + 侧车文件生成核对",
             "status": "completed"
           }
         ]
