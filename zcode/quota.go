@@ -165,6 +165,11 @@ type zcodeQuotaEntitlement struct {
 	AvailableUnits int64 `json:"available_units"`
 	// HasUsage 标记该 entitlement 是否带真实用量（balance 通道为 true）。
 	HasUsage bool `json:"has_usage"`
+	// PeriodStart / PeriodEnd 是该 entitlement 当前计费周期的起止时刻（Unix 秒）。
+	// 只有 balance 通道下发；current 通道缺省为 0。上游实测（2026-10-25）：
+	// PeriodStart = 当日 00:00:00 CST，PeriodEnd = 当日 23:59:59 CST。
+	PeriodStart int64 `json:"period_start,omitempty"`
+	PeriodEnd   int64 `json:"period_end,omitempty"`
 }
 
 // zcodeQuotaSnapshot 是单个账号的额度快照。
@@ -180,8 +185,12 @@ type zcodeQuotaSnapshot struct {
 	TotalUsed    int64                   `json:"total_used"`   // 全部 entitlement 已用额度合计
 	TotalRemain  int64                   `json:"total_remain"` // 全部 entitlement 剩余额度合计
 	HasUsage     bool                    `json:"has_usage"`    // 是否含真实用量（balance 通道）
-	Source       string                  `json:"source"`       // 数据来源：balance / current
-	FetchedAt    string                  `json:"fetched_at"`
+	// EarliestReset 是账号级最早重置时刻（Unix 秒）：取全部 entitlement 中
+	// 最小的非零 PeriodEnd。额度恢复判据用它——最早那一档重置后才值得重新验证。
+	// 无任何 entitlement 带 PeriodEnd 时为 0，表示重置时刻未知。
+	EarliestReset int64  `json:"earliest_reset,omitempty"`
+	Source        string `json:"source"` // 数据来源：balance / current
+	FetchedAt     string `json:"fetched_at"`
 }
 
 // zcodeQuotaCacheEntry 是缓存条目（含过期时间）。
@@ -373,6 +382,8 @@ func fetchQuotaFromEndpoint(jwt, endpoint string, withUsage bool) (*zcodeQuotaSn
 			item.RemainingUnits = bal.RemainingUnits
 			item.AvailableUnits = bal.AvailableUnits
 			item.HasUsage = true
+			item.PeriodStart = bal.PeriodStart
+			item.PeriodEnd = bal.PeriodEnd
 			// balance 的 total_units 是权威授予量，覆盖 current 侧（两者通常一致）。
 			if bal.TotalUnits > 0 {
 				item.GrantUnits = bal.TotalUnits
@@ -380,6 +391,9 @@ func fetchQuotaFromEndpoint(jwt, endpoint string, withUsage bool) (*zcodeQuotaSn
 			snap.HasUsage = true
 			snap.TotalUsed += bal.UsedUnits
 			snap.TotalRemain += bal.RemainingUnits
+		}
+		if item.PeriodEnd > 0 && (snap.EarliestReset == 0 || item.PeriodEnd < snap.EarliestReset) {
+			snap.EarliestReset = item.PeriodEnd
 		}
 		snap.Entitlements = append(snap.Entitlements, item)
 		snap.TotalGrant += item.GrantUnits

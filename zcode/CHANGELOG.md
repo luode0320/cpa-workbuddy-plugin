@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.0
+
+### Breaking - 故障排除从插件内存升级为宿主可见的写盘禁用
+
+**破坏性变更**：内存阶梯冷却（60s × 连续失败次数，上限 10 分钟）与账号×模型冷却状态机已整体下线。升级后不再存在「冷却中」这一状态，取而代之的是盘上 `disabled: true`。
+
+- 变更要点:
+  1. 根因：内存冷却只存在插件里，宿主选择器看不见（它只读 `Auth.Disabled` / `Status`）。同一个请求内，宿主仍会把这个已知的坏号发给插件、拿一次失败再换下一个号。
+  2. 写盘禁用（`failover_disable.go`）：上游失败即写 `disabled: true` 加三个归属标记（`failover_disable` / `failover_disable_model` / `failover_disable_at`），走宿主自己的路由判据。恢复由 10 分钟探活裁决，且**只回放当初失败的那一个模型**——别的模型探通不能证明失败模型已恢复。
+  3. 归属边界：盘上已 `disabled` 但无本机制标记的账号（用户手动禁用、额度耗尽禁用）一律不接管、不解除，避免抢走别人的恢复职责。宿主 persist 抹掉标记时，下一轮探活按「本进程写过禁用 + 盘上确实 disabled」补回。
+  4. 额度耗尽（`quota_disable.go`）：`HasUsage && TotalRemain <= 0` 时写 `disabled` 加 `quota_disable` / `quota_disable_at` / `quota_disable_reset` 三标记；恢复需**同时**满足越过重置时刻与探活成功。`HasUsage=false`（只有 `billing/current` 通道）一律不动手——此时剩余量是授予量回退，据此判耗尽会把全部账号误禁。
+  5. 额度快照补重置时刻：`zcodeQuotaEntitlement` 新增 `period_start` / `period_end`，快照新增 `earliest_reset`（全部 entitlement 中最小非零 `period_end`）。上游实测 `period_end` = 当日 23:59:59 CST，按自然日重置。
+  6. 物理文档归并写入：`writeAuthFileDirect` 从「按结构体重建整篇」改为「读旧文档 → 覆盖结构体已知键 → 写回」。原实现会抹掉结构体未声明的顶层键，包括本机制刚写好的禁用标记——E2E 探针实测复现了「探活成功解除禁用后 `disabled` 又被写回 true」。
+  7. 面板：`cooling_down` 字段改名为 `failover_disabled`；新增「额度耗尽」徽章（带北京时间恢复时刻）与筛选标签；汇总行增加额度耗尽计数。
+  8. 测试：`cgo-shim` 全绿；19 个新增/改写的变异全部被测试检出；WSL 真实 c-shared `.so` + ctypes 宿主桥 E2E 验证失败禁用、探活恢复、流式终止三条链路（额度链路的端点硬编码不可注入，改由单测覆盖）。
+- 涉及文件: `VERSION` `main.go` `failover.go` `failover_disable.go` `quota_disable.go` `model_circuit.go` `failure_class.go` `scheduler.go` `management.go` `panel.html` `authfile.go` `refresh_runner.go` `executor.go` `stream.go` `usage_feed.go` `redact.go` `quota.go` 及对应测试；删除 `cooldown_probe.go` `cooldown_probe_test.go` `cooldown_probe_cycle_test.go` `auth_model_cooldown_test.go` `failover_test.go`
+
 ## 0.1.35
 
 ### Fix - 保留 OAuth 授权链接原始查询参数

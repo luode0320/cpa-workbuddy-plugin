@@ -101,7 +101,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 
 	if lastErr != nil {
 		publishUsage(authID, accountLabel, req.Model, upstreamModel, startTime, usageTokensDetail{}, durationMS, finalStatusCode, true, lastErr.Error(), 0)
-		return nil, lastErr
+		// 返回给宿主的错误会进宿主日志，出口前脱敏；上面的分类判定与记账
+		// 已用原始报文完成，不受影响。
+		return nil, fmt.Errorf("%s", redactSecrets(lastErr.Error()))
 	}
 
 	// 提取用量
@@ -173,6 +175,9 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 			_ = resp.Body.Close()
 			cancel()
+			// 这里必须保留完整上游报文：isModelBlockedError 依赖在正文里查找
+			// 11128，提前截断会把风控码切掉导致误判。脱敏统一在出口
+			// （streamEmitError / publishUsage）完成。
 			errMsg := fmt.Sprintf("upstream status %d: %s", resp.StatusCode, string(body))
 			lastStreamErr = fmt.Errorf("%s", errMsg)
 			noteAccountFailureForModel(sa.AuthID, upstreamModel, resp.StatusCode, errMsg)

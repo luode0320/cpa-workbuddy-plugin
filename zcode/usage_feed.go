@@ -241,9 +241,11 @@ func publishUsage(
 		},
 	}
 	if failed && errMsg != "" {
+		// fail.body 会落进共享 NDJSON 并展示在用量看板，上游报文可能回显
+		// 鉴权头，必须先脱敏再落盘。
 		record["fail"] = map[string]any{
 			"status_code": statusCode,
-			"body":        errMsg,
+			"body":        redactSecrets(errMsg),
 		}
 	}
 

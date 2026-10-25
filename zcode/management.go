@@ -83,21 +83,26 @@ func managementRegistration() managementRegistrationResponse {
 }
 
 type accountSummary struct {
-	AuthID       string   `json:"auth_id"`
-	AuthIndex    string   `json:"auth_index"`
-	Label        string   `json:"label"`
-	APIKeyMasked string   `json:"api_key_masked"`
-	UserID       string   `json:"user_id,omitempty"`
-	Username     string   `json:"username,omitempty"`
-	Email        string   `json:"email,omitempty"`
-	AvatarURL    string   `json:"avatar_url,omitempty"`
-	ExpiresAt    string   `json:"expires_at,omitempty"`
-	Disabled     bool     `json:"disabled"`
-	TestFailed   bool     `json:"test_failed"`
-	CoolingDown  bool     `json:"cooling_down"`
-	CreatedAt    string   `json:"created_at"`
-	UpdatedAt    string   `json:"updated_at"`
-	Models       []string `json:"models"`
+	AuthID           string   `json:"auth_id"`
+	AuthIndex        string   `json:"auth_index"`
+	Label            string   `json:"label"`
+	APIKeyMasked     string   `json:"api_key_masked"`
+	UserID           string   `json:"user_id,omitempty"`
+	Username         string   `json:"username,omitempty"`
+	Email            string   `json:"email,omitempty"`
+	AvatarURL        string   `json:"avatar_url,omitempty"`
+	ExpiresAt        string   `json:"expires_at,omitempty"`
+	Disabled         bool     `json:"disabled"`
+	TestFailed       bool     `json:"test_failed"`
+	FailoverDisabled bool     `json:"failover_disabled"`
+	CreatedAt        string   `json:"created_at"`
+	UpdatedAt        string   `json:"updated_at"`
+	Models           []string `json:"models"`
+	// QuotaDisabled 标记该账号因额度耗尽被写盘禁用；QuotaResetAt 是预期重置时刻
+	// （Unix 秒），供面板展示恢复时间。两者都由 quota_disable.go 的三标记派生。
+	QuotaDisabled bool   `json:"quota_disabled,omitempty"`
+	QuotaResetAt  int64  `json:"quota_reset_at,omitempty"`
+	QuotaResetTxt string `json:"quota_reset_text,omitempty"`
 	// ProviderFamily 是账号的授权站点归属（`zai` 国际站 / `bigmodel` 中国区），
 	// 供面板卡片展示归属标识；历史账号缺省为 `zai`。
 	ProviderFamily string `json:"provider_family,omitempty"`
@@ -268,24 +273,28 @@ func handleListAccounts() ([]byte, error) {
 		if len(models) == 0 {
 			models = defaultModels
 		}
+		quotaDisabled, quotaResetAt := isQuotaDisabled(acc.AuthID)
 		list = append(list, accountSummary{
-			AuthID:         acc.AuthID,
-			AuthIndex:      acc.AuthID,
-			Label:          acc.Label,
-			APIKeyMasked:   maskAPIKey(acc.APIKey),
-			UserID:         acc.UserID,
-			Username:       acc.Username,
-			Email:          acc.Email,
-			AvatarURL:      acc.AvatarURL,
-			ExpiresAt:      acc.ExpiresAt,
-			Disabled:       acc.Disabled,
-			TestFailed:     acc.TestFailed,
-			CoolingDown:    isAccountCoolingDown(acc.AuthID),
-			CreatedAt:      acc.CreatedAt,
-			UpdatedAt:      acc.UpdatedAt,
-			Models:         models,
-			ProviderFamily: providerFamilyOf(acc),
-			Quota:          cachedQuota(acc.AuthID),
+			AuthID:           acc.AuthID,
+			AuthIndex:        acc.AuthID,
+			Label:            acc.Label,
+			APIKeyMasked:     maskAPIKey(acc.APIKey),
+			UserID:           acc.UserID,
+			Username:         acc.Username,
+			Email:            acc.Email,
+			AvatarURL:        acc.AvatarURL,
+			ExpiresAt:        acc.ExpiresAt,
+			Disabled:         acc.Disabled,
+			TestFailed:       acc.TestFailed,
+			FailoverDisabled: isFailoverDisabled(acc.AuthID),
+			QuotaDisabled:    quotaDisabled,
+			QuotaResetAt:     quotaResetAt,
+			QuotaResetTxt:    quotaResetText(quotaResetAt),
+			CreatedAt:        acc.CreatedAt,
+			UpdatedAt:        acc.UpdatedAt,
+			Models:           models,
+			ProviderFamily:   providerFamilyOf(acc),
+			Quota:            cachedQuota(acc.AuthID),
 		})
 	}
 

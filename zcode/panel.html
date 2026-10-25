@@ -66,7 +66,8 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:12px}
 .badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
 .badge.disabled{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
-.badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
+.badge.failover-disabled{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
+.badge.quota-disabled{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .badge.test-failed{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-style:italic}
 .badge.plan{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .badge.warning{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border);font-weight:700}
@@ -231,7 +232,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 <body>
 <div class="wrap">
   <h1>ZCode 账号面板</h1>
-  <div class="sub">Z.ai / BigModel 官方账号授权 · 每日额度 · ZCode 客户端指纹 · 失效自动冷却</div>
+  <div class="sub">Z.ai / BigModel 官方账号授权 · 每日额度 · ZCode 客户端指纹 · 失败禁用与探活恢复</div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
     <div style="display:flex;gap:8px">
@@ -256,10 +257,11 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   </div>
   <div class="filter-bar" id="filterBar">
     <button type="button" class="ftag active" data-state="all" onclick="filterState('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
-    <button type="button" class="ftag" data-state="available" onclick="filterState('available',this)" title="已启用 · 未打「测试」标签 · 未冷却，可正常承载流量">可用 <span class="cnt" id="cntAvailable">0</span></button>
+    <button type="button" class="ftag" data-state="available" onclick="filterState('available',this)" title="已启用 · 未打「测试」标签 · 未被失败禁用，可正常承载流量">可用 <span class="cnt" id="cntAvailable">0</span></button>
     <button type="button" class="ftag" data-state="disabled" onclick="filterState('disabled',this)" title="已被手动禁用，不参与调度">禁用 <span class="cnt" id="cntDisabled">0</span></button>
     <button type="button" class="ftag" data-state="test" onclick="filterState('test',this)" title="活跃探活失败被硬排除的账号；可点「测试」复核恢复">测试 <span class="cnt" id="cntTest">0</span></button>
-    <button type="button" class="ftag" data-state="cooling" onclick="filterState('cooling',this)" title="命中上游 429/5xx 处于阶梯退避冷却（1/3/10 分钟）">冷却 <span class="cnt" id="cntCooling">0</span></button>
+    <button type="button" class="ftag" data-state="failover" onclick="filterState('failover',this)" title="上游失败被写盘禁用，每 10 分钟只探失败模型恢复">失败禁用 <span class="cnt" id="cntFailover">0</span></button>
+    <button type="button" class="ftag" data-state="quota" onclick="filterState('quota',this)" title="额度耗尽被写盘禁用，越过重置时刻且探活成功才恢复">额度耗尽 <span class="cnt" id="cntQuota">0</span></button>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
@@ -534,14 +536,16 @@ const SORT_TITLE={
 function accountState(a){
   if(a.disabled) return "disabled";
   if(a.test_failed) return "test";
-  if(a.cooling_down) return "cooling";
+  if(a.quota_disabled) return "quota";
+  if(a.failover_disabled) return "failover";
   return "available";
 }
 function stateBadge(a){
   const st=accountState(a);
   if(st==="disabled") return '<span class="badge disabled">禁用</span>';
   if(st==="test") return '<span class="badge test-failed" title="活跃探活失败已被硬排除；点「测试」复核可恢复">测试</span>';
-  if(st==="cooling") return '<span class="badge cooling" title="命中上游 429/5xx，处于阶梯退避冷却">冷却</span>';
+  if(st==="quota") return '<span class="badge quota-disabled" title="额度已耗尽并写盘禁用；越过重置时刻且探活成功才恢复">额度耗尽'+(a.quota_reset_text?' · '+esc(a.quota_reset_text):'')+'</span>';
+  if(st==="failover") return '<span class="badge failover-disabled" title="上游失败已写盘禁用；每 10 分钟只探失败模型，探通即恢复">失败禁用</span>';
   return '<span class="badge">可用</span>';
 }
 function displayName(a){return a.label||a.username||a.email||a.api_key_masked||a.auth_id||"未命名"}
@@ -691,11 +695,12 @@ function toggleSort(btn){
   renderGrid();
 }
 function updateFilterCounts(all){
-  const counts={all:all.length,available:0,disabled:0,test:0,cooling:0};
+  const counts={all:all.length,available:0,disabled:0,test:0,failover:0,quota:0};
   all.forEach(a=>{counts[accountState(a)]++});
   const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v};
   set("cntAll",counts.all);set("cntAvailable",counts.available);
-  set("cntDisabled",counts.disabled);set("cntTest",counts.test);set("cntCooling",counts.cooling);
+  set("cntDisabled",counts.disabled);set("cntTest",counts.test);set("cntFailover",counts.failover);
+  set("cntQuota",counts.quota);
 }
 function renderSummary(accounts){
   const box=document.getElementById("summaryBox");
@@ -703,26 +708,27 @@ function renderSummary(accounts){
   const all=accounts||[];
   updateFilterCounts(all);
   if(!all.length){ box.style.display="none"; box.innerHTML=""; return; }
-  let availN=0, disabledN=0, testN=0, coolingN=0, modelN=0, quotaTotalSum=0, quotaKnownN=0, remainSum=0, remainKnownN=0;
+  let availN=0, disabledN=0, testN=0, failoverN=0, quotaN=0, modelN=0, quotaTotalSum=0, quotaKnownN=0, remainSum=0, remainKnownN=0;
   all.forEach(a=>{
     const st=accountState(a);
     if(st==="available") availN++;
     else if(st==="disabled") disabledN++;
     else if(st==="test") testN++;
-    else if(st==="cooling") coolingN++;
+    else if(st==="quota") quotaN++;
+    else if(st==="failover") failoverN++;
     modelN+=(Array.isArray(a.models)?a.models.length:0);
     const qt=quotaTotal(a);
     if(qt>=0){ quotaTotalSum+=qt; quotaKnownN++; }
     const q=a&&a.quota;
     if(q&&q.has_usage){ remainSum+=Number(q.total_remain)||0; remainKnownN++; }
   });
-  const scopeLabel={all:"全部账号",available:"可用账号",disabled:"禁用账号",test:"测试账号",cooling:"冷却账号"}[currentFilter]||"全部账号";
+  const scopeLabel={all:"全部账号",available:"可用账号",disabled:"禁用账号",test:"测试账号",failover:"失败禁用账号",quota:"额度耗尽账号"}[currentFilter]||"全部账号";
   const unknownN=all.length-quotaKnownN;
   box.style.display="block";
   box.innerHTML=`
     <div class="summary-hd">
       <div class="summary-title">额度汇总 · ${esc(scopeLabel)}</div>
-      <div class="summary-meta">${all.length} 个账号 · 可用 ${availN} · 禁用 ${disabledN} · 测试 ${testN} · 冷却 ${coolingN}</div>
+      <div class="summary-meta">${all.length} 个账号 · 可用 ${availN} · 禁用 ${disabledN} · 测试 ${testN} · 失败禁用 ${failoverN} · 额度耗尽 ${quotaN}</div>
     </div>
     <div class="summary-grid">
       <div class="summary-item"><div class="k">总账号数</div><div class="v">${all.length}</div></div>
@@ -1532,7 +1538,7 @@ async function runTestModel(authId, model, btn){
   const k=getKey();
   if(k) enterPanel(); else showAuth();
 })();
-// 每 60s 静默刷新一次账号状态（冷却/探活标签会随时间自然变化）。
+// 每 60s 静默刷新一次账号状态（失败禁用/探活标签会随时间自然变化）。
 setInterval(()=>{ if(getKey()) load({__silent:true}).catch(()=>{}); }, 60000);
 // Esc 关闭当前弹窗。
 document.addEventListener("keydown",e=>{

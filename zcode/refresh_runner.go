@@ -196,9 +196,13 @@ func (r *zcodeRefreshRunner) refreshOne(authID string) {
 		r.markFailed(authID, "账号不存在")
 		return
 	}
-	if _, errFetch := quotaForAccount(target, true); errFetch != nil {
+	if snap, errFetch := quotaForAccount(target, true); errFetch != nil {
 		r.markFailed(authID, errFetch.Error())
 		return
+	} else {
+		// 拿到新鲜额度后立即分级：耗尽即写盘禁用，已越过重置时刻则按探活结果恢复。
+		authIndex, _ := failoverResolveIdxFn(authID)
+		gradeQuotaForAuth(authIndex, authID, target, snap)
 	}
 	// 额度刷新成功后触发定时活跃探活，失败仅记录不做刷新失败处理
 	if pingErr := doActivePing(target); pingErr != nil {

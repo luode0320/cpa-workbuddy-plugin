@@ -5,18 +5,13 @@
 // accountFailover 持有，因此这里的用例聚焦三件事：
 //  1. 判据边界（11128 / 11140 / 6004 不能混淆）；
 //  2. 命中后确实写入模型级冷却，路由会跳过该组合；
-//  3. 冷却探活成功后才解除，失败则续期——这正是取代熔断的那条闭环。
+//  3. 冷却状态按账号×模型维度持有（恢复通道见 failover_disable.go）。
 package main
 
 import (
-	"errors"
 	"strings"
 	"testing"
-	"time"
 )
-
-// errFakeProbeFailed 是探活失败的注入错误，用于验证续期路径。
-var errFakeProbeFailed = errors.New("fake probe failed")
 
 // TestIsModelBlockedErrorClassifiesUpstreamRiskControl 验证风控错误分类边界：
 // 11128 是被拦截、11140 是账号级封禁、6004 是频率限制，三者必须区分开。
@@ -97,141 +92,31 @@ func TestClassifyUpstreamFailureBlocks11128AtModelScope(t *testing.T) {
 	}
 }
 
-// TestNoteModelBlockedHitWritesModelCooldown 验证一次 11128 命中就把该账号的
-// 这个模型放进冷却，进而被路由跳过。
-func TestNoteModelBlockedHitWritesModelCooldown(t *testing.T) {
-	resetFailoverForTest(t)
-
-	const (
-		authA = "workbuddyai-auth-a.json"
-		model = "deepseek-v4.1-flash"
-	)
-
-	noteModelBlockedHit(authA, model)
-	if !isAuthModelCoolingDown(authA, model) {
-		t.Fatal("写入后该账号应在该模型上处于冷却，路由才会跳过它")
-	}
-	// 只影响该模型：同账号的其它模型不受牵连。
-	if isAuthModelCoolingDown(authA, "glm-5") {
-		t.Fatal("11128 只应冷却命中的模型，不应牵连同账号的其它模型")
-	}
-	// 只影响该账号：其它账号的同模型不受牵连。
-	if isAuthModelCoolingDown("workbuddyai-auth-b.json", model) {
-		t.Fatal("11128 只应冷却命中账号，不应牵连其它账号")
-	}
-}
-
-// TestModelBlockedCooldownProbedBeforeExpiry 验证被 11128 冷却的组合会进入
-// 冷却探活候选——这是「复用冷却探活」而非另建一套的核心断言。
+// TestNoteModelBlockedHitWritesDisable 验证一次 11128 命中就把该账号写盘禁用，
+// 且失败的模型被记为探活回放目标。
 //
-// 旧实现只挑账号级冷却，模型级记录到期后自动失效且从不验证，等于把
-// 「是否恢复」交给运气。本用例锁住模型级冷却必须被探到。
-func TestModelBlockedCooldownProbedBeforeExpiry(t *testing.T) {
-	resetFailoverForTest(t)
+// 粒度说明（2026-10-25 设计变更）：宿主 disabled 只有账号级布尔值，没有模型维度。
+// 因此 11128 会禁用整个账号——这是有意的取舍，代价由「恢复时只探失败模型」承担：
+// 若该模型确实恢复，一次探通即整体解禁；若只是被别的模型牵连，探活会失败并保持禁用。
+func TestNoteModelBlockedHitWritesDisable(t *testing.T) {
+	h := newFailoverFakeHost(t)
+	h.addAccount("zcode-11128a", "idx-28a", nil)
+	h.addAccount("zcode-11128b", "idx-28b", nil)
 
-	const (
-		authA = "workbuddyai-auth-a.json"
-		model = "deepseek-v4.1-flash"
-	)
+	const model = "glm-5.3"
+	noteModelBlockedHit("zcode-11128a", model)
 
-	noteModelBlockedHit(authA, model)
-	_, until, ok := authModelFailoverSnapshot(authA, model)
-	if !ok || until.IsZero() {
-		t.Fatal("前置条件不成立：应已写入模型级冷却")
+	if h.docOf("idx-28a")["disabled"] != true {
+		t.Fatal("命中 11128 后该账号应被写盘禁用")
 	}
-
-	// 1. 远未到提前量窗口：不探测。
-	if targets := cooldownProbeTargets(until.Add(-cooldownProbeLeadTime - time.Second)); len(targets) != 0 {
-		t.Fatalf("未进入提前量窗口不应探测, got %d 个候选", len(targets))
+	if got := failoverProbeModelFor("zcode-11128a"); got != model {
+		t.Fatalf("应记录失败模型供探活回放，实际 %q", got)
 	}
-
-	// 2. 进入提前量窗口：必须探测，且回放的就是当初失败的模型。
-	targets := cooldownProbeTargets(until.Add(-cooldownProbeLeadTime + time.Millisecond))
-	if len(targets) != 1 {
-		t.Fatalf("进入提前量窗口应探测 1 个候选, got %d", len(targets))
-	}
-	if targets[0].model != model {
-		t.Fatalf("探活必须回放失败的模型 %q, got %q", model, targets[0].model)
-	}
-
-	// 3. 已探测过同一周期：不重复探测。
-	//    用候选自身的 authID/cooldownUntil 标记：冷却状态可能同时存在原始键
-	//    与归一化别名两条记录，拿外部快照标记会让去重判定落空。
-	markCooldownProbed(targets[0].authID, targets[0].cooldownUntil)
-	if again := cooldownProbeTargets(until.Add(-cooldownProbeLeadTime + time.Millisecond)); len(again) != 0 {
-		t.Fatalf("同一冷却周期不应重复探测, got %d", len(again))
+	// 只影响命中的账号：其它账号不受牵连。
+	if h.docOf("idx-28b")["disabled"] == true {
+		t.Fatal("11128 只应禁用命中账号，不应牵连其它账号")
 	}
 }
-
-// TestProbeSuccessClearsOnlyModelCooldown 验证探活成功只清模型维度：
-// 账号级冷却代表账号整体不可用，与单个模型的恢复无关。
-func TestProbeSuccessClearsOnlyModelCooldown(t *testing.T) {
-	resetFailoverForTest(t)
-
-	const (
-		authA = "workbuddyai-auth-a.json"
-		model = "deepseek-v4.1-flash"
-	)
-
-	// 账号级冷却 + 模型级冷却并存。
-	recordFailureScoped(authA, "", failureScopeAccount, "probe source")
-	noteModelBlockedHit(authA, model)
-	if !isAuthModelCoolingDown(authA, model) {
-		t.Fatal("前置条件不成立：应处于冷却")
-	}
-
-	// 注入成功的探活。
-	stubProbePing(t, func(*StoredAuth, string) error { return nil })
-
-	candidate := cooldownProbeCandidate{authID: authA, model: model, scope: failureScopeAuthModel}
-	if !probeCoolingAccount(candidate, &StoredAuth{}) {
-		t.Fatal("探活成功应返回 true")
-	}
-	// 模型级冷却必须已清除——这是本用例的核心断言。注意不能用
-	// isAuthModelCoolingDown 判定：它会先看账号级冷却，而账号级在本例中
-	// 刻意保留着，会把「模型级已清」这个事实掩盖掉。
-	if _, until, ok := authModelFailoverSnapshot(authA, model); ok && !until.IsZero() {
-		t.Fatal("探活成功后应清除该模型的冷却")
-	}
-	// 账号级冷却必须保留。
-	if !isAccountCoolingDown(authA) {
-		t.Fatal("探活成功不应清除账号级冷却")
-	}
-}
-
-// TestProbeFailureExtendsModelCooldown 验证探活失败沿模型维度续期，
-// 并且不会误写 test_failed（该标签硬排除、永不自动过期）。
-func TestProbeFailureExtendsModelCooldown(t *testing.T) {
-	resetFailoverForTest(t)
-
-	const (
-		authA = "workbuddyai-auth-a.json"
-		model = "deepseek-v4.1-flash"
-	)
-
-	noteModelBlockedHit(authA, model)
-	_, firstUntil, _ := authModelFailoverSnapshot(authA, model)
-
-	stubProbePing(t, func(*StoredAuth, string) error { return errFakeProbeFailed })
-
-	candidate := cooldownProbeCandidate{authID: authA, model: model, scope: failureScopeAuthModel}
-	if probeCoolingAccount(candidate, &StoredAuth{}) {
-		t.Fatal("探活失败应返回 false")
-	}
-	if !isAuthModelCoolingDown(authA, model) {
-		t.Fatal("探活失败后应仍在冷却中")
-	}
-	_, secondUntil, ok := authModelFailoverSnapshot(authA, model)
-	if !ok {
-		t.Fatal("探活失败后应保留模型级冷却记录")
-	}
-	if !secondUntil.After(firstUntil) {
-		t.Fatalf("探活失败应沿阶梯续期: first=%v second=%v", firstUntil, secondUntil)
-	}
-}
-
-// TestBlockedErrorBodyMarkersCoverProductionShape 用生产实测报文做回归，
-// 防止上游文案变化后判定静默失效。
 func TestBlockedErrorBodyMarkersCoverProductionShape(t *testing.T) {
 	// 生产原样报文（2026-10-18，1,173 次）
 	production := `{"code":11128,"msg":"request illegal","requestId":"e1a6043f-92ab-4eb8-b5c0-a1791dea9a24","displayMsg":{"en":"Request blocked. Please send it again","zh":"请求被拦截，请重新发送"}}`

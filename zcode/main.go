@@ -74,7 +74,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.1.35"
+	version      = "0.2.0"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -82,8 +82,10 @@ var (
 
 func init() {
 	activeConfig.Store(defaultConfig())
-	// 冷却前探活需要 5s 粒度，与小时级定时探活分开跑。
-	go cooldownProbeLoop()
+	// 写盘禁用的恢复通道：10 分钟一轮，只探当初失败的模型。
+	// 原 1 秒粒度的冷却前探活已移除——冷却状态本身在同一轮改造中下线，
+	// 恢复统一由这里裁决，避免两条通道重复打上游。
+	go failoverProbeLoop()
 }
 
 func main() {}

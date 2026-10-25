@@ -155,11 +155,15 @@ func TestNoteAccountFailureHonorsClassification(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resetFailoverForTest(t)
-			const authID = "auth-classified"
-			noteAccountFailure(authID, tc.status, tc.errMsg)
-			if got := isAccountCoolingDown(authID); got != tc.wantCool {
-				t.Fatalf("noteAccountFailure(%d, %q) cooling = %v, want %v", tc.status, tc.errMsg, got, tc.wantCool)
+			// 冷却状态下线后，「记账」的观测点是盘上禁用：分类命中才写盘。
+			h := newFailoverFakeHost(t)
+			h.addAccount("zcode-classified", "idx-cls", nil)
+
+			noteAccountFailure("zcode-classified", tc.status, tc.errMsg)
+
+			got := h.docOf("idx-cls")["disabled"] == true
+			if got != tc.wantCool {
+				t.Fatalf("noteAccountFailure(%d, %q) disabled = %v, want %v", tc.status, tc.errMsg, got, tc.wantCool)
 			}
 		})
 	}
@@ -172,21 +176,21 @@ func TestNoteAccountFailureHonorsClassification(t *testing.T) {
 // classifyUpstreamFailure 会判为成功响应，真实断流将不再进入冷却。
 // 本用例用与生产调用点相同的入参形态直接断言记账结果。
 func TestStreamReadErrorStillCounts(t *testing.T) {
-	resetFailoverForTest(t)
-
-	const authID = "auth-stream-read-error"
 	const readErr = "unexpected EOF"
 
-	// 1. 传 0（正确形态）：必须记账。
-	noteAccountFailure(authID, 0, readErr)
-	if !isAccountCoolingDown(authID) {
-		t.Fatal("流式读错误按 status 0 记账后应处于冷却")
+	// 1. 传 0（正确形态）：必须写盘禁用。
+	h := newFailoverFakeHost(t)
+	h.addAccount("zcode-stream-err", "idx-sr", nil)
+	noteAccountFailure("zcode-stream-err", 0, readErr)
+	if h.docOf("idx-sr")["disabled"] != true {
+		t.Fatal("流式读错误按 status 0 记账后应写盘禁用")
 	}
 
 	// 2. 传 200（错误形态）：不应记账——这正是必须避免的漏记形态。
-	resetFailoverForTest(t)
-	noteAccountFailure(authID, 200, readErr)
-	if isAccountCoolingDown(authID) {
+	h2 := newFailoverFakeHost(t)
+	h2.addAccount("zcode-stream-err2", "idx-sr2", nil)
+	noteAccountFailure("zcode-stream-err2", 200, readErr)
+	if h2.docOf("idx-sr2")["disabled"] == true {
 		t.Fatal("status 200 不应记账；若此断言失败说明分类把成功响应误判为失败")
 	}
 }
@@ -205,17 +209,4 @@ func TestIsAccountLevel4xxExcludesRateLimit(t *testing.T) {
 	if isAccountLevel4xx(400) {
 		t.Fatal("400 不应计入账号级 4xx")
 	}
-}
-
-// resetFailoverForTest 清空故障状态，供本文件用例互不干扰。
-func resetFailoverForTest(t *testing.T) {
-	t.Helper()
-	failoverMu.Lock()
-	failoverRecords = make(map[string]*failoverEntry)
-	failoverMu.Unlock()
-	t.Cleanup(func() {
-		failoverMu.Lock()
-		failoverRecords = make(map[string]*failoverEntry)
-		failoverMu.Unlock()
-	})
 }

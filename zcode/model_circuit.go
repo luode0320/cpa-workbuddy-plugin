@@ -1,57 +1,31 @@
 // model_circuit.go 处理上游「请求被拦截」（11128）的记账落点。
 //
-// 历史沿革：本文件最初实现的是独立的模型级熔断状态机——跨 3 个账号命中
-// 11128 后在该 provider × 模型上打开 60 秒闸门，闸门期间所有请求直接短路。
-// 该设计解决了「整池轮转后才失败」的时间损耗，但留下一个缺口：熔断只是拒绝
-// 请求，并不改变路由，被拦截的账号仍会被宿主选中，用户依旧每次都要等一个
-// 失败往返。
+// 历史沿革：本文件最初实现独立的模型级熔断状态机（跨 3 个账号命中 11128 后
+// 在该 provider × 模型上打开 60 秒闸门）；2026-10-20 改为复用账号×模型冷却；
+// 2026-10-25 冷却状态下线后，11128 与其它失败一样直接落成写盘禁用。
 //
-// 现方案（2026-10-20 重构）：不再维护独立的熔断状态，11128 直接走
-// 账号×模型冷却（classifyUpstreamFailure 返回 failureScopeAuthModel）。
-// 好处是复用既有冷却探活闭环——到期前 5 秒用同一模型回放探活，成功才清冷却，
-// 失败则沿阶梯续期。路由层 isAuthModelCoolingDown 会跳过冷却中的账号×模型，
-// 请求因此不再被派到已知会被拦截的组合上。
+// 为什么 11128 仍然值得单独一个函数：它的判据（isModelBlockedError）与
+// 「命中即停止换号」的决策绑定在一起，单独成函数让这条语义有明确归属。
 //
-// 本文件只保留「一次 11128 命中该记到哪」这个判定，状态全部交给 accountFailover。
-//
-// 最近修改时间：2026-10-20；改动原因：移除独立熔断状态机，改为复用账号×模型冷却。
+// 最近修改时间：2026-10-25；改动原因：冷却状态下线，改为直接写盘禁用。
 package main
 
 import (
 	"strings"
 )
 
-// noteModelBlockedHit 记录一次 11128 命中，并把它写进账号×模型冷却。
+// noteModelBlockedHit 记录一次 11128 命中，把它落成写盘禁用。
 //
-// 与历史 noteModelCircuitHit 的差异：不再维护跨账号聚合与 blockedTill，
-// 而是直接调用与其它失败相同的记账落点 recordFailureScoped。这样：
-//  1. 冷却阶梯（60s 起、每次 +60s、上限 10 分钟）对 11128 同样生效；
-//  2. 冷却探活会在到期前回放同一模型，成功才放开；
-//  3. 路由与换号通过 isAuthModelCoolingDown 自动跳过，不需要额外的全局闸门。
-//
+// 与其它失败走同一个落点（recordFailureScoped），区别只在分类固定为
+// failureScopeAuthModel：上游拦截的是「这个账号 × 这个模型」这个组合，
+// 探活时应当回放同一个模型来验证是否恢复。
 // [参数] authID: 命中的账号标识；model: 已归一化的上游模型名。
-// [返回] 无。冷却状态由 failover 记录持有，调用方无需返回值。
-// 最近修改时间：2026-10-20；改动原因：改为写入账号×模型冷却。
+// [返回] 无。
+// 最近修改时间：2026-10-25；改动原因：改为直接写盘禁用。
 func noteModelBlockedHit(authID, model string) {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return
 	}
 	recordFailureScoped(authID, model, failureScopeAuthModel, "upstream 11128 request illegal")
-}
-
-// resetModelBlockedState 在一次成功请求后清理该模型的残留冷却。
-//
-// 冷却状态按账号×模型存储，单账号成功由 resetAuthModelFailover 精确清除；
-// 这里额外清空该模型的全部账号记录，是因为一次成功已证明「该模型当前可用」，
-// 留着其它账号的旧冷却只会让已恢复的模型继续被跳过一段时间。
-//
-// [参数] model：已归一化的上游模型名。
-// 最近修改时间：2026-10-20；改动原因：成功路径清理模型维度的残留冷却。
-func resetModelBlockedState(model string) {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return
-	}
-	clearAuthModelCooldowns("", model)
 }

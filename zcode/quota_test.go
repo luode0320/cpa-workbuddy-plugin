@@ -113,6 +113,89 @@ func TestFetchAccountQuota_RequiresJWT(t *testing.T) {
 	}
 }
 
+// TestParseQuota_PeriodEndAndEarliestReset 断言 balance 通道把每档 period_end 落进
+// entitlement，并取全部非零值中最小者作为账号级最早重置时刻。
+// 样本取自本机 zcode 客户端 2026-10-11 的真实 billing/balance 响应（已脱敏，
+// 只保留额度与周期字段）：两档 entitlement 同为当日 23:59:59 CST，EarliestReset 应等于该值。
+func TestParseQuota_PeriodEndAndEarliestReset(t *testing.T) {
+	const realSample = `{"code":0,"msg":"","data":{"server_time":1791648000,"plans":[{"user_plan_id":"upl_2108995848818085888","plan_id":"zcode-v3-start-plan-0817","name":"ZCode Start Plan","status":"active","entitlements":[{"entitlement_id":"ent_2_0817_glm_5p3","show_name":"GLM-5.3","meter":"model_usage","unit_type":"token","capabilities":["model:glm-5.3"],"grant_units":3000000,"period":"daily","priority":110},{"entitlement_id":"ent_2_0817_glm_5p3f","show_name":"GLM-5.3-Flash","meter":"model_usage","unit_type":"token","capabilities":["model:glm-5.3-flash"],"grant_units":5000000,"period":"daily","priority":80}]}],"balances":[{"entitlement_id":"ent_2_0817_glm_5p3","show_name":"GLM-5.3","total_units":3000000,"used_units":0,"remaining_units":3000000,"available_units":3000000,"period_start":1791648000,"period_end":1791734399,"expires_at":1791734399},{"entitlement_id":"ent_2_0817_glm_5p3f","show_name":"GLM-5.3-Flash","total_units":5000000,"used_units":0,"remaining_units":5000000,"available_units":5000000,"period_start":1791648000,"period_end":1791734399,"expires_at":1791734399}]}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(realSample))
+	}))
+	defer srv.Close()
+
+	oldBal := balanceURLForTest
+	balanceURLForTest = srv.URL
+	defer func() { balanceURLForTest = oldBal }()
+
+	snap, err := fetchAccountQuota(&StoredAuth{AuthID: "zcode-period", Token: "jwt-token"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for i, ent := range snap.Entitlements {
+		if ent.PeriodEnd != 1791734399 {
+			t.Fatalf("entitlement[%d] period_end = %d, want 1791734399", i, ent.PeriodEnd)
+		}
+		if ent.PeriodStart != 1791648000 {
+			t.Fatalf("entitlement[%d] period_start = %d, want 1791648000", i, ent.PeriodStart)
+		}
+	}
+	if snap.EarliestReset != 1791734399 {
+		t.Fatalf("earliest_reset = %d, want 1791734399", snap.EarliestReset)
+	}
+}
+
+// TestParseQuota_EarliestResetTakesMinimum 断言多档周期不一致时取最小非零值，
+// 并跳过 period_end 缺失（0）的档位——0 是「未知」不是「立刻重置」。
+func TestParseQuota_EarliestResetTakesMinimum(t *testing.T) {
+	const mixedSample = `{"code":0,"msg":"","data":{"server_time":1,"plans":[{"user_plan_id":"upl_1","plan_id":"p","name":"P","status":"active","entitlements":[{"entitlement_id":"ent_a","show_name":"A","grant_units":100,"period":"daily"},{"entitlement_id":"ent_b","show_name":"B","grant_units":200,"period":"daily"},{"entitlement_id":"ent_c","show_name":"C","grant_units":300,"period":"daily"}]}],"balances":[{"entitlement_id":"ent_a","total_units":100,"remaining_units":0,"available_units":0,"period_start":1000,"period_end":2000},{"entitlement_id":"ent_b","total_units":200,"remaining_units":0,"available_units":0,"period_start":1000,"period_end":500},{"entitlement_id":"ent_c","total_units":300,"remaining_units":0,"available_units":0,"period_start":1000}]}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(mixedSample))
+	}))
+	defer srv.Close()
+
+	oldBal := balanceURLForTest
+	balanceURLForTest = srv.URL
+	defer func() { balanceURLForTest = oldBal }()
+
+	snap, err := fetchAccountQuota(&StoredAuth{AuthID: "zcode-min", Token: "jwt-token"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap.EarliestReset != 500 {
+		t.Fatalf("earliest_reset = %d, want 500（取最小非零，跳过缺失档）", snap.EarliestReset)
+	}
+}
+
+// TestParseQuota_EarliestResetZeroWhenAbsent 断言无任何 entitlement 带 period_end 时
+// EarliestReset 保持 0，供调用方识别「重置时刻未知」而不是误判为已重置。
+func TestParseQuota_EarliestResetZeroWhenAbsent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"","data":{"server_time":1,"plans":[{"user_plan_id":"upl_1","plan_id":"p","name":"P","status":"active","entitlements":[{"entitlement_id":"ent_a","show_name":"A","grant_units":100,"period":"daily"}]}],"balances":[{"entitlement_id":"ent_a","total_units":100,"used_units":10,"remaining_units":90,"available_units":90}]}}`))
+	}))
+	defer srv.Close()
+
+	oldBal := balanceURLForTest
+	balanceURLForTest = srv.URL
+	defer func() { balanceURLForTest = oldBal }()
+
+	snap, err := fetchAccountQuota(&StoredAuth{AuthID: "zcode-noreset", Token: "jwt-token"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !snap.HasUsage {
+		t.Fatalf("expected has_usage true")
+	}
+	if snap.EarliestReset != 0 {
+		t.Fatalf("earliest_reset = %d, want 0（周期缺失时不得臆造重置时刻）", snap.EarliestReset)
+	}
+}
+
 // TestQuotaForAccount_Caches 验证额度结果被缓存，重复查询不再打上游。
 func TestQuotaForAccount_Caches(t *testing.T) {
 	var hits int

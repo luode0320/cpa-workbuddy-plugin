@@ -56,17 +56,19 @@ func TestScheduler_RoutableAndPick(t *testing.T) {
 		t.Fatalf("expected sa1 to be picked, got %+v", picked)
 	}
 
-	// 测试冷却状态排除
+	// 失败禁用：429 属账号级失败，应写盘禁用并被路由跳过。
+	h := newFailoverFakeHost(t)
+	h.addAccount("zcode-acc1", "idx-acc1", nil)
 	noteAccountFailure(sa1.AuthID, 429, "rate limited")
 	if accountRoutable(sa1, "") {
-		t.Fatalf("sa1 should be cooling down after failure")
+		t.Fatalf("sa1 should be disabled after failure")
 	}
-	pickedCooling := pickActiveAuth("")
-	if pickedCooling != nil {
-		t.Fatalf("expected no active account when cooling down, got %+v", pickedCooling)
+	pickedDisabled := pickActiveAuth("")
+	if pickedDisabled != nil {
+		t.Fatalf("expected no active account when disabled, got %+v", pickedDisabled)
 	}
 
-	// 成功重置
+	// 成功即解除：一次真实成功证明该号可用，禁用标记应被清掉。
 	resetAccountFailover(sa1.AuthID)
 	if !accountRoutable(sa1, "") {
 		t.Fatalf("sa1 should be routable after reset")

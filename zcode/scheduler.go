@@ -24,7 +24,9 @@ func accountRoutable(sa *StoredAuth, model string) bool {
 	if sa.TestFailed {
 		return false
 	}
-	if isAuthModelCoolingDown(sa.AuthID, model) {
+	// 失败禁用是账号级的：宿主侧已禁用，插件这里只需判内存镜像与盘上标记。
+	// 原「账号×模型冷却」判据已随冷却状态下线移除。
+	if isFailoverDisabled(sa.AuthID) {
 		return false
 	}
 	if q := cachedQuota(sa.AuthID); q != nil {
