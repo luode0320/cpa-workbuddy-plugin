@@ -31,6 +31,18 @@
 
 ## 活动会话进展摘要
 
+- 当前会话（2026-10-26 晚）：**traework 0.5.3 面板改为纯读积分快照，全链路发布 + 生产热重载验收通过**：
+  - **用户诉求**：traework 对齐 workbuddy「进面板纯读快照」；并追问 10 分钟定时器的作用与 workbuddy 是否保留。
+  - **答问结论**：① traework 面板的 10 分钟定时器（`panel.html` `PERIODIC_REFRESH_MS`）是「页面开着就每 10 分钟打一轮 `POST /refresh` 全量上游」；② workbuddy 已无此定时器、`startBackgroundRefresh` 变成无调用点的死代码，新鲜度改由**后端 hourly `creditsSweepInterval`** 保证。
+  - **关键差异（决定改动安全性）**：traework 后端本来就有 `watchdogIntervalDefault` 10 分钟全量刷新，且不依赖面板是否打开——删前端定时器**不降低任何新鲜度**，只是从「前端一轮 + 后端一轮重叠」变成「只剩后端一轮」。
+  - **三处入口必须一起改**（只删前端仍会在首屏对每个无快照账号各打一次上游）：① `panel.html` `enterPanel()` 移除 `startBackgroundRefresh()`；② 删 10 分钟 `setInterval` 及其连带死代码（`startBackgroundRefresh` / `pollRefreshStatus` / `setCardRefreshState` / `finalizeCardState` / `updateRefreshProgress` + `data-refresh-state`/`ref-tag`/`ref-progress` 样式 + `#refreshProgress` 占位元素）；③ `management.go` `handleAccounts` 由「双未命中同步现查」改为 `cr, _ := cachedCredits(f.ID)` 保持未知。
+  - **与 workbuddy 的形态差异（刻意不照搬）**：workbuddy 的 `startBackgroundRefresh` / `pollRefreshStatus` 函数体仍留在文件里但零调用点，属死代码；traework 按「本轮产生的未使用代码必须清理」整体删除。
+  - **验证**：两段内联 `<script>` node `--check` 通过；`cgo-shim-build.py traework` build/vet/test 全绿；`grep` 复核 `api("/refresh"` 与 `PERIODIC_REFRESH_MS` 零命中、`accountCredits(` 仅剩手动刷新/watchdog/签到/生命周期链路。
+  - **发布链**：`7073219`(feat) → push → 首次 dispatch `40341476755` 因 `traework-provider darwin/arm64` 作业被 cancelled 导致 Release skipped（17 成功 / 1 取消）；`rerun-failed-jobs` **不会重跑之前 skipped 的 Release**，故取消重跑并整体重发 `40344671678` → success → 6/6 assets sha256 OK → `a842f2a`(registry) → 远端 registry 0.5.3、6/6 资产 200。
+  - **生产部署（热重载零重启，容器 Up 3 days 未重启）**：install 返回 `restart_required:false`；日志 `plugin hot reloaded active_version=0.5.3 retired_version=0.5.2`；落盘 `.so` sha256 `f11cfb26…` 与本地 zip **逐字节一致**。
+  - **行为验收**：`/accounts` 200、16 账号与部署前一致；连续 3 次 `/accounts` 全 200 且**零上游 credits/entitlement 调用痕迹**（核心改动生效证据）；快照 `traework-credits.json` mtime `23:06:33` 对应 0.5.3 加载后的 watchdog 首轮刷新，说明后端刷新链仍工作。
+  - **边界（如实记录）**：① 版本一致性用例 `TestVersionMatchesRegistration` 硬编码版本号，升版必须同步改 `test/traework/config_fields_test.go`，否则测试红（本轮首跑即因此失败，非代码缺陷）；② macOS runner 偶发 cancelled 会让 Release 跳过，只能整体重 dispatch；③ 面板在快照缺失（新装/首轮未跑）时显示「加载中…」且不再自动回填，需等 watchdog 一轮（≤10 分钟）。
+
 - 当前会话（2026-10-25）：**慢速账号冷却跨五插件移植完成并批量发生产**：
   - **用户裁定**：traework / qoderwork / workbuddy-ai / qoder-ai / zcode 五个插件都做；其中 workbuddy-ai（2 号）与 qoder-ai（0 号）**只落文档计划、暂不实现**——池子 <10 时 P25 基线不成立，会制造噪音；zcode 选「完整改造与其他插件对齐」；发布方式选「全部改完后批量发布」。
   - **两个前置硬前提（来自实施前的盘点）**：① **per-attempt TTFT 计时隔离**是阻断项——五个插件的 `ttftNS(started)` 都用请求级时间戳跨 attempt 复用，「A 失败 10s → B 首帧 2s」会被记成 12s，把 A 的失败耗时算到健康号头上，直接吃这个样本比不加机制更糟；② **账号池 ≥10**，否则 P25 退化成较小值。故顺序固定为「先补计时基准 + 用例锁定，再接状态机」。
