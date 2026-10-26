@@ -70,16 +70,6 @@ button.danger:hover{background:var(--err);color:#fff}
 .badge.stat{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-weight:500}
 .badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .badge.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}
-/* 后台刷新卡片三态 */
-.card[data-refresh-state="running"]{border:1px dashed var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
-.card[data-refresh-state="done"]{border-color:var(--ok);box-shadow:0 0 0 2px var(--ok-border);background:var(--ok-soft)}
-.card[data-refresh-state="failed"]{border-color:var(--err);box-shadow:0 0 0 2px var(--err-border)}
-.ref-tag{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;white-space:nowrap}
-.ref-tag.ref-running{background:var(--acc);color:var(--on-acc)}
-.ref-tag.ref-pending{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
-.ref-tag.ref-failed{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
-.ref-tag .spin{border-color:currentColor;border-top-color:transparent;margin-right:0;vertical-align:-2px}
-.ref-progress{color:var(--warn);font-size:12px}
 .filter-bar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
 .ftag{background:var(--surface);border:1px solid var(--border);color:var(--mut);border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600}
 .ftag.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}
@@ -239,7 +229,6 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="sec sort-btn" id="sortBtn" onclick="toggleSort(this)" title="按可用积分切换升序/降序">积分 ↕</button>
     <label class="toggle" title="本地时间 00/04/08/12/16/20 自动签到"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到</label>
     <span class="toggle" id="svtime"></span>
-    <span class="toggle ref-progress" id="refreshProgress" style="display:none"></span>
   </div>
   <div class="filter-bar" id="filterBar">
     <button type="button" class="ftag active" data-f="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
@@ -918,7 +907,7 @@ async function toggleDisabled(authIndex,disable,btn){
   }catch(e){toast("操作失败","err",e.message)}finally{busy(btn,false)}
 }
 // 拉取单个账号积分并合并进本地态 + 局部重绘（不 toast、不 busy）。
-// 供单卡刷新 refreshCredits 与后台轮询 pollRefreshStatus 共用。
+// 仅供单卡「刷新」按钮使用；进面板不再触发任何上游调用。
 async function fetchAndPatchCredits(idx,opts){
   const d=await api("/credits?auth_index="+encodeURIComponent(idx),opts);
   if(d.error)throw new Error(d.error);
@@ -1083,105 +1072,6 @@ setInterval(()=>{
     el.textContent="轮换让位 "+(until-now)+"s";
   });
 },1000);
-
-/* ---------- 异步刷新（进面板自动 + 10 分钟定时） ---------- */
-const PERIODIC_REFRESH_MS=10*60*1000;
-setInterval(()=>{startBackgroundRefresh()},PERIODIC_REFRESH_MS);
-let bgRateLimitRetry=0;
-async function startBackgroundRefresh(){
-  let d;
-  try{d=await api("/refresh",{method:"POST",__silent:true})}
-  catch(e){return}
-  if(d&&d.error){
-    if(/rate limit/i.test(String(d.error))&&bgRateLimitRetry<2){
-      bgRateLimitRetry++;
-      setTimeout(()=>{startBackgroundRefresh()},15000);
-    }else{bgRateLimitRetry=0}
-    return;
-  }
-  bgRateLimitRetry=0;
-  pollRefreshStatus();
-}
-function updateRefreshProgress(d){
-  const el=document.getElementById("refreshProgress");
-  if(!el)return;
-  const total=Number(d.total||0);
-  const done=Number(d.done||0);
-  const failed=Number(d.failed||0);
-  if(!total||!d.running){el.style.display="none";el.textContent="";return}
-  el.style.display="inline-block";
-  el.textContent="后台刷新中 "+done+"/"+total+(failed?" · 失败 "+failed:"");
-}
-function setCardRefreshState(idx,state,error){
-  if(idx==null||idx==="")return;
-  const el=document.querySelector('#grid .card[data-auth="'+CSS.escape(String(idx))+'"]');
-  if(!el)return;
-  if(!state){
-    delete el.dataset.refreshState;
-    const tagEl=el.querySelector(".ref-tag");
-    if(tagEl)tagEl.remove();
-    return;
-  }
-  el.dataset.refreshState=state;
-  let tagEl=el.querySelector(".ref-tag");
-  if(tagEl)tagEl.remove();
-  if(state==="running"||state==="pending"||state==="failed"){
-    tagEl=document.createElement("span");
-    tagEl.className="ref-tag ref-"+state;
-    if(state==="running")tagEl.innerHTML='<span class="spin"></span>刷新中…';
-    else if(state==="pending")tagEl.textContent="等待中…";
-    else tagEl.textContent="⚠️ "+(error||"刷新失败");
-    const h2=el.querySelector("h2");
-    if(h2)h2.appendChild(tagEl);
-  }
-}
-function finalizeCardState(idx,state,error){
-  setCardRefreshState(idx,state,error);
-  if(state==="done")setTimeout(()=>setCardRefreshState(idx,null),1500);
-  else if(state==="failed")setTimeout(()=>setCardRefreshState(idx,null),8000);
-}
-let refreshPollTimer=null;
-let refreshSeen={};
-function pollRefreshStatus(){
-  if(refreshPollTimer){clearInterval(refreshPollTimer);refreshPollTimer=null}
-  refreshSeen={};
-  const stop=()=>{
-    if(refreshPollTimer){clearInterval(refreshPollTimer);refreshPollTimer=null}
-    refreshSeen={};
-    updateRefreshProgress({total:0});
-  };
-  let tickBusy=false;
-  const tick=async()=>{
-    if(tickBusy)return;
-    tickBusy=true;
-    try{
-      let d;
-      try{d=await api("/refresh/status",{__silent:true})}
-      catch(e){stop();return}
-      if(d.error){stop();toast("刷新状态查询失败","err",d.error);return}
-      updateRefreshProgress(d);
-      (d.per_account||[]).forEach(pa=>{
-        const idx=pa.auth_index;
-        const key=String(idx);
-        const st=pa.status;
-        if(st==="done"||st==="failed"){
-          if(refreshSeen[key])return;
-          refreshSeen[key]=true;
-          // done/failed 后拉一次积分并局部更新卡片（__silent：轮询链路失败
-          // 不参与全局熔断计数，避免高频轮询放大故障）。
-          fetchAndPatchCredits(idx,{__silent:true})
-            .catch(()=>{})
-            .then(()=>finalizeCardState(idx,st,pa.error));
-        }else if(st==="running"||st==="pending"){
-          setCardRefreshState(idx,st,pa.error);
-        }
-      });
-      if(!d.running)stop();
-    }finally{tickBusy=false}
-  };
-  tick();
-  refreshPollTimer=setInterval(tick,2000);
-}
 
 /* ---------- 凭据导入（模态框：粘贴 + 选文件） ---------- */
 function openImportModal(){
@@ -1444,10 +1334,13 @@ document.addEventListener("keydown",e=>{
   if(document.getElementById("importModal").classList.contains("show"))closeImportModal();
   if(document.getElementById("deleteModal").classList.contains("show"))closeDeleteModal();
 });
+// 进入页面统一入口：只读内存缓存与落盘积分快照渲染，不触发任何上游调用。
+//
+// 与 workbuddy 0.14.17 同口径：新鲜度由后端 watchdog 的 10 分钟全量刷新保证
+// （不依赖面板是否打开），单卡「刷新」按钮仍可手动拉取。历史实现会在进页面时
+// 打一轮 POST /refresh 并每 10 分钟重复一次，16 个账号等于 16 次上游 billing。
 async function enterPanel(){
   await load();
-  // 进面板触发一轮异步积分刷新（幂等），随后 2s 轮询逐卡更新。
-  startBackgroundRefresh();
 }
 // 启动主题同步 watcher（嵌入父面板 MutationObserver + 独立时跟随系统主题）。
 // 只定义不调用的话，切换 CPA 主面板主题时本面板不会跟随。

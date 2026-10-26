@@ -1,5 +1,15 @@
 # TraeWork Plugin Changelog
 
+## 0.5.3
+
+### Feat - 进面板不再触发上游刷新，改为纯读积分快照
+
+- 变更: 面板进入时只渲染 `/accounts` 返回的内存缓存与落盘快照（`data/traework-credits.json`），不再打 `POST /refresh`；前端 10 分钟定时刷新一并移除。与 workbuddy 0.14.17（2026-10-23 用户裁定）同口径。
+- 后端配套: `handleAccounts` 的双未命中分支由「同步现查上游」改为「保持未知」，面板打开绝不触发全量 billing 调用。这是同一诉求的第三处入口——只删前端仍会在首屏对每个无快照账号各打一次上游。
+- 新鲜度来源: 后端 `watchdogLoop` 每 10 分钟全量刷新（`watchdogIntervalDefault`，不依赖面板是否打开），与调度排序共用同一份真相；单卡「刷新」按钮仍可手动拉取（traework 无顶部批量刷新入口）。
+- 清理: 删除已无调用点的 `startBackgroundRefresh` / `pollRefreshStatus` / `setCardRefreshState` / `finalizeCardState` / `updateRefreshProgress` 及配套 `data-refresh-state` / `ref-tag` / `ref-progress` 样式与 `#refreshProgress` 占位元素。workbuddy 侧这些函数体仍在但已无调用点，不照搬该形态。
+- 验证: 两段内联 `<script>` node `--check` 通过；`cgo-shim-build.py traework` 的 build / vet / test 全绿；`grep` 复核 `api("/refresh"` 零命中、`PERIODIC_REFRESH_MS` 零命中、`accountCredits(` 仅剩手动刷新 / watchdog / 签到链路。
+
 ## 0.5.2
 
 ### Feat - 账号池准入闸门（默认 > 20）

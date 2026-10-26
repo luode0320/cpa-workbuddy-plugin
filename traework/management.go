@@ -229,16 +229,12 @@ func handleAccounts() map[string]any {
 			ensureCounterLoaded(a.UserID, phys.JSON)
 			view.SuccessCount, view.FailedCount = counterSnapshot(a.UserID)
 		}
-		// Credits: cached snapshot first; live query when missing. The full
-		// quota snapshot (remain/used/size/packs) drives the panel progress
-		// bar; the flat Remain stays for backward-compatible consumers.
-		cr, cached := cachedCredits(f.ID)
-		if !cached {
-			if live, qerr := accountCredits(a); qerr == nil {
-				cr = live
-				cacheCredits(f.ID, cr)
-			}
-		}
+		// 积分只读缓存与落盘快照，双未命中时保持「未知」——面板打开绝不能触发
+		// 一轮全量上游 billing 调用。新鲜度由后端 watchdog 的 10 分钟全量刷新
+		// 保证，与面板是否打开无关；手动「刷新」按钮走单卡 /credits 链路。
+		// The full quota snapshot (remain/used/size/packs) drives the panel
+		// progress bar; the flat Remain stays for backward-compatible consumers.
+		cr, _ := cachedCredits(f.ID)
 		if cr != nil {
 			view.Remain = cr.TotalRemain
 			view.Credits = cr
