@@ -134,6 +134,8 @@ def main() -> int:
     ap.add_argument("version", nargs="?")
     ap.add_argument("--assets-dir", default="release-assets")
     ap.add_argument("--all-current", action="store_true")
+    ap.add_argument("--allow-missing", action="store_true",
+                    help="publish even if some platforms are absent (drops their artifact slots)")
     args = ap.parse_args()
 
     if args.all_current:
@@ -161,7 +163,12 @@ def main() -> int:
 
     missing = [t for t in PLATFORMS if not zip_path(t).exists()]
     if missing:
-        raise SystemExit(f"missing zips: {missing}")
+        # 默认仍强制 6 平台：缺件会让部分用户装不上，属于需要人工确认的发布形态。
+        # 只有显式 --allow-missing 才放宽（CI 单平台 runner 长期排队时的已知取舍），
+        # 此时 registry 不保留该平台的 artifact 槽位，避免指向不存在的 URL。
+        if not args.allow_missing:
+            raise SystemExit(f"missing zips: {missing} (pass --allow-missing to publish without them)")
+        print(f"WARN publishing without platforms: {missing}")
 
     # checksums.txt sanity (regenerate if absent)
     cksum = out / "checksums.txt"
