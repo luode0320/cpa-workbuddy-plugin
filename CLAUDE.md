@@ -79,7 +79,9 @@
 ## 提交 / 发布授权（默认授权，强制）
 
 - 本仓库**默认处于「提交 / 发布已授权」状态**：用户不需要每轮显式说「提交」「推送」「发布」，agent 在完成改动并通过全部门禁后，可直接执行提交、推送、CI 发布与生产部署全链路。
-- 默认授权覆盖：`git commit`、`git push`、创建分支、dispatch CI、下载 release assets、更新 registry、生产 plugin-store 安装与热重载验证（完整链路见项目 skill `project-cpa-workbuddy-plugin-release-rules`）。
+- 默认授权覆盖：`git commit`、`git push`、创建分支、dispatch CI、下载 release assets、更新 registry、生产 plugin-store 安装、**生产热重载（`plugin-store install` 触发的加载生效，含 `restart_required:false` 路径）与热重载生效验证**（完整链路见项目 skill `project-cpa-workbuddy-plugin-release-rules`）。
+- **生产热重载属默认授权范围（2026-10-28 明确）**：热重载是插件的标准生效路径，不是高风险操作，agent 不得以「涉及生产」为由跳过或另行索取授权。判定生效必须凭证据：`install` 后取 `docker logs cli-proxy-api | grep "hot reloaded"` 中该插件的加载记录，并核对生产落盘 `.so` 的 sha256 与本地 release zip 一致、插件版本与 registry 对齐。
+- **与「重启容器」的边界（默认授权不覆盖重启）**：默认授权只覆盖热重载，**不覆盖重启 `cli-proxy-api` 容器**。重启仍属高成本操作，只有热重载经证据确认未生效，或生产配置损坏恢复等必要场景，且取得当轮明确确认时才可执行；不得把「重启宿主」当作发布收尾的默认动作。
 - **用户当轮显式边界绝对优先于默认授权**：出现「只提交 git, 不要推送」「先不提交」「暂不发布」「不要动 Git」「只改代码」等限制时，必须严格遵守并停在对应边界，不得用「默认授权」覆盖当轮显式约束。
 - 默认授权**不等于免除门禁**：提交前的基础核查（格式、注释、安全、并发、崩溃、边界）、真实测试、`6-review` 风格回归、pre/post gate、远端验证与生产验证仍必须逐项真实执行；门禁未过不得提交，不得用默认授权跳过任何一步。
 - **非本轮代理产生的改动默认保护**：工作树存在其他会话 / 人工留下的改动时，默认只提交本轮目标的改动；只有用户当轮明确说「一起提交 / 都提交」才纳入，并在证据中列明。
