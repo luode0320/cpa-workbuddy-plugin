@@ -390,6 +390,12 @@ func isAccountCoolingDown(authID string) bool {
 	if isFailoverDisabledLocal(authID) {
 		return true
 	}
+	// 第二层：插件自有 sidecar。它是跨重启与宿主回写的唯一真相源——宿主 persist
+	// 会抹掉盘上标记、fsnotify 也可能静默失效，只有这里不受影响。没有这一层，
+	// 插件热重载或进程重启后内存集合为空，被禁用的号会重新接流量。
+	if failoverStateIsDisabled(authID) {
+		return true
+	}
 	failoverMu.Lock()
 	defer failoverMu.Unlock()
 	now := time.Now()
@@ -494,6 +500,9 @@ func resetAccountFailover(authID string) {
 	// 而盘上根本没禁它（宿主仍会路由过来），等于自造静默遗忘。
 	clearFailoverDisabledLocal(authID, "")
 	forgetFailoverProbeModel(authID)
+	// sidecar 同步解除：它能走到这里说明本进程确认写过禁用，而成功请求已经
+	// 证明这个号现在可用；不一起清会让 scheduler.pick 继续排除它。
+	failoverStateClearDisabled(authID)
 	authIndex, _ := failoverResolveIndexFn(strings.TrimSpace(authID))
 	if strings.TrimSpace(authIndex) == "" {
 		return

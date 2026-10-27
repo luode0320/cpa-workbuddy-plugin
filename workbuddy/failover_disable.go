@@ -455,13 +455,21 @@ func disableAccountForFailover(authID, model string) bool {
 
 	phys, err := failoverGetPhysicalFn(authIndex)
 	if err != nil || phys == nil || len(phys.JSON) == 0 {
-		log.Printf("[workbuddy] failover disable skipped: no physical auth doc for auth=%s", authID)
-		return false
+		// 宿主文档读不到（spool 尚未落盘 / RPC 不通）不影响判据：sidecar 不经过
+		// 宿主，正是这种情况下的唯一排除来源，必须写下。
+		log.Printf("[workbuddy] failover disabled via sidecar, host doc unavailable auth=%s", authID)
+		failoverStateMarkDisabled(authID, model)
+		markFailoverDisabledLocal(authID, authIndex)
+		return true
 	}
 	doc := parseFailoverAuthDoc(phys.JSON)
 	if doc.disabled {
 		// 已被禁用：谁的禁用谁负责。只有本机制的标记才认领；
 		// manual / exhausted 一律不接管，避免抢走别人的恢复职责。
+		// sidecar 同步只在本机制确有标记时补写，否则等于替别人的禁用伪造归属。
+		if doc.failoverDisable {
+			failoverStateMarkDisabled(authID, model)
+		}
 		return doc.failoverDisable
 	}
 
@@ -481,9 +489,13 @@ func disableAccountForFailover(authID, model string) bool {
 		log.Printf("[workbuddy] failover disable skipped: marshal auth doc: %v", err)
 		return false
 	}
+	// sidecar 先于写盘：它是路由判据的权威来源，不经过宿主，因此不受宿主 persist
+	// 抹标记与 fsnotify 失效影响；写盘失败也不影响排除已经生效。
+	failoverStateMarkDisabled(authID, model)
 	if err := failoverPersistFn(phys.Name, phys.Path, "", raw); err != nil {
-		log.Printf("[workbuddy] failover disable write failed: auth=%s err=%v", authID, err)
-		return false
+		log.Printf("[workbuddy] failover disabled via sidecar, host write failed: auth=%s err=%v", authID, err)
+		markFailoverDisabledLocalAt(authID, authIndex, at)
+		return true
 	}
 	markFailoverDisabledLocalAt(authID, authIndex, at)
 	wait := failoverWaitConfirmed
@@ -499,7 +511,7 @@ func disableAccountForFailover(authID, model string) bool {
 //
 // [参数] authIndex：宿主 auth_index，空串时按 authID 反查；authID：账号标识。
 // [返回] true 表示已解除禁用。
-// 最近修改时间：2026-10-22；改动原因：与禁用共用文档锁，避免恢复与再禁用交错写盘。
+// 最近修改时间：2026-10-27；改动原因：宿主文档不可读时也要清 sidecar，避免永久排除。
 func reenableAccountForFailover(authIndex, authID string) bool {
 	authIndex = strings.TrimSpace(authIndex)
 	if authIndex == "" {
@@ -517,11 +529,20 @@ func reenableAccountForFailover(authIndex, authID string) bool {
 
 	phys, err := failoverGetPhysicalFn(authIndex)
 	if err != nil || phys == nil || len(phys.JSON) == 0 {
-		return false
+		// 宿主文档读不到时仍要解除：调用方（探活成功 / 成功请求）已经证明这个号
+		// 可用，而 sidecar 是本机制自己的记录，不清就会让它在路由判据里永久被排除，
+		// 且探活候选也只认 sidecar，等于自造不可恢复的死角。
+		clearFailoverDisabledLocal(authID, authIndex)
+		forgetFailoverProbeModel(authID)
+		failoverStateClearDisabled(authID)
+		log.Printf("[workbuddy] failover re-enabled via sidecar, host doc unavailable auth=%s", authID)
+		return true
 	}
 	doc := parseFailoverAuthDoc(phys.JSON)
 	if !doc.failoverDisable || doc.manualDisable {
-		// 不是本机制禁的，或用户已表达禁用意图：绝不解除他人的禁用。
+		// 不是本机制禁的，或用户已表达禁用意图：绝不解除他人的禁用，也不返回成功。
+		// 外部启用（盘上已 disabled:false）造成的 sidecar 残留由 reconcileFailoverLocalSet
+		// 统一对账，不在本函数里越权处理。
 		return false
 	}
 
@@ -548,6 +569,9 @@ func reenableAccountForFailover(authIndex, authID string) bool {
 	resetCooldownState(authID)
 	forgetFailoverProbeModel(authID)
 	clearFailoverDisabledLocal(authID, authIndex)
+	// sidecar 同步解除：它是路由判据的权威来源，只解盘上会让账号在
+	// scheduler.pick 里继续被排除，形成「盘上已启用、插件的号却回不来」。
+	failoverStateClearDisabled(authID)
 	wait := failoverWaitConfirmed
 	go confirmFailoverHostState(wait, authIndex, false, authID, phys.Path)
 	log.Printf("[workbuddy] failover re-enabled account: auth=%s", authID)
@@ -561,15 +585,18 @@ type failoverProbeCandidate struct {
 	model     string
 }
 
-// failoverProbeTargets 从盘上枚举被本机制禁用的账号。
+// failoverProbeTargets 枚举被本机制禁用的账号。
 //
-// 真相源是物理文件而不是内存集合：禁用状态本身就在盘上，插件热重载或进程重启后
-// 不需要重建步骤就能继续把号探回来，也不会出现「内存记了、盘上没有」的双态。
-// host.auth.list 会原样返回 disabled 条目（宿主只在 runtime-only 或文件已消失时
-// 才隐藏），因此禁用中的账号仍在候选范围内。
+// 真相源是 sidecar 与物理文件，而不是内存集合：插件热重载或进程重启后内存集合
+// 为空，只有这两处能让被禁用的号继续被探回来，不会出现「内存记了、盘上没有」的双态。
+//
+// 为什么不能只认宿主 f.Disabled（2026-10-27 修正）：宿主没吸收写盘时列表仍报
+// enabled，而本机制已把它排除出路由。若探活也跳过它，这个号就再没有任何恢复通道，
+// 只能人工启用——比不排除更糟。故判据改为「sidecar 记禁用」或「盘上带本机制标记」，
+// 宿主状态只用于日志区分。
 //
 // [返回] 待探活候选列表；无候选时返回 nil。
-// 最近修改时间：2026-10-21；改动原因：新增，取代按内存冷却挑候选。
+// 最近修改时间：2026-10-27；改动原因：候选判据改为认 sidecar，避免写盘未生效时永久排除。
 func failoverProbeTargets() []failoverProbeCandidate {
 	files, err := failoverListFn()
 	if err != nil {
@@ -578,20 +605,32 @@ func failoverProbeTargets() []failoverProbeCandidate {
 	out := make([]failoverProbeCandidate, 0, len(files))
 	for _, f := range files {
 		authIndex := strings.TrimSpace(f.AuthIndex)
-		if !f.Disabled || authIndex == "" {
+		if authIndex == "" {
 			continue
 		}
+		sidecarDisabled := failoverStateIsDisabled(f.ID)
 		phys, errGet := failoverGetPhysicalFn(authIndex)
 		if errGet != nil || phys == nil || len(phys.JSON) == 0 {
+			// 宿主文档读不到时只有 sidecar 可依：它记着禁用就仍要探活，
+			// 否则该号既不被路由、也不被恢复。
+			if sidecarDisabled {
+				out = append(out, failoverProbeCandidate{authIndex: authIndex, authID: f.ID, model: failoverProbeModelFor(f.ID)})
+			}
 			continue
 		}
 		doc := parseFailoverAuthDoc(phys.JSON)
-		if !doc.failoverDisable {
+		if !doc.failoverDisable && !sidecarDisabled {
 			continue
 		}
 		model := failoverProbeModelFor(f.ID)
 		if model == "" {
 			model = doc.failoverModel
+		}
+		if model == "" {
+			// sidecar 是进程重启后模型的唯一来源：内存集合为空时靠它回放。
+			if entry, ok := failoverStateGet(f.ID); ok {
+				model = entry.Model
+			}
 		}
 		out = append(out, failoverProbeCandidate{authIndex: authIndex, authID: f.ID, model: model})
 	}
@@ -685,18 +724,24 @@ func runFailoverTickNonOverlap(tick func()) bool {
 // 漏杀会把号永久挡在路由外，所以取保守方向。
 //
 // [返回] 本轮清除的键数（仅供测试与日志观察）。
-// 最近修改时间：2026-10-21；改动原因：新增，防止外部启用后本地排除集合卡死。
+// 最近修改时间：2026-10-27；改动原因：判据由「宿主报 enabled」改为「盘上确实已启用」，避免把写盘未吸收误判成用户启用。
 func reconcileFailoverLocalSet() int {
 	files, err := failoverListFn()
 	if err != nil {
 		// 列表不可用时什么都不清：此时「查不到」不代表「已恢复」。
 		return 0
 	}
-	enabled := make(map[string]struct{})
+	// 1. 收集「宿主报 enabled」的候选，并记下它们的 auth_index。
+	// 宿主报 enabled 有两种成因，必须靠盘上状态区分：
+	//   - 用户在外面手动启用 → 盘上 disabled:false，应当清排除；
+	//   - 本机制的写盘还没被宿主吸收 → 盘上仍 disabled:true + 本机制标记，
+	//     此时清掉排除就等于把刚摘掉的坏号放回流量（2026-10-27 修正）。
+	hostEnabled := make(map[string]string)
 	for _, f := range files {
 		if f.Disabled {
 			continue
 		}
+		authIndex := strings.TrimSpace(f.AuthIndex)
 		for _, raw := range []string{f.ID, f.Name, f.AuthIndex} {
 			key := strings.ToLower(strings.TrimSpace(raw))
 			if key == "" {
@@ -704,22 +749,59 @@ func reconcileFailoverLocalSet() int {
 			}
 			// auth_index 保持原样即可命中；文件名/ID 还要再过一次归一化，
 			// 才能对上 markFailoverDisabledLocal 写入的裸 UID 形态。
-			enabled[key] = struct{}{}
+			hostEnabled[key] = authIndex
 			if norm := normalizeFailoverKey(raw); norm != "" {
-				enabled[norm] = struct{}{}
+				hostEnabled[norm] = authIndex
 			}
 		}
 	}
+	if len(hostEnabled) == 0 {
+		return 0
+	}
+
+	// 2. 盘上确实已启用的键才进入清除集。读盘走宿主 RPC，不能持 failoverProbeModelMu。
+	trulyEnabled := make(map[string]struct{})
+	for key, authIndex := range hostEnabled {
+		if authIndex == "" {
+			continue
+		}
+		phys, errGet := failoverGetPhysicalFn(authIndex)
+		if errGet != nil || phys == nil || len(phys.JSON) == 0 {
+			// 盘读不到无法判定，保持排除（漏杀可自愈，错杀会让号永久挡在路由外）。
+			continue
+		}
+		if parseFailoverAuthDoc(phys.JSON).disabled {
+			continue
+		}
+		trulyEnabled[key] = struct{}{}
+	}
+	if len(trulyEnabled) == 0 {
+		return 0
+	}
+
+	// 3. 清本地集合。
 	failoverProbeModelMu.Lock()
-	defer failoverProbeModelMu.Unlock()
 	cleared := 0
 	for key := range failoverDisabledLocal {
-		if _, ok := enabled[key]; !ok {
+		if _, ok := trulyEnabled[key]; !ok {
 			continue
 		}
 		delete(failoverDisabledLocal, key)
 		delete(failoverDisableAtLocal, key)
 		delete(failoverProbeModels, key)
+		cleared++
+	}
+	failoverProbeModelMu.Unlock()
+
+	// 4. sidecar 同步对账：它是路由判据的权威来源，比本地集合更持久。外部启用后
+	// 若不一起清，账号会在 scheduler.pick 里被永久排除，而盘上与宿主都已可用。
+	// 必须在 failoverProbeModelMu 释放后再调：failoverStateClearDisabled 自己取
+	// failoverStateMu 并写盘，持锁调用会与其它 sidecar 写入形成锁序风险。
+	for _, key := range failoverStateDisabledIDs() {
+		if _, ok := trulyEnabled[key]; !ok {
+			continue
+		}
+		failoverStateClearDisabled(key)
 		cleared++
 	}
 	return cleared
