@@ -30,13 +30,13 @@ func TestModelCooldownOnlyBlocksSameModel(t *testing.T) {
 		t.Fatal("账号×模型级冷却不应污染账号维度")
 	}
 
-	// 模型维度计数从 1 开始，阶梯与账号层一致（60s）。
+	// 模型维度计数从 1 开始，阶梯与账号层一致（10 分钟）。
 	count, until, ok := authModelFailoverSnapshot(authID, badModel)
 	if !ok || count != 1 {
 		t.Fatalf("模型维度计数 = %d, ok = %v; want 1", count, ok)
 	}
-	if remain := time.Until(until); remain <= 55*time.Second || remain > 65*time.Second {
-		t.Fatalf("模型维度冷却剩余 = %v, want ~60s", remain)
+	if remain := time.Until(until); remain <= 10*time.Minute-5*time.Second || remain > 10*time.Minute+5*time.Second {
+		t.Fatalf("模型维度冷却剩余 = %v, want ~10m", remain)
 	}
 }
 
@@ -69,7 +69,7 @@ func TestModelCooldownLadderIncrements(t *testing.T) {
 	const authID = "auth-model-ladder"
 	const model = "deepseek-v4.1-flash"
 
-	wants := []time.Duration{60 * time.Second, 120 * time.Second, 180 * time.Second}
+	wants := []time.Duration{10 * time.Minute, 20 * time.Minute, 30 * time.Minute}
 	for i, want := range wants {
 		recordAccountFailureForModel(authID, model, 429, "rate limit")
 		count, until, ok := authModelFailoverSnapshot(authID, model)

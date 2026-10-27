@@ -14,16 +14,17 @@
 // 调度器路由的新请求一律跳过该账号，让会话改落到健康账号，而不是继续往同一个
 // 已耗尽的账号上堆失败。
 //
-// 冷却时长按连续失败次数阶梯递增：第 1 次 60s、第 2 次 120s、第 3 次 180s……
-// 封顶 10 分钟。瞬时过载类失败（429 无额度标记 / 软限流文案 / 上游零字节断流）
-// 与硬失败走同一条阶梯路径，不再单独豁免计数。连续失败计数同时用于面板
-// 「失败N次」展示；异常池隔离已于 2026-09-08 移除，计数不再触发任何冻结或停用。
+// 冷却时长按连续失败次数阶梯递增：第 1 次 10 分钟、第 2 次 20 分钟、第 3 次
+// 30 分钟……封顶 60 分钟。瞬时过载类失败（429 无额度标记 / 软限流文案 /
+// 上游零字节断流）与硬失败走同一条阶梯路径，不再单独豁免计数。连续失败计数
+// 同时用于面板「失败N次」展示；异常池隔离已于 2026-09-08 移除，计数不再触发
+// 任何冻结或停用。
 //
 // 任意一次成功请求都会清零计数并立即解除冷却。冷却状态只存内存：不写 auth
 // 文件、不写 DB，进程重启即清空。可通过插件配置 `account_failover: false`
 // 整体关闭该机制。
 //
-// 最近修改时间：2026-10-19；改动原因：阶梯基数由 30s 调整为 60s（仍为 base × count、上限 10 分钟），软失败并入计数。
+// 最近修改时间：2026-10-28；改动原因：阶梯基数由 60s 调整为 10 分钟、上限由 10 分钟调整为 60 分钟（封顶档 6）。
 package main
 
 import (
@@ -34,13 +35,13 @@ import (
 )
 
 // failoverCooldownBase 是阶梯基数：每次连续失败使冷却窗口增加一个基数，
-// 首次失败即冷却一个基数（60s），第 n 次失败冷却 n × 60s。
-const failoverCooldownBase = 60 * time.Second
+// 首次失败即冷却一个基数（10 分钟），第 n 次失败冷却 n × 10 分钟。
+const failoverCooldownBase = 10 * time.Minute
 
-// failoverCooldownMax 是阶梯上限：连续失败再多也不超过 10 分钟。
-const failoverCooldownMax = 10 * time.Minute
+// failoverCooldownMax 是阶梯上限：连续失败再多也不超过 60 分钟。
+const failoverCooldownMax = 60 * time.Minute
 
-// failoverCooldownLadderCap 是达到上限所需的连续失败次数（10min / 60s = 10）。
+// failoverCooldownLadderCap 是达到上限所需的连续失败次数（60min / 10min = 6）。
 // 先比较次数再相乘，避免 count 极大时的乘法溢出。
 const failoverCooldownLadderCap = int(failoverCooldownMax / failoverCooldownBase)
 

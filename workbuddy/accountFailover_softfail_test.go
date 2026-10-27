@@ -14,7 +14,7 @@ import (
 // 阶梯的代价（抖动期间冷却更久）由「一次成功即清零」兜底。
 
 // TestTransientThrottle_Soft429LadderCooldown 锁定软失败新语义：
-// 连续 12 次 429 计数逐次递增，冷却沿 60s×count 阶梯增长。
+// 连续 12 次 429 计数逐次递增，冷却沿 10min×count 阶梯增长。
 func TestTransientThrottle_Soft429LadderCooldown(t *testing.T) {
 	resetFailover(t)
 	for i := 0; i < 12; i++ {
@@ -50,7 +50,7 @@ func TestTransientThrottle_ZeroByteStreamCountsOnLadder(t *testing.T) {
 		if !ok || count != 1 {
 			t.Fatalf("zero-byte stream must advance count to 1 (got count=%d ok=%v)", count, ok)
 		}
-		assertCooldownNear(t, id, 60*time.Second)
+		assertCooldownNear(t, id, 10*time.Minute)
 		if !isAccountCoolingDown(id) {
 			t.Fatalf("zero-byte stream must trigger cooldown: %q", body)
 		}

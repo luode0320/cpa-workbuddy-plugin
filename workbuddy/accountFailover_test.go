@@ -38,7 +38,7 @@ func assertCooldownNear(t *testing.T, authID string, tier time.Duration) {
 
 // TestFailoverCooldownFor_Ladder 锁定阶梯时长契约：count 每增 1 冷却加一个基数，
 // 到 failoverCooldownLadderCap 后恒为上限。
-// 最近修改时间：2026-10-19；改动原因：基数由 30s 调整为 60s（仍为 base × count 线性阶梯、上限 10 分钟）。
+// 最近修改时间：2026-10-28；改动原因：基数由 60s 调整为 10 分钟、上限由 10 分钟调整为 60 分钟（封顶档 6）。
 func TestFailoverCooldownFor_Ladder(t *testing.T) {
 	cases := []struct {
 		count int
@@ -46,22 +46,22 @@ func TestFailoverCooldownFor_Ladder(t *testing.T) {
 	}{
 		{0, 0},
 		{-1, 0},
-		{1, 60 * time.Second},
-		{2, 120 * time.Second},
-		{3, 180 * time.Second},
-		{4, 240 * time.Second},
-		{9, 540 * time.Second},
-		{10, 10 * time.Minute},
-		{11, 10 * time.Minute},
-		{99, 10 * time.Minute},
+		{1, 10 * time.Minute},
+		{2, 20 * time.Minute},
+		{3, 30 * time.Minute},
+		{4, 40 * time.Minute},
+		{5, 50 * time.Minute},
+		{6, 60 * time.Minute},
+		{7, 60 * time.Minute},
+		{99, 60 * time.Minute},
 	}
 	for _, tc := range cases {
 		if got := failoverCooldownFor(tc.count); got != tc.want {
 			t.Fatalf("failoverCooldownFor(%d) = %v, want %v", tc.count, got, tc.want)
 		}
 	}
-	if failoverCooldownLadderCap != 10 {
-		t.Fatalf("failoverCooldownLadderCap = %d, want 10", failoverCooldownLadderCap)
+	if failoverCooldownLadderCap != 6 {
+		t.Fatalf("failoverCooldownLadderCap = %d, want 6", failoverCooldownLadderCap)
 	}
 	if failoverCooldownFor(failoverCooldownLadderCap-1) >= failoverCooldownMax {
 		t.Fatal("档位必须低于上限，否则封顶点与递增语义冲突")
@@ -70,13 +70,13 @@ func TestFailoverCooldownFor_Ladder(t *testing.T) {
 
 func TestRecordAccountFailure_LadderCooldown(t *testing.T) {
 	resetFailover(t)
-	// 硬失败逐次递增：60s → 120s → 180s → 240s。
+	// 硬失败逐次递增：10m → 20m → 30m → 40m。
 	// (403 是硬账号级失败；429 见 accountFailover_softfail_test.go 的阶梯断言。)
 	wants := []time.Duration{
-		60 * time.Second,
-		120 * time.Second,
-		180 * time.Second,
-		240 * time.Second,
+		10 * time.Minute,
+		20 * time.Minute,
+		30 * time.Minute,
+		40 * time.Minute,
 	}
 	for i, want := range wants {
 		recordAccountFailure("acc-1", 403, "forbidden")
@@ -136,11 +136,11 @@ func TestRecordAccountFailure_Business4xxExcluded(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("count = %d after two 400s, want 0", count)
 	}
-	// 403 首次计入为 60s，第二次递增到 120s（阶梯）。
+	// 403 首次计入为 10 分钟，第二次递增到 20 分钟（阶梯）。
 	recordAccountFailure("acc-1", 403, "forbidden")
-	assertCooldownNear(t, "acc-1", 60*time.Second)
+	assertCooldownNear(t, "acc-1", 10*time.Minute)
 	recordAccountFailure("acc-1", 403, "forbidden")
-	assertCooldownNear(t, "acc-1", 120*time.Second)
+	assertCooldownNear(t, "acc-1", 20*time.Minute)
 }
 
 // TestRecordAccountFailure_AccountLevel4xxCounted locks in the v0.12
@@ -267,9 +267,9 @@ func TestFailoverCooldownExpiry(t *testing.T) {
 	if isAccountCoolingDown("acc-1") {
 		t.Fatal("account should be routable after cooldown expires")
 	}
-	// 再次失败沿阶梯递增：count=2 → 120s。
+	// 再次失败沿阶梯递增：count=2 → 20 分钟。
 	recordAccountFailure("acc-1", 403, "forbidden")
-	assertCooldownNear(t, "acc-1", 120*time.Second)
+	assertCooldownNear(t, "acc-1", 20*time.Minute)
 }
 
 func TestFailoverDisabled(t *testing.T) {
