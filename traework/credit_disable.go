@@ -20,6 +20,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -141,6 +142,7 @@ func disableForLowCredits(authIndex, authID string, sa *traeAuth, cr *traeCredit
 	// 4. 落盘。走 failoverPersistFn 而不是 persistAuthDirect：两者生产路径相同
 	// （都是直写物理文件，不经 host.auth.save），但前者有测试注入点，与
 	// failover_disable.go 的写盘出口保持同一条。
+	// 优先经宿主管理 API 写进路由真相源；未配置密钥或调用失败时回落写盘。
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		return err
@@ -148,6 +150,14 @@ func disableForLowCredits(authIndex, authID string, sa *traeAuth, cr *traeCredit
 	name := strings.TrimSpace(phys.Name)
 	if name == "" {
 		name = authFileNameFor(sa)
+	}
+	apiErr := setHostAuthDisabled(name, authIndex, true)
+	if apiErr == nil {
+		log.Printf("[traework] low-credit disabled via cpa api: auth=%s remain=%d below=%d", authID, cr.TotalRemain, below)
+		return nil
+	}
+	if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+		log.Printf("[traework] cpa disable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
 	}
 	if err := failoverPersistFn(name, phys.Path, "", raw); err != nil {
 		return err
@@ -189,7 +199,8 @@ func reenableForLowCredits(authIndex, authID string, sa *traeAuth, cr *traeCredi
 	delete(doc, creditDisableBelowKey)
 	delete(doc, creditDisableAtKey)
 
-	// 3. 落盘（与 disableForLowCredits 同一出口）。
+	// 3. 落盘（与 disableForLowCredits 同一出口）。恢复优先走宿主管理 API：
+	// 宿主真相源里的 disabled 不置回 false，宿主会继续挡住这个号。
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		return err
@@ -197,6 +208,14 @@ func reenableForLowCredits(authIndex, authID string, sa *traeAuth, cr *traeCredi
 	name := strings.TrimSpace(phys.Name)
 	if name == "" {
 		name = authFileNameFor(sa)
+	}
+	apiErr := setHostAuthDisabled(name, authIndex, false)
+	if apiErr == nil {
+		log.Printf("[traework] low-credit re-enabled via cpa api: auth=%s remain=%d", authID, cr.TotalRemain)
+		return nil
+	}
+	if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+		log.Printf("[traework] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
 	}
 	if err := failoverPersistFn(name, phys.Path, "", raw); err != nil {
 		return err

@@ -19,6 +19,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -168,8 +169,19 @@ func persistExhaustedDisable(authIndex string, sa *traeAuth, cr *traeCredits) er
 	if name == "" {
 		name = authFileNameFor(sa)
 	}
-	if err := persistAuthDirect(name, phys.Path, "", raw); err != nil {
-		return err
+	// 优先经宿主管理 API 写进路由真相源；未配置密钥或调用失败时回落直写。
+	apiErr := setHostAuthDisabled(name, authIndex, true)
+	if apiErr != nil {
+		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			log.Printf("[lifecycle] cpa disable api failed, fallback to disk: auth=%s err=%v", authIndex, apiErr)
+		}
+		if err := persistAuthDirect(name, phys.Path, "", raw); err != nil {
+			return err
+		}
+	}
+	if apiErr == nil {
+		log.Printf("[lifecycle] exhausted-disable %s via cpa api: credits exhausted (remain=%d used=%d)", authIndex, remain, used)
+		return nil
 	}
 	log.Printf("[lifecycle] exhausted-disable %s: credits exhausted (remain=%d used=%d), disabled + exhausted_disable set", authIndex, remain, used)
 	return nil
@@ -211,8 +223,20 @@ func persistExhaustedReenable(authIndex string, sa *traeAuth, cr *traeCredits) e
 	if name == "" {
 		name = authFileNameFor(sa)
 	}
-	if err := persistAuthDirect(name, phys.Path, "", raw); err != nil {
-		return err
+	// 恢复优先走宿主管理 API：宿主真相源里的 disabled 不置回 false，
+	// 宿主会继续挡住这个号。未配密钥或调用失败时回落直写。
+	apiErr := setHostAuthDisabled(name, authIndex, false)
+	if apiErr != nil {
+		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			log.Printf("[lifecycle] cpa enable api failed, fallback to disk: auth=%s err=%v", authIndex, apiErr)
+		}
+		if err := persistAuthDirect(name, phys.Path, "", raw); err != nil {
+			return err
+		}
+	}
+	if apiErr == nil {
+		log.Printf("[lifecycle] exhausted-reenable %s via cpa api: credits recovered (remain=%d)", authIndex, remain)
+		return nil
 	}
 	log.Printf("[lifecycle] exhausted-reenable %s: credits recovered (remain=%d), disabled flag cleared", authIndex, remain)
 	return nil

@@ -1,5 +1,16 @@
 # TraeWork Plugin Changelog
 
+## 0.5.4
+
+### Fix - 禁用状态改由 CPA 管理接口写入宿主路由真相源
+
+- 缺陷(生产实证 2026-10-28): 失败禁用／低额禁用／额度耗尽禁用原本只直写物理 auth 文件的 `disabled` 字段。宿主用 MySQL 存储时物理文件只是镜像，路由真相源在 DB；宿主下一次 persist 会把镜像覆盖回 `disabled:false`，插件写的归属标记也被白名单裁剪丢弃，导致插件认为已禁用、宿主照样把请求发过来。
+- 修复: 新增 `cpa_disable_sync.go`，三处禁用/恢复改为调用 `PATCH /v0/management/auth-files/status`——与认证文件管理页 toggle 同一条链路，宿主内存态与 MySQL 同时被改写。
+- 兜底: 未配置密钥时该通道整体不启用（行为与 0.5.3 完全一致）；配置了但调用失败时回落原写盘路径，并打 `cpa disable api failed, fallback to disk` 降级日志。
+- 配置: 新增 `cpa_management_url`（默认 `http://127.0.0.1:8317`）与 `cpa_management_key`（config_yaml 优先 → env `WB_CPA_MANAGEMENT_KEY`）。密钥只用于请求头，任何日志与回显都不输出其值。
+- 边界: 只改造插件自动写入的禁用；manual_disable（用户在宿主手动关的号）不由本插件调用该接口。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增用例锁定三条路径（走 API 不写盘／未配密钥写盘零回归／API 失败回落写盘）。
+
 ## 0.5.3
 
 ### Feat - 进面板不再触发上游刷新，改为纯读积分快照

@@ -38,6 +38,10 @@ type traeConfig struct {
 	// UsageReportURL / UsageReportKey optional CPAMP usage-import endpoint.
 	UsageReportURL string
 	UsageReportKey string
+	// CPAManagementURL / CPAManagementKey 用于调用宿主管理 API，把禁用状态
+	// 写进宿主路由真相源（MySQL 存储下直写物理文件会被 persist 覆盖）。
+	CPAManagementURL string
+	CPAManagementKey string
 }
 
 // Defaults mirror the verified gateway configuration (trae-gateway-go).
@@ -115,6 +119,24 @@ func configure(raw []byte) {
 	cfgMu.Lock()
 	defer cfgMu.Unlock()
 	applyConfigLines(traeCfg, lines)
+	// cpa_management_*: 宿主管理 API 地址与密钥。密钥缺失时通道不启用，
+	// 禁用/恢复继续走写盘兜底（行为与旧版一致）。
+	prevConfigured := cpaDisableSyncConfigured()
+	prevURL, _ := loadedCPAManagement()
+	setCPAManagement(traeCfg.CPAManagementURL, cpaManagementSecretResolver(traeCfg.CPAManagementKey))
+	if nowConfigured := cpaDisableSyncConfigured(); nowConfigured != prevConfigured {
+		// 只打印是否启用，绝不打印密钥本身。
+		state := "disabled"
+		if nowConfigured {
+			state = "enabled"
+		}
+		curURL, _ := loadedCPAManagement()
+		log.Printf("[traework] cpa management sync %s (url=%s)", state, curURL)
+	} else if nowConfigured {
+		if curURL, _ := loadedCPAManagement(); curURL != prevURL {
+			log.Printf("[traework] cpa management sync url changed: %s", curURL)
+		}
+	}
 }
 
 // yamlLines converts the config_yaml bytes into trimmed, comment-stripped
@@ -216,6 +238,12 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 				cfg.ManagementKey = v
 			}
 			setManagementKey(cfg.ManagementKey)
+		case "cpa_management_url":
+			// 宿主管理 API 地址，默认 127.0.0.1:8317；空值回落默认。
+			cfg.CPAManagementURL = strings.TrimSpace(val)
+		case "cpa_management_key":
+			// 宿主管理密钥：配置后禁用/恢复改走宿主 auth-files/status 接口。
+			cfg.CPAManagementKey = strings.TrimSpace(val)
 		case "usage_report_url":
 			if v := strings.TrimSpace(val); v != "" {
 				cfg.UsageReportURL = v

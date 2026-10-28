@@ -278,7 +278,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.5.3"
+var version = "0.5.4"
 
 func wbRegistration() registration {
 	return registration{
@@ -299,6 +299,8 @@ func wbRegistration() registration {
 				{Name: "management_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：管理类接口的 Bearer 密钥（纵深防御；留空则信任宿主中间件）。"},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：CPAMP 用量上报地址（NDJSON）。"},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：用量上报使用的 CPAMP 管理密钥。"},
+				{Name: "cpa_management_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：CPA 宿主管理 API 地址，默认 http://127.0.0.1:8317。仅当宿主管理端口非默认时才需要填。"},
+				{Name: "cpa_management_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：CPA 宿主管理密钥。填写后，失败禁用／低额禁用／额度耗尽禁用会改为调用宿主 auth-files/status 接口写入路由真相源。留空则沿用旧的直写物理文件路径。也可用环境变量 WB_CPA_MANAGEMENT_KEY。"},
 				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
 				{Name: "usage_feed_path", Type: pluginapi.ConfigFieldTypeString, Description: "可选：共享用量数据流路径（默认 <CLIProxyAPI 根目录>/data/token-usage-feed.ndjson）。必须与 token-usage-tracker 的 usage_feed_path 保持一致。"},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每4小时 token 保号刷新（默认开启）：access token 临近过期时通过 ExchangeToken 自动续期；刷新令牌失效的账号仅记录过期备注不停用（停用需面板手动操作），路由层靠失败冷却自动避开。"},
