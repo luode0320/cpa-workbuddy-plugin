@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -1037,4 +1038,94 @@ func funcNameOf(line string) string {
 		return fields[len(fields)-1]
 	}
 	return ""
+}
+
+// withCPADisableSync 把管理 API 注入点替换为记录器，返回调用记录与恢复函数。
+// [参数] t：测试上下文；enabled：是否配置密钥（false 模拟旧部署）。
+// [返回] 调用记录切片指针与恢复函数。
+// 最近修改时间：2026-10-29；改动原因：新增，供禁用同步路径断言复用。
+func withCPADisableSync(t *testing.T, enabled bool) (*[]cpaAuthFileStatusRequest, func()) {
+	t.Helper()
+	origDo := cpaDisableSyncDo
+	origURL, origKey := loadedCPAManagement()
+	var calls []cpaAuthFileStatusRequest
+	if enabled {
+		setCPAManagement("http://127.0.0.1:8317", "test-key")
+		cpaDisableSyncDo = func(req *http.Request) (*hostHTTPResponse, error) {
+			var body cpaAuthFileStatusRequest
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				return nil, err
+			}
+			calls = append(calls, body)
+			return &hostHTTPResponse{StatusCode: http.StatusOK}, nil
+		}
+	} else {
+		setCPAManagement("", "")
+	}
+	return &calls, func() {
+		cpaDisableSyncDo = origDo
+		setCPAManagement(origURL, origKey)
+	}
+}
+
+// TestFailoverDisable_UsesCPAAPIWhenConfigured 锁定：配了密钥就走宿主 API，不写盘。
+func TestFailoverDisable_UsesCPAAPIWhenConfigured(t *testing.T) {
+	resetFailover(t)
+	h := newFailoverFakeHost(t)
+	calls, restore := withCPADisableSync(t, true)
+	defer restore()
+
+	h.addAccount("auth-api", "idx-api", nil)
+	if !disableAccountForFailover("auth-api", "glm-4.6") {
+		t.Fatal("禁用应成功")
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("API 调用次数 = %d; want 1", len(*calls))
+	}
+	if got := (*calls)[0]; !got.Disabled || got.AuthIndex != "idx-api" {
+		t.Fatalf("API 请求体 = %+v", got)
+	}
+	if h.writeCount() != 0 {
+		t.Fatalf("走 API 时不应写盘，实际 %d", h.writeCount())
+	}
+}
+
+// TestFailoverDisable_FallsBackToDiskWhenNotConfigured 锁定未配密钥的零回归。
+func TestFailoverDisable_FallsBackToDiskWhenNotConfigured(t *testing.T) {
+	resetFailover(t)
+	h := newFailoverFakeHost(t)
+	_, restore := withCPADisableSync(t, false)
+	defer restore()
+
+	h.addAccount("auth-disk", "idx-disk", nil)
+	if !disableAccountForFailover("auth-disk", "glm-4.6") {
+		t.Fatal("禁用应成功")
+	}
+	if h.writeCount() != 1 {
+		t.Fatalf("未配密钥应写盘一次，实际 %d", h.writeCount())
+	}
+}
+
+// TestFailoverDisable_FallsBackToDiskOnAPIError 锁定 API 失败必须回落写盘。
+func TestFailoverDisable_FallsBackToDiskOnAPIError(t *testing.T) {
+	resetFailover(t)
+	h := newFailoverFakeHost(t)
+	origDo := cpaDisableSyncDo
+	origURL, origKey := loadedCPAManagement()
+	defer func() {
+		cpaDisableSyncDo = origDo
+		setCPAManagement(origURL, origKey)
+	}()
+	setCPAManagement("http://127.0.0.1:8317", "test-key")
+	cpaDisableSyncDo = func(*http.Request) (*hostHTTPResponse, error) {
+		return &hostHTTPResponse{StatusCode: 500, Body: []byte(`{"error":"boom"}`)}, nil
+	}
+
+	h.addAccount("auth-err", "idx-err", nil)
+	if !disableAccountForFailover("auth-err", "glm-4.6") {
+		t.Fatal("API 失败时禁用仍应生效（走写盘）")
+	}
+	if h.writeCount() != 1 {
+		t.Fatalf("应回落写盘一次，实际 %d", h.writeCount())
+	}
 }

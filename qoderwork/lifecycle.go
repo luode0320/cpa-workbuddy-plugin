@@ -10,7 +10,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -97,8 +99,16 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) 
 	if err != nil {
 		return err
 	}
-	if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
-		return err
+	// 恢复优先走宿主管理 API：宿主真相源里的 disabled 不置回 false，
+	// 宿主会继续挡住这个号。未配密钥或调用失败时回落直写物理文件。
+	apiErr := setHostAuthDisabled(name, authIndex, false)
+	if apiErr != nil {
+		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			log.Printf("[qoderwork] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+		}
+		if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
+			return err
+		}
 	}
 	rememberLifecycleState(authID, false, note)
 	accountCache.Delete(authID)

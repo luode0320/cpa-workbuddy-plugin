@@ -348,7 +348,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.12.2"
+var version = "0.12.3"
 
 func wbRegistration() registration {
 	return registration{
@@ -378,6 +378,8 @@ func wbRegistration() registration {
 				{Name: "slow_min_pool_size", Type: pluginapi.ConfigFieldTypeInteger, Description: "账号池准入下限（默认 20）：账号总数（启用 + 停用）须严格大于该值才触发慢速判定。池子太小时下四分位基线退化，两个账号里任一次抖动就会让其中一个被判慢、互相顶替。"},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 用量上报地址（默认 http://cpa-manager-plus:18317/v0/management/usage/import；也可用环境变量 USAGE_REPORT_URL）。"},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 管理密钥。优先从环境变量 CPAMP_ADMIN_KEY / USAGE_REPORT_KEY 或密钥文件 /run/secrets/cpamp_admin_key 自动探测。"},
+				{Name: "cpa_management_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：CPA 宿主管理 API 地址，默认 http://127.0.0.1:8317。仅当宿主管理端口非默认时才需要填。"},
+				{Name: "cpa_management_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：CPA 宿主管理密钥。填写后，失败禁用与额度恢复会改为调用宿主 auth-files/status 接口写入路由真相源。留空则沿用旧的直写物理文件路径。也可用环境变量 WB_CPA_MANAGEMENT_KEY。"},
 				{Name: "usage_feed_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "将每次请求的 token 用量追加写入共享 NDJSON 数据流，供 token-usage-tracker 插件消费（默认开启）。"},
 				{Name: "usage_feed_path", Type: pluginapi.ConfigFieldTypeString, Description: "可选：共享用量数据流路径（默认 <CLIProxyAPI 根目录>/data/token-usage-feed.ndjson）。必须与 token-usage-tracker 的 usage_feed_path 保持一致。"},
 			},

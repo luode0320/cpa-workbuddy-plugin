@@ -33,6 +33,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"strings"
 	"sync"
@@ -760,6 +761,17 @@ func disableAccountForFailover(authID, model string) bool {
 		log.Printf("[qoderwork] failover disable: sidecar written, marshal auth doc: %v", err)
 		return true
 	}
+	// 优先经宿主管理 API 写进路由真相源（MySQL）；未配置密钥或调用失败时回落到
+	// 直写物理文件，保证排除不会完全失效。
+	apiErr := setHostAuthDisabled(phys.Name, authIndex, true)
+	if apiErr == nil {
+		markFailoverDisabledLocalAt(authID, authIndex, at)
+		log.Printf("[qoderwork] failover disabled account via cpa api: auth=%s model=%s", authID, strings.TrimSpace(model))
+		return true
+	}
+	if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+		log.Printf("[qoderwork] cpa disable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+	}
 	if err := failoverPersistFn(phys.Name, phys.Path, "", raw); err != nil {
 		// 宿主侧写盘失败不影响 sidecar 已经生效的排除，只是探活还要靠 sidecar 枚举。
 		log.Printf("[qoderwork] failover disable: sidecar written, host write failed auth=%s err=%v", authID, err)
@@ -826,8 +838,16 @@ func reenableAccountForFailover(authIndex, authID string) bool {
 	if err != nil {
 		return failoverStateClearAndReport(authID, "marshal failed")
 	}
-	if err := failoverPersistFn(phys.Name, phys.Path, "", raw); err != nil {
-		log.Printf("[qoderwork] failover re-enable host write failed, clearing sidecar only: auth=%s err=%v", authID, err)
+	// 恢复同样优先走宿主管理 API：宿主真相源里的 disabled 不置回 false，
+	// 宿主会继续把这个号挡在路由外，插件侧解除就成了空转。
+	apiErr := setHostAuthDisabled(phys.Name, authIndex, false)
+	if apiErr != nil {
+		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			log.Printf("[qoderwork] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+		}
+		if err := failoverPersistFn(phys.Name, phys.Path, "", raw); err != nil {
+			log.Printf("[qoderwork] failover re-enable host write failed, clearing sidecar only: auth=%s err=%v", authID, err)
+		}
 	}
 	// 解除禁用必须同时清掉内存冷却：双写下两侧是同一个故障的两份记录，只解一边
 	// 会得到「盘上可用、插件仍排除」的半恢复账号——宿主会把请求路由过来，但
