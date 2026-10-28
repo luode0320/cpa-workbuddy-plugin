@@ -27,6 +27,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"strings"
 	"sync"
@@ -492,6 +493,17 @@ func disableAccountForFailover(authID, model string) bool {
 	// sidecar 先于写盘：它是路由判据的权威来源，不经过宿主，因此不受宿主 persist
 	// 抹标记与 fsnotify 失效影响；写盘失败也不影响排除已经生效。
 	failoverStateMarkDisabled(authID, model)
+	// 优先经宿主管理 API 写进路由真相源（MySQL）；未配置密钥或调用失败时回落到
+	// 直写物理文件，保证排除不会完全失效。
+	apiErr := setHostAuthDisabled(phys.Name, authIndex, true)
+	if apiErr == nil {
+		markFailoverDisabledLocalAt(authID, authIndex, at)
+		log.Printf("[workbuddy] failover disabled account via cpa api: auth=%s model=%s", authID, strings.TrimSpace(model))
+		return true
+	}
+	if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+		log.Printf("[workbuddy] cpa disable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+	}
 	if err := failoverPersistFn(phys.Name, phys.Path, "", raw); err != nil {
 		log.Printf("[workbuddy] failover disabled via sidecar, host write failed: auth=%s err=%v", authID, err)
 		markFailoverDisabledLocalAt(authID, authIndex, at)
@@ -558,9 +570,17 @@ func reenableAccountForFailover(authIndex, authID string) bool {
 	if err != nil {
 		return false
 	}
-	if err := failoverPersistFn(phys.Name, phys.Path, "", raw); err != nil {
-		log.Printf("[workbuddy] failover re-enable write failed: auth=%s err=%v", authID, err)
-		return false
+	// 恢复同样优先走宿主管理 API：宿主真相源里的 disabled 不置回 false，
+	// 宿主会继续把这个号挡在路由外，插件侧解除就成了空转。
+	apiErr := setHostAuthDisabled(phys.Name, authIndex, false)
+	if apiErr != nil {
+		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			log.Printf("[workbuddy] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+		}
+		if err := failoverPersistFn(phys.Name, phys.Path, "", raw); err != nil {
+			log.Printf("[workbuddy] failover re-enable write failed: auth=%s err=%v", authID, err)
+			return false
+		}
 	}
 	// 解除禁用必须同时清掉内存冷却：双写下两侧是同一个故障的两份记录，只解一边
 	// 会得到「盘上可用、插件仍排除」的半恢复账号——宿主会把请求路由过来，但
@@ -572,6 +592,10 @@ func reenableAccountForFailover(authIndex, authID string) bool {
 	// sidecar 同步解除：它是路由判据的权威来源，只解盘上会让账号在
 	// scheduler.pick 里继续被排除，形成「盘上已启用、插件的号却回不来」。
 	failoverStateClearDisabled(authID)
+	if apiErr == nil {
+		log.Printf("[workbuddy] failover re-enabled account via cpa api: auth=%s", authID)
+		return true
+	}
 	wait := failoverWaitConfirmed
 	go confirmFailoverHostState(wait, authIndex, false, authID, phys.Path)
 	log.Printf("[workbuddy] failover re-enabled account: auth=%s", authID)

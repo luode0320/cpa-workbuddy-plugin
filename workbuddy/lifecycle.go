@@ -14,6 +14,8 @@
 package main
 
 import (
+	"errors"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -163,8 +165,16 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 		if err != nil {
 			return err
 		}
-		if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
-			return err
+		// 自动耗尽路径同样优先经宿主管理 API 写进路由真相源；未配置密钥或调用
+		// 失败时回落直写物理文件，保证排除不会完全失效。
+		apiErr := setHostAuthDisabled(name, authIndex, finalDisabled)
+		if apiErr != nil {
+			if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+				log.Printf("[workbuddy] cpa disable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+			}
+			if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
+				return err
+			}
 		}
 		rememberLifecycleState(authID, finalDisabled, note)
 		accountCache.Delete(authID)
@@ -224,11 +234,19 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) 
 	if err != nil {
 		return err
 	}
-	// Direct physical write — host.auth.save would force the record Active
-	// (fine here) but would ALSO reset the scheduler state via the persist
-	// hook; the watcher path keeps every top-level field intact.
-	if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
-		return err
+	// 恢复优先走宿主管理 API：宿主真相源里的 disabled 不置回 false，
+	// 宿主会继续挡住这个号。未配密钥或调用失败时回落直写物理文件。
+	apiErr := setHostAuthDisabled(name, authIndex, false)
+	if apiErr != nil {
+		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			log.Printf("[workbuddy] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+		}
+		// Direct physical write — host.auth.save would force the record Active
+		// (fine here) but would ALSO reset the scheduler state via the persist
+		// hook; the watcher path keeps every top-level field intact.
+		if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
+			return err
+		}
 	}
 	rememberLifecycleState(authID, false, note)
 	accountCache.Delete(authID)

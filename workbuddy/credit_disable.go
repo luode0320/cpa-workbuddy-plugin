@@ -16,6 +16,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"strings"
 	"sync"
@@ -206,15 +207,27 @@ func disableForLowCredits(authIndex, authID string, sa *storedAuth, cr *creditsS
 	doc["note"] = displayNote(sa, cr, true)
 
 	// 4. 落盘并同步内存状态，最后异步确认宿主已接受新状态。
+	//    优先经宿主管理 API 写进路由真相源；未配置密钥或调用失败时回落到直写
+	//    物理文件，保证排除不会完全失效。
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		return err
 	}
 	name, path, legacy := resolveAuthFileTarget(sa, phys)
-	if err := failoverPersistFn(name, path, legacy, raw); err != nil {
-		return err
+	apiErr := setHostAuthDisabled(name, authIndex, true)
+	if apiErr != nil {
+		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			log.Printf("[workbuddy] cpa disable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+		}
+		if err := failoverPersistFn(name, path, legacy, raw); err != nil {
+			return err
+		}
 	}
 	rememberLifecycleState(authID, true, displayNote(sa, cr, true))
+	if apiErr == nil {
+		log.Printf("[workbuddy] low-credit disabled via cpa api: auth=%s remain=%d below=%d", authID, cr.TotalRemain, below)
+		return nil
+	}
 	log.Printf("[workbuddy] low-credit disabled: auth=%s remain=%d below=%d", authID, cr.TotalRemain, below)
 	go confirmFailoverHostState(failoverWaitConfirmed, authIndex, true, authID, path)
 	return nil
@@ -253,19 +266,30 @@ func reenableForLowCredits(authIndex, authID string, sa *storedAuth, cr *credits
 	delete(doc, creditDisableBelowKey)
 	delete(doc, creditDisableAtKey)
 
-	// 3. 落盘并同步内存状态。
+	// 3. 落盘并同步内存状态。恢复同样优先走宿主管理 API：宿主真相源里的
+	//    disabled 不置回 false，宿主会继续挡住这个号，插件侧解除等于空转。
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		return err
 	}
 	name, path, legacy := resolveAuthFileTarget(sa, phys)
-	if err := failoverPersistFn(name, path, legacy, raw); err != nil {
-		return err
+	apiErr := setHostAuthDisabled(name, authIndex, false)
+	if apiErr != nil {
+		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			log.Printf("[workbuddy] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+		}
+		if err := failoverPersistFn(name, path, legacy, raw); err != nil {
+			return err
+		}
 	}
 	// 4. 清掉内存冷却与探活缓存，避免「盘上可用、插件仍排除」。
 	resetCooldownState(authID)
 	forgetCreditProbe(authID)
 	rememberLifecycleState(authID, false, displayNote(sa, cr, false))
+	if apiErr == nil {
+		log.Printf("[workbuddy] low-credit re-enabled via cpa api: auth=%s remain=%d", authID, cr.TotalRemain)
+		return nil
+	}
 	log.Printf("[workbuddy] low-credit re-enabled: auth=%s remain=%d", authID, cr.TotalRemain)
 	go confirmFailoverHostState(failoverWaitConfirmed, authIndex, false, authID, path)
 	return nil

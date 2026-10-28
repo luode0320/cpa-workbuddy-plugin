@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1015,4 +1016,135 @@ func mustMarshalMap(t *testing.T, doc map[string]any) []byte {
 		t.Fatalf("marshal: %v", err)
 	}
 	return raw
+}
+
+// withCPADisableSync 把管理 API 注入点替换为记录器，返回调用记录与恢复函数。
+// [参数] t：测试上下文；enabled：是否配置密钥（false 模拟旧部署）。
+// [返回] 调用记录切片指针与恢复函数。
+// 最近修改时间：2026-10-28；改动原因：新增，供禁用同步路径断言复用。
+func withCPADisableSync(t *testing.T, enabled bool) (*[]cpaAuthFileStatusRequest, func()) {
+	t.Helper()
+	origDo := cpaDisableSyncDo
+	origURL, origKey := loadedCPAManagement()
+	var calls []cpaAuthFileStatusRequest
+	if enabled {
+		setCPAManagement("http://127.0.0.1:8317", "test-key")
+		cpaDisableSyncDo = func(req *http.Request) (*hostHTTPResponse, error) {
+			var body cpaAuthFileStatusRequest
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				return nil, err
+			}
+			calls = append(calls, body)
+			return &hostHTTPResponse{StatusCode: http.StatusOK}, nil
+		}
+	} else {
+		setCPAManagement("", "")
+	}
+	return &calls, func() {
+		cpaDisableSyncDo = origDo
+		setCPAManagement(origURL, origKey)
+	}
+}
+
+// TestFailoverDisable_UsesCPAAPIWhenConfigured 锁定：配了密钥就走宿主 API，
+// 且不再直写物理文件（写盘会让镜像与宿主 DB 再次分叉）。
+func TestFailoverDisable_UsesCPAAPIWhenConfigured(t *testing.T) {
+	resetFailover(t)
+	h := newFailoverFakeHost(t)
+	calls, restore := withCPADisableSync(t, true)
+	defer restore()
+
+	h.addAccount("auth-api", "idx-api", nil)
+	if !disableAccountForFailover("auth-api", "glm-4.6") {
+		t.Fatal("禁用应成功")
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("API 调用次数 = %d; want 1", len(*calls))
+	}
+	if got := (*calls)[0]; got.Name != "workbuddy-auth-api.json" || !got.Disabled || got.AuthIndex != "idx-api" {
+		t.Fatalf("API 请求体 = %+v", got)
+	}
+	if h.writeCount() != 0 {
+		t.Fatalf("走 API 时不应写盘，实际写盘 %d 次", h.writeCount())
+	}
+	// sidecar 仍必须记录：归属与探活目标只认它。
+	if !failoverStateIsDisabled("auth-api") {
+		t.Fatal("sidecar 必须记禁用")
+	}
+}
+
+// TestFailoverDisable_FallsBackToDiskWhenNotConfigured 锁定：未配密钥时行为
+// 与旧版完全一致（写盘 + 三个归属标记），确保存量部署零回归。
+func TestFailoverDisable_FallsBackToDiskWhenNotConfigured(t *testing.T) {
+	resetFailover(t)
+	h := newFailoverFakeHost(t)
+	_, restore := withCPADisableSync(t, false)
+	defer restore()
+
+	h.addAccount("auth-disk", "idx-disk", nil)
+	if !disableAccountForFailover("auth-disk", "glm-4.6") {
+		t.Fatal("禁用应成功")
+	}
+	if h.writeCount() != 1 {
+		t.Fatalf("未配密钥应写盘一次，实际 %d", h.writeCount())
+	}
+	doc := h.docOf("idx-disk")
+	if doc["disabled"] != true || doc[failoverDisableKey] != true {
+		t.Fatalf("盘上缺禁用标记: %+v", doc)
+	}
+}
+
+// TestFailoverDisable_FallsBackToDiskOnAPIError 锁定：API 调用失败必须回落写盘，
+// 否则排除彻底失效。
+func TestFailoverDisable_FallsBackToDiskOnAPIError(t *testing.T) {
+	resetFailover(t)
+	h := newFailoverFakeHost(t)
+	origDo := cpaDisableSyncDo
+	origURL, origKey := loadedCPAManagement()
+	defer func() {
+		cpaDisableSyncDo = origDo
+		setCPAManagement(origURL, origKey)
+	}()
+	setCPAManagement("http://127.0.0.1:8317", "test-key")
+	cpaDisableSyncDo = func(*http.Request) (*hostHTTPResponse, error) {
+		return &hostHTTPResponse{StatusCode: 500, Body: []byte(`{"error":"boom"}`)}, nil
+	}
+
+	h.addAccount("auth-err", "idx-err", nil)
+	if !disableAccountForFailover("auth-err", "glm-4.6") {
+		t.Fatal("API 失败时禁用仍应生效（走写盘）")
+	}
+	if h.writeCount() != 1 {
+		t.Fatalf("应回落写盘一次，实际 %d", h.writeCount())
+	}
+	if h.docOf("idx-err")["disabled"] != true {
+		t.Fatal("盘上应被置为 disabled")
+	}
+}
+
+// TestFailoverReenable_UsesCPAAPIWhenConfigured 锁定恢复也走 API：
+// 宿主真相源不置回 false，宿主会继续挡住这个号。
+func TestFailoverReenable_UsesCPAAPIWhenConfigured(t *testing.T) {
+	resetFailover(t)
+	h := newFailoverFakeHost(t)
+	calls, restore := withCPADisableSync(t, true)
+	defer restore()
+
+	h.addAccount("auth-re", "idx-re", map[string]any{
+		"disabled":              true,
+		failoverDisableKey:      true,
+		failoverDisableModelKey: "glm-4.6",
+	})
+	if !reenableAccountForFailover("idx-re", "auth-re") {
+		t.Fatal("恢复应成功")
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("API 调用次数 = %d; want 1", len(*calls))
+	}
+	if got := (*calls)[0]; got.Disabled {
+		t.Fatalf("恢复请求应 disabled=false，实际 %+v", got)
+	}
+	if failoverStateIsDisabled("auth-re") {
+		t.Fatal("sidecar 必须同步解除")
+	}
 }

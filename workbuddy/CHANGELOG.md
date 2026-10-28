@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.21.6
+
+### Fix - 禁用状态改由 CPA 管理接口写入宿主路由真相源
+
+- 缺陷(生产实证 2026-10-28): 三类禁用（failover / low_credit / exhausted）原本只直写物理 auth 文件的 `disabled` 字段。宿主用 MySQL 存储时物理文件只是镜像，路由真相源在 DB；宿主下一次 persist 会用内存态把镜像覆盖回 `disabled:false`，插件写的归属标记也被白名单裁剪丢弃。结果是插件认为已禁用、宿主照样把这个号发给插件，双源长期分叉；被污染的号还会被探活反复回放、每次 429，sidecar 记录永远清不掉。
+- 修复: 新增 `cpa_disable_sync.go`，把禁用/恢复的权威落点改为 `PATCH /v0/management/auth-files/status`——它与认证文件管理页 toggle 走同一条链路（`applyAuthDisabledState` + `authManager.Update` → `persist` → `store.Save`），因此宿主内存态与 DB 同时被改写，宿主选择器真正跳过该账号。
+- 归属不变: 归属判断（谁的禁用谁负责恢复）仍只靠 sidecar + 物理文件标记，API 只承载 `disabled`。manual_disable（用户手动禁用）分支不调用该接口。
+- 兜底: 未配置密钥时该通道整体不启用（行为与 0.21.5 完全一致）；配置了但调用失败时回落原写盘路径，并打 `cpa disable api failed, fallback to disk` 降级日志。
+- 配置: 新增 `cpa_management_url`（默认 `http://127.0.0.1:8317`，末尾斜杠自动裁除）与 `cpa_management_key`（config_yaml 优先 → env `WB_CPA_MANAGEMENT_KEY` → `CPA_MANAGEMENT_KEY`）。密钥只用于请求头，任何日志与回显都不输出其值。
+- 验证: `cgo-shim-build.py workbuddy` build / vet / test 全绿；新增用例锁定「配密钥走 API 且不写盘」「未配密钥写盘零回归」「API 非 2xx 回落写盘」「恢复请求 disabled=false」「API 成功时不产生写盘」「真实 HTTP 服务校验方法/路径/Bearer 头」，并用引用新符号的必失败哨兵确认新测试真实进编译。
+
 ## 0.21.5
 
 ### Change - 失败冷却阶梯放宽为 10 分钟起、60 分钟封顶
