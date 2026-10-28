@@ -65,7 +65,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.6.3"
+	version      = "0.6.4"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -400,6 +400,10 @@ func configurePlugin(raw []byte) error {
 		if decoded.CreditRefreshSeconds > 0 {
 			cfg.CreditRefreshSeconds = decoded.CreditRefreshSeconds
 		}
+		// cpa_management_* 是字符串配置，空串即「未配置」，直接照抄；
+		// 漏抄这两个字段会让管理 API 通道永远拿不到密钥（0.6.3 首版实测）。
+		cfg.CPAManagementURL = decoded.CPAManagementURL
+		cfg.CPAManagementKey = decoded.CPAManagementKey
 	}
 	activeConfig.Store(cfg)
 	applyCreditConfig(cfg)

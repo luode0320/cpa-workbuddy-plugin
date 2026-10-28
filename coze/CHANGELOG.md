@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.4 (2026-10-29)
+
+### Fix - 修复 0.6.3 的 cpa_management_* 配置未生效
+
+- 缺陷(生产实证 2026-10-29): 0.6.3 的 `configurePlugin` 从宿主下发的 YAML 里只回填了超时、续期间隔、积分红线、刷新间隔四项，`cpa_management_url` / `cpa_management_key` 从未写入运行期配置，`setCPAManagement` 恒收到空值。表现：配置在 `config.yaml` 里存在、`GET /config` 能读回，但通道始终未启用，日志里没有 `cpa management sync enabled`。
+- 修复: `configurePlugin` 补两行字段回填。
+- 测试: 新增 `TestConfigurePlugin_AppliesCPAManagement`，直接从 YAML 载荷走完整 `configurePlugin` 链路断言运行期地址与密钥；已做变异验证（删掉回填行该用例 KILLED）。
+
 ## 0.6.3 (2026-10-29)
 
 ### Fix - 低额禁用同步到 CPA 管理接口

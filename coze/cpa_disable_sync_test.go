@@ -6,6 +6,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -103,5 +104,37 @@ func TestCPAWireShapes(t *testing.T) {
 	body := cpaAuthFileStatusRequest{Name: "x.json", Disabled: true}
 	if body.Name != "x.json" || !body.Disabled {
 		t.Fatalf("请求体结构异常: %+v", body)
+	}
+}
+
+// TestConfigurePlugin_AppliesCPAManagement 锁死「配置里的 cpa_management_*
+// 必须真的落到运行时状态」这条链路。0.6.3 首版曾漏抄这两个字段，
+// 宿主下发配置后管理 API 通道永远保持未启用。
+func TestConfigurePlugin_AppliesCPAManagement(t *testing.T) {
+	origURL, origKey := loadedCPAManagement()
+	defer func() {
+		setCPAManagement(origURL, origKey)
+		activeConfig.Store(defaultConfig())
+	}()
+	setCPAManagement("", "")
+
+	yamlCfg := "cpa_management_url: http://127.0.0.1:9999\ncpa_management_key: k-from-yaml\n"
+	payload, errMarshal := json.Marshal(map[string][]byte{"config_yaml": []byte(yamlCfg)})
+	if errMarshal != nil {
+		t.Fatalf("构造载荷失败: %v", errMarshal)
+	}
+	if err := configurePlugin(payload); err != nil {
+		t.Fatalf("configurePlugin 失败: %v", err)
+	}
+
+	gotURL, gotKey := loadedCPAManagement()
+	if gotURL != "http://127.0.0.1:9999" {
+		t.Fatalf("管理 API 地址未生效: got %q", gotURL)
+	}
+	if gotKey != "k-from-yaml" {
+		t.Fatalf("管理密钥未生效: got %q", gotKey)
+	}
+	if !cpaDisableSyncConfigured() {
+		t.Fatal("配置了密钥但通道仍报告未启用")
 	}
 }
