@@ -1,5 +1,16 @@
 # QwenWork Plugin Changelog
 
+## 0.2.11
+
+### Fix - 额度耗尽禁用改由 CPA 管理接口写入宿主路由真相源
+
+- 缺陷(生产实证 2026-10-28): 额度耗尽自动禁用原本只直写物理 auth 文件的 `disabled` 字段。宿主用 MySQL 存储时物理文件只是镜像，路由真相源在 DB；宿主下一次 persist 会把镜像覆盖回 `disabled:false`，插件写的 `exhausted_disable` 标记也被白名单裁剪丢弃。
+- 修复: 新增 `cpa_disable_sync.go`，耗尽禁用与积分恢复改为调用 `PATCH /v0/management/auth-files/status`——与认证文件管理页 toggle 同一条链路，宿主内存态与 MySQL 同时被改写。
+- 边界: 只有「本机制新写入的禁用」才调用该接口（内部 `ownsDisable` 门控）；manual_disable 与未知写入方的禁用一律不调，避免把用户意图改写成插件可恢复的禁用。
+- 兜底: 未配置密钥时该通道整体不启用（行为与 0.2.10 完全一致）；配置了但调用失败时回落原写盘路径，并打 `cpa disable api failed, fallback to disk` 降级日志。
+- 配置: 新增 `cpa_management_url`（默认 `http://127.0.0.1:8317`）与 `cpa_management_key`（config_yaml 优先 → env `WB_CPA_MANAGEMENT_KEY`）。密钥只用于请求头，任何日志与回显都不输出其值。
+- 验证: `cgo-shim-build.py qwenwork` build / vet / test 全绿；新增用例锁定通道契约（方法/路径/Bearer 头/请求体）、未配密钥报错、非 2xx 报错、默认 URL 与末尾斜杠裁除、密钥解析优先级。
+
 ## 0.2.10
 
 ### Feat - 慢速账号 TTFT 拥堵自动冷却（账号 × 模型级）

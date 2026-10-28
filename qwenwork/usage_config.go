@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -83,6 +84,9 @@ func configure(raw []byte) {
 	retryOn4xxSeen := false
 
 	cfgURL, cfgKey := "", ""
+	// cpa_management_*：调用宿主管理 API 的地址与密钥，用于把禁用状态写进宿主
+	// 路由真相源（见 cpa_disable_sync.go）。密钥留空时该通道整体不启用。
+	cfgCPAMgmtURL, cfgCPAMgmtKey := "", ""
 	if len(raw) > 0 {
 		var req struct {
 			ConfigYAML []byte `json:"config_yaml"`
@@ -125,6 +129,14 @@ func configure(raw []byte) {
 				if strings.HasPrefix(line, "management_key:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "management_key:"))
 					nextMgmtKey = strings.Trim(v, "\"'")
+				}
+				if strings.HasPrefix(line, "cpa_management_url:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "cpa_management_url:"))
+					cfgCPAMgmtURL = strings.Trim(v, "\"'")
+				}
+				if strings.HasPrefix(line, "cpa_management_key:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "cpa_management_key:"))
+					cfgCPAMgmtKey = strings.Trim(v, "\"'")
 				}
 				if strings.HasPrefix(line, "token_keepalive:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "token_keepalive:"))
@@ -264,6 +276,25 @@ func configure(raw []byte) {
 	managementAPIKeyMu.Unlock()
 
 	resolveUsageReport(cfgURL, cfgKey)
+
+	// cpa_management_*: 宿主管理 API 地址与密钥。密钥缺失时通道不启用，
+	// 禁用/恢复继续走写盘兜底（行为与旧版一致）。
+	prevCPAMgmtConfigured := cpaDisableSyncConfigured()
+	prevCPAMgmtURL, _ := loadedCPAManagement()
+	setCPAManagement(cfgCPAMgmtURL, cpaManagementSecretResolver(cfgCPAMgmtKey))
+	if nowConfigured := cpaDisableSyncConfigured(); nowConfigured != prevCPAMgmtConfigured {
+		// 只打印是否启用，绝不打印密钥本身。
+		state := "disabled"
+		if nowConfigured {
+			state = "enabled"
+		}
+		curURL, _ := loadedCPAManagement()
+		log.Printf("[qwenwork] cpa management sync %s (url=%s)", state, curURL)
+	} else if nowConfigured {
+		if curURL, _ := loadedCPAManagement(); curURL != prevCPAMgmtURL {
+			log.Printf("[qwenwork] cpa management sync url changed: %s", curURL)
+		}
+	}
 	// Shared usage feed for the standalone token-usage-tracker plugin.
 	// Parses usage_feed_* fields from the same config_yaml. Non-fatal by
 	// design: a failure only disables the feed, never chat.
