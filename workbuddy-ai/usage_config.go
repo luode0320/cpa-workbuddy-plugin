@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -100,6 +101,10 @@ func configure(raw []byte) {
 	nextClientVersion := ""
 
 	cfgURL, cfgKey := "", ""
+	// cpa_management_*：调用宿主管理 API 的地址与密钥，用于把禁用状态写进宿主
+	// 路由真相源（见 cpa_disable_sync.go）。密钥留空时该通道整体不启用，
+	// 禁用仍走原有的写盘路径。
+	cfgCPAMgmtURL, cfgCPAMgmtKey := "", ""
 	if len(raw) > 0 {
 		var req struct {
 			ConfigYAML []byte `json:"config_yaml"`
@@ -142,6 +147,14 @@ func configure(raw []byte) {
 				if strings.HasPrefix(line, "management_key:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "management_key:"))
 					nextMgmtKey = strings.Trim(v, "\"'")
+				}
+				if strings.HasPrefix(line, "cpa_management_url:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "cpa_management_url:"))
+					cfgCPAMgmtURL = strings.Trim(v, "\"'")
+				}
+				if strings.HasPrefix(line, "cpa_management_key:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "cpa_management_key:"))
+					cfgCPAMgmtKey = strings.Trim(v, "\"'")
 				}
 				if strings.HasPrefix(line, "token_keepalive:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "token_keepalive:"))
@@ -300,6 +313,25 @@ func configure(raw []byte) {
 	managementAPIKeyMu.Unlock()
 
 	resolveUsageReport(cfgURL, cfgKey)
+
+	// cpa_management_*: 宿主管理 API 地址与密钥。密钥缺失时通道不启用，
+	// 禁用/恢复继续走写盘兜底（行为与旧版一致）。
+	prevCPAMgmtConfigured := cpaDisableSyncConfigured()
+	prevCPAMgmtURL, _ := loadedCPAManagement()
+	setCPAManagement(cfgCPAMgmtURL, cpaManagementSecretResolver(cfgCPAMgmtKey))
+	if nowConfigured := cpaDisableSyncConfigured(); nowConfigured != prevCPAMgmtConfigured {
+		// 只打印是否启用，绝不打印密钥本身。
+		state := "disabled"
+		if nowConfigured {
+			state = "enabled"
+		}
+		curURL, _ := loadedCPAManagement()
+		log.Printf("[workbuddy] cpa management sync %s (url=%s)", state, curURL)
+	} else if nowConfigured {
+		if curURL, _ := loadedCPAManagement(); curURL != prevCPAMgmtURL {
+			log.Printf("[workbuddy] cpa management sync url changed: %s", curURL)
+		}
+	}
 
 	// 轮换配置写回。serve/cooldown 为 0 时 loadedRotationConfig 会把 enabled
 	// 降级为 false，因此这里不需要额外校验，避免两处判断分叉。
