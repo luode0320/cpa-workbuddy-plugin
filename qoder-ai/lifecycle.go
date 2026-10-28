@@ -13,7 +13,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -97,6 +99,9 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 	phys, err := hostAuthGetPhysical(authIndex)
 	finalDisabled := false
 	extra := map[string]any{}
+	// ownsDisable 标记本次是「本机制新写入的禁用」，只有它为真才允许调用
+	// 宿主管理 API：manual 与未知写入方的禁用不归本机制管。
+	ownsDisable := false
 	if err == nil && phys != nil {
 		finalDisabled = parseDisabledFromAuthJSON(phys.JSON)
 		switch {
@@ -115,6 +120,7 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 			// Enabled → exhausted auto-disable (可自动恢复).
 			finalDisabled = true
 			extra["exhausted_disable"] = true
+			ownsDisable = true
 		}
 	}
 	note := displayNote(sa, cr, finalDisabled)
@@ -135,6 +141,20 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 	raw, err := buildAuthFileJSON(sa, finalDisabled, note, extra)
 	if err != nil {
 		return err
+	}
+	// 本机制新写入的禁用优先经宿主管理 API 写进路由真相源；未配置密钥或
+	// 调用失败时回落直写物理文件。非本机制关注的禁用（manual/未知）不调 API。
+	if ownsDisable && finalDisabled {
+		apiErr := setHostAuthDisabled(name, authIndex, true)
+		if apiErr == nil {
+			rememberLifecycleState(authID, finalDisabled, note)
+			accountCache.Delete(authID)
+			log.Printf("[qoder-ai] exhausted-disable %s via cpa api (remain=%d)", authID, cr.TotalRemain)
+			return nil
+		}
+		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			log.Printf("[qoder-ai] cpa disable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+		}
 	}
 	if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
 		return err
@@ -173,8 +193,16 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) 
 	if err != nil {
 		return err
 	}
-	if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
-		return err
+	// 恢复优先走宿主管理 API：宿主真相源里的 disabled 不置回 false，
+	// 宿主会继续挡住这个号。未配密钥或调用失败时回落直写物理文件。
+	apiErr := setHostAuthDisabled(name, authIndex, false)
+	if apiErr != nil {
+		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			log.Printf("[qoder-ai] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+		}
+		if err := persistAuthDirect(name, path, legacyPath, raw); err != nil {
+			return err
+		}
 	}
 	rememberLifecycleState(authID, false, note)
 	accountCache.Delete(authID)
