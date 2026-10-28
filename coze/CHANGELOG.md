@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.3 (2026-10-29)
+
+### Fix - 低额禁用同步到 CPA 管理接口
+
+- 缺陷(生产实证 2026-10-28): 低额自动禁用原本只直写物理 auth 文件的 `disabled` 字段。宿主用 MySQL 存储时物理文件只是镜像，路由真相源在 DB；宿主下一次 persist 会把镜像覆盖回 `disabled:false`，`low_credit_disable` 标记也被白名单裁剪丢弃，导致插件认为已禁用、宿主照样把请求发过来。
+- 修复: 新增 `cpa_disable_sync.go`，低额禁用/解禁在写盘之外再调用 `PATCH /v0/management/auth-files/status`——与认证文件管理页 toggle 同一条链路，宿主内存态与 MySQL 同时被改写。
+- 通道差异: coze 没有 `hostHTTPDo` 封装，本插件按 `host.http.do` 的 wire 契约直接走通用 `hostCall`，与其它插件行为等价。
+- 兜底: 未配置密钥时通道整体不启用（行为与 0.6.2 完全一致，仍只写盘）；配置了但调用失败时只记 warning 日志，物理写盘继续生效。
+- 配置: 新增 `cpa_management_url`（默认 `http://127.0.0.1:8317`）与 `cpa_management_key`（config_yaml 优先 → env `WB_CPA_MANAGEMENT_KEY`）。密钥只用于请求头，任何日志与回显都不输出其值。
+- 边界: 只改造低额自动禁用/解禁；用户手动禁用/启用（面板开关）不经过本机制。
+- 验证: `cgo-shim-build.py coze` build / vet / test 全绿；新增用例锁定未配密钥哨兵、空 name 拒绝、默认 URL 与末尾斜杠裁除、密钥解析优先级、缺物理路径报错、wire 契约形态。
+
 ## 0.6.2 (2026-10-25)
 
 ### Fix - 低额自动禁用补顶层 Disabled，宿主认证文件页不再显示为启用

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"time"
 )
 
@@ -125,7 +126,18 @@ func disableForLowCredits(sa *StoredAuth, cr *creditSummary, redline int64) {
 	if !written {
 		return
 	}
-	// 2. 内存副本同步，避免同一轮后续判定仍看到旧状态。
+	// 2. 经宿主管理 API 把禁用写进路由真相源（MySQL 存储下直写物理文件会被
+	//    persist 覆盖）。未配密钥或调用失败时只记日志——物理写盘已经完成，
+	//    排除仍由插件的路由判据兜底。
+	if errAPI := syncCozeAuthDisabled(sa, true); errAPI != nil {
+		if !errors.Is(errAPI, errCPAManagementNotConfigured) {
+			hostLogf("warn", "低额禁用未能同步到宿主管理接口", map[string]any{
+				"auth_id": sa.AuthID,
+				"error":   errAPI.Error(),
+			})
+		}
+	}
+	// 3. 内存副本同步，避免同一轮后续判定仍看到旧状态。
 	sa.Disabled = true
 	sa.LowCreditDisable = true
 	sa.LowCreditDisableBelow = redline
@@ -168,7 +180,16 @@ func reenableForLowCredits(sa *StoredAuth, cr *creditSummary) {
 	if !written {
 		return
 	}
-	// 2. 内存副本同步，避免同一轮后续判定仍看到禁用状态。
+	// 2. 经宿主管理 API 解除宿主侧禁用；未配密钥或调用失败时只记日志。
+	if errAPI := syncCozeAuthDisabled(sa, false); errAPI != nil {
+		if !errors.Is(errAPI, errCPAManagementNotConfigured) {
+			hostLogf("warn", "低额解禁未能同步到宿主管理接口", map[string]any{
+				"auth_id": sa.AuthID,
+				"error":   errAPI.Error(),
+			})
+		}
+	}
+	// 3. 内存副本同步，避免同一轮后续判定仍看到禁用状态。
 	sa.Disabled = false
 	sa.LowCreditDisable = false
 	sa.LowCreditDisableBelow = 0

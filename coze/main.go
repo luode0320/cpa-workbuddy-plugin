@@ -65,7 +65,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.6.2"
+	version      = "0.6.3"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -90,6 +90,10 @@ type Config struct {
 	MinRoutableCredits *int64 `yaml:"min_routable_credits,omitempty" json:"min_routable_credits,omitempty"`
 	// CreditRefreshSeconds 是后台积分刷新间隔（秒）。
 	CreditRefreshSeconds int `yaml:"credit_refresh_interval_seconds" json:"credit_refresh_interval_seconds"`
+	// CPAManagementURL / CPAManagementKey 用于调用宿主管理 API，把禁用状态
+	// 写进宿主路由真相源（MySQL 存储下直写物理文件会被 persist 覆盖）。
+	CPAManagementURL string `yaml:"cpa_management_url,omitempty" json:"cpa_management_url,omitempty"`
+	CPAManagementKey string `yaml:"cpa_management_key,omitempty" json:"cpa_management_key,omitempty"`
 }
 
 // defaultConfig 返回插件默认配置。
@@ -284,6 +288,8 @@ func cozeRegistration() registration {
 				{Name: "renew_interval_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "会话续期巡检间隔（秒）。"},
 				{Name: "credit_refresh_interval_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "积分巡检间隔（秒），默认 3600。巡检同时完成当日签到领取、积分落盘与低额分级。"},
 				{Name: "min_routable_credits", Type: pluginapi.ConfigFieldTypeInteger, Description: "积分红线，默认 200 分：剩余积分低于该值的账号不承载新请求，并被自动写盘禁用；积分回到线上后自动解禁。填 0 关闭整个机制。"},
+				{Name: "cpa_management_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：CPA 宿主管理 API 地址，默认 http://127.0.0.1:8317。仅当宿主管理端口非默认时才需要填。"},
+				{Name: "cpa_management_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：CPA 宿主管理密钥。填写后，低额自动禁用/解禁会同时调用宿主 auth-files/status 接口写入路由真相源。留空则只做物理文件写盘（旧行为）。也可用环境变量 WB_CPA_MANAGEMENT_KEY。"},
 			},
 		},
 		Capabilities: registrationCapability{
@@ -397,6 +403,24 @@ func configurePlugin(raw []byte) error {
 	}
 	activeConfig.Store(cfg)
 	applyCreditConfig(cfg)
+	// cpa_management_*: 宿主管理 API 地址与密钥。密钥缺失时通道不启用，
+	// 禁用/恢复继续走写盘兜底（行为与旧版一致）。
+	prevConfigured := cpaDisableSyncConfigured()
+	prevURL, _ := loadedCPAManagement()
+	setCPAManagement(cfg.CPAManagementURL, cpaManagementSecretResolver(cfg.CPAManagementKey))
+	if nowConfigured := cpaDisableSyncConfigured(); nowConfigured != prevConfigured {
+		// 只打印是否启用，绝不打印密钥本身。
+		state := "disabled"
+		if nowConfigured {
+			state = "enabled"
+		}
+		curURL, _ := loadedCPAManagement()
+		hostLogf("info", "cpa management sync "+state, map[string]any{"url": curURL})
+	} else if nowConfigured {
+		if curURL, _ := loadedCPAManagement(); curURL != prevURL {
+			hostLogf("info", "cpa management sync url changed", map[string]any{"url": curURL})
+		}
+	}
 	// 间隔可能在本次 reconfigure 里被改小：让循环立即重排，避免旧 timer
 	// 继续按旧间隔睡满一整轮。
 	requestRenewTick()
