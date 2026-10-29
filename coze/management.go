@@ -80,6 +80,8 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/refresh-all", Description: "立即触发一轮全量积分巡检（含签到、落盘与低额分级，body: {}）。"},
 			{Method: http.MethodPost, Path: base + "/claim-daily", Description: "立即为指定账号领取当日登录积分（body: {auth_id}）。"},
 			{Method: http.MethodPost, Path: base + "/register-host", Description: "把本地已落盘的账号补注册到宿主认证目录（body: {}）。"},
+			{Method: http.MethodGet, Path: base + "/export", Description: "导出全部账号凭据为单个 JSON 备份文件（含完整 Cookie 原文）。"},
+			{Method: http.MethodPost, Path: base + "/import-cred", Description: "从备份恢复一条账号凭据（body: {cred}）。"},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "Coze", Description: "扣子 Provider 管理面板：授权登录、账号管理与续期。"},
@@ -194,6 +196,12 @@ func handleManagement(raw []byte) ([]byte, error) {
 
 	case method == http.MethodPost && subPath == "/register-host":
 		return handleReRegister()
+
+	case method == http.MethodGet && subPath == "/export":
+		return handleExportAuth()
+
+	case method == http.MethodPost && subPath == "/import-cred":
+		return handleImportCred(req.Body)
 
 	default:
 		return makeHTTPResponse(http.StatusNotFound, []byte(`{"error":"not_found"}`))

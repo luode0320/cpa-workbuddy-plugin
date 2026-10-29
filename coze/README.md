@@ -140,6 +140,8 @@ OpenAI 请求
 | POST | `/login-start` | 生成一次性授权会话与脚本 |
 | POST | `/renew` | 手动续期 |
 | POST | `/delete` / `/enable` / `/disable` | 账号管理 |
+| GET | `/export` | 导出全部账号凭据为单个 JSON 备份（含 Cookie 原文） |
+| POST | `/import-cred` | 从备份恢复单条账号（`body: {cred}`） |
 
 免密钥资源页：`/v0/resource/plugins/coze-provider/panel`、`/login`、
 `/login/callback`。

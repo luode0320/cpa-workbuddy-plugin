@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0 (2026-10-29)
+
+### Feat - 面板补齐凭据导出与备份恢复
+
+- 缺陷(用户反馈 2026-10-29): coze 面板从立项起就没有导出/导入能力。核对确认：`panel.html` 全文无「导出/导入/export/import」字样，后端路由表也只有 accounts / login-start / delete / enable / disable / renew / models / test-active / credits / refresh-all / claim-daily / register-host 十一条，而其余 8 个插件均已具备该能力。
+- 新增 `GET /export`：逐号读取物理文件原文汇总为单个 JSON 备份（`{version, exported_at, plugin, count, accounts:[{auth_id, label, screen_name, disabled, credential}]}`）。读取失败的单号只记 `load_error`，不让整批失败。
+- 新增 `POST /import-cred`：接收 `{cred}`，结构校验后落盘并注册宿主。缺失 `auth_id` 时按 `sec_user_id` 重算（`authIDForSecUserID`），保证同一账号重复恢复落到同一文件、天然幂等。
+- 面板新增「导出备份」「导入备份」按钮与弹窗：支持导出包装、裸数组、单条凭据三种输入形态，可粘贴或选择文件，逐条恢复并展示单账号失败原因。
+- 备份保留完整状态：`disabled`、`label`、`auth_invalid`、三个低额禁用归属标记、`login_at` / `last_renew_at`、`cookies` 快照。恢复禁用账号后仍是禁用状态。
+- 注册失败不整体判负：凭据已落盘、插件侧可见可续期，仅回 `registered:false` + `warning`，避免用户误以为数据没写进去。
+- 边界(用户裁定 2026-10-29): 只做备份恢复，不提供「粘贴 Cookie 换号」入口——coze 无 PAT / API Key 体系，新账号仍走浏览器授权；导出为完整明文凭据，文件本身即凭据。
+- 验证: `cgo-shim-build.py coze` build / vet / test 全绿；新增 `backup_test.go` 6 条用例，三条核心断言做了变异验证（删 cookie 校验 / 删 credential 导出 / 恢复时清空 disabled）均被 KILLED；新增 `test/coze/panel_backup.mjs` 锁住前端展开逻辑与 DOM 契约，11 项全通过。
+
 ## 0.6.4 (2026-10-29)
 
 ### Fix - 修复 0.6.3 的 cpa_management_* 配置未生效

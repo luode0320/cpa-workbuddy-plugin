@@ -124,6 +124,18 @@ button.danger:hover{background:var(--err);color:#fff}
 .test-result .r-hd.ok{color:var(--ok)}
 .test-result .r-hd.err{color:var(--err)}
 .test-result .r-item{color:var(--mut);word-break:break-all;line-height:1.6}
+.modal-bd textarea{width:100%;box-sizing:border-box;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--fg);font-family:ui-monospace,monospace;font-size:12px;resize:vertical}
+.file-row{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.import-progress{color:var(--mut);font-size:12px;margin-top:8px;min-height:16px}
+.import-result{margin-top:12px;border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:12px;max-height:160px;overflow:auto;display:none}
+.import-result.show{display:block}
+.import-result .r-hd{font-weight:600;margin-bottom:6px}
+.import-result .r-hd.ok{color:var(--ok)}
+.import-result .r-hd.err{color:var(--err)}
+.import-result .r-item{display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-top:1px dashed var(--border)}
+.import-result .r-item:first-of-type{border-top:0}
+.import-result .r-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.import-result .r-err{color:var(--err);flex:none;max-width:55%;text-align:right;word-break:break-all}
 .toasts{position:fixed;top:16px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:9999;max-width:360px}
 .toast{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--acc);border-radius:var(--radius-md);padding:14px 18px;font-size:13px;box-shadow:var(--toast-shadow);transform:translateX(120%);opacity:0;transition:transform .3s cubic-bezier(.2,.9,.3,1.1),opacity .25s;cursor:pointer;word-break:break-all}
 .toast.show{transform:translateX(0);opacity:1}
@@ -197,6 +209,8 @@ button.danger:hover{background:var(--err);color:#fff}
     <button class="sec" id="btnSweep" title="立即对所有账号执行一轮积分巡检（含签到领取与低额分级）">立即巡检</button>
     <button class="sec" id="btnEnableAll" title="启用全部已禁用账号">全部启用</button>
     <button class="sec" id="btnDisableAll" title="禁用全部账号（不再参与路由）">全部禁用</button>
+    <button class="sec" id="btnExport" title="导出全部账号凭据为 JSON 备份文件，可通过「导入备份」恢复">导出备份</button>
+    <button class="sec" id="btnImport" title="从「导出备份」生成的文件恢复账号（逐条写回，不经过上游换票）">导入备份</button>
     <input id="searchInput" class="search" type="search" placeholder="搜索昵称 / 手机 / 账号标识" autocomplete="off">
   </div>
 
@@ -227,6 +241,29 @@ button.danger:hover{background:var(--err);color:#fff}
     </div>
     <div class="modal-ft">
       <button type="button" class="sec" id="testModalFootClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-mask" id="importModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
+    <div class="modal-hd">
+      <h2 id="importModalTitle">导入备份</h2>
+      <button type="button" class="modal-x" id="importModalClose" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint">粘贴「导出备份」生成的 JSON，或选择备份文件。支持完整备份文件、凭据数组或单条凭据；逐条写回并注册宿主，全程不经过上游换票。</p>
+      <textarea id="importRaw" rows="6" placeholder='{"version":1,"plugin":"coze-provider","accounts":[...]}'></textarea>
+      <div class="file-row">
+        <label class="sec" for="importFiles" title="可选择多个备份 .json 文件">📁 选择备份文件</label>
+        <input type="file" id="importFiles" multiple accept=".json,application/json" hidden>
+      </div>
+      <div class="import-progress" id="importProgress"></div>
+      <div class="import-result" id="importResult"></div>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" id="importCancel">取消</button>
+      <button type="button" id="importConfirm">导入并保存</button>
     </div>
   </div>
 </div>
@@ -877,6 +914,141 @@ async function confirmDelete(){
   }
 }
 
+/* ---------- 凭据导出（一键备份） ----------
+   GET /export 返回 {version, exported_at, plugin, count, accounts:[...credential]}，
+   前端下载为 coze-credentials-YYYY-MM-DD.json；该文件可经「导入备份」恢复。
+   credential 是落盘原文（含 cookie_header 与 cookies 快照），文件本身即凭据。
+*/
+async function exportAuth(btn){
+  busy(btn,true);
+  try{
+    const d=await api("/export");
+    if(d&&d.error){toast("导出失败","err",d.error);return}
+    const accounts=(d&&d.accounts)||[];
+    if(!accounts.length){toast("没有可导出的账号","warn");return}
+    const stamp=new Date().toISOString().slice(0,10);
+    const fname="coze-credentials-"+stamp+".json";
+    const blob=new Blob([JSON.stringify(d,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    a.download=fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    const bad=accounts.filter(x=>x.load_error).length;
+    toast("已导出 "+accounts.length+" 个账号","ok",bad?(fname+" · "+bad+" 个不完整"):fname);
+  }catch(e){
+    toast("导出失败","err",e.message||String(e));
+  }finally{
+    busy(btn,false);
+  }
+}
+
+/* ---------- 备份恢复（展开 + 逐条导入） ----------
+   接受导出包装（accounts[].credential）、裸数组或单条凭据；统一展开后
+   逐条 POST /import-cred，使进度与失败原因能精确到单个账号。
+*/
+function expandCredentials(text){
+  let obj;
+  try{obj=JSON.parse(text)}catch(_){return null}
+  if(!obj||typeof obj!=="object")return null;
+  const out=[];
+  const push=c=>{if(c&&typeof c==="object"&&!Array.isArray(c))out.push(c)};
+  if(Array.isArray(obj)){
+    obj.forEach(push);
+  }else if(Array.isArray(obj.accounts)){
+    obj.accounts.forEach(a=>{
+      if(a&&a.credential&&typeof a.credential==="object")out.push(a.credential);
+      else push(a);
+    });
+  }else{
+    push(obj);
+  }
+  return out;
+}
+
+function openImportModal(){
+  document.getElementById("importRaw").value="";
+  document.getElementById("importFiles").value="";
+  const res=document.getElementById("importResult");
+  res.className="import-result";res.innerHTML="";
+  document.getElementById("importProgress").textContent="";
+  setTimeout(()=>document.getElementById("importRaw").focus(),50);
+  document.getElementById("importModal").classList.add("show");
+}
+function closeImportModal(){
+  document.getElementById("importModal").classList.remove("show");
+}
+function onImportMaskClick(ev){
+  if(ev.target&&ev.target.id==="importModal")closeImportModal();
+}
+
+// 多文件选择：把每个文件的文本追加到粘贴框，统一走同一条导入链路。
+document.getElementById("importFiles").addEventListener("change",async e=>{
+  const files=Array.from(e.target.files||[]);
+  if(!files.length)return;
+  const ta=document.getElementById("importRaw");
+  const chunks=[];
+  for(const f of files){
+    try{ chunks.push(await f.text()); }
+    catch(err){ toast("读取文件失败","err",f.name+"："+(err.message||String(err))); }
+  }
+  if(chunks.length){
+    ta.value=[ta.value, ...chunks].filter(Boolean).join("\n");
+    toast("已读取 "+chunks.length+" 个文件","ok","点「导入并保存」开始恢复");
+  }
+  e.target.value="";
+});
+
+async function importCred(btn){
+  const raw=(document.getElementById("importRaw").value||"").trim();
+  if(!raw){toast("请先粘贴或选择备份 JSON","warn");return}
+  const items=expandCredentials(raw);
+  if(!items||!items.length){toast("无法解析备份 JSON","err","需要导出备份文件、凭据数组或单条凭据对象");return}
+  const res=document.getElementById("importResult");
+  const prog=document.getElementById("importProgress");
+  busy(btn,true);
+  res.className="import-result show";
+  res.innerHTML='<div class="r-hd">恢复中…</div>';
+  let ok=0;
+  const fails=[];
+  const warns=[];
+  try{
+    for(let i=0;i<items.length;i++){
+      if(prog)prog.textContent="恢复中 "+(i+1)+"/"+items.length+" …";
+      try{
+        const d=await api("/import-cred",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cred:items[i]})});
+        if(d&&d.success){
+          ok++;
+          // 已落盘但宿主注册失败：凭据可用、暂时不路由，必须让用户看到，
+          // 否则会以为恢复完全成功、直接去发请求然后全失败。
+          if(d.registered===false)warns.push({name:d.auth_id||("第 "+(i+1)+" 个"),err:d.warning||"注册宿主失败"});
+        }
+        else fails.push({name:(items[i]&&(items[i].auth_id||items[i].label))||("第 "+(i+1)+" 个"),err:(d&&d.error)||"未知错误"});
+      }catch(e){
+        fails.push({name:(items[i]&&(items[i].auth_id||items[i].label))||("第 "+(i+1)+" 个"),err:(e&&e.message)||String(e)});
+      }
+    }
+    if(prog)prog.textContent="";
+    res.innerHTML='<div class="r-hd '+(ok&&!fails.length&&!warns.length?"ok":(ok?"":"err"))+'">恢复完成：'+ok+' 成功'+(fails.length?" / "+fails.length+" 失败":"")+(warns.length?" / "+warns.length+" 待补注册":"")+'</div>'+
+      fails.map(f=>'<div class="r-item"><span class="r-name">'+esc(f.name)+'</span><span class="r-err">'+esc(f.err)+'</span></div>').join("")+
+      warns.map(w=>'<div class="r-item"><span class="r-name">'+esc(w.name)+'</span><span class="r-err">'+esc(w.err)+'</span></div>').join("");
+    if(ok){
+      toast("恢复完成","ok",ok+" 成功"+(fails.length?" / "+fails.length+" 失败":"")+(warns.length?" / "+warns.length+" 待补注册":""));
+      document.getElementById("importRaw").value="";
+      await load();
+      if(!fails.length&&!warns.length)closeImportModal();
+    }else{
+      toast("恢复失败","err","0 成功 / "+fails.length+" 失败，请检查备份内容");
+    }
+  }finally{
+    if(prog)prog.textContent="";
+    busy(btn,false);
+  }
+}
+
 /* ---------- 事件绑定 ---------- */
 document.getElementById("keySave").addEventListener("click",saveKey);
 document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
@@ -884,6 +1056,12 @@ document.getElementById("btnRefresh").addEventListener("click",()=>load());
 document.getElementById("btnSweep").addEventListener("click",()=>triggerSweep());
 document.getElementById("btnEnableAll").addEventListener("click",()=>setAll(false));
 document.getElementById("btnDisableAll").addEventListener("click",()=>setAll(true));
+document.getElementById("btnExport").addEventListener("click",e=>exportAuth(e.currentTarget));
+document.getElementById("btnImport").addEventListener("click",openImportModal);
+document.getElementById("importModalClose").addEventListener("click",closeImportModal);
+document.getElementById("importCancel").addEventListener("click",closeImportModal);
+document.getElementById("importConfirm").addEventListener("click",e=>importCred(e.currentTarget));
+document.getElementById("importModal").addEventListener("click",onImportMaskClick);
 document.getElementById("searchInput").addEventListener("input",e=>{currentSearch=String(e.target.value||"").trim();render()});
 document.getElementById("filterBar").addEventListener("click",e=>{
   const btn=e.target.closest?e.target.closest(".ftag"):null;
@@ -912,6 +1090,7 @@ document.addEventListener("keydown",e=>{
   if(e.key!=="Escape")return;
   if(document.getElementById("testModal").classList.contains("show"))closeTestModal();
   if(document.getElementById("deleteModal").classList.contains("show"))closeDeleteModal();
+  if(document.getElementById("importModal").classList.contains("show"))closeImportModal();
 });
 
 /* 启动：先同步主题监听，再按是否已有密钥决定直接加载还是显示鉴权框。 */
