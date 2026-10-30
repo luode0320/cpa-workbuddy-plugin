@@ -1,10 +1,13 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -61,6 +64,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import ZCode API keys."},
 			{Method: http.MethodGet, Path: base + "/export", Description: "Export all ZCode credentials."},
 			{Method: http.MethodPost, Path: base + "/export", Description: "Export all ZCode credentials."},
+			{Method: http.MethodGet, Path: base + "/export/zip", Description: "Export each ZCode credential as its own JSON file inside one zip archive (per-account backup/migration)."},
 			{Method: http.MethodPost, Path: base + "/delete", Description: "Delete one ZCode account."},
 			{Method: http.MethodPost, Path: base + "/enable", Description: "Enable one ZCode account."},
 			{Method: http.MethodPost, Path: base + "/disable", Description: "Disable one ZCode account."},
@@ -188,6 +192,9 @@ func handleManagement(raw []byte) ([]byte, error) {
 
 	case (method == http.MethodPost || method == http.MethodGet) && subPath == "/export":
 		return handleExportAccounts()
+
+	case method == http.MethodGet && subPath == "/export/zip":
+		return handleExportAccountsZip()
 
 	case method == http.MethodPost && subPath == "/delete":
 		return handleDeleteAccount(req.Body)
@@ -405,6 +412,88 @@ func handleExportAccounts() ([]byte, error) {
 
 	data, _ := json.MarshalIndent(accounts, "", "  ")
 	return makeHTTPResponse(http.StatusOK, data)
+}
+
+// handleExportAccountsZip 把每个账号的原始凭证文件打成 zip，包内每账号一个 JSON。
+//
+// 与 handleExportAccounts 的区别：那个返回解析后的汇总数组，适合整库备份；
+// 本接口面向「按账号分发/迁移」——解压后直接得到一组 <uid>.json，可逐个导入。
+// 直接读取磁盘上的 auth 文件原字节，保证形态与未知字段无损。
+// 单账号读取失败不影响其余账号：失败项以 <name>.error.txt 记录原因。
+// [参数] 无
+// [返回] zip 二进制响应；无账号时返回 404 JSON 错误
+// 最近修改时间：2026-10-30；改动原因：新增每账号一个 JSON 的 zip 导出。
+func handleExportAccountsZip() ([]byte, error) {
+	dir := getAccountsDir()
+	authFilesMu.RLock()
+	entries, err := os.ReadDir(dir)
+	authFilesMu.RUnlock()
+	if err != nil && !os.IsNotExist(err) {
+		return makeHTTPResponse(http.StatusInternalServerError, []byte(fmt.Sprintf(`{"error":%q}`, err.Error())))
+	}
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	used := make(map[string]int, len(entries))
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !isZCodeAuthFileName(entry.Name()) {
+			continue
+		}
+		name := zcodeAccountFileName(entry.Name(), used)
+		data, errRead := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if errRead != nil {
+			w, werr := zw.Create(strings.TrimSuffix(name, ".json") + ".error.txt")
+			if werr == nil {
+				_, _ = w.Write([]byte("读取出错：" + errRead.Error()))
+			}
+			continue
+		}
+		w, werr := zw.Create(name)
+		if werr != nil {
+			continue
+		}
+		if _, werr = w.Write(data); werr != nil {
+			continue
+		}
+		count++
+	}
+	if count == 0 {
+		_ = zw.Close()
+		return makeHTTPResponse(http.StatusNotFound, []byte(`{"error":"没有可导出的账号"}`))
+	}
+	if errClose := zw.Close(); errClose != nil {
+		return makeHTTPResponse(http.StatusInternalServerError, []byte(fmt.Sprintf(`{"error":%q}`, "zip finalize failed: "+errClose.Error())))
+	}
+
+	stamp := time.Now().Format("2006-01-02")
+	h := http.Header{}
+	h.Set("Content-Type", "application/zip")
+	h.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="zcode-credentials-%s.zip"`, stamp))
+	return okEnvelope(pluginapi.ManagementResponse{
+		StatusCode: http.StatusOK,
+		Headers:    h,
+		Body:       buf.Bytes(),
+	})
+}
+
+// zcodeAccountFileName 生成 zip 内的单账号文件名，同名冲突时追加序号。
+// [参数] name: 磁盘上的 auth 文件名；used: 已用文件名计数表
+// [返回] 唯一且以 .json 结尾的文件名
+// 最近修改时间：2026-10-30；改动原因：新增，配合 zip 导出。
+func zcodeAccountFileName(name string, used map[string]int) string {
+	base := strings.TrimSpace(filepath.Base(name))
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = "zcode-account"
+	}
+	if !strings.HasSuffix(strings.ToLower(base), ".json") {
+		base += ".json"
+	}
+	used[base]++
+	if n := used[base]; n > 1 {
+		base = fmt.Sprintf("%s-%d.json", strings.TrimSuffix(base, ".json"), n)
+	}
+	return base
 }
 
 func extractAuthIDFromBody(body []byte) string {

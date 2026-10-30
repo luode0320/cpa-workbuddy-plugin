@@ -4,10 +4,13 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/subtle"
-	_ "embed"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -126,6 +129,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import a Qoder AI PAT (pt-...) by exchanging it for a jobToken pair and persisting."},
 			{Method: http.MethodPost, Path: base + "/import-cred", Description: "Restore one credential JSON previously exported by /export (structural check only, no upstream exchange)."},
 			{Method: http.MethodGet, Path: base + "/export", Description: "Export all Qoder AI credentials as a single JSON backup document (raw physical files, re-importable via /import-cred)."},
+			{Method: http.MethodGet, Path: base + "/export/zip", Description: "Export each credential as its own JSON file inside one zip archive (per-account backup/migration)."},
 			{Method: http.MethodPost, Path: base + "/select", Description: "Select the active account card used for chat routing (body: {auth_index})."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodPost, Path: base + "/claim-pro", Description: "Claim one-time Pro upgrade pack for one account (auth_index)."},
@@ -183,6 +187,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportCred(req)))
 	case req.Method == http.MethodGet && path == base+"/export":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleExportAuth()))
+	case req.Method == http.MethodGet && path == base+"/export/zip":
+		return okEnvelope(handleExportAuthZip(req))
 	case req.Method == http.MethodPost && path == base+"/select":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleSelectAuth(req)))
 	case req.Method == http.MethodPost && path == base+"/keepalive":
@@ -279,6 +285,7 @@ func mutatingManagementPath(path string) bool {
 		base + "/import",
 		base + "/import-cred",
 		base + "/export",
+		base + "/export/zip",
 		base + "/select",
 		base + "/keepalive",
 		base + "/claim-pro",
@@ -389,4 +396,86 @@ func handleClearCooldown(req pluginapi.ManagementRequest) map[string]any {
 		"ok":      true,
 		"message": "每日冷却已成功解除",
 	}
+}
+
+// handleExportAuthZip 把每个账号的原始凭证打成 zip，包内每个账号一个独立 JSON。
+//
+// 与 handleExportAuth 的区别：那个返回单个汇总 JSON（accounts[] 数组），适合
+// 一次性整库备份；本接口面向「按账号分发/迁移」——解压后直接得到
+// <provider>-<uid>.json 一组文件，可逐个拖进导入弹窗，也可直接放进 auth 目录。
+// 单账号读取失败不影响其余账号：失败项以 <name>.error.txt 记录原因。
+// [参数] req: 管理请求（当前不读取参数）
+// [返回] zip 二进制响应；无账号时返回 404 JSON 错误
+// 最近修改时间：2026-10-30；改动原因：新增每账号一个 JSON 的 zip 导出。
+func handleExportAuthZip(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	files, err := hostAuthListFn()
+	if err != nil {
+		return mgmtJSONResponse(http.StatusInternalServerError, map[string]any{
+			"error": "host.auth.list failed: " + err.Error(),
+		})
+	}
+	if len(files) == 0 {
+		return mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "没有可导出的账号"})
+	}
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	used := make(map[string]int, len(files))
+	for _, f := range files {
+		name := perAccountFileName(f.Name, f.AuthIndex, used)
+		phys, gerr := hostAuthGetPhysicalFn(f.AuthIndex)
+		if gerr != nil || phys == nil {
+			// 读取失败：写一个同名 .error.txt 说明原因，保持「每个账号一个条目」。
+			w, werr := zw.Create(strings.TrimSuffix(name, ".json") + ".error.txt")
+			if werr == nil {
+				_, _ = w.Write([]byte("读取出错：" + errString(gerr)))
+			}
+			continue
+		}
+		w, werr := zw.Create(name)
+		if werr != nil {
+			continue
+		}
+		// 原样写入物理文件字节：保留 nested/flat 形态与未知字段，保证可被
+		// /import 直接回灌，也不会因重新序列化丢失上游私有权重字段。
+		if _, werr = w.Write(phys.JSON); werr != nil {
+			continue
+		}
+	}
+	if errClose := zw.Close(); errClose != nil {
+		return mgmtJSONResponse(http.StatusInternalServerError, map[string]any{
+			"error": "zip finalize failed: " + errClose.Error(),
+		})
+	}
+
+	stamp := time.Now().Format("2006-01-02")
+	h := http.Header{}
+	h.Set("Content-Type", "application/zip")
+	h.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-credentials-%s.zip"`, providerName, stamp))
+	return pluginapi.ManagementResponse{StatusCode: http.StatusOK, Headers: h, Body: buf.Bytes()}
+}
+
+// perAccountFileName 生成 zip 内的单账号文件名，并保证同名冲突时追加序号。
+//
+// 命名优先沿用宿主 auth 文件名（已含 uid，形如 <provider>-<uid>.json）；缺失时
+// 回退 auth_index，再回退固定名，避免 zip 内出现空名或重复条目。
+// [参数] name: 宿主侧 auth 文件名；authIndex: 账号索引；used: 已用文件名计数表
+// [返回] 唯一且以 .json 结尾的文件名
+// 最近修改时间：2026-10-30；改动原因：新增，配合 zip 导出。
+func perAccountFileName(name, authIndex string, used map[string]int) string {
+	base := strings.TrimSpace(filepath.Base(strings.TrimSpace(name)))
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = strings.TrimSpace(authIndex)
+	}
+	if base == "" {
+		base = providerName + "-account"
+	}
+	if !strings.HasSuffix(strings.ToLower(base), ".json") {
+		base += ".json"
+	}
+	used[base]++
+	if n := used[base]; n > 1 {
+		base = fmt.Sprintf("%s-%d.json", strings.TrimSuffix(base, ".json"), n)
+	}
+	return base
 }

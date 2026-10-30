@@ -71,7 +71,7 @@ func TestResolveModelOptionsAutoUsesInlineChat(t *testing.T) {
 func TestBuildTraePayloadStreamDefaultMaxTokens(t *testing.T) {
 	// 1. 流式 + 未传 max_tokens：必须补默认值。
 	payload := buildTraePayload([]map[string]any{{"role": "user", "content": "hi"}}, "qwen3.8-max", true, 0, nil, nil, nil, "")
-	if got := payload["max_tokens"]; got != streamDefaultMaxTokens {
+	if got := payload["max_tokens"]; got != int(streamDefaultMaxTokens) {
 		t.Fatalf("stream max_tokens = %v, want %d", got, streamDefaultMaxTokens)
 	}
 
@@ -100,4 +100,3 @@ func TestBuildTraePayloadAdaptiveMaxTokens(t *testing.T) {
 		t.Fatalf("deepseek-reasoner max_tokens = %v, want >= 32768", payload["max_tokens"])
 	}
 }
-

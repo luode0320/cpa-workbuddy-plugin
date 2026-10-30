@@ -5,7 +5,6 @@ package main
 import (
 	"bytes"
 	"crypto/subtle"
-	_ "embed"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -67,6 +66,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import WorkBuddy AI credential JSON into host auth store."},
 			{Method: http.MethodGet, Path: base + "/export", Description: "Export all WorkBuddy AI credentials as JSON backup."},
+			{Method: http.MethodGet, Path: base + "/export/zip", Description: "Export each credential as its own JSON file inside one zip archive (per-account backup/migration)."},
 			{Method: http.MethodPost, Path: base + "/trial", Description: "Claim expert trial pack for one account (auth_index). 250 credits / 14 days."},
 			{Method: http.MethodPost, Path: base + "/register", Description: "Complete account registration (region + cloud account + trial) for one account (auth_index)."},
 			{Method: http.MethodPost, Path: base + "/select", Description: "Select the active account card used for chat routing (body: {auth_index})."},
@@ -122,6 +122,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportAuth(req)))
 	case req.Method == http.MethodGet && path == base+"/export":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleExportAuth(req)))
+	case req.Method == http.MethodGet && path == base+"/export/zip":
+		return okEnvelope(handleExportAuthZip(req))
 	case req.Method == http.MethodPost && path == base+"/trial":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleClaimTrial(req)))
 	case req.Method == http.MethodPost && path == base+"/register":
@@ -268,6 +270,7 @@ func mutatingManagementPath(path string) bool {
 		base + "/checkin/config",
 		base + "/import",
 		base + "/export",
+		base + "/export/zip",
 		base + "/trial",
 		base + "/register",
 		base + "/select",

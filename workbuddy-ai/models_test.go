@@ -83,7 +83,8 @@ func TestParseModelsAPIResponse(t *testing.T) {
 	if models1[0].ContextLength != 128000 || models1[0].MaxCompletionTokens != 128000 {
 		t.Fatalf("unexpected token limits for gpt-5: %+v", models1[0])
 	}
-	if models1[1].ContextLength != 200000 || models1[1].MaxCompletionTokens != 100000 {
+	// 2026-10-30：所有模型对外声明的输出上限统一为推理模式上限 128000。
+	if models1[1].ContextLength != 200000 || models1[1].MaxCompletionTokens != 128000 {
 		t.Fatalf("unexpected token limits for o3: %+v", models1[1])
 	}
 
@@ -104,7 +105,7 @@ func TestParseModelsAPIResponse(t *testing.T) {
 	if len(models2) != 1 || models2[0].ID != "gemini-2.5-pro" {
 		t.Fatalf("expected 1 active model, got %+v", models2)
 	}
-	if models2[0].ContextLength != 1000000 || models2[0].MaxCompletionTokens != 65536 {
+	if models2[0].ContextLength != 1000000 || models2[0].MaxCompletionTokens != 128000 {
 		t.Fatalf("unexpected token limits for gemini: %+v", models2[0])
 	}
 }
@@ -149,7 +150,7 @@ func TestParseModelsAPIResponseV3Config(t *testing.T) {
 	for _, m := range models {
 		if m.ID == "auto" {
 			foundAuto = true
-			if m.ContextLength != 176000 || m.MaxCompletionTokens != 32768 {
+			if m.ContextLength != 176000 || m.MaxCompletionTokens != 128000 {
 				t.Fatalf("auto alias did not inherit limits from default-model: %+v", m)
 			}
 		}
@@ -186,7 +187,7 @@ func TestParseModelsAPIResponseV3ConfigNestedAgent(t *testing.T) {
 	for _, m := range models {
 		if m.ID == "auto" {
 			foundAuto = true
-			if m.ContextLength != 200000 || m.MaxCompletionTokens != 32768 {
+			if m.ContextLength != 200000 || m.MaxCompletionTokens != 128000 {
 				t.Fatalf("auto alias did not inherit limits from default: %+v", m)
 			}
 		}

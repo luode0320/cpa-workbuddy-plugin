@@ -224,6 +224,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="primary" id="qrLoginBtn" onclick="openLoginModal()" style="font-weight:600;background:var(--accent,#0066cc);color:#fff">📱 扫码登录 / 添加账号</button>
     <button class="sec" id="importBtn" onclick="openImportModal()">导入凭证</button>
     <button class="sec" id="exportBtn" onclick="exportAuth(this)" title="导出全部账号凭证为 JSON，可直接再导入">导出凭证</button>
+    <button class="sec" id="exportZipBtn" onclick="exportAuthZip(this)" title="导出为 zip，每个账号一个独立 JSON 文件，便于按账号分发或迁移">导出 ZIP</button>
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
     <input id="searchInput" class="search" type="search" placeholder="搜索 nickname / UID" oninput="onSearchChange(this.value)" autocomplete="off">
 <button class="sec sort-btn" id="sortBtn" onclick="toggleSort(this)" title="当前：创建时间倒序（新→旧），点击切积分升序">创建 ↓</button>
@@ -1383,6 +1384,49 @@ async function exportAuth(btn){
     busy(btn,false);
   }
 }
+
+/* ---------- 按账号导出 zip（每账号一个 JSON）----------
+   GET /export/zip 返回 application/zip 二进制，包内每个账号一个独立 json
+   （沿用宿主 auth 文件名，形如 <provider>-<uid>.json）。与 /export 的单 JSON
+   汇总互补：汇总适合整库备份，zip 适合按账号分发或逐个拖入导入弹窗。
+   走原生 fetch 而非 api()：api() 只解 JSON，二进制会被降级成 {error}。
+*/
+async function exportAuthZip(btn){
+  busy(btn,true);
+  try{
+    const k=getKey();
+    if(!k){showAuth();return}
+    const r=await fetch(API+"/export/zip",{method:"GET",credentials:'omit',headers:authHeaders(k)});
+    if(r.status===401){
+      showAuth();
+      throw new Error("management key 无效或缺失");
+    }
+    if(!r.ok){
+      // 后端错误分支返回 JSON（无账号/清单失败），透出真实原因。
+      let msg="HTTP "+r.status;
+      try{const j=await r.json();if(j&&j.error)msg=j.error}catch(_){}
+      throw new Error(msg);
+    }
+    const blob=await r.blob();
+    if(!blob.size) throw new Error("服务端返回空压缩包");
+    const stamp=new Date().toISOString().slice(0,10);
+    const fname="workbuddycredentials-"+stamp+".zip";
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    a.download=fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    toast("已导出 ZIP","ok",fname);
+  }catch(e){
+    toast("导出失败","err",e.message||String(e));
+  }finally{
+    busy(btn,false);
+  }
+}
+
 /* ---------- batch import expansion ----------
    The import modal accepts one credential per call. The export file (wrapper
    with accounts[].credential), a bare JSON array, or a single nested/flat

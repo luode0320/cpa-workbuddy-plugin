@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.3
+
+### Feat - 输出上限统一为推理 128k / 非推理 64k
+
+- 变更: 删除逐模型官方规格表，改为四个全局常量（`minMaxTokensFloor=32768`、`defaultMaxOutputTokens=64000`、`defaultReasoningMaxTokens=128000`、`defaultContextWindow=1048576`）。所有模型一律按「推理模式 128000 / 非推理模式 64000」自适应，动态发现（上游 /models 返回但未收录）的模型同样适用。
+- 自适应规则: 客户端未传 max_tokens（<=0）取目标上限；推理模式且客户端传 <=8192 时放宽到 128000，避免思维链吃满配额提前截断；客户端传值超过目标上限时安全截断，防止上游 400；其余保留客户端原值但受 32768 底线保护。
+- 影响: 净删除约 340 行逐模型规格代码；`lookupOfficialModelSpec` 保留签名，恒返回可用规格，调用方零改动。
+
+### Feat - 新增每账号一个 JSON 的 zip 导出
+
+- 新增 `GET /export/zip` 管理接口：把每个账号的原始凭证打成 zip，包内每个账号一个独立 JSON 文件，便于按账号分发或迁移。
+- 与既有 `/export` 的区别：`/export` 返回单个汇总 JSON（accounts[] 数组），适合整库备份；`/export/zip` 解压后直接得到一组 `<name>.json`，可逐个拖进导入弹窗，也可直接放进 auth 目录。
+- 容错: 单账号读取失败不影响其余账号，失败项以 `<name>.error.txt` 记录原因；无账号时返回 404 JSON 错误。
+- 文件名: 取宿主 auth 文件名 basename，为空回退 auth_index，再回退固定名；同名冲突追加 `-2`、`-3` 序号，避免 zip 内条目覆盖。
+- 面板: 账号工具栏新增「导出 ZIP」按钮，走原生 `fetch` + `blob()` 下载。
+
+### 验证
+
+- `cgo-shim-build.py zcode` build / vet / test 全绿；新增 `credits_export_zip_test.go` 覆盖文件名生成、同名去重、每账号一文件、单账号失败容错、空账号列表、宿主列表报错六条路径。
+
 ## 0.3.2
 
 ### Feat - 账号池准入闸门（默认 > 20）

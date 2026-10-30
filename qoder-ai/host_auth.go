@@ -83,3 +83,8 @@ func hostAuthGetBundle(authIndex string) (*storedAuth, *hostAuthPhysical, error)
 	}
 	return sa, phys, nil
 }
+
+// hostAuthListFn / hostAuthGetPhysicalFn 是 zip 导出链路的包级测试接缝：
+// 生产指向真实 host RPC，单测替换为内存桩，避免为可测性改动既有调用方。
+var hostAuthListFn = hostAuthList
+var hostAuthGetPhysicalFn = hostAuthGetPhysical

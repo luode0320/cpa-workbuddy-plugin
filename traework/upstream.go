@@ -25,8 +25,8 @@ const (
 	maxBodyBytes = 4 << 20 // 4 MiB non-streamed body cap
 	// streamDefaultMaxTokens 是流式请求缺省 max_tokens。客户端不传时上游
 	// Trae 会给极小上限，导致 solo 长任务（如 qwen3.8-max 分析项目）刚开口
-	// 就 done。取值对齐全局输出底线。
-	streamDefaultMaxTokens = 32768
+	// 就 done。取非推理模式的统一上限（2026-10-30 由全局底线 32768 抬升）。
+	streamDefaultMaxTokens = defaultMaxOutputTokens
 )
 
 // UpstreamError carries the upstream HTTP status and truncated body so the
@@ -134,20 +134,11 @@ func buildTraePayload(messages []map[string]any, model string, stream bool, maxT
 	if toolChoice != "" {
 		payload["tool_choice"] = toolChoice
 	}
-	// 流式路径自适应 max_tokens：按模型官方规格自适应放宽/截断
+	// 流式路径自适应 max_tokens：统一上限（推理 128k / 非推理 64k）
 	if stream {
 		mLower := strings.ToLower(configName)
 		isReasoning := strings.Contains(mLower, "reasoner") || strings.Contains(mLower, "thinking")
-		if maxTokens <= 0 {
-			spec := resolveOfficialModelSpec(configName)
-			if spec.MaxOutputTokens > 0 {
-				maxTokens = int(spec.MaxOutputTokens)
-			} else {
-				maxTokens = streamDefaultMaxTokens
-			}
-		} else if maxTokens <= 8192 && isReasoning {
-			maxTokens = int(computeAdaptiveMaxTokens(configName, int64(maxTokens), true))
-		}
+		maxTokens = int(computeAdaptiveMaxTokens(configName, int64(maxTokens), isReasoning))
 	}
 	// 统一抬升至全局输出底线，任何路径下发往上游的 max_tokens 不低于 32768
 	if maxTokens > 0 {

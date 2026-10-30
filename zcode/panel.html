@@ -248,6 +248,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button id="oauthBtn" onclick="openOAuthBridge()" style="background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border);font-weight:600">OAuth 授权登录</button>
     <button class="sec" id="importBtn" onclick="openImportModal()">导入凭据</button>
     <button class="sec" id="exportBtn" onclick="exportAccounts(this)" title="导出全部账号凭证为 JSON，可直接再导入">导出凭证</button>
+    <button class="sec" id="exportZipBtn" onclick="exportAccountsZip(this)" title="导出为 zip，每个账号一个独立 JSON 文件，便于按账号分发或迁移">导出 ZIP</button>
     <button class="sec" id="refreshBtn" onclick="refreshAll(this)" title="重新拉取全部账号的每日额度">刷新额度</button>
     <button class="sec" onclick="setAllStatus(false, this)">全部启用</button>
     <button class="sec" onclick="setAllStatus(true, this)">全部禁用</button>
@@ -1430,6 +1431,47 @@ async function exportAccounts(btn){
     toast("已导出凭证","ok");
   }catch(e){ toast("导出失败","err",e.message); }
   finally{ busy(btn,false); }
+}
+/* ---------- 按账号导出 zip（每账号一个 JSON）----------
+   GET /export/zip 返回 application/zip 二进制，包内每个账号一个独立 json
+   （沿用磁盘 auth 文件名）。与 /export 的汇总 JSON 互补：汇总适合整库备份，
+   zip 适合按账号分发或逐个拖入导入弹窗。
+   走原生 fetch 而非 api()：api() 只解 JSON，二进制会被降级成 {error}。
+*/
+async function exportAccountsZip(btn){
+  busy(btn,true);
+  try{
+    const k=getKey();
+    if(!k){showAuth();return}
+    const r=await fetch(API+"/export/zip",{method:"GET",credentials:'omit',headers:authHeaders(k)});
+    if(r.status===401){
+      showAuth();
+      throw new Error("management key 无效或缺失");
+    }
+    if(!r.ok){
+      // 后端错误分支返回 JSON（无账号/读取失败），透出真实原因。
+      let msg="HTTP "+r.status;
+      try{const j=await r.json();if(j&&j.error)msg=j.error}catch(_){}
+      throw new Error(msg);
+    }
+    const blob=await r.blob();
+    if(!blob.size) throw new Error("服务端返回空压缩包");
+    const stamp=new Date().toISOString().slice(0,10);
+    const fname="zcode-credentials-"+stamp+".zip";
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    a.download=fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    toast("已导出 ZIP","ok");
+  }catch(e){
+    toast("导出失败","err",e.message||String(e));
+  }finally{
+    busy(btn,false);
+  }
 }
 async function setStatus(authId, disable, btn){
   busy(btn,true);

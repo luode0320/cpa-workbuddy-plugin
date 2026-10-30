@@ -5,7 +5,13 @@ import (
 	"testing"
 )
 
-// TestAdaptiveMaxTokens 验证按官方规格自适应计算 max_tokens。
+// TestAdaptiveMaxTokens 验证统一上限下的自适应计算。
+//
+// 2026-10-30 起不再按模型区分：推理模式统一 128k，非推理模式统一 64k，
+// 所有模型（含未收录与别称）行为一致。
+// [参数] t: 测试上下文
+// [返回] 无
+// 最近修改时间：2026-10-30；改动原因：改为全局统一上限。
 func TestAdaptiveMaxTokens(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -15,32 +21,39 @@ func TestAdaptiveMaxTokens(t *testing.T) {
 		wantTokens  int64
 	}{
 		{
-			name:        "Qwen3.8-Flash 默认非思考 -> 抬升至 32768 最低输出底线",
+			name:        "非推理模式 + 未传 -> 补足为 64000",
 			model:       "Qwen3.8-Flash",
 			requested:   0,
 			isReasoning: false,
-			wantTokens:  32768,
+			wantTokens:  64000,
 		},
 		{
-			name:        "Qwen3.8-Flash 思考模式 + 传 8192 -> 提升至官方推理上限 32768",
+			name:        "推理模式 + 传 8192 -> 放宽至 128000",
 			model:       "Qwen3.8-Flash",
-			requested:   8192,
-			isReasoning: true,
-			wantTokens:  32768,
-		},
-		{
-			name:        "GLM-5.3 思考模式 + 传 8192 -> 提升至官方推理上限 128000",
-			model:       "GLM-5.3",
 			requested:   8192,
 			isReasoning: true,
 			wantTokens:  128000,
 		},
 		{
-			name:        "超限值 200000 -> 截断至官方允许上限 32768",
+			name:        "推理模式 + 未传 -> 补足为 128000",
+			model:       "GLM-5.3",
+			requested:   0,
+			isReasoning: true,
+			wantTokens:  128000,
+		},
+		{
+			name:        "推理模式 + 超限 200000 -> 截断至 128000",
 			model:       "flash",
 			requested:   200000,
 			isReasoning: true,
-			wantTokens:  32768,
+			wantTokens:  128000,
+		},
+		{
+			name:        "非推理模式 + 超限 200000 -> 截断至 64000",
+			model:       "flash",
+			requested:   200000,
+			isReasoning: false,
+			wantTokens:  64000,
 		},
 	}
 
@@ -78,8 +91,8 @@ func TestPrepareUpstreamBody_ForcesStreamAndRelaxesTokens(t *testing.T) {
 	if stream, _ := obj["stream"].(bool); !stream {
 		t.Fatal("stream must be forced to true")
 	}
-	if got := jsonI64(obj, "max_tokens"); got != 32768 {
-		t.Fatalf("max_tokens = %d, want 32768", got)
+	if got := jsonI64(obj, "max_tokens"); got != 128000 {
+		t.Fatalf("max_tokens = %d, want 128000", got)
 	}
 	// 原请求的其余字段必须原样保留。
 	if _, ok := obj["messages"]; !ok {

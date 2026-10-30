@@ -20,6 +20,11 @@ import (
 var hostAuthListFn = hostAuthList
 var hostAuthGetFn = hostAuthGet
 
+// hostAuthGetPhysicalFn 是凭据物理文件读取（host.auth.get）的包级测试接缝。
+// zip 导出需要未解析的原始 JSON 字节（保留 nested/flat 形态与未知字段），
+// 与返回 *storedAuth 的 hostAuthGetFn 不同，故单独设接缝。
+var hostAuthGetPhysicalFn = hostAuthGetPhysical
+
 // checkinSummary 是签到状态快照，同时作为面板 JSON 契约与缓存载荷。
 // 字段兼容上游 snake_case 与 camelCase 两种形态（解析见
 // fetchCheckinStatus）。

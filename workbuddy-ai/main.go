@@ -298,7 +298,7 @@ type registrationCapability struct {
 	UsagePlugin           bool                         `json:"usage_plugin"`
 }
 
-var version = "0.1.32"
+var version = "0.1.33"
 
 func wbRegistration() registration {
 	return registration{

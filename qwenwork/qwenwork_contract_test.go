@@ -206,16 +206,24 @@ func TestParseChatModesCatalog_NoUsableModels(t *testing.T) {
 	}
 }
 
-// TestOfficialSpecsCoverQwenWorkTiers 验证上游真实下发的三档模型都有官方规格，
-// 不会落到 131072 的通用兜底（否则 1M 上下文会被误报）。
+// TestOfficialSpecsCoverQwenWorkTiers 验证上游真实下发的三档模型都拿到统一规格。
+//
+// 2026-10-30 起所有模型共用统一上限（ContextWindow 固定 1048576、
+// 推理 128k / 非推理 64k），不再区分已收录与未收录。
+// [参数] t: 测试上下文
+// [返回] 无
+// 最近修改时间：2026-10-30；改动原因：对齐全局统一上限。
 func TestOfficialSpecsCoverQwenWorkTiers(t *testing.T) {
 	for _, id := range []string{"flash", "pro", "qwen3.8-max-preview"} {
 		spec := resolveOfficialModelSpec(id)
-		if spec.ContextWindow != 1000000 {
-			t.Errorf("%s ContextWindow = %d, want 1000000", id, spec.ContextWindow)
+		if spec.ContextWindow != defaultContextWindow {
+			t.Errorf("%s ContextWindow = %d, want %d", id, spec.ContextWindow, defaultContextWindow)
 		}
-		if spec.ReasoningMax <= 0 {
-			t.Errorf("%s ReasoningMax = %d, want > 0", id, spec.ReasoningMax)
+		if spec.ReasoningMax != defaultReasoningMaxTokens {
+			t.Errorf("%s ReasoningMax = %d, want %d", id, spec.ReasoningMax, defaultReasoningMaxTokens)
+		}
+		if spec.MaxOutputTokens != defaultMaxOutputTokens {
+			t.Errorf("%s MaxOutputTokens = %d, want %d", id, spec.MaxOutputTokens, defaultMaxOutputTokens)
 		}
 	}
 }

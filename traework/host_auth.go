@@ -112,3 +112,8 @@ func waitAuthDisabledState(authIndex string, want bool, timeout time.Duration) b
 	}
 	return false
 }
+
+// hostAuthListFn 是 zip 导出链路的账号枚举测试接缝：生产指向真实 host RPC，
+// 单测替换为内存桩，避免为可测性改动既有调用方。
+// 物理文件读取复用 failover_disable.go 已有的 hostAuthGetPhysicalFn。
+var hostAuthListFn = hostAuthList
