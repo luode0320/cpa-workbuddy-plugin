@@ -146,21 +146,25 @@ func TestRefreshRunner_FailureIsolation(t *testing.T) {
 
 // Snapshot counts must stay consistent across the state transitions.
 func TestRefreshRunner_SnapshotCounts(t *testing.T) {
-	r := newTestRunner(func(authIndex, authID string) error { return nil })
+	// 用 release 阻塞 worker 直到取完 early snapshot：fetch 若立即返回，多核机器上
+	// 5 个账号可能在 Snapshot() 之前就跑完，"early 未完成" 的断言会假失败。
+	release := make(chan struct{})
+	r := newTestRunner(func(authIndex, authID string) error {
+		<-release
+		return nil
+	})
 	startTestRunner(r)
 	defer close(r.stop)
 
 	r.EnqueueAll(targets(5), "credits")
-	// Immediately after enqueue the worker may already have started the first
-	// account, so only assert on invariants that hold regardless of timing:
-	// total is 5 and the batch is nowhere near fully done.
 	early := r.Snapshot()
 	if early.Total != 5 {
 		t.Fatalf("early snapshot total wrong: %+v", early)
 	}
-	if early.Done == 5 {
-		t.Fatalf("early snapshot already fully done: %+v", early)
+	if early.Done != 0 {
+		t.Fatalf("early snapshot should have no completed account: %+v", early)
 	}
+	close(release)
 
 	snap := waitForIdle(r, 3*time.Second)
 	if snap.Done != 5 || snap.Failed != 0 || snap.Pending != 0 || snap.Running {
