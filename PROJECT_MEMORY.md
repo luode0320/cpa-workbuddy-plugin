@@ -82,6 +82,15 @@
 - **非流式路径 TTFT 恒为 0 是慢速冷却的隐形杀手（2026-10-26 修复）**：workbuddy-ai / qoder-ai / qwenwork 的非流式请求 `publishUsage(..., 0)` 恒传 0。慢速冷却按样本数门槛判定，纯非流式流量永远达不到门槛——机制对它们**等同不存在**。修复须逐插件改非流式函数返回值 + 聚合函数加 `firstByteAt *time.Time` 出参，打点位置在**首个可解析分片**（不是读完正文），语义才与流式「首字」一致。
 - 数据库/配置一律逻辑引用（无物理外键）
 - failover：1/3/10 分钟阶梯退避，429/402/5xx/传输错误计入，业务 400 不计
+- **上游拥堵不罚号（2026-10-31，workbuddy 0.21.8）**：失败分类新增两个「非账号故障」维度——`failureScopeUpstreamBusy`（业务码 6021 / 文案 `queue.full`：渠道推理集群容量满载，换任何账号都撞同一堵墙）既不写冷却也不写盘禁用且**同请求不换号**，只透传可读提示；`failureScopeModelRateLimit`（业务码 6004：模型级限流，账号健康）只隔离「账号×模型」，**永不禁用账号**。判据集中在 `workbuddy/failure_class.go`，由 `recordsCooldown()` / `disablesAccount()` 两个派生方法表达，`classifyUpstreamFailure` 里 6021/6004 必须**先于**通用限流与 5xx 判定（它们常以 429/5xx 承载）。
+  **Why**：高峰期（北京 15–17 点）拥堵被按账号级记账 → 一次失败即写盘禁用 → 可用池缩小 + 会话亲和打散 → 剩余号压力上升 → 更多拥堵，形成雪崩，表现为「几乎无法使用」。
+  **How to apply**：任何新增的「上游容量/限流类」失败判据都要走这两个维度而不是 `failureScopeAccount`；给其他插件移植同类修复时，5xx 同请求换号（`shouldRotateOnStatus`）与顶层业务码帧识别（`sseErrorFrame` 无 `error` 包裹时取 `code`，注意 JSON 数字解成 float64 需去掉 `.0` 尾巴）是同一组配套，缺一则拥堵帧既不记账也不换号。
+- **写盘禁用需连续失败门限（2026-10-31，workbuddy 0.21.8）**：`failover_disable_min_count` 默认 **3**，且**只作用于瞬时类失败**（`isTransientUpstreamFailure`：传输错误、5xx、软限流文案、零字节断流）；确定性失败（401/403/404/405 凭据、402 额度、11128 模型拦截）**跳过门限立即禁用**——它们在同一个号上必然重演，多等两次只会让用户多失败两次。填 1 完整恢复「首次失败即禁用」旧行为。
+  **Why**：2026-10-29 生产事故——主力快号一次 429（latency 仅 261ms，属频率限制而非额度耗尽）即被禁用 8 小时且零探活，直接导致 deepseek-v4.1-flash 午后集体变慢。
+  **How to apply**：调用点必须区分「掌握原始 status/body」与「不掌握」两条入口：前者走 `recordFailureScopedWithCause`（按瞬时/确定性分流），后者走 `recordFailureScoped`（只保留确定性语义，当前唯一调用方是 11128 拦截点）。新增记账入口若绕过 status/body 透传，等于把该失败强行当成确定性失败。
+- **探活必须有兜底模型（2026-10-31，workbuddy 0.21.8）**：`failoverProbeTargets` 在盘上标记与 sidecar 都没记模型时，回落 `failoverStateSnapshotModel`（内存 lastModel）→ `failoverProbeFallbackModel`（`deepseek-v4.1-flash`），**不再「无模型即跳过」**。
+  **Why**：「无模型不恢复」正是 2026-10-29 主力号被禁 8 小时零探活的机制根因；旧测试 `TestRunFailoverProbeWithoutFailedModelSkips` 固化的就是这个缺陷，已改写为兜底语义。
+  **How to apply**：禁用类机制必须保证恢复通道无条件存在——任何「缺少 X 就跳过恢复」的写法都是潜在永久失联点，评审时按红线看待。
 - 40x 换号重试（2026-08-22）：401/403/404/405 计入账号级故障，`retry_on_4xx` 预算默认 3（0-5），**缺省键保持当前值**（kill switch 安全），400 直通不重试
 - 路由：0.12.0 起移除三池只留保号池；**2026-09-30 起保号池也已移除**；**2026-10-13 起调度转为「高积分优先 + `min_routable_credits`=20 红线硬排除」**，健康闸门共三类硬排除（`test_failed` + failover cooldown + 低额/耗尽）；存量 `pool`/`priority`/`preserve` 字段忽略式读取不清理
 - 版本三轨（qoderwork）：main.go 0.8.2 / VERSION 0.4.1 / registry 0.2.x 历史双轨，发版以 registry 为准

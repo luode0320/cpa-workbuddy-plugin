@@ -31,7 +31,18 @@
 
 ## 活动会话进展摘要
 
-- 当前会话（2026-10-29 深夜）：**deepseek-v4.1-flash 16 点后变慢根因诊断（只读排查，未改代码、未发布）**：
+- 当前会话（2026-10-31 凌晨）：**workbuddy 高峰期拥堵识别与失败分类修正（0.21.8，已提交推送，CI 发布中）**：
+  - **用户诉求**：「workbuddy客户端有一个模型拥堵的状态, 我们插件现在时看不到的…高峰期拥堵几乎导致无法使用? 分析一下」，随后确认「现在的修复支持提交发布生产了吗?」。
+  - **用户三点裁定**：① 参考 `https://github.com/linguo2625469/workbuddy2api-panel` 的处理方式；② 允许生产只读实测但拥堵发生在北京 15–17 点（本轮不在窗口，未取得实证）；③ 只做 `workbuddy-provider`。
+  - **结论：不是「看不到状态」，而是拥堵被系统性误判成账号故障，形成雪崩**。四条缺陷：D1 SSE 错误帧只认 `{"error":...}`，顶层业务码帧 `{"code":6004}` 被当正常正文透传；D2 5xx 不在同请求内换号；D3 一次失败即写盘禁用（无门限）；D4 探活标记缺失时永久跳过（2026-10-29 事故机制）。放大链：拥堵 → 按账号级记账 → 一次即禁用 → 池子缩小 + 会话亲和打散 → 压力转移 → 更多拥堵。
+  - **修复（10 文件 +679/-51，全部在 `workbuddy/`）**：新增 `failureScopeUpstreamBusy`（6021/`queue.full`：不冷却、不禁用、不换号，只透传 `upstreamBusyHint`）与 `failureScopeModelRateLimit`（6004：只隔离账号×模型，永不禁用账号）；`classifyUpstreamFailure` 判定顺序把两者放在通用限流与 5xx **之前**；`sseErrorFrame` 补顶层业务码帧分支（`topLevelCodeText` 处理 float64 去 `.0`）；5xx 纳入同请求换号（`shouldRotateOnStatus`）；写盘禁用加 `failover_disable_min_count`（默认 3，填 1 恢复旧行为），**门限只作用于瞬时类失败**（`isTransientUpstreamFailure` 判确定性的 401/403/404/405、402、11128 直接禁用）；探活无模型时回落 `failoverStateSnapshotModel` → `deepseek-v4.1-flash`。
+  - **实施中的自我修正**：初版门限无差别作用于所有失败，打破 5 个既有测试；审查结论是**设计缺陷而非测试过时**（确定性故障等三次只会让用户多失败两次），故拆出 `recordFailureScopedWithCause` 透传 status/body。另 `TestRunFailoverProbeWithoutFailedModelSkips` 原本断言的正是事故根因机制，已改写为兜底语义并补失败侧用例——该测试在修复前是在固化缺陷。
+  - **验证证据**：`python scripts/cgo-shim-build.py workbuddy` build/vet/test 全绿（33.978s / 升版后复跑 34.094s）；**6 项变异测试全部 KILLED**（顶层码帧分支、6021 分支、免罚、门限、门限越界作用于确定性失败、探活兜底）；gofmt 合规（`usage_config.go` 的 `retry_on_4xx` 缩进为既有问题，非本轮引入，按手术式改动原则不动）。
+  - **发布链进度**：commit `611e340` → push `7d39588..611e340` → CI dispatch run `41120779119`（`plugin=workbuddy-provider version=0.21.8`）；workbuddy 单测 job 已 success，6 平台构建与 Release 排队中。**注意**：本机从 Git Bash 直接走 `https://...` + `git-askpass.sh` 会失败（该脚本已不存在，现存 `~/.github/ghcred.sh` 也不被接受）；正确通道是远端已配的 SSH（`ssh://git@ssh.github.com:443`），直接 `git push origin main`。`gh` 未安装，CI 触发与状态查询一律走 GitHub API + `~/.github/token`。
+  - **边界（如实记录）**：① 拥堵窗口（北京 15–17 点）生产实证未取得，`6004`/`6021` 的真实报文形态依据来自参考仓库 2026-10-15 实案注释，非我方日志；② 下一拥堵窗口需执行 `docker logs cli-proxy-api | grep -E "6004|6021|queue.full"` 补齐；③ 未做面板拥堵状态可视化（用户原始诉求是「高峰期不可用」，本轮只修处置链路）。
+  - **产物**：`doc/2-需求/2026-10-31_040033_workbuddy高峰期拥堵识别与失败分类修正.md`、`doc/3-实施/2026-10-31_040033_workbuddy高峰期拥堵识别与失败分类修正_实施总览.md`。
+
+- 会话（2026-10-29 深夜）：**deepseek-v4.1-flash 16 点后变慢根因诊断（只读排查，未改代码、未发布）**：
   - **用户诉求**：「下午 16 点左右大量会话请求进来后，deepseek-v4.1-flash 推理很慢，分析一下为什么」。
   - **结论：双因叠加，非上游故障、非主机资源、非 CPA 并发**。
   - **主因（变慢起点，早于 16 点）**：主力快号 `1d7eca06`（14:30-15:48 承载该模型 58%-100% 流量，TTFT 中位 1825ms 全池最快）在 **15:48:53** 一条 429（latency 仅 261ms）后触发 `failover disabled account via cpa api`，`failed_count=1`，**至次日 00:01 仍 `disabled=true`、8 小时零探活**。原因：该账号文件顶层无 `failover_disable`/`failover_model` 标记，探活走 `failover probe skipped: no failed model recorded` 分支永久跳过（`workbuddy/failover_disable.go:700-706`）。
