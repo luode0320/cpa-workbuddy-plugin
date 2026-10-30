@@ -49,11 +49,25 @@ const failoverCooldownLadderCap = int(failoverCooldownMax / failoverCooldownBase
 // are swept from memory. Aligned with the session-binding pruner.
 const failoverPruneInterval = 5 * time.Minute
 
+// defaultFailoverDisableMinCount 是写盘禁用的默认连续失败门限。
+//
+// 为什么不设 1：写盘禁用会把这个账号从宿主路由里彻底摘掉，恢复只能靠
+// 10 分钟探活。高峰期一次上游抖动就禁用，会把整池健康号逐个摘光
+// （2026-10-29 事故：主力快号单次 429 后被禁 8 小时零探活）。
+// 取 3 与阶梯冷却的第 3 档对齐：前两次失败只走内存冷却（数分钟内自愈），
+// 连续第 3 次才认定这个号真的坏了。
+const defaultFailoverDisableMinCount = 3
+
 var (
 	// failoverEnabled gates the whole mechanism. Default true; set false via
 	// plugin config account_failover: false to restore pre-failover behavior.
 	failoverEnabled   = true
 	failoverEnabledMu sync.RWMutex
+
+	// failoverDisableMinCount 是写盘禁用前置的连续失败次数门限。
+	// 填 1 等价于恢复修复前行为（首次失败即禁用）。
+	failoverDisableMinCount   = defaultFailoverDisableMinCount
+	failoverDisableMinCountMu sync.RWMutex
 
 	// failoverMu guards failoverStates.
 	failoverMu     sync.Mutex
@@ -105,6 +119,31 @@ func setFailoverEnabled(on bool) {
 	failoverEnabledMu.Unlock()
 }
 
+// failoverDisableThreshold 返回当前生效的写盘禁用门限。
+// [返回] 连续失败次数门限，最小为 1。
+// 最近修改时间：2026-10-31；改动原因：新增，供记账落点与单测读取。
+func failoverDisableThreshold() int {
+	failoverDisableMinCountMu.RLock()
+	defer failoverDisableMinCountMu.RUnlock()
+	if failoverDisableMinCount < 1 {
+		return 1
+	}
+	return failoverDisableMinCount
+}
+
+// setFailoverDisableMinCount 设置写盘禁用门限（配置 / 测试）。
+// 传入非正数时回落到 1，等价于「首次失败即禁用」的历史行为。
+// [参数] n：连续失败次数门限。
+// 最近修改时间：2026-10-31；改动原因：新增。
+func setFailoverDisableMinCount(n int) {
+	if n < 1 {
+		n = 1
+	}
+	failoverDisableMinCountMu.Lock()
+	failoverDisableMinCount = n
+	failoverDisableMinCountMu.Unlock()
+}
+
 // failoverCooldownFor 返回第 count 次连续失败对应的阶梯冷却时长。
 // 时长按 failoverCooldownBase 线性递增并在 failoverCooldownMax 封顶，
 // count <= 0 返回零值表示不冷却。
@@ -138,16 +177,25 @@ func isAccountFailure(status int, body string) bool {
 }
 
 // shouldRotateOnUpstreamErr 判定一次上游失败是否值得在同请求内换号。
-// 账号级 4xx（401/403/404/405）与 429 沿用既有契约；HTTP 200 内的 SSE
-// 业务错误帧（上游以 200 承载配额/限流等失败，见 traework 生产实证）
-// 走 body-marker 分类，命中账号级同样换号。5xx/0/402 维持跨请求冷却
-// 路径，不在同请求内烧预算。
+// 账号级 4xx（401/403/404/405）、429 与 5xx 都值得换号；HTTP 200 内的 SSE
+// 业务错误帧（上游以 200 承载配额/限流等失败，见 traework 生产实证）走
+// body-marker 分类，命中账号级同样换号。
+//
+// 渠道级容量满载（6021 / queue.full）是唯一不换号的失败：换任何账号都会
+// 撞同一堵墙，换号只会放大请求量（参考实现记录 2026-10-15 实案）。
+// 402 硬额度也不换号——由生命周期写盘禁用接管。
+//
 // 最近修改时间：2026-09-06 17:00:00；改动原因：同步 traework 的 200 SSE 业务错误换号修复。
+// 最近修改时间：2026-10-31；改动原因：5xx 纳入换号、渠道满载显式排除。
 func shouldRotateOnUpstreamErr(status int, errBody string) bool {
+	// 渠道满载优先于其它判据：它常以 429/5xx 承载，必须先排掉。
+	if isQueueFullBody(errBody) {
+		return false
+	}
 	if status == http.StatusOK {
 		return isAccountFailure(status, errBody)
 	}
-	return isAccountLevel4xx(status)
+	return shouldRotateOnStatus(status)
 }
 
 // isAccountLevel4xx reports whether a 4xx status reflects an account-level
@@ -180,6 +228,26 @@ func isAccountLevel4xx(status int) bool {
 		return true
 	}
 	return false
+}
+
+// shouldRotateOnStatus 判定一个非 2xx 上游状态是否值得在同一请求内换号续试。
+//
+// 与 isAccountLevel4xx 的分工：本函数覆盖同请求换号的全集，即在账号级 4xx
+// 之外额外纳入 5xx。5xx 在高峰期几乎必然发生（上游过载通常只影响部分后端），
+// 过去只在跨请求冷却层级处理，等于让用户直接承受第一次失败。
+//
+// 仍然排除的形态：
+//   - 402 硬额度：换号也可能撞额度墙，且明确由生命周期写盘禁用接管；
+//   - 400/422 请求形状：换任何账号都同样失败，白烧预算。
+//
+// [参数] status：上游 HTTP 状态码。
+// [返回] true 表示应在同请求内换下一个账号。
+// 最近修改时间：2026-10-31；改动原因：新增，把 5xx 纳入同请求换号。
+func shouldRotateOnStatus(status int) bool {
+	if isAccountLevel4xx(status) {
+		return true
+	}
+	return status >= 500 && status <= 599
 }
 
 // normalizeFailoverKey canonicalizes an auth identifier across various representations:
@@ -244,7 +312,7 @@ func recordAccountFailureForModel(authID, model string, status int, body string)
 	if !failoverActive() {
 		return false
 	}
-	return recordFailureScoped(authID, model, classifyUpstreamFailure(status, body))
+	return recordFailureScopedWithCause(authID, model, classifyUpstreamFailure(status, body), status, body)
 }
 
 // recordSSEErrorFailureForModel 记录 HTTP 200 承载的业务错误帧。
@@ -277,28 +345,108 @@ func recordSSEErrorFailureForModel(authID, model, body string) bool {
 //   - 返回值只表达「这次失败是否计入冷却」，不表达禁用是否写成功——否则
 //     分类单测会被宿主可用性与磁盘绑架。
 //
+// 是否写盘禁用由两个条件共同决定（2026-10-31 起）：
+//   - scope.disablesAccount()：模型级限流（6004）与渠道满载（6021）都不禁用——
+//     前者说明账号健康、只是该模型限流，后者根本不是账号问题；
+//   - 连续失败次数已达 failoverDisableMinCount：单次抖动只走内存冷却
+//     （数分钟内自愈），连续失败才认定该号真的坏了。
+//
+// 两条都是刻意的保守化：禁用是「把号从宿主路由里彻底摘掉」，恢复只能靠
+// 10 分钟探活。高峰期一次抖动就禁用，会把整池健康号逐个摘光并放大拥堵。
+//
 // [参数] authID：账号唯一标识；model：已归一化的上游模型名，可为空；
 // scope：记账维度。
-// [返回] true 表示已写入；scope 为 none 时返回 false。
+// [返回] true 表示已写入；不记账的维度返回 false。
 // 最近修改时间：2026-10-21；改动原因：失败双写——冷却阶梯 + 盘上禁用。
+// 最近修改时间：2026-10-31；改动原因：按分类决定是否写盘禁用，并加连续失败门限。
+// recordFailureScoped 是不掌握原始 status/body 的记账入口。
+//
+// 目前唯一的调用方是 11128 模型拦截点（noteModelBlockedHit）：那是确定性失败，
+// 同一个号上必然重演，因此不做门限判定、直接写盘禁用。需要按瞬时/确定性区分
+// 门限的调用方必须走 recordFailureScopedWithCause。
+//
+// [参数] authID：账号唯一标识；model：已归一化的上游模型名；scope：记账维度。
+// [返回] true 表示已写入；不记账的维度返回 false。
+// 最近修改时间：2026-10-31；改动原因：拆出带原因版本后，本函数保留确定性失败语义。
 func recordFailureScoped(authID, model string, scope failureScope) bool {
 	if !recordCooldownScoped(authID, model, scope) {
 		return false
 	}
-	disableAccountForFailover(authID, model)
+	if scope.disablesAccount() {
+		disableAccountForFailover(authID, model)
+	}
 	return true
+}
+
+// recordFailureScopedWithCause 在 recordFailureScoped 基础上带上本次失败的原始
+// status/body，供写盘禁用门限区分「瞬时抖动」与「确定性故障」。
+//
+// [参数] authID：账号唯一标识；model：已归一化的上游模型名；scope：记账维度；
+// status/body：本次失败原始信息，未知时传 0/""。
+// [返回] true 表示已写入；不记账的维度返回 false。
+// 最近修改时间：2026-10-31；改动原因：新增，把失败原因透传给门限判定。
+func recordFailureScopedWithCause(authID, model string, scope failureScope, status int, body string) bool {
+	if !recordCooldownScoped(authID, model, scope) {
+		return false
+	}
+	if scope.disablesAccount() && failureCountReachedDisableThreshold(authID, model, scope, status, body) {
+		disableAccountForFailover(authID, model)
+	}
+	return true
+}
+
+// failureCountReachedDisableThreshold 报告本次失败后是否已达到写盘禁用门限。
+//
+// 门限只过滤「瞬时类」失败（5xx、传输错误、限流文案、零字节断流）：这类
+// 信号在高峰期成片出现，一次就禁用会把整池健康号摘光。确定性失败
+// （11128 模型拦截、401/403/404/405 凭据问题、402 额度耗尽）不设门限——
+// 它们在同一个号上必然重演，多等两次只会让用户多失败两次。
+//
+// 必须读「刚写入的」计数：recordFailureScoped 先调 recordCooldownScoped，
+// 因此这里拿到的是包含本次失败在内的累计次数。
+//
+// 模型维度只在账号×模型级分类下有意义；账号级失败读账号层计数。模型名为空
+// 且是模型级分类时，记冷却已退化为账号级，这里同步读账号层保持一致。
+//
+// [参数] authID：账号唯一标识；model：已归一化的上游模型名，可为空；
+// scope：本次记账维度；status/body：本次失败原始信息，用于判定是否瞬时。
+// [返回] true 表示可以写盘禁用。
+// 最近修改时间：2026-10-31；改动原因：新增，把「一次失败即禁用」改为瞬时失败按次数设门限。
+func failureCountReachedDisableThreshold(authID, model string, scope failureScope, status int, body string) bool {
+	// 确定性失败不受门限约束：等两次不会自愈，只会多失败两次。
+	if !isTransientUpstreamFailure(status, body) {
+		return true
+	}
+	threshold := failoverDisableThreshold()
+	model = strings.TrimSpace(model)
+	if model != "" && (scope == failureScopeAuthModel || scope == failureScopeModelRateLimit) {
+		count, _, ok := authModelFailoverSnapshot(authID, model)
+		if !ok {
+			return false
+		}
+		return count >= threshold
+	}
+	count, _, ok := failoverStateSnapshot(authID)
+	if !ok {
+		return false
+	}
+	return count >= threshold
 }
 
 // recordCooldownScoped 按给定维度写入内存阶梯冷却，是冷却侧的唯一写入落点。
 //
 // 从 recordFailureScoped 拆出，只为让 RPC 留在锁外；冷却语义与拆分前完全一致。
 //
+// 上游拥堵（failureScopeUpstreamBusy）在此直接返回 false：它既不写冷却也不写
+// 禁用。把它当普通限流逐号冷却，高峰期可在数秒内把整池健康号摘光。
+//
 // [参数] authID：账号唯一标识；model：已归一化的上游模型名，可为空；
 // scope：记账维度。
-// [返回] true 表示已写入冷却；scope 为 none 时返回 false。
+// [返回] true 表示已写入冷却；不记账的维度返回 false。
 // 最近修改时间：2026-10-21；改动原因：拆出锁内部分，供双写在锁外追加禁用。
+// 最近修改时间：2026-10-31；改动原因：拥堵维度不记账，改用 recordsCooldown 判据。
 func recordCooldownScoped(authID, model string, scope failureScope) bool {
-	if scope == failureScopeNone {
+	if !scope.recordsCooldown() {
 		return false
 	}
 	model = strings.TrimSpace(model)
@@ -307,8 +455,9 @@ func recordCooldownScoped(authID, model string, scope failureScope) bool {
 	defer failoverMu.Unlock()
 
 	// 账号×模型级失败：只冷却该模型，不摘掉整个账号。
+	// 模型级限流（6004）走同一落点——它同样只对该模型成立。
 	// 模型名为空时无维度可写，退化为账号级，避免失败被静默丢弃。
-	if scope == failureScopeAuthModel && model != "" {
+	if (scope == failureScopeAuthModel || scope == failureScopeModelRateLimit) && model != "" {
 		for _, k := range failoverKeysLocked(authID) {
 			st := ensureFailoverStateLocked(k)
 			st.lastModel = model

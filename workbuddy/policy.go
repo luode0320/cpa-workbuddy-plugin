@@ -205,6 +205,12 @@ func isHardCreditError(status int, body string) bool {
 
 const httpStatusPaymentRequired = 402
 
+// upstreamBusyHint 是渠道级容量满载时追加给客户端的可读说明。
+//
+// 它明确告诉调用方「这不是你的账号问题、换号也没用」，避免下游把它当成
+// 凭据故障去做无谓的重登或换号。
+const upstreamBusyHint = "（上游推理集群容量已满，非账号问题，请稍后重试）"
+
 // isSoftRateLimit is pure throttling without hard-credit semantics.
 func isSoftRateLimit(status int, body string) bool {
 	if isHardCreditError(status, body) {

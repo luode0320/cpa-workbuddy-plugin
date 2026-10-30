@@ -166,16 +166,16 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			}
 			noteAccountFailureForModel(curAuthID, upstreamModel, statusCode, errPayload)
 
-			// Retry policy (v0.14.2 — 429 included):
-			//   account-level 4xx (401/403/404/405) and 429 soft rate limit
-			//   benefit from switching accounts on the SAME request,
-			//   constrained by retry_on_4xx budget.
-			//   5xx/0/402 are still surfaced and recorded, but rotate the
-			//   account cross-request via the cooldown tier; same-request
-			//   rotation gives no guarantee the next upstream isn't also
-			//   5xx, so we don't burn budget on it.
-			//   Business 400 is request-shaped and would fail identically
-			//   on every account, so we propagate it immediately.
+			// Retry policy（2026-10-31 起 5xx 纳入同请求换号）：
+			//   account-level 4xx (401/403/404/405)、429 soft rate limit 与 5xx
+			//   都在同一请求内换号续试，共用 retry_on_4xx 预算。
+			//   5xx 过去只在跨请求冷却层级处理，高峰期意味着用户在第一个
+			//   5xx 就直接看到失败——而上游过载往往只影响部分后端，换号
+			//   有真实成功机会。
+			//   Business 400 是请求形状问题，换号必然同样失败，立即透传。
+			//
+			// 6021 渠道满载是唯一例外：换任何账号都会撞同一堵墙，换号只会
+			// 放大请求量，因此不换号、直接透传拥堵提示。
 			//
 			// 11128「请求被拦截」：双写记账后直接返回。
 			// 该状态码是 400，本就不会进入换号分支（isAccountLevel4xx 不含
@@ -187,7 +187,14 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 				streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(errPayload, 200)))
 				return
 			}
-			if !isAccountLevel4xx(statusCode) {
+			// 渠道级容量满载：上游推理集群排队打满，不是账号问题。
+			// 不换号、不罚号（记账侧已由 failureScopeUpstreamBusy 免罚），
+			// 直接把可读原因交给客户端。
+			if isQueueFullBody(errPayload) {
+				streamEmitError(streamID, fmt.Sprintf("upstream %d: %s%s", statusCode, truncateRedacted(errPayload, 200), upstreamBusyHint))
+				return
+			}
+			if !shouldRotateOnStatus(statusCode) {
 				streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(errPayload, 200)))
 				return
 			}
@@ -935,7 +942,12 @@ func mergeToolCallDelta(merged, delta map[string]any) {
 // SSE body (production evidence: the Trae upstream carries quota/rate-limit
 // failures this way; see traework stream 389/391). Returns "" for any
 // non-error chunk so the hot path stays a single map lookup.
+//
+// 另识别上游顶层业务错误帧 `{"code":6004,"message":"..."}`。WorkBuddy 的
+// 模型级限流与渠道满载在流式路径上以这种无 error 包裹的形态下发；不识别会
+// 被 cleanChunkJSON 当作正常分片透传给客户端，既不记账也不换号。
 // 最近修改时间：2026-09-06 17:00:00；改动原因：同步 traework 的 200 SSE 业务错误换号修复。
+// 最近修改时间：2026-10-31；改动原因：补顶层业务码帧识别，避免拥堵帧被当正文透传。
 func sseErrorFrame(content string) string {
 	var obj map[string]any
 	if json.Unmarshal([]byte(content), &obj) != nil {
@@ -943,7 +955,21 @@ func sseErrorFrame(content string) string {
 	}
 	v, present := obj["error"]
 	if !present || v == nil {
-		return ""
+		// 顶层业务码帧：没有 error 包裹，但对端已明确给出非零 code。
+		// 只取 code 与 message，不递归展开嵌套 JSON —— workbuddy 侧暂无
+		// 嵌套 message 的观测证据，引入展开会增加热路径开销。
+		code := topLevelCodeText(obj)
+		if code == "" || code == "0" {
+			return ""
+		}
+		msg, _ := obj["message"].(string)
+		if msg == "" {
+			msg, _ = obj["msg"].(string)
+		}
+		if strings.TrimSpace(msg) == "" {
+			return code
+		}
+		return code + ": " + msg
 	}
 	switch t := v.(type) {
 	case map[string]any:
@@ -957,6 +983,28 @@ func sseErrorFrame(content string) string {
 		return msg
 	case string:
 		return t
+	}
+	return ""
+}
+
+// topLevelCodeText 取出帧顶层 code 的文本形态。
+//
+// 上游同一业务码可能写成数字（6004 / 6004.0）或字符串（"6004"），统一归一为
+// 去掉小数尾巴的字符串，供上层按业务码判定。缺省或非法时返回空串。
+// [参数] obj：已解析的帧对象。
+// [返回] 归一化后的 code 文本；不存在时为空串。
+// 最近修改时间：2026-10-31；改动原因：新增，兼容 code 的数字/字符串两种书写。
+func topLevelCodeText(obj map[string]any) string {
+	switch v := obj["code"].(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case float64:
+		// JSON 数字一律解成 float64：6004 会变成 6004.0，需去掉小数部分，
+		// 否则后续按 "6004" 匹配全部落空。
+		if v == float64(int64(v)) {
+			return strconv.FormatInt(int64(v), 10)
+		}
+		return strconv.FormatFloat(v, 'f', -1, 64)
 	}
 	return ""
 }

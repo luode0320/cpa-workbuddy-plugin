@@ -49,6 +49,11 @@ const (
 	failoverDisableKey      = "failover_disable"
 	failoverDisableModelKey = "failover_disable_model"
 	failoverDisableAtKey    = "failover_disable_at"
+
+	// failoverProbeFallbackModel 是探活兜底模型：当盘上标记与 sidecar 都没记
+	// 模型时用它回放，保证被禁用的号始终存在恢复通道。取插件固定兜底模型，
+	// 不依赖账号状态与网络。
+	failoverProbeFallbackModel = "deepseek-v4.1-flash"
 )
 
 var (
@@ -656,9 +661,53 @@ func failoverProbeTargets() []failoverProbeCandidate {
 				model = entry.Model
 			}
 		}
+		if model == "" {
+			// 兜底：盘上标记与 sidecar 都没记模型（历史版本写入的文档、
+			// 或多个入口竞争导致标记残缺）。此时若仍按「无模型不恢复」处理，
+			// 该号会永久卡在「禁用且永远探不了」的死角——2026-10-29 事故里
+			// 主力快号就是这样被禁 8 小时、零探活。
+			// 回落到账号的默认模型：探通即解禁，探不通保持禁用，代价是
+			// 可能用错模型白白消耗一次请求，远小于永久失联的代价。
+			model = failoverFallbackProbeModel(f.ID)
+			if model != "" {
+				log.Printf("[workbuddy] failover probe adopts fallback model: auth=%s model=%s", f.ID, model)
+			}
+		}
 		out = append(out, failoverProbeCandidate{authIndex: authIndex, authID: f.ID, model: model})
 	}
 	return out
+}
+
+// failoverFallbackProbeModel 在模型标记缺失时给出一个可回放的候选模型。
+//
+// 只在「盘上标记与 sidecar 都没记模型」这一死角上使用：此时按严格口径该号
+// 永远不会被探活，只能人工启用。优先取该账号内存状态里记录的最近模型，
+// 没有则退回插件固定兜底模型——宁可探错一次，也不能让健康号永久失联。
+//
+// [参数] authID：账号唯一标识。
+// [返回] 可回放的模型名；确实无候选时返回空串（此时仍保持禁用）。
+// 最近修改时间：2026-10-31；改动原因：新增，修复标记缺失导致探活永久跳过。
+func failoverFallbackProbeModel(authID string) string {
+	// 1. 优先用该账号内存里记录的最近模型：它最可能是真实失败的那个。
+	if model := failoverStateSnapshotModel(authID); model != "" {
+		return model
+	}
+	// 2. 退回插件固定兜底模型，保证标记残缺的号仍有恢复通道。
+	return failoverProbeFallbackModel
+}
+
+// failoverStateSnapshotModel 返回账号内存状态里记录的最近失败/使用模型。
+// [参数] authID：账号唯一标识。
+// [返回] 模型名；无记录时为空串。
+// 最近修改时间：2026-10-31；改动原因：新增，供探活兜底取模型。
+func failoverStateSnapshotModel(authID string) string {
+	failoverMu.Lock()
+	defer failoverMu.Unlock()
+	st := failoverStates[authID]
+	if st == nil {
+		return ""
+	}
+	return strings.TrimSpace(st.lastModel)
 }
 
 // resolveFailoverAuth 把候选的 auth_index 解析为可用的账号凭据。

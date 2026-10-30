@@ -349,7 +349,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.21.7"
+var version = "0.21.8"
 
 func wbRegistration() registration {
 	return registration{
@@ -368,6 +368,7 @@ func wbRegistration() registration {
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "可选模型列表。每个条目可包含 id、name、alias、context、max_tokens、enabled、reasoning 字段；配置后优先于自动获取的模型列表。"},
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeSession, schedulerModeCredits, schedulerModeOff}, Description: "多账号选择策略：session（按会话轮询，同一会话 1 小时内固定同一账号；默认）／credits（面板指定的固定账号）／off（交给内置逻辑）。注意：off 且 lifecycle_auto=false 时，额度耗尽的账号仍可能被路由——请启用 lifecycle_auto 或保持 session/credits。"},
 				{Name: "min_routable_credits", Type: pluginapi.ConfigFieldTypeInteger, Description: "保活线，默认 400 点：剩余积分低于该值但高于禁用线的账号打「保活」标，仍可路由但排在正常号之后。填 0 关闭保活降级。"},
+				{Name: "failover_disable_min_count", Type: pluginapi.ConfigFieldTypeInteger, Description: "写盘禁用的连续失败门限，默认 3：同一账号连续失败达到该次数才写盘禁用。前两次失败只走内存冷却（数分钟内自愈）。填 1 恢复「首次失败即禁用」的旧行为；拥堵类失败（6004 模型级限流 / 6021 渠道满载）不受此项影响，永不禁用。"},
 				{Name: "low_credit_disable_below", Type: pluginapi.ConfigFieldTypeInteger, Description: "硬禁用线，默认 100 点：每小时扫描或手动刷新发现剩余积分低于该值时，直接写盘停用该账号；积分回到线上且探活成功才自动解禁。填 0 关闭该机制。"},
 				{Name: "rotation_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用连续使用轮换（默认开启）：单个账号连续承流达到 rotation_serve_minutes 后主动让位，进入 rotation_cooldown_minutes 冷却，后续请求改由其它账号承接。与 priority 不同，该机制在请求入口换号，已绑定会话同样生效；关闭填 false。"},
 				{Name: "rotation_serve_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "单账号连续承流多少分钟后让位（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
@@ -839,8 +840,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		// (401/403/404/405) and 429 rotate as before; an in-stream error
 		// frame on a 200 body rotates only when isAccountFailure
 		// classifies the body as account-level (quota/rate-limit markers).
-		// 5xx/0/402 keep the cooldown-only path (cross-request rotation
-		// via recordAccountFailure) and skip this loop.
+		// 5xx rotates on the same request as of 2026-10-31 (shouldRotateOnStatus);
+		// 0/402 keep the cooldown-only path and skip this loop.
+		// 渠道满载（6021 / queue.full）由 shouldRotateOnUpstreamErr 显式排除。
 		statusCode := parseUpstreamStatusFromErr(completionErr)
 		// 11128：双写记账（模型冷却 + 账号禁用写盘），并立即停止本轮换号。
 		// 上游拦截的是这个组合，其余账号大概率同样命中；恢复统一由 60 秒
