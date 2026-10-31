@@ -142,11 +142,11 @@ func TestConfigFields_LowCreditDisableBelowWired(t *testing.T) {
 
 // TestVersionMatchesRegistration 锁定版本三处一致。
 func TestVersionMatchesRegistration(t *testing.T) {
-	if version != "0.5.5" {
-		t.Fatalf("main.go version = %q, want 0.5.5", version)
+	if version != "0.5.6" {
+		t.Fatalf("main.go version = %q, want 0.5.6", version)
 	}
 	reg := wbRegistration()
-	if reg.Metadata.Version != "0.5.5" {
-		t.Fatalf("注册元数据版本 = %q, want 0.5.5", reg.Metadata.Version)
+	if reg.Metadata.Version != "0.5.6" {
+		t.Fatalf("注册元数据版本 = %q, want 0.5.6", reg.Metadata.Version)
 	}
 }

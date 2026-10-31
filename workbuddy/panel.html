@@ -323,6 +323,7 @@ const API = "/v0/management/plugins/workbuddy-provider";
    3) Manual input (sessionStorage only, never persisted).
 */
 const ENC_PREFIX = "enc::v1::";
+const ENC_PREFIX_V2 = "enc::v2::";
 const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
 const PANEL_STORE = "cli-proxy-auth";
 const SS_KEY = "workbuddy-mgmt-key";
@@ -333,11 +334,20 @@ let minRoutableCredits=0;
 
 function _enc(t){return new TextEncoder().encode(t)}
 function _dec(b){return new TextDecoder().decode(b)}
-function _keyBytes(){try{return _enc(SECRET_SALT+"|"+window.location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
+// v2 是宿主主面板 2026-10-31 起的新格式：XOR key 只含 host，不再拼 userAgent。
+// v1 保留 host+UA，用于解码升级前已写入 localStorage 的旧值。
+function _keyBytes(v2){try{return _enc(v2?SECRET_SALT+"|"+window.location.host:SECRET_SALT+"|"+window.location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
 function _xor(d,k){const r=new Uint8Array(d.length);for(let i=0;i<d.length;i++)r[i]=d[i]^k[i%k.length];return r}
 function _b64e(b){let s="";for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s)}
 function _b64d(s){const bin=atob(s);const b=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b}
-function deobfuscate(p){if(!p||!p.startsWith(ENC_PREFIX))return p;try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes()))}catch(e){return p}}
+function deobfuscate(p){
+  if(!p)return p;
+  // 1. 先按 v2 解：宿主的当前格式，解不出保留原文走下一步。
+  if(p.startsWith(ENC_PREFIX_V2)){try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX_V2.length)),_keyBytes(true)))}catch(e){return p}}
+  // 2. 再按 v1 解：兼容升级前遗留的旧值。
+  if(p.startsWith(ENC_PREFIX)){try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes(false)))}catch(e){return p}}
+  return p;
+}
 function isEmbedded(){try{return window.self!==window.top}catch(e){return false}}
 
 function readPanelKey(){
@@ -372,8 +382,15 @@ function persistKey(k){
   try{ sessionStorage.setItem(SS_KEY,k); }catch(e){}
   return k;
 }
+// 旧版本可能把未解密的 enc:: 密文写进 sessionStorage，它不是可用密钥。
+// 不清理会让面板持续用错误 Bearer 打服务端并停在 401，且无法自愈。
+function readSessionKey(){
+  let v=null;try{v=sessionStorage.getItem(SS_KEY)}catch(e){return null}
+  if(v&&(v.startsWith(ENC_PREFIX)||v.startsWith(ENC_PREFIX_V2))){try{sessionStorage.removeItem(SS_KEY)}catch(e){};return null}
+  return v;
+}
 function getKey(){
-  return sessionStorage.getItem(SS_KEY)||persistKey(readPanelKey())||persistKey(readUrlKey());
+  return readSessionKey()||persistKey(readPanelKey())||persistKey(readUrlKey());
 }
 function saveKey(){
   const v=document.getElementById("keyInput").value.trim();
