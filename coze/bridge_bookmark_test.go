@@ -309,6 +309,21 @@ func TestRememberPublicOrigin(t *testing.T) {
 	if got := currentPublicOrigin(); got != "https://10.0.0.1:8317" {
 		t.Fatalf("空头不应覆盖，实际 %q", got)
 	}
+
+	// 回环请求不得覆盖已观测到的外部域名（容器内自测、健康检查都会这样打）。
+	rememberPublicOrigin(http.Header{"Host": []string{"127.0.0.1:8317"}})
+	if got := currentPublicOrigin(); got != "https://10.0.0.1:8317" {
+		t.Fatalf("回环地址不应覆盖外部 origin，实际 %q", got)
+	}
+
+	// 从未观测到外部 origin 时，回环作为兜底可用。
+	publicOriginMu.Lock()
+	publicOrigin = ""
+	publicOriginMu.Unlock()
+	rememberPublicOrigin(http.Header{"Host": []string{"127.0.0.1:8317"}})
+	if got := currentPublicOrigin(); got != "https://127.0.0.1:8317" {
+		t.Fatalf("空状态时应接受回环兜底，实际 %q", got)
+	}
 }
 
 // resetLoginSessionsForTest 清空授权会话表，保证用例之间互不影响。

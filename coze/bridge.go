@@ -337,8 +337,30 @@ func rememberPublicOrigin(h http.Header) {
 		scheme = "https"
 	}
 	publicOriginMu.Lock()
-	publicOrigin = scheme + "://" + host
+	// 回环地址（容器内自测、健康检查、我自己的 curl）不能覆盖用户真实访问的
+	// 域名，否则宿主弹窗里的授权入口会变成 https://127.0.0.1:8317/...；
+	// 只有在还没有任何观测值时，才允许用它兜底。
+	if publicOrigin == "" || !isLoopbackHost(host) {
+		publicOrigin = scheme + "://" + host
+	}
 	publicOriginMu.Unlock()
+}
+
+// isLoopbackHost 判断主机名是否为回环 / 通配地址。
+// [参数] host: 可能带端口的 Host 值。
+// [返回] 属于回环地址时为 true。
+// 最近修改时间：2026-11-01；改动原因：新增，防止容器内自测污染外部 origin。
+func isLoopbackHost(host string) bool {
+	name := host
+	if idx := strings.LastIndex(name, ":"); idx > 0 {
+		name = name[:idx]
+	}
+	name = strings.Trim(name, "[]")
+	switch name {
+	case "127.0.0.1", "localhost", "::1", "0.0.0.0":
+		return true
+	}
+	return false
 }
 
 // currentPublicOrigin 返回最近记录的 origin，未观测到时返回空串。
