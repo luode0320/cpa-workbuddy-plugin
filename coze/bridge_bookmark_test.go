@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -185,4 +186,137 @@ func TestLoginBridge_WithStateKeepsScript(t *testing.T) {
 	if !strings.Contains(body, `id="bmLink"`) {
 		t.Fatal("有 state 时也应提供书签，便于用户跳过 Console")
 	}
+}
+
+// TestAdoptPendingLoginSession_ClaimsNewest 验证无 state 导入能认领宿主弹窗会话。
+//
+// 这是「书签授权成功但弹窗一直等待」的回归用例：固定书签不带 state，
+// 若落盘后不认领，宿主 auth.login.poll 永远拿不到结果。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-01；改动原因：新增，弹窗不关闭缺陷回归。
+func TestAdoptPendingLoginSession_ClaimsNewest(t *testing.T) {
+	resetLoginSessionsForTest()
+	defer resetLoginSessionsForTest()
+
+	state := randomState()
+	loginSessionsMu.Lock()
+	loginSessions[state] = &loginSession{startedAt: time.Now()}
+	loginSessionsMu.Unlock()
+
+	if !adoptPendingLoginSession("coze-adopted") {
+		t.Fatal("存在待完成会话时应认领成功")
+	}
+	if got := loginImportedAuthID(state); got != "coze-adopted" {
+		t.Fatalf("会话应登记本次账号，实际 %q", got)
+	}
+}
+
+// TestAdoptPendingLoginSession_SkipsImported 验证已完成的会话不会被改写。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-01；改动原因：新增，防串号。
+func TestAdoptPendingLoginSession_SkipsImported(t *testing.T) {
+	resetLoginSessionsForTest()
+	defer resetLoginSessionsForTest()
+
+	state := randomState()
+	loginSessionsMu.Lock()
+	loginSessions[state] = &loginSession{startedAt: time.Now(), importedAuthID: "coze-old"}
+	loginSessionsMu.Unlock()
+
+	if adoptPendingLoginSession("coze-new") {
+		t.Fatal("已导入的会话不应被重复认领")
+	}
+	if got := loginImportedAuthID(state); got != "coze-old" {
+		t.Fatalf("已完成会话的账号不应被覆盖，实际 %q", got)
+	}
+}
+
+// TestAdoptPendingLoginSession_NoSession 验证没有弹窗会话时不误报。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-01；改动原因：新增，无会话分支。
+func TestAdoptPendingLoginSession_NoSession(t *testing.T) {
+	resetLoginSessionsForTest()
+	defer resetLoginSessionsForTest()
+	if adoptPendingLoginSession("coze-x") {
+		t.Fatal("无待完成会话时应返回 false")
+	}
+}
+
+// TestHandleStartLogin_AbsoluteURL 验证授权入口返回绝对地址。
+//
+// 宿主把该字段原样展示给用户，相对路径无法复制成完整 URL。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-01；改动原因：新增，完整地址复制缺陷回归。
+func TestHandleStartLogin_AbsoluteURL(t *testing.T) {
+	resetLoginSessionsForTest()
+	defer resetLoginSessionsForTest()
+
+	publicOriginMu.Lock()
+	old := publicOrigin
+	publicOrigin = "https://cpa.example.com"
+	publicOriginMu.Unlock()
+	defer func() {
+		publicOriginMu.Lock()
+		publicOrigin = old
+		publicOriginMu.Unlock()
+	}()
+
+	raw, err := handleStartLogin([]byte("{}"))
+	if err != nil {
+		t.Fatalf("登录起点不应失败：%v", err)
+	}
+	want := "https://cpa.example.com/v0/resource/plugins/" + providerName + "/login?state="
+	if !strings.Contains(string(raw), want) {
+		t.Fatalf("入口 URL 应为绝对地址，实际：%s", string(raw))
+	}
+}
+
+// TestRememberPublicOrigin 验证转发头优先级与多级代理取值。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-01；改动原因：新增，origin 解析。
+func TestRememberPublicOrigin(t *testing.T) {
+	publicOriginMu.Lock()
+	old := publicOrigin
+	publicOrigin = ""
+	publicOriginMu.Unlock()
+	defer func() {
+		publicOriginMu.Lock()
+		publicOrigin = old
+		publicOriginMu.Unlock()
+	}()
+
+	h := http.Header{}
+	h.Set("X-Forwarded-Host", "cpa.example.com, inner.local")
+	h.Set("X-Forwarded-Proto", "https")
+	rememberPublicOrigin(h)
+	if got := currentPublicOrigin(); got != "https://cpa.example.com" {
+		t.Fatalf("应取转发头首段，实际 %q", got)
+	}
+
+	// 没有转发头时回退 Host；协议默认 https。
+	rememberPublicOrigin(http.Header{"Host": []string{"10.0.0.1:8317"}})
+	if got := currentPublicOrigin(); got != "https://10.0.0.1:8317" {
+		t.Fatalf("应回退 Host，实际 %q", got)
+	}
+
+	// 空头不覆盖已有值。
+	rememberPublicOrigin(http.Header{})
+	if got := currentPublicOrigin(); got != "https://10.0.0.1:8317" {
+		t.Fatalf("空头不应覆盖，实际 %q", got)
+	}
+}
+
+// resetLoginSessionsForTest 清空授权会话表，保证用例之间互不影响。
+// [参数] 无。
+// [返回] 无。
+// 最近修改时间：2026-11-01；改动原因：新增，全局状态隔离。
+func resetLoginSessionsForTest() {
+	loginSessionsMu.Lock()
+	loginSessions = make(map[string]*loginSession)
+	loginSessionsMu.Unlock()
 }

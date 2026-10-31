@@ -94,6 +94,12 @@ func handleStartLogin(raw []byte) ([]byte, error) {
 	loginSessionsMu.Unlock()
 
 	bridgeURL := loginBridgeURL(state)
+	// 宿主会把该字段原样渲染给用户（弹窗里的「打开管理页并完成登录」），
+	// 相对路径无法被复制成完整地址。用最近一次请求观测到的外部 origin 拼
+	// 绝对 URL；拿不到时仍回退相对路径（宿主会按自身 origin 解析）。
+	if origin := currentPublicOrigin(); origin != "" && strings.HasPrefix(bridgeURL, "/") {
+		bridgeURL = origin + bridgeURL
+	}
 	return okEnvelope(pluginapi.AuthLoginStartResponse{
 		Provider:  providerName,
 		URL:       bridgeURL,
@@ -222,8 +228,47 @@ func markLoginImported(state, authID string) bool {
 	return true
 }
 
-// markLoginFailed 记录一次失败说明，供轮询回显。
-// [参数] state: 授权会话标识；reason: 失败原因。
+// adoptPendingLoginSession 把一次无 state 的导入结果认领给最近的待完成会话。
+//
+// 固定书签不带 state（要能长期复用），但宿主「添加账号」弹窗仍在等一个
+// auth.login.poll 结果。若此时恰好存在未完成会话，就把本次落盘的账号登记
+// 到最近创建的那一个，让弹窗自动关闭，而不是空等到 15 分钟超时。
+//
+// 只认领「最近创建且尚未导入」的会话：多账号并发时宁可让用户回面板刷新，
+// 也不能把 A 账号的结果挂到 B 账号的弹窗上。
+// [参数] authID: 本次落盘的账号标识。
+// [返回] 是否认领到会话。
+// 最近修改时间：2026-11-01；改动原因：新增，修复固定书签授权后宿主弹窗不关闭。
+func adoptPendingLoginSession(authID string) bool {
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return false
+	}
+	loginSessionsMu.Lock()
+	defer loginSessionsMu.Unlock()
+	var newestState string
+	var newestAt time.Time
+	for state, session := range loginSessions {
+		if session == nil || session.importedAuthID != "" {
+			continue
+		}
+		if time.Since(session.startedAt) > loginStateTTL {
+			continue
+		}
+		if session.startedAt.After(newestAt) {
+			newestState = state
+			newestAt = session.startedAt
+		}
+	}
+	if newestState == "" {
+		return false
+	}
+	loginSessions[newestState].importedAuthID = authID
+	loginSessions[newestState].lastError = ""
+	return true
+}
+
+// markLoginFailed 记录一次失败说明，供轮询回显。// [参数] state: 授权会话标识；reason: 失败原因。
 // [返回] 无。
 // 最近修改时间：2026-10-18；改动原因：新增，失败原因可见化。
 func markLoginFailed(state, reason string) {

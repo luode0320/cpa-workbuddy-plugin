@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -113,10 +114,17 @@ func handleLoginCallback(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 	}
 
 	if !strict {
+		// 固定书签不带 state，但宿主「添加账号」弹窗可能正等结果：
+		// 认领最近一个未完成会话，让它自动关闭，而不是空等到 15 分钟超时。
+		adopted := adoptPendingLoginSession(sa.AuthID)
+		message := "授权成功，账号已保存；回到面板点「刷新账号」即可看到。"
+		if adopted {
+			message = "授权成功，管理页会自动关闭并显示该账号。"
+		}
 		return jsonManagementResponse(http.StatusOK, map[string]any{
 			"ok":      true,
 			"label":   sa.Label,
-			"message": "授权成功，账号已保存；回到面板点「刷新账号」即可看到。",
+			"message": message,
 		})
 	}
 
@@ -151,6 +159,8 @@ func loginCallbackShell(state, detail string) pluginapi.ManagementResponse {
 		return htmlManagementResponse(b.String())
 	}
 	b.WriteString("<h1>正在完成授权</h1><div id=\"result\" class=\"note\">正在接收令牌…</div>")
+	// 回调页通常是新标签页：给一个明确的回跳入口，避免用户停在空白结果页。
+	b.WriteString("<a id=\"backPanel\" class=\"bm\" style=\"display:none;margin-top:16px\" href=\"/v0/resource/plugins/" + providerName + "/panel\">打开扣子面板</a>")
 	b.WriteString("<script>")
 	b.WriteString("var STATE=document.body.getAttribute(\"data-state\")||\"\";")
 	// 宽松模式（面板 / 固定书签）没有 state：不带该参数，服务端按无会话导入处理。
@@ -166,7 +176,7 @@ func loginCallbackShell(state, detail string) pluginapi.ManagementResponse {
 	b.WriteString("    .then(function(res){return res.json()})")
 	b.WriteString("    .then(function(d){")
 	b.WriteString("      history.replaceState(null,\"\",location.pathname+location.search);")
-	b.WriteString("      if(d&&d.ok){document.querySelector(\"h1\").textContent=\"授权成功\";show((d.message||\"\")+(d.label?\"　账号：\"+d.label:\"\"),\"ok\")}")
+	b.WriteString("      if(d&&d.ok){document.querySelector(\"h1\").textContent=\"授权成功\";show((d.message||\"\")+(d.label?\"　账号：\"+d.label:\"\"),\"ok\");var bk=document.getElementById(\"backPanel\");if(bk)bk.style.display=\"inline-block\"}")
 	b.WriteString("      else{document.querySelector(\"h1\").textContent=\"授权失败\";show((d&&d.message)||\"未知错误\",\"err\")}")
 	b.WriteString("    })")
 	b.WriteString("    .catch(function(e){show(\"提交失败：\"+(e&&e.message?e.message:String(e)),\"err\")})")
@@ -250,6 +260,10 @@ func writeBridgeBody(b *strings.Builder, state string) {
 	b.WriteString("<button id=\"copyScript\" type=\"button\">复制脚本</button>")
 	b.WriteString("<div id=\"copyHint\"></div>")
 	b.WriteString("</details>")
+	b.WriteString("<p style=\"margin-top:16px\"><b>换浏览器或发给别人？</b><br>本页完整地址可直接复制（含授权参数，15 分钟内有效）：</p>")
+	b.WriteString("<pre id=\"bridgeURL\"></pre>")
+	b.WriteString("<button id=\"copyURL\" type=\"button\">复制完整地址</button>")
+	b.WriteString("<div id=\"copyURLHint\"></div>")
 	b.WriteString("<p class=\"note\">书签只做一件事：在扣子页面内调用令牌接口取 <code>x-tt-token</code>，然后把令牌交给本插件。它不读取、也不上传你的 Cookie，内容不含任何密钥，可以长期保留。</p>")
 	b.WriteString("<script>")
 	b.WriteString("var STATE=document.body.getAttribute(\"data-state\")||\"\";")
@@ -263,6 +277,16 @@ func writeBridgeBody(b *strings.Builder, state string) {
 	b.WriteString("  bmLink.href=BM.split(\"__CPA_ORIGIN__\").join(location.origin);")
 	b.WriteString("  bmLink.addEventListener(\"click\",function(e){e.preventDefault();alert(\"请把这个按钮拖到浏览器书签栏（不要直接点击），然后在扣子页面点击该书签。\")})")
 	b.WriteString("}")
+	// 完整地址：宿主弹窗里的入口有时只显示相对路径，这里给出可复制的绝对地址。
+	b.WriteString("var bridgeEl=document.getElementById(\"bridgeURL\");")
+	b.WriteString("if(bridgeEl){bridgeEl.textContent=location.href}")
+	b.WriteString("var copyURLBtn=document.getElementById(\"copyURL\");")
+	b.WriteString("if(copyURLBtn){copyURLBtn.addEventListener(\"click\",function(){")
+	b.WriteString("  var hint=document.getElementById(\"copyURLHint\");")
+	b.WriteString("  var done=function(){hint.className=\"ok\";hint.textContent=\"已复制完整地址。\"};")
+	b.WriteString("  var fail=function(){hint.className=\"err\";hint.textContent=\"自动复制失败，请手动选中上面的地址复制。\"};")
+	b.WriteString("  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(location.href).then(done).catch(fail)}else{fail()}")
+	b.WriteString("})}")
 	b.WriteString("var openBtn=document.getElementById(\"openCoze\");")
 	b.WriteString("if(openBtn){openBtn.addEventListener(\"click\",function(){window.open(\"https://www.coze.cn\",\"_blank\",\"noopener\")})}")
 	b.WriteString("var copyBtn=document.getElementById(\"copyScript\");")
@@ -282,6 +306,64 @@ func writeBridgeBody(b *strings.Builder, state string) {
 // （反向代理 / 端口映射都会改写）。桥接页在浏览器里加载，location.origin
 // 就是用户真实可用的地址，替换后才不会把令牌发到 coze.cn。
 const cpaOriginPlaceholder = "__CPA_ORIGIN__"
+
+// publicOrigin 缓存最近一次请求观测到的外部访问 origin。
+//
+// 插件跑在容器里，永远不知道用户实际用的域名（反向代理、端口映射都会改写）；
+// 但每个管理 / 资源请求都带着 Host 与 X-Forwarded-* 头，取一次就能拼出
+// 用户可复制的绝对地址，供宿主登录弹窗里的入口 URL 使用。
+var (
+	publicOriginMu sync.RWMutex
+	publicOrigin   string
+)
+
+// rememberPublicOrigin 从请求头记录外部 origin（取不到 Host 时保持原值）。
+// [参数] h: 请求头。
+// [返回] 无。
+// 最近修改时间：2026-11-01；改动原因：新增，为授权入口拼绝对 URL。
+func rememberPublicOrigin(h http.Header) {
+	if h == nil {
+		return
+	}
+	host := firstHeaderValue(h.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = firstHeaderValue(h.Get("Host"))
+	}
+	if host == "" {
+		return
+	}
+	scheme := firstHeaderValue(h.Get("X-Forwarded-Proto"))
+	if scheme == "" {
+		scheme = "https"
+	}
+	publicOriginMu.Lock()
+	publicOrigin = scheme + "://" + host
+	publicOriginMu.Unlock()
+}
+
+// currentPublicOrigin 返回最近记录的 origin，未观测到时返回空串。
+// [参数] 无。
+// [返回] 形如 https://cpa.example.com 的 origin。
+// 最近修改时间：2026-11-01；改动原因：新增，绝对 URL 生成。
+func currentPublicOrigin() string {
+	publicOriginMu.RLock()
+	defer publicOriginMu.RUnlock()
+	return publicOrigin
+}
+
+// firstHeaderValue 取多级代理头里的第一个值。
+// [参数] raw: 原始头值。
+// [返回] 去空白后的首段；空值时返回空串。
+// 最近修改时间：2026-11-01；改动原因：新增，兼容逗号分隔的转发头。
+func firstHeaderValue(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if idx := strings.Index(raw, ","); idx >= 0 {
+		raw = raw[:idx]
+	}
+	return strings.TrimSpace(raw)
+}
 
 // buildAuthScript 生成一次性同源授权脚本。
 //

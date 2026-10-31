@@ -143,6 +143,10 @@ func handleManagement(raw []byte) ([]byte, error) {
 	subPath, urlQuery := normalizeMgmtSubPath(req.Path)
 	method := strings.ToUpper(req.Method)
 
+	// 记住外部访问 origin：宿主登录弹窗里的授权入口需要绝对 URL，
+	// 而插件在容器内看不到用户实际使用的域名（见 bridge.go 的说明）。
+	rememberPublicOrigin(req.Headers)
+
 	if method == http.MethodGet && (subPath == "/" || subPath == "/panel") {
 		return handlePanelPage(), nil
 	}

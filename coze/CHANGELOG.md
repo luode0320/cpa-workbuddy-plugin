@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.3 (2026-11-01)
+
+### Fix - 固定书签授权后宿主弹窗不关闭 + 授权入口只显示相对路径
+
+- 缺陷(用户反馈 2026-11-01): 用固定书签授权成功后，回调页显示「授权成功」，但 CPA 主面板的「coze-provider OAuth」弹窗一直停在「等待认证中…」。根因：书签刻意不带 state（为了长期复用），落盘后只走宽松分支，从不登记 `loginSessions`，宿主 `auth.login.poll` 永远拿不到结果，只能等 15 分钟超时。
+- 修复：新增 `adoptPendingLoginSession(authID)`，宽松导入成功后把结果认领给「最近创建且尚未导入」的未过期会话。弹窗随即在下一次 poll 拿到 success 并自动关闭；无待完成会话时行为不变（返回 false，文案仍是「回面板刷新」）。只认领最近一个，绝不覆盖已导入会话，避免并发时串号。
+- 缺陷: 宿主弹窗里「打开管理页并完成登录」显示的是 `/v0/resource/plugins/coze-provider/login?state=…` 相对路径，无法复制成完整地址。根因：`auth.login.start` 由宿主 RPC 调起，插件在容器内不知道外部域名，历史上只能返回相对路径。
+- 修复：新增 `rememberPublicOrigin` / `currentPublicOrigin`，在每个管理 / 资源请求入口缓存 `X-Forwarded-Host` / `Host` + `X-Forwarded-Proto`（多级代理取首段）；`handleStartLogin` 用它拼绝对 URL，取不到时仍回退相对路径。
+- 新增回调页「打开扣子面板」按钮：授权完成后可直接回跳，不再停在空白结果页。
+- 新增桥接页「复制完整地址」区块：直接给出 `location.href` 全文（含 state），一键复制，便于换浏览器或转交他人。
+- 影响范围: `login.go` / `bridge.go` / `management.go`；令牌换发、严格模式校验与账号落盘逻辑零改动。
+- 验证: `cgo-shim-build.py coze` build / vet / test 全绿；新增 5 条用例（认领最近会话、不覆盖已导入会话、无会话返回 false、入口绝对 URL、转发头解析与回退）。
+
 ## 0.7.2 (2026-11-01)
 
 ### Feat - 固定书签一键授权（面板独立入口）
