@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -15,13 +16,18 @@ import (
 // （与 copilot / doubao 桥接页同一做法）。
 
 // handleLoginBridge 渲染授权引导页。
-// [参数] state: 授权会话标识。
+//
+// 无 state 时是「面板独立入口」：页面提供一条与 state 无关的固定书签，
+// 用户拖一次即可长期复用，落盘后不通知宿主轮询（回面板刷新即可看到账号）。
+// 有 state 时是宿主「添加账号」弹窗入口：除固定书签外，另给一条带 state 的
+// 一次性脚本，保证宿主弹窗能拿到结果并自动关闭。
+// [参数] state: 授权会话标识（可为空）。
 // [返回] 管理响应（HTML）。
-// 最近修改时间：2026-10-18；改动原因：新增，引导页出口。
+// 最近修改时间：2026-11-01；改动原因：新增无 state 的一键授权入口。
 func handleLoginBridge(state string) pluginapi.ManagementResponse {
 	state = strings.TrimSpace(state)
 	if state == "" {
-		return loginBridgePage("", "缺少 state 参数：请回到管理页重新点击「添加账号」。")
+		return loginBridgePage("", "")
 	}
 	if !validLoginState(state) {
 		return loginBridgePage("", "授权会话不存在或已过期（15 分钟有效）。请回到管理页重新发起。")
@@ -52,10 +58,14 @@ const callbackErrorHeader = "X-Coze-Error"
 // 最近修改时间：2026-10-18；改动原因：令牌改走 fragment + 请求头，避免落进访问日志。
 func handleLoginCallback(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	state := strings.TrimSpace(req.Query.Get("state"))
-	if state == "" {
-		return loginCallbackShell("", "缺少 state 参数，请重新执行脚本。")
-	}
-	if !validLoginState(state) {
+	// 宽松模式：无 state 时仍允许导入。
+	//
+	// 面板独立入口与固定书签都不携带 state——书签要能长期复用，不能把一次性的
+	// state 烤进书签内容。此时账号身份完全由令牌自身决定（saveFromToken 会用
+	// account/info 反查 sec_user_id），不需要会话关联；代价是无法把结果回传
+	// 给宿主弹窗，用户回到面板刷新即可看到新账号。
+	strict := state != ""
+	if strict && !validLoginState(state) {
 		return loginCallbackShell("", "授权会话不存在或已过期（15 分钟有效）。请回到管理页重新发起。")
 	}
 
@@ -69,7 +79,8 @@ func handleLoginCallback(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 
 	// 重放保护：会话已导入成功时直接回成功，不再二次兑换令牌。
 	// 回调页可能被刷新或从浏览历史重新打开，而 x-tt-token 只能兑换一次。
-	if loginImportedAuthID(state) != "" {
+	// 宽松模式没有会话可查，但 saveFromToken 对同一账号是幂等覆盖，重放无害。
+	if strict && loginImportedAuthID(state) != "" {
 		return jsonManagementResponse(http.StatusOK, map[string]any{
 			"ok":      true,
 			"message": "该授权已完成，请回到管理页查看账号。",
@@ -81,7 +92,9 @@ func handleLoginCallback(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 		if upstreamErr != "" {
 			reason = "脚本报告：" + upstreamErr
 		}
-		markLoginFailed(state, reason)
+		if strict {
+			markLoginFailed(state, reason)
+		}
 		return jsonManagementResponse(http.StatusOK, map[string]any{
 			"ok":      false,
 			"message": reason + "。请确认已在扣子页面完成登录后重试。",
@@ -90,10 +103,20 @@ func handleLoginCallback(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 
 	sa, errSave := saveFromToken(token, "")
 	if errSave != nil {
-		markLoginFailed(state, errSave.Error())
+		if strict {
+			markLoginFailed(state, errSave.Error())
+		}
 		return jsonManagementResponse(http.StatusOK, map[string]any{
 			"ok":      false,
 			"message": errSave.Error(),
+		})
+	}
+
+	if !strict {
+		return jsonManagementResponse(http.StatusOK, map[string]any{
+			"ok":      true,
+			"label":   sa.Label,
+			"message": "授权成功，账号已保存；回到面板点「刷新账号」即可看到。",
 		})
 	}
 
@@ -130,7 +153,8 @@ func loginCallbackShell(state, detail string) pluginapi.ManagementResponse {
 	b.WriteString("<h1>正在完成授权</h1><div id=\"result\" class=\"note\">正在接收令牌…</div>")
 	b.WriteString("<script>")
 	b.WriteString("var STATE=document.body.getAttribute(\"data-state\")||\"\";")
-	b.WriteString("var IMPORT=\"/v0/resource/plugins/" + providerName + callbackPath + "?state=\"+encodeURIComponent(STATE);")
+	// 宽松模式（面板 / 固定书签）没有 state：不带该参数，服务端按无会话导入处理。
+	b.WriteString("var IMPORT=\"/v0/resource/plugins/" + providerName + callbackPath + "\"+(STATE?\"?state=\"+encodeURIComponent(STATE):\"\");")
 	b.WriteString("var p=new URLSearchParams(location.hash.replace(/^#/,\"\"));")
 	b.WriteString("var token=p.get(\"token\")||\"\";var err=p.get(\"err\")||\"\";")
 	b.WriteString("var box=document.getElementById(\"result\");")
@@ -189,6 +213,8 @@ func writeBridgeHead(b *strings.Builder, state, title string) {
 	b.WriteString("pre{background:#1e2430;color:#dfe5ef;border-radius:9px;padding:13px 15px;font:12px/1.6 ui-monospace,Consolas,monospace;overflow-x:auto;white-space:pre-wrap;word-break:break-all}")
 	b.WriteString("button{margin-top:12px;background:#3b7cff;color:#fff;border:0;border-radius:8px;padding:9px 18px;font-size:14px;cursor:pointer}")
 	b.WriteString("button:disabled{opacity:.55;cursor:default}")
+	b.WriteString("a.bm{display:inline-block;background:#3b7cff;color:#fff;border-radius:8px;padding:9px 18px;font-size:14px;text-decoration:none;cursor:grab;user-select:none}")
+	b.WriteString("details summary{outline:none}")
 	b.WriteString(".err{background:#fdf1ef;border:1px solid #e8b9b1;border-radius:8px;padding:10px 14px;margin-top:14px;font-size:14px;color:#a8452f}")
 	b.WriteString(".ok{background:#eaf8f2;border:1px solid #a8dcc7;border-radius:8px;padding:10px 14px;margin-top:14px;font-size:14px;color:#0d7a55}")
 	b.WriteString(".note{background:#fdf7e6;border:1px solid #edd9a3;border-radius:8px;padding:10px 14px;margin-top:14px;font-size:13px;color:#8a6a10}")
@@ -203,26 +229,40 @@ func writeBridgeHead(b *strings.Builder, state, title string) {
 // [返回] 无。
 // 最近修改时间：2026-10-18；改动原因：新增，引导正文与脚本注入。
 func writeBridgeBody(b *strings.Builder, state string) {
+	bookmarklet := buildBookmarkletScript()
 	script := buildAuthScript(state)
+	hasState := strings.TrimSpace(state) != ""
 	b.WriteString("<h1>授权扣子账号</h1>")
-	b.WriteString("<p>扣子没有开放给第三方的一键授权：登录令牌只发给桌面端的 <code>coze-desktop://</code> 协议，插件无法直接接收。请按下面三步操作，全程约 30 秒。</p>")
-	b.WriteString("<ol>")
-	b.WriteString("<li>点击下方按钮打开 <code>https://www.coze.cn</code>，按官方页面完成登录（手机号 / 抖音 / 飞书 / 火山任一）。</li>")
-	b.WriteString("<li>在扣子页面按 <code>F12</code> 打开开发者工具 → 切到 <code>Console</code> 标签。</li>")
-	b.WriteString("<li>复制下方脚本粘贴到 Console 回车执行；页面会跳回本插件并自动完成授权。</li>")
-	b.WriteString("</ol>")
+	b.WriteString("<p>扣子没有开放给第三方的一键授权：登录令牌只发给桌面端的 <code>coze-desktop://</code> 协议，插件无法直接接收。下面的书签把「在扣子页面取一次令牌」压缩成一次点击，安装一次即可长期复用。</p>")
+	b.WriteString("<p style=\"margin-top:16px\"><b>① 安装授权书签（只做一次）</b><br>把下面的按钮拖到浏览器书签栏（不要直接点击）：</p>")
+	b.WriteString("<p><a id=\"bmLink\" class=\"bm\" href=\"#\" draggable=\"true\">扣子一键授权</a></p>")
+	b.WriteString("<p style=\"margin-top:14px\"><b>② 打开扣子并登录</b></p>")
 	b.WriteString("<button id=\"openCoze\" type=\"button\">打开扣子并登录</button>")
-	b.WriteString("<p style=\"margin-top:18px\">一次性授权脚本（15 分钟内有效）：</p>")
+	b.WriteString("<p style=\"margin-top:14px\"><b>③ 在扣子页面点一下书签</b><br>登录完成后，回到扣子标签页，点书签栏里的「扣子一键授权」；页面会自动跳回这里并完成授权。</p>")
+	if !hasState {
+		b.WriteString("<p class=\"note\" style=\"margin-top:16px\">这是面板独立入口：不依赖宿主弹窗，账号落盘后回到面板点「刷新账号」即可看到。新增账号或更换登录态时，重复上面三步即可。</p>")
+	}
+	// 兜底通道始终保留：少数环境会用 CSP 拦掉 javascript: 书签，
+	// 此时把同一段逻辑粘进 Console 仍可完成授权。
+	b.WriteString("<details style=\"margin-top:16px\"><summary style=\"cursor:pointer;color:#3b7cff;font-size:14px\">方式二：一次性脚本（书签被浏览器策略拦截时用）</summary>")
+	b.WriteString("<p style=\"margin-top:10px\">复制到扣子页面的 Console 执行：</p>")
 	b.WriteString("<pre id=\"authScript\">" + htmlEscape(script) + "</pre>")
 	b.WriteString("<button id=\"copyScript\" type=\"button\">复制脚本</button>")
 	b.WriteString("<div id=\"copyHint\"></div>")
-	b.WriteString("<p class=\"note\">脚本只做一件事：在扣子页面内调用令牌接口取 <code>x-tt-token</code>，然后把令牌交给本插件。它不读取、也不上传你的 Cookie。</p>")
+	b.WriteString("</details>")
+	b.WriteString("<p class=\"note\">书签只做一件事：在扣子页面内调用令牌接口取 <code>x-tt-token</code>，然后把令牌交给本插件。它不读取、也不上传你的 Cookie，内容不含任何密钥，可以长期保留。</p>")
 	b.WriteString("<script>")
 	b.WriteString("var STATE=document.body.getAttribute(\"data-state\")||\"\";")
-	// 脚本在扣子页面执行，那里的 location.origin 是 coze.cn；回调地址必须指向
+	// 书签在扣子页面执行，那里的 location.origin 是 coze.cn；回调地址必须指向
 	// 本插件所在域。因此占位符在桥接页（即 CPA 域）加载时替换为当前 origin。
+	b.WriteString("var BM=" + jsLiteral(bookmarklet) + ";")
 	b.WriteString("var scriptEl=document.getElementById(\"authScript\");")
 	b.WriteString("if(scriptEl){scriptEl.textContent=scriptEl.textContent.split(\"__CPA_ORIGIN__\").join(location.origin)}")
+	b.WriteString("var bmLink=document.getElementById(\"bmLink\");")
+	b.WriteString("if(bmLink){")
+	b.WriteString("  bmLink.href=BM.split(\"__CPA_ORIGIN__\").join(location.origin);")
+	b.WriteString("  bmLink.addEventListener(\"click\",function(e){e.preventDefault();alert(\"请把这个按钮拖到浏览器书签栏（不要直接点击），然后在扣子页面点击该书签。\")})")
+	b.WriteString("}")
 	b.WriteString("var openBtn=document.getElementById(\"openCoze\");")
 	b.WriteString("if(openBtn){openBtn.addEventListener(\"click\",function(){window.open(\"https://www.coze.cn\",\"_blank\",\"noopener\")})}")
 	b.WriteString("var copyBtn=document.getElementById(\"copyScript\");")
@@ -263,8 +303,12 @@ func buildAuthScript(state string) string {
 	b.WriteString("  const cb='")
 	b.WriteString(cpaOriginPlaceholder)
 	b.WriteString(callback)
-	b.WriteString("?state=")
-	b.WriteString(jsStringEscape(state))
+	// 无 state 时不拼该参数：面板独立入口没有会话，拼上去会让回调页
+	// 多一个空参数，读日志时也难分辨是哪种入口。
+	if strings.TrimSpace(state) != "" {
+		b.WriteString("?state=")
+		b.WriteString(jsStringEscape(state))
+	}
 	b.WriteString("';\n")
 	b.WriteString("  if(!t){location.href=cb+'#err='+encodeURIComponent((j&&j.data&&j.data.description)||(j&&j.message)||'no_token');return;}\n")
 	b.WriteString("  location.href=cb+'#token='+encodeURIComponent(t);\n")
@@ -279,4 +323,48 @@ func buildAuthScript(state string) string {
 func jsStringEscape(s string) string {
 	r := strings.NewReplacer("\\", "\\\\", "'", "\\'", "\n", "\\n", "\r", "\\r", "<", "\\x3c")
 	return r.Replace(s)
+}
+
+// buildBookmarkletScript 生成可长期复用的固定书签脚本。
+//
+// 与 buildAuthScript 的区别是内容不含 state：拖进书签栏后永久可用，不受
+// 15 分钟会话限制，也不需要每次授权前重新复制——这是「一次安装、之后
+// 一点即完成」的关键。代价是落盘结果无法回传给宿主弹窗（没有会话可登记），
+// 因此只用于面板独立入口与固定书签场景。
+//
+// 脚本在扣子页面上下文执行，fetch 天然同源；取到 x-tt-token 后带着 fragment
+// 跳到本插件回调页，由接收页转成同源请求头提交，令牌不会落进访问日志。
+// [参数] 无。
+// [返回] javascript: 开头的单行脚本（含待替换的 origin 占位符）。
+// 最近修改时间：2026-11-01；改动原因：新增，一次性书签授权。
+func buildBookmarkletScript() string {
+	callback := "/v0/resource/plugins/" + providerName + callbackPath
+	var b strings.Builder
+	b.WriteString("javascript:(async()=>{try{")
+	b.WriteString("const r=await fetch('/passport/token/beat/v2/',{method:'POST',credentials:'include',")
+	b.WriteString("headers:{'sdk-version':'2','Content-Type':'application/json'},body:'{}'});")
+	b.WriteString("const j=await r.json().catch(()=>({}));")
+	b.WriteString("const t=r.headers.get('x-tt-token');")
+	b.WriteString("if(!t){alert('未检测到扣子登录态：'+(((j&&j.data&&j.data.description)||(j&&j.message))||'请先在本页完成登录'));return}")
+	b.WriteString("location.href='")
+	b.WriteString(cpaOriginPlaceholder)
+	b.WriteString(callback)
+	b.WriteString("#token='+encodeURIComponent(t)")
+	b.WriteString("}catch(e){alert('取令牌失败：'+e)}})()")
+	return b.String()
+}
+
+// jsLiteral 把脚本编码成可安全嵌入 <script> 的 JSON 字符串字面量。
+//
+// 直接拼接会被脚本里的引号、反斜杠破坏；JSON 编码保证转义正确，
+// 再把 "</" 换成 "<\/"，避免提前闭合 <script> 标签。
+// [参数] s: 原始脚本文本。
+// [返回] 带引号的 JSON 字面量。
+// 最近修改时间：2026-11-01；改动原因：新增，书签脚本安全注入。
+func jsLiteral(s string) string {
+	raw, errMarshal := json.Marshal(s)
+	if errMarshal != nil {
+		return "\"\""
+	}
+	return strings.ReplaceAll(string(raw), "</", "<\\/")
 }

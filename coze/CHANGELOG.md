@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.2 (2026-11-01)
+
+### Feat - 固定书签一键授权（面板独立入口）
+
+- 背景: 原授权流程要求用户复制一次性脚本、开 F12、粘到 Console 执行。根因是脚本里写死了每次登录都会变的 `state`，因此无法存成书签复用。用户提出「登录完成后点一下按钮就完成授权」。
+- 约束(技术判定): 浏览器跨域决定了「从 CPA 页面跳到扣子并自动执行脚本」不成立——CPA 读不到 `www.coze.cn` 的 localStorage，也无法向该域注入 JS。唯一可行的自动载体是预先存在于扣子域的一次点击入口：书签。
+- 新增 `buildBookmarkletScript()`：生成不含 state 的固定书签脚本，配合无 state 回调实现「一次拖拽、永久复用」。之后任何一次扣子登录完成，点一下书签即可授权或把新登录态覆盖回旧账号。
+- `GET /login` 在无 state 时改为「面板一键授权页」（三步：拖书签 → 打开扣子登录 → 点书签），不再返回「缺少 state 参数」错误页；带 state 时仍是宿主「添加账号」弹窗入口，行为不变。
+- `GET /login/callback` 支持宽松模式：无 state 时跳过会话校验直接 `saveFromToken` 落盘，账号身份由 `passport/account/info/v2` 的 `sec_user_id` 决定；有 state 时仍严格校验、登记会话并供宿主轮询领取。
+- 面板新增「登录扣子」按钮与空态引导，直接打开一键授权页，无需经过宿主弹窗。
+- Console 脚本保留为兜底通道（少数环境的 CSP 会拦截 `javascript:` 书签）。
+- 影响范围: `bridge.go` / `management.go` / `panel.html` / `README.md`；宿主弹窗授权链路与令牌换发逻辑零改动。
+- 边界: 书签不含任何密钥，泄露无额外风险；宽松导入仍需有效 `x-tt-token`，该令牌本身即账号凭据，安全等级与严格模式一致。
+- 验证: `cgo-shim-build.py coze` build / vet / test 全绿；新增 `bridge_bookmark_test.go` 6 条用例（书签不含 state、宽松导入落盘且不建会话、首开接收页、伪造 state 被拒绝且不落盘、两种入口页面形态）；书签脚本经 `node --check` 语法校验通过。
+
 ## 0.7.1
 
 ### Fix - 兼容宿主主面板 enc::v2:: 密钥格式（修复面板 401）

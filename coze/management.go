@@ -85,8 +85,8 @@ func managementRegistration() managementRegistrationResponse {
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "Coze", Description: "扣子 Provider 管理面板：授权登录、账号管理与续期。"},
-			{Path: "/login", Description: "宿主「添加账号」弹窗打开的授权引导页。"},
-			{Path: callbackPath, Description: "一次性脚本回传令牌的接收页（免管理密钥，state 短时凭证）。"},
+			{Path: "/login", Description: "扣子授权引导页：带 state 为宿主「添加账号」弹窗入口，不带 state 为面板一键授权入口（固定书签）。"},
+			{Path: callbackPath, Description: "令牌接收页（免管理密钥）：带 state 回传宿主弹窗，不带 state 为面板宽松导入。"},
 		},
 	}
 }

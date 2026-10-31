@@ -205,6 +205,7 @@ button.danger:hover{background:var(--err);color:#fff}
   </div>
 
   <div class="bar">
+    <button id="btnLogin" title="打开扣子一键授权页：拖一次书签，之后登录完在扣子页面点一下书签即可完成">登录扣子</button>
     <button class="sec" id="btnRefresh">刷新账号</button>
     <button class="sec" id="btnSweep" title="立即对所有账号执行一轮积分巡检（含签到领取与低额分级）">立即巡检</button>
     <button class="sec" id="btnEnableAll" title="启用全部已禁用账号">全部启用</button>
@@ -225,7 +226,7 @@ button.danger:hover{background:var(--err);color:#fff}
 
   <div class="summary" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
-  <div class="empty" id="empty" style="display:none">暂无扣子账号。请在 CPA 主面板的「添加账号」中通过扣子授权接入。</div>
+  <div class="empty" id="empty" style="display:none">暂无扣子账号。点上方「登录扣子」即可一键授权接入（首次拖一次书签，之后登录完点一下书签即可）。</div>
 </div>
 
 <div class="modal-mask" id="testModal">
@@ -1069,6 +1070,11 @@ async function importCred(btn){
 /* ---------- 事件绑定 ---------- */
 document.getElementById("keySave").addEventListener("click",saveKey);
 document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
+// 登录扣子：打开面板独立授权页（不带 state，走固定书签模式）。
+// 前缀必须与 providerName 逐字符一致，不能用 location.pathname 推导。
+document.getElementById("btnLogin").addEventListener("click",()=>{
+  window.open("/v0/resource/plugins/coze-provider/login","_blank","noopener");
+});
 document.getElementById("btnRefresh").addEventListener("click",()=>load());
 document.getElementById("btnSweep").addEventListener("click",()=>triggerSweep());
 document.getElementById("btnEnableAll").addEventListener("click",()=>setAll(false));

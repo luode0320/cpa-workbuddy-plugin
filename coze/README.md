@@ -48,21 +48,43 @@ OpenAI 请求
 | `/desktop-login` 的 `redirect` | 登录令牌只流向 `redirect_uri`，`redirect` 不承载令牌 |
 | `/desktop-login` 的 `redirect_uri` | 协议白名单硬编码 `coze-desktop:` / `-beta:` / `-dev:` |
 
-插件因此采用「同源授权脚本」：用户在扣子网页完成官方登录后，执行插件给出的
-一次性脚本取 `x-tt-token`，再由插件换取会话。**不读浏览器 Cookie 库、
+插件因此采用「同源授权」：用户在扣子网页完成官方登录后，由**一段在扣子页面
+同源执行的脚本**取 `x-tt-token`，再由插件换取会话。**不读浏览器 Cookie 库、
 不内嵌浏览器、不注册自定义协议。**
+
+这段脚本有两种形态，二者共用同一个回调页：
+
+| 形态 | 是否带 state | 有效期 | 适用入口 |
+|---|---|---|---|
+| **固定书签** | 不带 | 长期可用 | 面板「登录扣子」（推荐） |
+| 一次性脚本 | 带 state | 15 分钟 | 宿主「添加账号」弹窗、书签被 CSP 拦截时 |
+
+固定书签是 0.7.2 新增：因为内容不含 state，拖进书签栏后**永久可用**，
+之后任何一次扣子登录完成，点一下书签即可完成授权（或把新登录态覆盖回旧账号）。
 
 ## 授权流程
 
 ```text
-面板点「生成授权脚本」
+方式 A：固定书签（面板「登录扣子」）
+  → 面板新开 /v0/resource/plugins/coze-provider/login（无 state）
+  → 用户把页面上的按钮拖到书签栏（只做一次）
+  → 点「打开扣子并登录」完成官方登录
+  → 在扣子页面点一下该书签
+  → 书签在扣子同源取 x-tt-token，带 fragment 跳回插件回调页
+  → 插件换 Cookie + 校验 sec_user_id + 落盘（不通知宿主弹窗，回面板刷新可见）
+
+方式 B：一次性脚本（宿主「添加账号」弹窗）
   → 插件签发 state（15 分钟有效）并返回可复制脚本
   → 用户在 https://www.coze.cn 完成官方登录
   → 在 Console 粘贴脚本执行
-  → 脚本在扣子同源上下文取 x-tt-token，跳转插件回调页
-  → 插件 POST /passport/token/beat/v2/（x-tt-token）→ 13 条 Set-Cookie
-  → GET /passport/account/info/v2/ → sec_user_id 非空 → 落盘
+  → 脚本在扣子同源上下文取 x-tt-token，跳转插件回调页（带 state）
+  → 插件换 Cookie + 校验 + 落盘 + 登记会话，宿主弹窗自动关闭
+
+公共末段：POST /passport/token/beat/v2/（x-tt-token）→ 13 条 Set-Cookie
+        → GET /passport/account/info/v2/ → sec_user_id 非空 → 落盘
 ```
+
+两种形态的令牌都走 URL fragment + 同源请求头提交，不落访问日志。
 
 ## 续期
 
@@ -145,6 +167,9 @@ OpenAI 请求
 
 免密钥资源页：`/v0/resource/plugins/coze-provider/panel`、`/login`、
 `/login/callback`。
+
+- `GET /login`：**不带 state** 为面板一键授权页（固定书签）；带 state 为宿主弹窗引导页。
+- `GET /login/callback`：带 state 时回传宿主弹窗；不带 state 时为面板宽松导入（账号身份由令牌自身决定）。
 
 ## 本地验证
 
