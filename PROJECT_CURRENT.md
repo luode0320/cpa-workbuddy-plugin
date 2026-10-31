@@ -31,7 +31,16 @@
 
 ## 活动会话进展摘要
 
-- 当前会话（2026-10-31 凌晨）：**workbuddy 高峰期拥堵识别与失败分类修正（0.21.8，已提交推送，CI 发布中）**：
+- 当前会话（2026-10-31 下午）：**宿主 management.html 自动升级导致 10 插件面板集体 401（已修复并批量发生产，热重载验收通过）**：
+  - **用户诉求**：贴出生产截图（WorkBuddy 面板「management key 无效或缺失（将自动重试）」，计数器全 0，侧栏「认证文件 44」）问「这是什么问题?」，随后「顺便把其他 10 个同实现的插件一起改掉」。
+  - **根因（生产实证）**：宿主 `management.html` 由 `managementasset` 每 3 小时自动拉取，**2026-10-31 05:45:30** 那次升级把 key 混淆从 `enc::v1::`（XOR key = `salt|host|userAgent`）换成 `enc::v2::`（`salt|host`，去掉 UA）；插件 `deobfuscate()` 只认 v1 → 原样返回密文 → `JSON.parse` 失败 → `readPanelKey()` 返回 null。**症状被第二层缺陷放大**：旧版插件曾把未解密密文写进 sessionStorage，`getKey()` 又优先读它，于是面板持续用错误 Bearer 打服务端停在 401（宿主日志 14:51:08–14:52:59 五次 401），不会自愈。
+  - **已排除**：账号数据丢失（`/accounts` 200 且 10 个账号）、宿主 management key 问题（无 key 401 / 正确 key 200）、example-api-key safe mode（生产 `api-keys` 无 `your-api-key-*`）、插件后端鉴权（`checkManagementAuth` 只拦 mutating 路径）。
+  - **修复（10 文件 +20/-3 各一份）**：`ENC_PREFIX_V2` 常量 + `_keyBytes(v2)` 双派生（v2 不拼 UA、v1 保留 UA 兼容旧落盘值）+ `deobfuscate()` 双前缀分支 + 新增 `readSessionKey()` 丢弃任何 `enc::` 前缀的遗留密文。覆盖 workbuddy / workbuddy-ai / copilot / coze / qoder-ai / qoderwork / qwenwork / traework / zcode 的 `panel.html` 与 `cursor/internal/plugin/assets/management.html`。
+  - **验证**：10 面板 v1/v2/明文三组解码向量 + 3 组 E2E（clean-v2 / session 残留 v2 / clean-v1）全绿；`cgo-shim-build.py` 10 插件全绿；10 个 CI run 全 success（`41181309134` 等）；**生产热重载 9 个 `hot reloaded` + cursor 首次安装 `loaded+registered`（`overwritten=false`，无 retired 版本属正常）**；10 个落盘 `.so` sha256 与本地 release zip 逐一一致；`/accounts` 与 `/panel` 全 200（workbuddy 10 账号、coze 17 账号）；浏览器侧对 10 个生产面板跑完整断言（v1/v2/明文/损坏值安全/遗留密文清理/明文 session 保留）全部通过。
+  - **版本**：workbuddy 0.21.9 / qoderwork 0.12.5 / traework 0.5.6 / workbuddy-ai 0.1.34 / cursor 0.1.7 / qoder-ai 0.1.35 / zcode 0.3.4 / copilot 0.1.12 / qwenwork 0.2.13 / coze 0.7.1；commit `79b581e`（代码）+ `368b4f3`（registry）。
+  - **待观察**：宿主下次自动升级若再改格式，同类症状会复发；排查入口固定为「`docker cp` 出生产 `management.html` 比对其 `enc::v` 前缀与 `yl()` 派生函数」。project memory 已沉淀 `project-host-key-obfuscation-versioning.md`。
+
+- 会话（2026-10-31 凌晨）：**workbuddy 高峰期拥堵识别与失败分类修正（0.21.8，已提交推送，CI 发布中）**：
   - **用户诉求**：「workbuddy客户端有一个模型拥堵的状态, 我们插件现在时看不到的…高峰期拥堵几乎导致无法使用? 分析一下」，随后确认「现在的修复支持提交发布生产了吗?」。
   - **用户三点裁定**：① 参考 `https://github.com/linguo2625469/workbuddy2api-panel` 的处理方式；② 允许生产只读实测但拥堵发生在北京 15–17 点（本轮不在窗口，未取得实证）；③ 只做 `workbuddy-provider`。
   - **结论：不是「看不到状态」，而是拥堵被系统性误判成账号故障，形成雪崩**。四条缺陷：D1 SSE 错误帧只认 `{"error":...}`，顶层业务码帧 `{"code":6004}` 被当正常正文透传；D2 5xx 不在同请求内换号；D3 一次失败即写盘禁用（无门限）；D4 探活标记缺失时永久跳过（2026-10-29 事故机制）。放大链：拥堵 → 按账号级记账 → 一次即禁用 → 池子缩小 + 会话亲和打散 → 压力转移 → 更多拥堵。
@@ -66,17 +75,12 @@
   - **行为验收**：`/accounts` 200、16 账号与部署前一致；连续 3 次 `/accounts` 全 200 且**零上游 credits/entitlement 调用痕迹**（核心改动生效证据）；快照 `traework-credits.json` mtime `23:06:33` 对应 0.5.3 加载后的 watchdog 首轮刷新，说明后端刷新链仍工作。
   - **边界（如实记录）**：① 版本一致性用例 `TestVersionMatchesRegistration` 硬编码版本号，升版必须同步改 `test/traework/config_fields_test.go`，否则测试红（本轮首跑即因此失败，非代码缺陷）；② macOS runner 偶发 cancelled 会让 Release 跳过，只能整体重 dispatch；③ 面板在快照缺失（新装/首轮未跑）时显示「加载中…」且不再自动回填，需等 watchdog 一轮（≤10 分钟）。
 
-- 当前会话（2026-10-25）：**慢速账号冷却跨五插件移植完成并批量发生产**：
-  - **用户裁定**：traework / qoderwork / workbuddy-ai / qoder-ai / zcode 五个插件都做；其中 workbuddy-ai（2 号）与 qoder-ai（0 号）**只落文档计划、暂不实现**——池子 <10 时 P25 基线不成立，会制造噪音；zcode 选「完整改造与其他插件对齐」；发布方式选「全部改完后批量发布」。
-  - **两个前置硬前提（来自实施前的盘点）**：① **per-attempt TTFT 计时隔离**是阻断项——五个插件的 `ttftNS(started)` 都用请求级时间戳跨 attempt 复用，「A 失败 10s → B 首帧 2s」会被记成 12s，把 A 的失败耗时算到健康号头上，直接吃这个样本比不加机制更糟；② **账号池 ≥10**，否则 P25 退化成较小值。故顺序固定为「先补计时基准 + 用例锁定，再接状态机」。
-  - **各插件接入点差异（不能整体复制文件）**：traework 四处（前期预检 + 异步流 + 同步 collect + `pickNextAuthForModel`）；qoderwork 用 `pickNextAuth` 变参 `model ...string` 避开 10 处调用点改动；zcode 架构差异最大，单点 `accountRoutable` 同时覆盖三条路径，另补非流式 TTFT 采集（`executeOnceTimed` + `firstByteReader`，空读不算首字节）。
-  - **实现与验证**：三插件各补 per-attempt 用例（traework 4 / qoderwork 3 / zcode 3）；`slow_pipeline_test.go` 覆盖「打点去判定」链式语义——该变异首轮**存活**，因为异步成功路径的 `noteSlowObservation` 挂在宿主 RPC 链上无法单测，补链式用例后才 KILLED（覆盖边界已如实记录）。
-  - **发布链**：`13fb652`(feat, 48 文件) → 三 CI success → 6/6×3 assets sha256 OK → `3abc5eb`(registry) → 远端 6/6×3 200 → 三插件热重载部署，sha256 逐字节一致。
-  - **本轮发现的真实缺陷（生产实证）**：`recordSlowSample` 检测到冷却到期后只打日志、**不清零 `cooldownUntil`**，导致「已过期」在后续每条成功请求上持续成立——生产同一账号 **1 分钟内刷 8 条** `slow cooldown expired`。修复为判定过期后立即清零，并补 `TestSlowCooldownExpiryLogsOnce`；「去掉清零」变异在四插件全部 KILLED。**教训**：我先前在该处注释里写「每条冷却只会打一次」是错的，注释不能替代用例。
-  - **第二批发布（携带上述修复）**：三插件已发版本产物构建于修复之前，同号重发会与既有 tag 冲突，故升 patch——traework 0.5.1 / qoderwork 0.12.1 / zcode 0.3.1，与 workbuddy 0.21.2 一并批量发布。`494bf80`(fix) + `a820790`(版本升级) → 四 CI success → 6/6×4 assets sha256 OK → `06f10bd`(registry) → 远端 registry 四插件版本正确、零旧版残留、linux_amd64 资产 4/4 返回 200。
-  - **生产部署（热重载零重启，容器 Up 2 days 未重启）**：四次 install 均 `restart_required:false`；四条 `hot reloaded`（`0.21.2←0.21.1` / `0.5.1←0.5.0` / `0.12.1←0.12.0` / `0.3.1←0.3.0`）；四个落盘 `.so` sha256 与本地 zip **逐字节一致**（`b110fb36…` / `bec2a75c…` / `4a6230ff…` / `aff4ef5b…`）。
-  - **生产验收**：四插件 `enabled=true`、`/accounts` 全部 200；账号规模 37 / 16 / 18 / 1 与移植前盘点一致（部署未影响账号数据）；无 panic / 加载失败日志；近 4 分钟无 `slow cooldown` 日志——池内延迟均匀时本就不该判慢，符合预期。
-  - **边界（如实记录）**：① 慢速判定的**正向触发**未在本轮生产窗口内复现（需真实慢号），四插件的判定/放开/到期三类日志目前只有单测 + 变异覆盖，workbuddy 侧历史上有过真实触发记录；② workbuddy-ai 与 qoder-ai 仅有文档计划，代码未动；③ zcode 生产池仅 1 个账号，P25 基线在该池不成立，机制实质性不会生效——待池子扩充后再观察。
+- 更早会话（2026-10-25）：**慢速账号冷却跨五插件移植完成并批量发生产**：
+  - **用户裁定**：traework / qoderwork / zcode 三插件实现；workbuddy-ai（2 号）与 qoder-ai（0 号）只落文档计划——池子 <10 时 P25 基线不成立；zcode 选「完整改造与其他插件对齐」；批量发布。
+  - **两个前置硬前提**：① **per-attempt TTFT 计时隔离**是阻断项（请求级时间戳跨 attempt 复用会把 A 的失败耗时记到健康号头上）；② **账号池 ≥10**，否则 P25 退化成较小值。故顺序固定为「先补计时基准 + 用例锁定，再接状态机」。
+  - **各插件接入点差异（不能整体复制文件）**：traework 四处；qoderwork 用 `pickNextAuth` 变参 `model ...string` 避开 10 处调用点；zcode 单点 `accountRoutable` 覆盖三条路径 + 补非流式 TTFT 采集。
+  - **发布链**：`13fb652`(feat, 48 文件) → 三 CI success → `3abc5eb`(registry) → 三插件热重载部署，sha256 逐字节一致。中途发现 `recordSlowSample` 到期后不清零 `cooldownUntil` 导致日志刷屏，修复后升 patch 二批发布（traework 0.5.1 / qoderwork 0.12.1 / zcode 0.3.1）→ `494bf80` + `a820790` → `06f10bd`(registry)。**教训**：注释不能替代用例。
+  - **边界**：慢速判定的正向触发未在生产窗口复现（只有单测 + 变异覆盖）；zcode 生产池仅 1 个账号，P25 基线不成立，机制实质不生效。
 
 - 当前会话（2026-10-26）：**慢速冷却加账号池准入闸门（>20）+ 三插件补齐机制，七插件批量发生产**：
   - **用户诉求**：「慢速冷却改成只有账号大于 20（启用+停用）才触发，这样就不会因为账号不够出现问题；把所有慢速冷却机制都加上这个逻辑，把其他插件也补上慢速冷却机制并账号大于 20 才触发」。

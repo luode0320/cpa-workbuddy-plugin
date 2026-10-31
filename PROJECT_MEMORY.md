@@ -58,6 +58,7 @@
 
 ### 关键设计决策
 
+- **插件面板 management key 只能从父页 localStorage 取，且必须兼容宿主混淆格式演进（2026-10-31 生产事故后固化）**：宿主 `management.html` 渲染 `/plugin-pages/:id/:idx` iframe 时**不通过 URL 传 key**，插件只能读父页 `localStorage["cli-proxy-auth"]` 再解密。该文件由 `managementasset` **每 3 小时自动拉取更新**，2026-10-31 05:45:30 那次把格式从 `enc::v1::`（XOR key = `salt|host|userAgent`）改为 `enc::v2::`（`salt|host`），插件只认 v1 → 密文原样返回 → `JSON.parse` 失败 → 面板报「management key 无效或缺失」且计数器归零。**三条硬要求**：① 同时认 `enc::v1::` 与 `enc::v2::` 双前缀，v2 派生**不含** UA；② v1 分支保留以解升级前已落盘的旧值，不可把 v2 派生套到 v1；③ sessionStorage 中的 key 若以 `enc::` 开头必须丢弃——旧版插件曾把未解密密文写进 sessionStorage，而 `getKey()` 优先读 sessionStorage，会持续用错误 Bearer 打到 401 且不自愈。**将来同类症状复发的排查入口**：`docker cp` 出生产 `management.html`，比对其 `enc::v` 前缀与密钥派生函数，不要先怀疑账号数据或插件后端鉴权。
 - **扣子每日登录积分由 `credit/balance/check` 触发，且 pass 字段与发放无关（2026-10-24 九账号实证）**：
   每日 1500 分「每日登录」活动积分**有效期仅 1 天、当天不领即归零**，是账号池长期 0 分的真因。
   **唯一触发器**是 `GET /api/marketplace/trade/credit/balance/check?account_type=2`——
