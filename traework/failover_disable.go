@@ -44,6 +44,11 @@ const (
 	// 或该记录根本没有物理文件），必须告警——否则「写了就算禁了」会把失效隐藏起来。
 	failoverConfirmTimeout = 3 * time.Second
 
+	// failoverProbeFallbackModel 是探活兜底模型：当盘上标记与 sidecar 都没记
+	// 失败模型时用它回放。按「无模型不恢复」处理会让标记残缺的号永久卡在禁用，
+	// 只能人工启用——2026-10-29 事故里主力快号就是这样被禁 8 小时。
+	failoverProbeFallbackModel = "deepseek-v4.1-flash"
+
 	// failoverDisableKey 系列是本机制拥有的三个顶层键：标记表示归属，model 是
 	// 探活回放的目标（进程重启后盘上是唯一可靠来源），at 供面板与人工诊断。
 	failoverDisableKey      = "failover_disable"
@@ -626,24 +631,83 @@ func failoverProbeTargets() []failoverProbeCandidate {
 	out := make([]failoverProbeCandidate, 0, len(files))
 	for _, f := range files {
 		authIndex := strings.TrimSpace(f.AuthIndex)
-		if !f.Disabled || authIndex == "" {
+		if authIndex == "" {
 			continue
 		}
+		// sidecar 是本插件写禁用的权威记录，宿主 f.Disabled 只是镜像：
+		// 宿主在 persist / 重建记录时可能丢掉标记，此时盘上 raw 为 false
+		// 但账号实际仍应被探活恢复。反过来只看宿主标志会让这类号永久失联。
+		sidecarDisabled := failoverStateIsDisabled(f.ID)
 		phys, errGet := failoverGetPhysicalFn(authIndex)
 		if errGet != nil || phys == nil || len(phys.JSON) == 0 {
+			// 宿主文档读不到时只有 sidecar 可依：它记着禁用就仍要探活，
+			// 否则该号既不被路由、也不被恢复。
+			if sidecarDisabled {
+				out = append(out, failoverProbeCandidate{authIndex: authIndex, authID: f.ID, model: failoverProbeModelFor(f.ID)})
+			}
 			continue
 		}
 		doc := parseFailoverAuthDoc(phys.JSON)
-		if !doc.failoverDisable {
+		if !doc.failoverDisable && !sidecarDisabled {
 			continue
 		}
 		model := failoverProbeModelFor(f.ID)
 		if model == "" {
 			model = doc.failoverModel
 		}
+		if model == "" {
+			// sidecar 是进程重启后模型的唯一来源：内存集合为空时靠它回放。
+			if entry, ok := failoverStateGet(f.ID); ok {
+				model = entry.Model
+			}
+		}
+		if model == "" {
+			// 兜底：盘上标记与 sidecar 都没记模型（历史版本写入的文档、
+			// 或多个入口竞争导致标记残缺）。此时若仍按「无模型不恢复」处理，
+			// 该号会永久卡在「禁用且永远探不了」的死角——2026-10-29 事故里
+			// 主力快号就是这样被禁 8 小时、零探活。
+			// 回落到账号的默认模型：探通即解禁，探不通保持禁用，代价是
+			// 可能用错模型白白消耗一次请求，远小于永久失联的代价。
+			model = failoverFallbackProbeModel(f.ID)
+			if model != "" {
+				log.Printf("[traework] failover probe adopts fallback model: auth=%s model=%s", f.ID, model)
+			}
+		}
 		out = append(out, failoverProbeCandidate{authIndex: authIndex, authID: f.ID, model: model})
 	}
 	return out
+}
+
+// failoverFallbackProbeModel 在模型标记缺失时给出一个可回放的候选模型。
+//
+// 只在「盘上标记与 sidecar 都没记模型」这一死角上使用：此时按严格口径该号
+// 永远不会被探活，只能人工启用。优先取该账号内存状态里记录的最近模型，
+// 没有则退回插件固定兜底模型——宁可探错一次，也不能让健康号永久失联。
+//
+// [参数] authID：账号唯一标识。
+// [返回] 可回放的模型名；确实无候选时返回空串（此时仍保持禁用）。
+// 最近修改时间：2026-10-31；改动原因：新增，修复标记缺失导致探活永久跳过。
+func failoverFallbackProbeModel(authID string) string {
+	// 1. 优先用该账号内存里记录的最近模型：它最可能是真实失败的那个。
+	if model := failoverStateSnapshotModel(authID); model != "" {
+		return model
+	}
+	// 2. 退回插件固定兜底模型，保证标记残缺的号仍有恢复通道。
+	return failoverProbeFallbackModel
+}
+
+// failoverStateSnapshotModel 返回账号内存状态里记录的最近失败/使用模型。
+// [参数] authID：账号唯一标识。
+// [返回] 模型名；无记录时为空串。
+// 最近修改时间：2026-10-31；改动原因：新增，供探活兜底取模型。
+func failoverStateSnapshotModel(authID string) string {
+	failoverMu.Lock()
+	defer failoverMu.Unlock()
+	st := failoverStates[authID]
+	if st == nil {
+		return ""
+	}
+	return strings.TrimSpace(st.lastModel)
 }
 
 // resolveFailoverAuth 把候选的 auth_index 解析为可用的账号凭据。
@@ -681,7 +745,10 @@ func runFailoverProbeTick(resolve func(string) *traeAuth) int {
 		}
 		model := strings.TrimSpace(tc.model)
 		if model == "" {
-			log.Printf("[traework] failover probe skipped: no failed model recorded for auth=%s", tc.authIndex)
+			// 候选构造时已尝试兜底，仍为空说明连固定兜底模型都不可用
+			// （理论上不会发生）。保持禁用并显眼告警，让运维知道该号
+			// 需要人工介入，而不是静默停在死角。
+			log.Printf("[traework] failover probe skipped: no probe model available for auth=%s", tc.authIndex)
 			continue
 		}
 		probed++

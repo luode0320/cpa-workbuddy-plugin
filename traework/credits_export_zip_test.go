@@ -189,3 +189,80 @@ func TestHandleExportAuthZip_ListError(t *testing.T) {
 		t.Fatalf("body should mention host.auth.list, got %s", string(resp.Body))
 	}
 }
+
+// TestExportAuthZipSurvivesEnvelopeRoundTrip 验证 zip 二进制经宿主 envelope
+// 往返后仍逐字节完好、可正常解压。
+//
+// 背景：管理接口统一走 okEnvelope → json.Marshal → 宿主还原 Result 的链路。
+// 曾有人据静态代码推测 ManagementResponse.Body 会被 base64 二次编码而损坏
+// zip，实测证明 envelope 往返无损。该用例把这条实测结论固化为回归断言：
+// 任何改动导致二进制在 envelope 里失真，这里立刻失败。
+//
+// [参数] t: 测试上下文
+// [返回] 无
+// 最近修改时间：2026-10-31；改动原因：新增，锁定 zip 二进制经 envelope 无损。
+func TestExportAuthZipSurvivesEnvelopeRoundTrip(t *testing.T) {
+	files := []pluginapi.HostAuthFileEntry{
+		{Name: "acct-1.json", AuthIndex: "idx-1"},
+	}
+	withAuthStubsZip(t, files, nil, func(idx string) (*hostAuthPhysical, error) {
+		return &hostAuthPhysical{AuthIndex: idx, JSON: []byte(`{"accessToken":"tok"}`)}, nil
+	})
+
+	// 走生产链路：handler → okEnvelope。
+	raw, err := okEnvelope(handleExportAuthZip(pluginapi.ManagementRequest{Method: http.MethodGet}))
+	if err != nil {
+		t.Fatalf("okEnvelope: %v", err)
+	}
+
+	// 还原宿主侧的解包结果。
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if !env.OK {
+		t.Fatalf("envelope ok = false, raw=%s", string(raw))
+	}
+	var restored pluginapi.ManagementResponse
+	if err := json.Unmarshal(env.Result, &restored); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if restored.StatusCode != http.StatusOK {
+		t.Fatalf("restored status = %d, want 200", restored.StatusCode)
+	}
+	if len(restored.Body) < 4 || !bytes.Equal(restored.Body[:4], []byte("PK\x03\x04")) {
+		t.Fatalf("restored body 不是合法 zip 头: %x", restored.Body[:min(4, len(restored.Body))])
+	}
+
+	// 端到端可解压，且内容与原始凭证字节一致。
+	zr, err := zip.NewReader(bytes.NewReader(restored.Body), int64(len(restored.Body)))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+	if len(zr.File) != 1 {
+		t.Fatalf("zip entries = %d, want 1", len(zr.File))
+	}
+	rc, errOpen := zr.File[0].Open()
+	if errOpen != nil {
+		t.Fatalf("open entry: %v", errOpen)
+	}
+	data, errRead := io.ReadAll(rc)
+	_ = rc.Close()
+	if errRead != nil {
+		t.Fatalf("read entry: %v", errRead)
+	}
+	if string(data) != `{"accessToken":"tok"}` {
+		t.Fatalf("entry content = %q, want 原始凭证字节", string(data))
+	}
+}
+
+// min 返回两个整数中的较小者（Go 1.21 之前的标准库无内置 min）。
+// [参数] a, b: 待比较的两个整数
+// [返回] 较小值
+// 最近修改时间：2026-10-31；改动原因：新增，供切片边界保护使用。
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

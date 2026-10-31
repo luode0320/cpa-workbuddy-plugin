@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -140,13 +142,26 @@ func TestConfigFields_LowCreditDisableBelowWired(t *testing.T) {
 	}
 }
 
-// TestVersionMatchesRegistration 锁定版本三处一致。
+// TestVersionMatchesRegistration 锁定版本三处一致：main.go 的 version 变量、
+// 注册元数据与 VERSION 文件必须相同。
+//
+// 期望值从 VERSION 文件读取而不是写死字面量：写死会让每次发版都必须同步改测试，
+// 反而更容易漏改。这里校验的是「三处彼此一致」，不是某个具体版本号。
+// 最近修改时间：2026-10-31；改动原因：改为比对 VERSION 文件，发版无需改测试。
 func TestVersionMatchesRegistration(t *testing.T) {
-	if version != "0.5.6" {
-		t.Fatalf("main.go version = %q, want 0.5.6", version)
+	raw, err := os.ReadFile("VERSION")
+	if err != nil {
+		t.Fatalf("读取 VERSION 失败: %v", err)
+	}
+	want := strings.TrimSpace(string(raw))
+	if want == "" {
+		t.Fatal("VERSION 文件为空")
+	}
+	if version != want {
+		t.Fatalf("main.go version = %q, want %q（应与 VERSION 一致）", version, want)
 	}
 	reg := wbRegistration()
-	if reg.Metadata.Version != "0.5.6" {
-		t.Fatalf("注册元数据版本 = %q, want 0.5.6", reg.Metadata.Version)
+	if reg.Metadata.Version != want {
+		t.Fatalf("注册元数据版本 = %q, want %q", reg.Metadata.Version, want)
 	}
 }

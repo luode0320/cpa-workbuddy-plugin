@@ -97,6 +97,11 @@ func TestFailoverState_VersionMismatchIsEmpty(t *testing.T) {
 // 前面几个用例只测 sidecar 自身的读写；若 disableAccountForFailover 里的
 // failoverStateMarkDisabled 调用被删掉，它们全部仍会通过——这正是变异测试
 // 存活的形态。本用例走生产入口 recordAccountFailure，断言失败确实落到 sidecar。
+//
+// 2026-10-31 起瞬时失败受连续失败门限（默认 3）约束，单次 500 不再写盘；
+// 这里改用确定性故障（401），它不受门限约束，能保持「一次失败即写盘」的
+// 整合断言强度而不依赖外部配置。
+// 最近修改时间：2026-10-31；改动原因：适配写盘禁用门限，改用确定性故障验证写盘链路。
 func TestFailoverState_FailurePathWritesSidecar(t *testing.T) {
 	setupFailoverStateDir(t)
 	clearFailoverStates()
@@ -108,11 +113,43 @@ func TestFailoverState_FailurePathWritesSidecar(t *testing.T) {
 	setFailoverEnabled(true)
 	t.Cleanup(func() { setFailoverEnabled(true) })
 
-	if !recordAccountFailure("acc-integration", 500, "boom") {
-		t.Fatalf("500 必须记账")
+	if !recordAccountFailure("acc-integration", 401, `{"error":"invalid token"}`) {
+		t.Fatalf("401 必须记账")
 	}
 	if !failoverStateIsDisabled("acc-integration") {
 		t.Fatalf("失败记账必须同时写入 sidecar（否则重启后禁用状态全丢）")
+	}
+}
+
+// TestFailoverState_TransientFailureRespectsDisableThreshold 锁定门限与 sidecar 的
+// 关系：瞬时失败未达门限时只冷却、不得写 sidecar 禁用，达门限后才落盘。
+// 这条断言防止「门限只在宿主盘上生效、sidecar 仍被提前写成禁用」的半吊子修复。
+// 最近修改时间：2026-10-31；改动原因：新增，锁定门限对 sidecar 同样成立。
+func TestFailoverState_TransientFailureRespectsDisableThreshold(t *testing.T) {
+	setupFailoverStateDir(t)
+	clearFailoverStates()
+	t.Cleanup(clearFailoverStates)
+	setFailoverDisableMinCount(3)
+	t.Cleanup(func() { setFailoverDisableMinCount(defaultFailoverDisableMinCount) })
+
+	h := newFailoverFakeHost(t)
+	h.addAccount("acc-transient", "idx-transient", nil)
+	setFailoverEnabled(true)
+	t.Cleanup(func() { setFailoverEnabled(true) })
+
+	for i := 1; i <= 2; i++ {
+		if !recordAccountFailure("acc-transient", 500, "upstream 500: internal error") {
+			t.Fatalf("第 %d 次 500 应计入冷却", i)
+		}
+		if failoverStateIsDisabled("acc-transient") {
+			t.Fatalf("第 %d 次瞬时失败未达门限，不得写 sidecar 禁用", i)
+		}
+	}
+	if !recordAccountFailure("acc-transient", 500, "upstream 500: internal error") {
+		t.Fatal("第 3 次 500 应计入冷却")
+	}
+	if !failoverStateIsDisabled("acc-transient") {
+		t.Fatal("达到门限后必须写 sidecar 禁用")
 	}
 }
 

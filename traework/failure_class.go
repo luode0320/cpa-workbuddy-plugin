@@ -29,6 +29,23 @@ const (
 	failureScopeAccount
 	// failureScopeAuthModel 账号×模型级冷却：限流或业务错误帧通常按账号+模型生效。
 	failureScopeAuthModel
+	// failureScopeModelRateLimit 模型级限流（只冷却模型、不禁用账号）。
+	// 与 failureScopeAuthModel 的差别只在禁用侧：6004 表明账号整体健康，
+	// 只是该模型当下限流，摘掉整个账号会把可用池无谓缩小。
+	failureScopeModelRateLimit
+	// failureScopeUpstreamBusy 上游拥堵：渠道/集群容量问题，不是账号故障。
+	// 该维度既不写冷却也不写盘禁用——罚号只会缩小可用池并放大拥堵。
+	failureScopeUpstreamBusy
+)
+
+// 上游拥堵相关的业务码。
+const (
+	// modelRateLimitCode 明确指向「模型级 429 限流」的业务 code：账号健康、
+	// 只是这个模型此刻被限，切模型即可用。
+	modelRateLimitCode = "6004"
+	// queueFullCode 明确指向「渠道级容量满载」的业务 code：上游推理集群排队
+	// 队列打满，同一时刻换任何账号都会撞同一堵墙。
+	queueFullCode = "6021"
 )
 
 // String 返回分类的可读名，供日志与测试断言使用。
@@ -38,9 +55,29 @@ func (s failureScope) String() string {
 		return "account"
 	case failureScopeAuthModel:
 		return "account_model"
+	case failureScopeModelRateLimit:
+		return "model_rate_limit"
+	case failureScopeUpstreamBusy:
+		return "upstream_busy"
 	default:
 		return "none"
 	}
+}
+
+// recordsCooldown 报告该分类是否需要写入冷却状态。
+// 上游拥堵刻意不写：它会在数秒内把整池健康号逐个冷却。
+// [返回] 需要记账时返回 true。
+// 最近修改时间：2026-10-31；改动原因：对齐 workbuddy，表达拥堵维度不记账。
+func (s failureScope) recordsCooldown() bool {
+	return s != failureScopeNone && s != failureScopeUpstreamBusy
+}
+
+// disablesAccount 报告该分类是否需要把账号写盘禁用。
+// 只有模型级限流例外：6004 是账号健康的证据，禁用会让健康号退出路由。
+// [返回] 需要写盘禁用时返回 true。
+// 最近修改时间：2026-10-31；改动原因：新增，堵住模型级限流误禁用健康号。
+func (s failureScope) disablesAccount() bool {
+	return s == failureScopeAccount || s == failureScopeAuthModel
 }
 
 // classifyUpstreamFailure 把一次上游失败归类到冷却维度。
@@ -66,26 +103,36 @@ func classifyUpstreamFailure(status int, body string) failureScope {
 	if isModelLevelFailure(body) {
 		return failureScopeNone
 	}
-	// 3. 凭据/端点类 4xx 属账号级：换模型也不可用。
+	// 3. 渠道级容量满载必须在通用限流兜底之前判定：它是比「限流」更具体的
+	//    信号。落进限流分支会按账号逐个冷却，高峰期可在数秒内把整池健康号摘光。
+	if isQueueFullBody(body) {
+		return failureScopeUpstreamBusy
+	}
+	// 4. 模型级限流（6004）：账号健康，只隔离该账号×模型，换模型即可用。
+	//    必须同时先于通用限流与 5xx —— 6004 常以 429 或 5xx 承载。
+	if isModelRateLimitBody(body) {
+		return failureScopeModelRateLimit
+	}
+	// 5. 凭据/端点类 4xx 属账号级：换模型也不可用。
 	if isAccountLevel4xxExcludingRateLimit(status) {
 		return failureScopeAccount
 	}
-	// 4. 传输错误与 5xx 属账号级。
+	// 6. 传输错误与 5xx 属账号级。
 	if status == 0 || status >= 500 {
 		return failureScopeAccount
 	}
-	// 5. 请求被拦截（11128）按账号×模型冷却：禁用探活会把该模型排在回放序列首位，
+	// 7. 请求被拦截（11128）按账号×模型冷却：禁用探活会把该模型排在回放序列首位，
 	//    验证该账号在这个模型上是否真的恢复。先于限流文案判定，因为 11128
 	//    的 displayMsg 可能带「请重新发送」这类无关文案。
 	if isModelBlockedError(status, body) {
 		return failureScopeAuthModel
 	}
-	// 6. 限流文案与零字节断流按账号×模型处理：这类信号通常随模型变化。
+	// 8. 限流文案与零字节断流按账号×模型处理：这类信号通常随模型变化。
 	//    顺序与历史一致——先判文案再判状态，故 400 携带限流文案时仍会记账。
 	if isSoftRateLimit(status, body) || isEmptyStreamBody(body) {
 		return failureScopeAuthModel
 	}
-	// 7. 其余不记账：400/422 等请求形状问题换账号同样失败。
+	// 9. 其余不记账：400/422 等请求形状问题换账号同样失败。
 	return failureScopeNone
 }
 
@@ -105,6 +152,94 @@ func isAccountLevel4xxExcludingRateLimit(status int) bool {
 // 最近修改时间：2026-10-18 23:40:00；改动原因：新增。
 func isRequestShapeFailure(status int) bool {
 	return status == http.StatusBadRequest || status == http.StatusUnprocessableEntity
+}
+
+// businessCodeMarkers 返回一个上游业务码在 JSON 里的全部常见书写形态。
+// 上游同一 code 可能写成数字、带空格的数字或字符串包裹，逐个比对避免漏判。
+// [参数] code：纯数字业务码文本，如 "6004"。
+// [返回] 待匹配的形态列表。
+// 最近修改时间：2026-10-31；改动原因：新增，供拥堵码识别复用。
+func businessCodeMarkers(code string) []string {
+	return []string{
+		`"code":` + code,
+		`"code": ` + code,
+		`"code":"` + code + `"`,
+		`"code": "` + code + `"`,
+	}
+}
+
+// containsBusinessCode 报告 body 是否携带指定上游业务码。
+// [参数] body：上游响应正文或错误帧文本；code：纯数字业务码。
+// [返回] 命中任一书写形态时返回 true。
+// 最近修改时间：2026-10-31；改动原因：新增，统一业务码匹配口径。
+func containsBusinessCode(body, code string) bool {
+	if body == "" {
+		return false
+	}
+	for _, marker := range businessCodeMarkers(code) {
+		if strings.Contains(body, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// isModelRateLimitBody 报告 body 是否明确指向「模型级限流」。
+//
+// 上游用 code 6004 表达「该模型当下被限流」，与账号整体健康无关：同一个账号
+// 换到别的模型即可正常使用。处置口径因此是「只隔离该账号×模型」，不得据此
+// 摘掉整个账号。
+//
+// [参数] body：上游响应正文或错误帧文本。
+// [返回] 命中 6004 语义时返回 true。
+// 最近修改时间：2026-10-31；改动原因：新增，区分模型级限流与账号级故障。
+func isModelRateLimitBody(body string) bool {
+	return containsBusinessCode(body, modelRateLimitCode)
+}
+
+// isQueueFullBody 报告 body 是否指向「渠道级容量满载」。
+//
+// 上游用 code 6021 与固定文案 queue.full 表达推理集群排队队列打满。这不是
+// 账号问题：同一时刻换任何账号都会撞同一堵墙，换号只会放大请求量。处置口径
+// 是「不罚号」——既不冷却也不写盘禁用。
+//
+// 只匹配固定文案 queue.full / queue full，不做宽泛的 queue 子串匹配——
+// 后者会把「queued for processing」这类正常排队语义也吞进来。
+//
+// [参数] body：上游响应正文或错误帧文本。
+// [返回] 命中 6021 或 queue.full 文案时返回 true。
+// 最近修改时间：2026-10-31；改动原因：新增，识别渠道级容量满载。
+func isQueueFullBody(body string) bool {
+	if body == "" {
+		return false
+	}
+	if containsBusinessCode(body, queueFullCode) {
+		return true
+	}
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "queue.full") || strings.Contains(lower, "queue full")
+}
+
+// isTransientUpstreamFailure 报告一次失败是否属于「可能自愈的瞬时故障」。
+//
+// 判据只影响写盘禁用是否受连续失败门限约束，不影响分类与冷却：
+//   - 瞬时（受门限约束）：传输错误、5xx、限流文案、零字节断流。这些信号在
+//     高峰期成片出现，同一个号上可能只是恰好撞上上游抖动；
+//   - 确定性（不受门限）：401/403/404/405 凭据或权限问题、402 额度耗尽、
+//     11128 模型拦截。它们在同一个号上必然重演，等两次只会让用户多失败两次。
+//
+// [参数] status：上游 HTTP 状态码，0 表示传输层失败；body：上游响应正文。
+// [返回] true 表示该失败可能在短时间内自愈。
+// 最近修改时间：2026-10-31；改动原因：新增，给写盘禁用门限划出适用范围。
+func isTransientUpstreamFailure(status int, body string) bool {
+	// 确定性故障优先判定：它们即使带 5xx 或限流文案也不该等。
+	if isModelBlockedError(status, body) || isHardCreditError(status, body) {
+		return false
+	}
+	if isAccountLevel4xxExcludingRateLimit(status) {
+		return false
+	}
+	return status == 0 || status >= 500 || isSoftRateLimit(status, body) || isEmptyStreamBody(body)
 }
 
 // isModelBlockedError 判定一次失败是否属于「上游拦截了这次请求」。

@@ -116,6 +116,9 @@ type traeAccountView struct {
 	// 不会让账号回来，所以面板必须把它和冷却分开显示。
 	FailoverDisabled bool   `json:"failover_disabled,omitempty"`
 	FailoverModel    string `json:"failover_model,omitempty"` // 探活回放的模型（唯一目标）
+	// FailoverUnconfirmed 表示盘上写着禁用但宿主列表仍为 enabled——写盘尚未被
+	// 宿主吸收，这个号此刻仍会被路由。它是「显示与实际不符」的唯一在线判据。
+	FailoverUnconfirmed bool `json:"failover_unconfirmed,omitempty"`
 	// 轮换侧：与失败冷却完全独立的状态（resetAccountFailover 不清它），
 	// 面板必须分开显示，否则用户看到「没有冷却却被跳过」会无法理解。
 	RotationCooling bool  `json:"rotation_cooling,omitempty"`

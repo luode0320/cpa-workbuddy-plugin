@@ -588,7 +588,7 @@ function card(a){
   const badges=[];
   if(a.active)badges.push(tag("active","活跃"));
   if(a.disabled)badges.push(tag("disabled","停用"));
-  if(a.failover_disabled)badges.push(tag("test-failed","禁用探活中"));
+  if(a.failover_disabled)badges.push(tag("test-failed",a.failover_unconfirmed?"禁用写盘未生效":"禁用探活中"));
   if(a.exhausted)badges.push(tag("exhausted","耗尽"));
   else if(a.low_credits)badges.push(tag("low-credits","低额保护"));
   // 积分档位：disabled = 低于禁用线且已停用（与「耗尽」区分开——那是 remain<=0，

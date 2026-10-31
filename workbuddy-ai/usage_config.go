@@ -71,6 +71,9 @@ func configure(raw []byte) {
 	// failover default: enabled. Explicit account_failover: false disables the
 	// whole cooldown mechanism (pre-failover behavior).
 	nextFailoverEnabled := true
+	// failover_disable_min_count: 写盘禁用的连续失败门限，默认 3。
+	// 填 1 等价于恢复「首次失败即禁用」的历史行为。
+	nextFailoverDisableMinCount := defaultFailoverDisableMinCount
 
 	// retry_on_4xx: per-request account-failover budget. Applied ONLY when
 	// the key is present in config_yaml: a valid value is clamped to
@@ -126,6 +129,13 @@ func configure(raw []byte) {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "account_failover:"))
 					v = strings.Trim(v, "\"'")
 					nextFailoverEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "failover_disable_min_count:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "failover_disable_min_count:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+						nextFailoverDisableMinCount = n
+					}
 				}
 				if strings.HasPrefix(line, "scheduler_mode:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "scheduler_mode:"))
@@ -287,6 +297,8 @@ func configure(raw []byte) {
 	lifecycleAutoMu.Unlock()
 
 	setFailoverEnabled(nextFailoverEnabled)
+
+	setFailoverDisableMinCount(nextFailoverDisableMinCount)
 
 	// 慢速冷却配置整套写入：六个键共同决定判定结果，分开写会留下
 	// 「阈值改了、窗口还是旧值」的中间态。未出现任何 slow 键时跳过，

@@ -438,9 +438,15 @@ func TestRunFailoverProbeStopsAfterOnePing(t *testing.T) {
 	}
 }
 
-// TestRunFailoverProbeWithoutFailedModelSkips 锁定缺失败模型时的处置：
-// 没有可回放的目标就跳过，既不发探活请求、也不解除禁用。无法验证就不恢复，
-// 比盲目放回安全；跳过的账号也不消耗当日探活配额。
+// TestRunFailoverProbeWithoutFailedModelSkips 锁定缺失败模型时的处置。
+//
+// 2026-10-31 语义修正：旧实现「没有模型就跳过」看似安全，实际制造了
+// 「禁用且永远探不了」的死角——2026-10-29 生产事故里主力快号就是这样被禁
+// 8 小时零探活，只能人工启用。现在改为兜底出一个可回放模型（优先该账号的
+// 可用模型），探通即解禁，探不通保持禁用。兜底同样受当日探活配额约束。
+//
+// 本测试锁定兜底行为本身，名字保留以便对照历史。
+// 最近修改时间：2026-10-31；改动原因：语义从「跳过」改为「兜底回放」，避免禁用号失联。
 func TestRunFailoverProbeWithoutFailedModelSkips(t *testing.T) {
 	resetFailover(t)
 	h := newFailoverFakeHost(t)
@@ -450,20 +456,44 @@ func TestRunFailoverProbeWithoutFailedModelSkips(t *testing.T) {
 		failoverDisableKey: true,
 	})
 
-	pinged := 0
-	failoverPingFn = func(*storedAuth, string) error { pinged++; return nil }
+	pingedModel := ""
+	failoverPingFn = func(_ *storedAuth, m string) error { pingedModel = m; return nil }
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.Local)
-	if probed := runFailoverProbeTick(func(string) *storedAuth { return &storedAuth{} }, now); probed != 0 {
-		t.Fatalf("无失败模型时应跳过, probed = %d", probed)
+	if probed := runFailoverProbeTick(func(string) *storedAuth { return &storedAuth{} }, now); probed != 1 {
+		t.Fatalf("标记残缺必须兜底探活, probed = %d, want 1", probed)
 	}
-	if pinged != 0 {
-		t.Fatalf("无失败模型时不应发任何探活请求, pinged = %d", pinged)
+	if pingedModel == "" {
+		t.Fatal("兜底探活必须带一个具体模型")
 	}
-	if h.docOf("idx-n")["disabled"] != true {
-		t.Fatal("跳过的账号必须保持禁用")
+	if h.docOf("idx-n")["disabled"] != false {
+		t.Fatal("兜底模型探通后应解除禁用")
 	}
 	if got := failoverProbeFailsToday("nomodel", now); got != 0 {
-		t.Fatalf("跳过不得消耗当日配额, fails = %d", got)
+		t.Fatalf("探通不得消耗当日失败配额, fails = %d", got)
+	}
+}
+
+// TestRunFailoverProbeFallbackKeepsDisabledOnFailure 锁定兜底探活的失败侧：
+// 探不通就保持禁用，不得因为「探错了模型」把号放回去。
+// 最近修改时间：2026-10-31；改动原因：新增，防止兜底探活把故障号误放回。
+func TestRunFailoverProbeFallbackKeepsDisabledOnFailure(t *testing.T) {
+	resetFailover(t)
+	h := newFailoverFakeHost(t)
+	h.addAccount("nomodel2", "idx-n2", map[string]any{
+		"disabled":         true,
+		failoverDisableKey: true,
+	})
+
+	origPing := failoverPingFn
+	t.Cleanup(func() { failoverPingFn = origPing })
+	failoverPingFn = func(*storedAuth, string) error { return errors.New("qoderwork fake probe failed") }
+
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.Local)
+	if probed := runFailoverProbeTick(func(string) *storedAuth { return &storedAuth{} }, now); probed != 1 {
+		t.Fatalf("应兜底探测 1 个禁用账号, got %d", probed)
+	}
+	if h.docOf("idx-n2")["disabled"] != true {
+		t.Fatal("兜底探活失败必须保持禁用")
 	}
 }
 

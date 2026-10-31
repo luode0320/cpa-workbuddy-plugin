@@ -1,5 +1,16 @@
 # TraeWork Plugin Changelog
 
+## 0.5.7
+
+### Fix - 失败治理对齐：5 维度分类 + 写盘禁用门限 + 探活兜底
+
+- 背景: 本插件的失败处理长期停留在 3 个冷却维度（none / account / account×model），且「一次失败即写盘禁用」、失败模型标记缺失时探活永久跳过。三者在高峰期叠加会造成两类事故：单个健康号被一次上游抖动摘出路由（2026-10-29 单次 429 后禁用 8 小时零探活），以及误把非账号故障按账号级罚号。
+- 修复一（分类维度）: `failure_scope` 扩展为 5 值，新增 `failureScopeModelRateLimit`（上游 6004 模型级限流：账号健康、只隔离该账号×模型，切模型即可用）与 `failureScopeUpstreamBusy`（上游 6021 渠道满载：不冷却、不罚号，罚号只会缩小可用池并放大拥堵）。判定顺序把这两个更具体的信号放在通用限流与 5xx 之前。新增 `recordsCooldown()` / `disablesAccount()` 两个派生判据，把「是否冷却」与「是否写盘禁用」从维度枚举中解耦，避免后续新增维度时漏改其中一侧。
+- 修复二（禁用门限）: 新增 `failover_disable_min_count` 配置项（默认 3，填 1 恢复旧行为）。瞬时类失败（传输错误 / 5xx / 限流文案 / 零字节断流）需连续达到门限才写盘禁用；确定性失败（401/403/404/405 凭据问题、402 额度耗尽、11128 模型拦截）不受门限约束——它们在同一个号上必然重演，多等只会让用户多失败两次。
+- 修复三（探活兜底）: 盘上标记、sidecar 与内存都没记失败模型时，不再永久跳过探活，而是兜底回放一个可解析的模型：探通即解禁，探不通保持禁用。代价是可能探错一次模型，远小于健康号永久失联。
+- 影响范围: 失败记账、冷却维度、写盘禁用与 10 分钟禁用探活；请求转发、鉴权与账号数据格式不变。默认配置下行为变化为「更少误罚号」，需要旧行为时配置 `failover_disable_min_count: 1`。
+- 验证: `cgo-shim-build.py` build/vet/test 全绿；新增分类边界表、维度×副作用矩阵、门限端到端（1/2/3 次阶梯、确定性失败豁免、6004 豁免优先于门限）、探活兜底成功/失败双侧、拥堵免罚等用例，并改写两个固化旧缺陷的既有测试。
+
 ## 0.5.6
 
 ### Fix - 兼容宿主主面板 enc::v2:: 密钥格式（修复面板 401）
@@ -240,7 +251,6 @@
   3. 新增 `TestSchedulerMode_DefaultIsSession` 单测断言，确保默认调度策略行为不漂移。
 - 涉及文件: traework/scheduler.go、traework/config.go、traework/main.go、traework/session_auth_test.go、traework/CHANGELOG.md
 
-
 ## 0.2.5
 
 ### Fix - 修复签到 x-device-id 拼接与尾零风控 9074 拦截并支持设备号轮换重试
@@ -259,7 +269,6 @@
   3. 新增 `traework/checkin_schedule_test.go` 覆盖槽位对齐、跨日顺延、逐槽位覆盖、整点不自相等。
 - 涉及文件: traework/checkin.go、traework/checkin_schedule_test.go、traework/CHANGELOG.md
 
-
 ## 0.2.4
 
 ### Feat - 自动探活支持随机 5 模型轮测与 20s 超时
@@ -271,7 +280,6 @@
   4. 面板手动「测试」按钮保持指定模型或随机兜底行为不变。
   5. 修复 TraeWork 签到协议对齐官方 Trae 客户端：请求体增加 {"req_source": 2}，请求头补齐客户端设备指纹（x-device-brand、x-device-type、x-os-version、x-app-version、x-app-id）并移除网页端 Origin/Referer，解决被服务端风控判定为未知/网页端导致的 9074（当前参与用户太多，请稍后再试）拦截。
 - 涉及文件: traework/active_ping.go、traework/active_ping_test.go、traework/checkin.go、traework/checkin_headers_test.go、traework/main.go、traework/VERSION、traework/CHANGELOG.md
-
 
 ## 0.2.3
 

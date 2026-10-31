@@ -191,6 +191,18 @@ func handleManagement(raw []byte) ([]byte, error) {
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }
 
+// failoverUnconfirmed 判定「盘上说已禁用、宿主仍在路由」这一不一致状态。
+//
+// 抽成纯函数是为了可测：handleAccounts 直接调宿主读取，整函数无法在 cgo-shim
+// 下单测，而这个判据恰好是面板文案分叉的唯一来源，必须能被变异验证覆盖。
+//
+// [参数] diskDisabled：盘上带本机制标记且 disabled；hostDisabled：宿主列表的 disabled。
+// [返回] true 表示写盘尚未被宿主吸收。
+// 最近修改时间：2026-10-31；改动原因：新增，暴露写盘与宿主状态的分叉。
+func failoverUnconfirmed(diskDisabled, hostDisabled bool) bool {
+	return diskDisabled && !hostDisabled
+}
+
 // handleAccounts builds the dashboard account list: for every traework auth
 // it merges the physical record (disabled), cached or live credits, and the
 // failover snapshot. Also refreshes the active-auth pin.
@@ -229,6 +241,11 @@ func handleAccounts() map[string]any {
 		if doc := parseFailoverAuthDoc(phys.JSON); doc.failoverDisable && doc.disabled {
 			view.FailoverDisabled = true
 			view.FailoverModel = doc.failoverModel
+			// 宿主是否真按这次禁用停掉了路由，只有宿主列表说得准：盘上写着
+			// disabled:true 而宿主仍 enabled，说明写盘尚未被吸收（宿主每次请求
+			// 结束都用内存 Metadata 重建文件，标记与 disabled 都可能被覆盖）。
+			// 把不一致暴露出来，避免面板显示「已禁用」而实际仍在吃流量。
+			view.FailoverUnconfirmed = failoverUnconfirmed(view.FailoverDisabled, f.Disabled)
 		}
 		// Cumulative success/failed counters (plugin-owned, survive restart).
 		if strings.TrimSpace(a.UserID) != "" {

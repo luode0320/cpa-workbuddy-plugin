@@ -980,6 +980,22 @@ func failoverProbeTargets() []failoverProbeCandidate {
 	return out
 }
 
+// failoverFallbackProbeModel 在模型标记缺失时给出一个可回放的候选模型。
+//
+// 只在「盘上标记、sidecar、内存都没记模型」这一死角上使用：此时按严格口径该号
+// 永远不会被探活，只能人工启用。优先取该账号的可用模型（随机选一个，
+// 与手动「测试」按钮同源），确实没有候选时返回空串让调用方保持禁用。
+//
+// [参数] sa：已解析的账号凭据，可为 nil。
+// [返回] 可回放的模型名；无候选时返回空串。
+// 最近修改时间：2026-10-31；改动原因：新增，修复标记缺失导致探活永久跳过。
+func failoverFallbackProbeModel(sa *storedAuth) string {
+	if sa == nil {
+		return ""
+	}
+	return strings.TrimSpace(pickRandomQoderModel(sa))
+}
+
 // resolveFailoverAuth 把候选的 auth_index 解析为可用的账号凭据。
 // [参数] authIndex：宿主 auth_index。
 // [返回] 账号凭据；解析失败返回 nil。
@@ -1000,9 +1016,11 @@ func resolveFailoverAuth(authIndex string) *storedAuth {
 // 回到路由，下一个请求照样失败；在 Qoder 这里代价更大——探活与真实推理共享同一份
 // 日调用配额，多探一个模型就是多烧一次额度。
 //
-// 没有失败模型可回放（禁用文档里记了空模型）时跳过该账号：无法验证就不恢复，
-// 保持禁用比盲目放回安全。这条日志必须显眼，否则该号会停在「禁用且永远探不了」
-// 的死角，只能人工启用。
+// 没有失败模型可回放（禁用文档里记了空模型）时兜底出一个可回放模型：
+// 探通即解禁，探不通保持禁用。旧实现「无模型就跳过」看似安全，实际制造了
+// 「禁用且永远探不了」的死角——2026-10-29 事故里主力快号就是这样被禁
+// 8 小时零探活，只能人工启用。代价是可能探错一次模型（Qoder 探活与真实推理
+// 共享日配额），远小于健康号永久失联；兜底同样受 failoverProbeFailLimit 约束。
 //
 // Qoder 专属：当日探活失败达到 failoverProbeFailLimit 次的账号本轮直接跳过，
 // 不消耗任何上游额度；计数在本地日期翻篇时自动归零。
@@ -1012,7 +1030,7 @@ func resolveFailoverAuth(authIndex string) *storedAuth {
 //
 // [参数] resolve：auth_index 到凭据的解析函数（测试注入）；now：当前时刻（测试注入）。
 // [返回] 本轮实际探测的账号数。
-// 最近修改时间：2026-10-22；改动原因：探活范围从全量模型任一成功收缩为仅失败模型。
+// 最近修改时间：2026-10-31；改动原因：空模型改为兜底回放，避免禁用号永久失联。
 func runFailoverProbeTick(resolve func(string) *storedAuth, now time.Time) int {
 	targets := failoverProbeTargets()
 	probed := 0
@@ -1028,8 +1046,13 @@ func runFailoverProbeTick(resolve func(string) *storedAuth, now time.Time) int {
 		}
 		model := strings.TrimSpace(tc.model)
 		if model == "" {
-			log.Printf("[qoderwork] failover probe skipped: no failed model recorded for auth=%s", tc.authIndex)
-			continue
+			// 兜底：优先用该账号可用的模型，保证标记残缺的号仍有恢复通道。
+			model = failoverFallbackProbeModel(sa)
+			if model == "" {
+				log.Printf("[qoderwork] failover probe skipped: no probe model available for auth=%s", tc.authIndex)
+				continue
+			}
+			log.Printf("[qoderwork] failover probe adopts fallback model: auth=%s model=%s", tc.authIndex, model)
 		}
 		probed++
 		if err := failoverPingFn(sa, model); err != nil {

@@ -287,6 +287,8 @@ func doActivePing(sa *StoredAuth) error {
 	}
 	var lastErr error
 	success := false
+	lastModel := ""
+	lastStatus := 0
 
 	// 3. 依次测试候选模型，任意一个成功即刻退出
 	for _, m := range models {
@@ -300,6 +302,7 @@ func doActivePing(sa *StoredAuth) error {
 			break
 		} else {
 			lastErr = fmt.Errorf("%s: %s", m, errMsg)
+			lastModel, lastStatus = m, statusCode
 		}
 	}
 
@@ -311,7 +314,13 @@ func doActivePing(sa *StoredAuth) error {
 		if lastErr == nil {
 			lastErr = fmt.Errorf("active ping failed for all %d models", len(models))
 		}
-		noteAccountFailure(sa.AuthID, 0, lastErr.Error())
+		// 必须带上真实模型记账：传空模型会把 failover_disable_model 写成空串，
+		// 探活候选因此再也取不到可回放的模型，账号永久卡在禁用（2026-10-29
+		// 事故同形）。lastModel 为空时退回候选列表首个模型，保证标记非空。
+		if strings.TrimSpace(lastModel) == "" && len(models) > 0 {
+			lastModel = models[0]
+		}
+		noteAccountFailureForModel(sa.AuthID, mappedModel(lastModel, currentConfig()), lastStatus, lastErr.Error())
 		return lastErr
 	}
 

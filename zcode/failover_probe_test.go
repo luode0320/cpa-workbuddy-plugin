@@ -6,6 +6,10 @@ import (
 	"testing"
 )
 
+// errFakeProbeFailedZCode 是兜底探活失败注入的错误。
+// 最近修改时间：2026-10-31；改动原因：新增，供兜底探活失败侧用例注入。
+var errFakeProbeFailedZCode = errors.New("zcode fake probe failed")
+
 // TestRunFailoverProbeTickReenablesOnSuccess 断言探通失败模型后解除禁用。
 func TestRunFailoverProbeTickReenablesOnSuccess(t *testing.T) {
 	h := newFailoverFakeHost(t)
@@ -56,8 +60,15 @@ func TestRunFailoverProbeTickKeepsDisabledOnFailure(t *testing.T) {
 	}
 }
 
-// TestRunFailoverProbeTickSkipsWithoutModel 断言没有失败模型的账号被跳过，
-// 不得因为「无法验证」而盲目放回路由。
+// TestRunFailoverProbeTickSkipsWithoutModel 锁定缺失败模型时的处置。
+//
+// 2026-10-31 语义修正：旧实现「没有模型就跳过」看似安全，实际制造了
+// 「禁用且永远探不了」的死角——2026-10-29 生产事故里主力快号就是这样被禁
+// 8 小时零探活，只能人工启用。现在改为兜底出一个可回放模型：探通即解禁，
+// 探不通保持禁用。代价是可能探错一次模型，远小于健康号永久失联。
+//
+// 本测试锁定兜底行为本身，名字保留以便对照历史。
+// 最近修改时间：2026-10-31；改动原因：语义从「跳过」改为「兜底回放」，避免禁用号失联。
 func TestRunFailoverProbeTickSkipsWithoutModel(t *testing.T) {
 	h := newFailoverFakeHost(t)
 	// 手工构造一个带标记但没有模型的盘上文档。
@@ -68,22 +79,47 @@ func TestRunFailoverProbeTickSkipsWithoutModel(t *testing.T) {
 	})
 	resetFailoverDisableState()
 
-	called := false
+	pingedModel := ""
 	prevPing := failoverPingFn
 	t.Cleanup(func() { failoverPingFn = prevPing })
-	failoverPingFn = func(*StoredAuth, string) error { called = true; return nil }
+	failoverPingFn = func(_ *StoredAuth, model string) error { pingedModel = model; return nil }
 
 	resolved := map[string]*StoredAuth{"idx-p3": {AuthID: "idx-p3", APIKey: "sk-test"}}
 	probed := runFailoverProbeTick(func(idx string) *StoredAuth { return resolved[idx] })
 
-	if probed != 0 {
-		t.Fatalf("无失败模型时不应计入探测数，实际 %d", probed)
+	if probed != 1 {
+		t.Fatalf("标记残缺必须兜底探活，实际 %d", probed)
 	}
-	if called {
-		t.Fatal("无失败模型时不应发起探活")
+	if pingedModel == "" {
+		t.Fatal("兜底探活必须带一个具体模型")
 	}
-	if h.docOf("idx-p3")["disabled"] != true {
-		t.Fatal("无失败模型时不得解禁")
+	if h.docOf("idx-p3")["disabled"] != false {
+		t.Fatal("兜底模型探通后应解除禁用")
+	}
+}
+
+// TestRunFailoverProbeTickFallbackKeepsDisabledOnFailure 锁定兜底探活的失败侧：
+// 探不通就保持禁用，不得因为「探错了模型」把号放回去。
+// 最近修改时间：2026-10-31；改动原因：新增，防止兜底探活把故障号误放回。
+func TestRunFailoverProbeTickFallbackKeepsDisabledOnFailure(t *testing.T) {
+	h := newFailoverFakeHost(t)
+	h.addAccount("zcode-probe005", "idx-p5", map[string]any{
+		"disabled":           true,
+		failoverDisableKey:   true,
+		failoverDisableAtKey: "2026-10-25T00:00:00Z",
+	})
+	resetFailoverDisableState()
+
+	prevPing := failoverPingFn
+	t.Cleanup(func() { failoverPingFn = prevPing })
+	failoverPingFn = func(*StoredAuth, string) error { return errFakeProbeFailedZCode }
+
+	resolved := map[string]*StoredAuth{"idx-p5": {AuthID: "idx-p5", APIKey: "sk-test"}}
+	if probed := runFailoverProbeTick(func(idx string) *StoredAuth { return resolved[idx] }); probed != 1 {
+		t.Fatalf("应兜底探测 1 个禁用账号, got %d", probed)
+	}
+	if h.docOf("idx-p5")["disabled"] != true {
+		t.Fatal("兜底探活失败必须保持禁用")
 	}
 }
 

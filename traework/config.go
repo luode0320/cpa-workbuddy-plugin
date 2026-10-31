@@ -268,6 +268,12 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 			if n, ok := parseRetryOn4xxLine(ln); ok {
 				setRetryOn4xx(clampRetryOn4xx(n))
 			}
+		case "failover_disable_min_count":
+			// 缺省键保持当前值：无关 reconfigure 不得把显式设过的门限重置回默认，
+			// 与 retry_on_4xx 的 kill-switch 安全口径一致。
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
+				setFailoverDisableMinCount(n)
+			}
 		case "token_keepalive":
 			if b, ok := parseYAMLBool(val); ok {
 				setKeepaliveEnabled(b)

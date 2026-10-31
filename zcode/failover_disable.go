@@ -47,6 +47,12 @@ const (
 	failoverDisableKey      = "failover_disable"
 	failoverDisableModelKey = "failover_disable_model"
 	failoverDisableAtKey    = "failover_disable_at"
+
+	// failoverProbeFallbackModel 是探活兜底模型：当盘上标记与内存都没记
+	// 失败模型时用它回放。按「无模型不恢复」处理会让标记残缺的号永久卡在禁用，
+	// 只能人工启用——探活入口用空模型记账会写入空 failover_disable_model，
+	// 正是这条死路的成因。
+	failoverProbeFallbackModel = "glm-4.6"
 )
 
 var (
@@ -484,7 +490,10 @@ func failoverProbeTargets() []failoverProbeCandidate {
 	out := make([]failoverProbeCandidate, 0, len(files))
 	for _, f := range files {
 		authIndex := strings.TrimSpace(f.AuthIndex)
-		if !f.Disabled || authIndex == "" || !isZCodeAuthFileName(f.Name) {
+		if authIndex == "" || !isZCodeAuthFileName(f.Name) {
+			continue
+		}
+		if !f.Disabled {
 			continue
 		}
 		doc, _, errDoc := failoverGetDocFn(authIndex)
@@ -503,6 +512,13 @@ func failoverProbeTargets() []failoverProbeCandidate {
 		}
 		if model == "" {
 			model = diskModel
+		}
+		if model == "" {
+			// 兜底：盘上标记与内存都没记模型。按「无模型不恢复」处理会让
+			// 该号永久卡在「禁用且永远探不了」的死角——探活入口用空模型记账
+			// 会写入空 failover_disable_model，正是这条死路的成因。
+			model = failoverProbeFallbackModel
+			log.Printf("[zcode] failover probe adopts fallback model: auth=%s model=%s", f.ID, model)
 		}
 		out = append(out, failoverProbeCandidate{
 			authID:    strings.TrimSpace(f.Name),

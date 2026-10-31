@@ -49,6 +49,11 @@ const (
 	failoverDisableKey      = "failover_disable"
 	failoverDisableModelKey = "failover_disable_model"
 	failoverDisableAtKey    = "failover_disable_at"
+
+	// failoverProbeFallbackModel 是探活兜底模型：当盘上标记与内存都没记失败
+	// 模型时用它回放。取平台默认模型，保证标记残缺的禁用号仍有恢复通道。
+	// 最近修改时间：2026-10-31；改动原因：新增，修复标记缺失导致探活永久跳过。
+	failoverProbeFallbackModel = "deepseek-v4.1-flash"
 )
 
 var (
@@ -640,6 +645,16 @@ func failoverProbeTargets() []failoverProbeCandidate {
 		model := failoverProbeModelFor(f.ID)
 		if model == "" {
 			model = doc.failoverModel
+		}
+		if model == "" {
+			// 兜底：盘上标记与内存都没记模型（历史版本写入的文档、或多个入口
+			// 竞争导致标记残缺）。此时若仍按「无模型不恢复」处理，该号会永久
+			// 卡在「禁用且永远探不了」的死角——2026-10-29 事故里主力快号就是
+			// 这样被禁 8 小时、零探活。回落到固定兜底模型：探通即解禁，
+			// 探不通保持禁用，代价是可能用错模型白烧一次请求，
+			// 远小于永久失联的代价。
+			model = failoverProbeFallbackModel
+			log.Printf("[workbuddy-ai] failover probe adopts fallback model: auth=%s model=%s", f.ID, model)
 		}
 		out = append(out, failoverProbeCandidate{authIndex: authIndex, authID: f.ID, model: model})
 	}
