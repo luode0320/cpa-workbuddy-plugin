@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.21.10
+
+### Feat - 非推理输出上限由 64000 抬升至 128000
+
+- 变更: `defaultMaxOutputTokens` 由 64000 抬升至 128000，与 `defaultReasoningMaxTokens` 齐平；`minMaxTokensFloor` 保持 32768、`defaultContextWindow` 保持 1048576 不变。
+- 动机: 模型元数据广播层（`models.go` 的 `maxOutputTokens()`）自 2026-10-30 起对全部模型已宣称 128000，而请求体自适应层在非推理模式仍只发 64000，形成「元数据 128k、实际 64k」的自相矛盾，长总结与上下文压缩场景被提前截断。
+- 影响: 客户端未传 `max_tokens` 时，非推理请求的补足值由 64000 变为 128000；传入超过 128000 的值截断至 128000；传入低于 32768 的值仍抬升至 32768 底线；推理模式行为不变。
+- 验证: `python scripts/cgo-shim-build.py workbuddy` 的 build/vet/test 全绿；`max_tokens_test.go` 全部期望值同步更新。
+
 ## 0.21.9
 
 ### Fix - 兼容宿主主面板 enc::v2:: 密钥格式（修复面板 401）
@@ -502,7 +511,6 @@
 - 根因：面板「创建」时间此前取宿主 HostAuthFileEntry.CreatedAt，该字段由宿主文件 watcher 每次扫描时用 time.Now() 重新赋值，因此会随积分刷新 / 保号 keepalive / 活跃测试写入漂移到「最近写入时刻」，并非账号创建时间。
 - 修复：新增 created_at.go 解析 accessToken JWT payload 的 auth_time（账号真实授权时间，登录时写定、token 刷新不变），面板优先采用；仅当 token 缺 auth_time 时回退宿主值。
 - 涉及文件：workbuddy/created_at.go、workbuddy/created_at_test.go、workbuddy/panel.go
-
 
 ## 0.14.41
 
@@ -1981,19 +1989,16 @@ executor 请求宿主 UsagePlugin 广播为空、独立 token 统计插件检测
 ### Changed
 - 请求监控 key 自动探测：config → env（CPAMP_ADMIN_KEY/USAGE_REPORT_KEY）→ docker secret `/run/secrets/cpamp_admin_key`，无需手写 usage_report_key
 
-
 ## 0.6.12
 
 ### Changed
 - 删除无效 `usage.PublishRecord` 路径，请求监控仅走 CPAMP `/v0/management/usage/import`
-
 
 ## 0.6.11
 
 ### Fixed
 - **请求监控**：c-shared 隔离导致 `usage.PublishRecord` 进不了宿主 redisqueue；改为异步 POST CPA-Manager-Plus `/v0/management/usage/import`（`usage_report_url`/`usage_report_key`）
 - 补全 ExecutorType/AuthType/Source；配置字段暴露于管理面板
-
 
 ## 0.6.10
 
@@ -2019,7 +2024,6 @@ executor 请求宿主 UsagePlugin 广播为空、独立 token 统计插件检测
 - accountCache concurrent errs race + soft cap (A-02)
 - Dashboard single host.auth.get per row (A-05)
 - Instant check-in/trial button state (panel)
-
 
 ## 0.6.2
 

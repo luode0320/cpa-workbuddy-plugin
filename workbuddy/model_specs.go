@@ -1,9 +1,10 @@
 // model_specs.go 提供统一的输出上限策略与 max_tokens 自适应计算逻辑。
 //
 // 2026-10-30 起不再维护逐模型官方规格表：所有模型（含上游动态发现的模型）
-// 一律按「推理模式 128k / 非推理模式 64k」统一取值。逐模型表的问题是它会随
-// 上游新增模型产生遗漏——未收录模型落到保守兜底值，长总结与上下文压缩
-// 场景被提前截断，且用户无法感知。
+// 一律按统一上限取值。2026-11-04 起非推理档由 64k 抬升至 128k，与推理档
+// 齐平——此前元数据广播层已对所有模型宣称 128k，请求层只发 64k 属自相矛盾。
+// 逐模型表的问题是它会随上游新增模型产生遗漏——未收录模型落到保守兜底值，
+// 长总结与上下文压缩场景被提前截断，且用户无法感知。
 package main
 
 // 统一输出上限：所有模型共用，不再按模型区分。
@@ -11,7 +12,8 @@ const (
 	// minMaxTokensFloor 是所有模型对外输出的统一最低 max_tokens 底线。
 	minMaxTokensFloor int64 = 32768
 	// defaultMaxOutputTokens 是非推理模式下的统一输出上限。
-	defaultMaxOutputTokens int64 = 64000
+	// 2026-11-04 由 64000 抬升至 128000，与推理档 defaultReasoningMaxTokens 齐平。
+	defaultMaxOutputTokens int64 = 128000
 	// defaultReasoningMaxTokens 是推理/思考模式下的统一输出上限。
 	defaultReasoningMaxTokens int64 = 128000
 	// defaultContextWindow 是模型元信息里 ContextLength 的兜底值。
@@ -67,8 +69,8 @@ func resolveOfficialModelSpec(model string) ModelOfficialSpec {
 
 // computeAdaptiveMaxTokens 按统一上限计算发往上游的 max_tokens。
 //
-// 推理模式上限 128k，非推理模式上限 64k：客户端未传入时直接补足到当前模式
-// 的上限；推理模式下客户端传入保守小值（<=8192）时放宽；超出上限时截断。
+// 两档上限当前同为 128k：客户端未传入时直接补足到当前模式的上限；推理模式
+// 下客户端传入保守小值（<=8192）时放宽；超出上限时截断。
 // [参数] model: 请求模型名称（不再参与取值）；requested: 客户端传入的 token 数（<=0 表示未传）；isReasoning: 是否处于思考/推理模式
 // [返回] 最终 max_tokens，不低于统一底线
 // 最近修改时间：2026-10-30；改动原因：改为全局统一上限，不再按模型查表。

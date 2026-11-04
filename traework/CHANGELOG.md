@@ -1,5 +1,15 @@
 # TraeWork Plugin Changelog
 
+## 0.5.8
+
+### Feat - 非推理输出上限由 64000 抬升至 128000
+
+- 变更: `defaultMaxOutputTokens` 由 64000 抬升至 128000，与 `defaultReasoningMaxTokens` 齐平；`minMaxTokensFloor` 保持 32768、`defaultContextWindow` 保持 1048576 不变。
+- 动机: 模型元数据广播层（`models.go` 的 `maxOutputTokens()`）自 2026-10-30 起对全部模型已宣称 128000，而请求体自适应层在非推理模式仍只发 64000，形成「元数据 128k、实际 64k」的自相矛盾，长总结与上下文压缩场景被提前截断。
+- 影响: 客户端未传 `max_tokens` 时，非推理请求的补足值由 64000 变为 128000；传入超过 128000 的值截断至 128000；传入低于 32768 的值仍抬升至 32768 底线；推理模式行为不变。
+- 验证: `python scripts/cgo-shim-build.py traework` 的 build/vet/test 全绿；`max_tokens_test.go` 全部期望值同步更新。
+- 附带: `streamDefaultMaxTokens` 引用同一常量，流式请求缺省上限同步由 64000 变为 128000；新增 `TestUnifiedOutputCap` 锁定常量与流式缺省值对齐。
+
 ## 0.5.7
 
 ### Fix - 失败治理对齐：5 维度分类 + 写盘禁用门限 + 探活兜底
