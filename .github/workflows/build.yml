@@ -393,8 +393,8 @@ jobs:
       needs.prepare.result == 'success' &&
       (
         (github.event.inputs.allow_partial == 'true' &&
-          (needs.build.result == 'success' || needs.build.result == 'failure') &&
-          (needs.build-cross.result == 'success' || needs.build-cross.result == 'failure')) ||
+          needs.build.result != 'skipped' &&
+          needs.build-cross.result != 'skipped') ||
         (needs.build.result == 'success' && needs.build-cross.result == 'success')
       ) &&
       (
