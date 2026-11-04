@@ -54,6 +54,11 @@ on:
         description: "Version without v (empty = plugin's VERSION file)"
         required: false
         default: ""
+      allow_partial:
+        description: "Release even when some platform builds failed (missing platforms are dropped from assets/registry)"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   # Push runs cancel each other, but they must never cancel a dispatch/tag
@@ -386,8 +391,12 @@ jobs:
       always() &&
       needs.test.result == 'success' &&
       needs.prepare.result == 'success' &&
-      needs.build.result == 'success' &&
-      needs.build-cross.result == 'success' &&
+      (
+        (github.event.inputs.allow_partial == 'true' &&
+          (needs.build.result == 'success' || needs.build.result == 'failure') &&
+          (needs.build-cross.result == 'success' || needs.build-cross.result == 'failure')) ||
+        (needs.build.result == 'success' && needs.build-cross.result == 'success')
+      ) &&
       (
       (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '') ||
       startsWith(github.ref, 'refs/tags/workbuddy-provider-v') ||
@@ -478,9 +487,17 @@ jobs:
             (cd out && sha256sum *.zip > checksums.txt)
           fi
           cat out/checksums.txt
+          MISSING=""
           for t in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64 windows_arm64; do
-            test -f "out/${PLUGIN}_${VERSION}_${t}.zip" || { echo "missing ${PLUGIN}_${VERSION}_${t}.zip"; exit 1; }
+            test -f "out/${PLUGIN}_${VERSION}_${t}.zip" || MISSING="${MISSING} ${t}"
           done
+          if [ -n "${MISSING}" ]; then
+            if [ "${{ github.event.inputs.allow_partial }}" = "true" ]; then
+              echo "WARN partial release: missing${MISSING} (allow_partial=true)"
+            else
+              echo "missing platform artifacts:${MISSING}"; exit 1
+            fi
+          fi
 
       - name: Sync registry.json version (this plugin only)
         env:
