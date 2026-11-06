@@ -395,7 +395,9 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 				logDailyCooldownPersistFailure(curAuthID, triggerDailyCooldown("", curAuthID))
 			}
 			if !modelLevel {
-				noteAccountFailureForModel(curAuthID, upstreamModel, http.StatusForbidden, sseErr)
+				// 不能伪造 403：403 是确定性失败，会让写盘禁用门限失效（首败即禁）。
+				// 200 错误帧按瞬时记账，交给连续失败门限；额度类内部会升为 402。
+				noteUpstreamErrFrameForModel(curAuthID, upstreamModel, sseErr)
 			}
 			publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), true, statusCode, sseErr, reasoningEffort, collector.ttftNS(started), curAccountLabel, sessionKey)
 			// 200 内业务错误帧与 HTTP 4xx 同责：零泄漏（emitted=false）且账号级

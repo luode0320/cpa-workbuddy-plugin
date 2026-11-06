@@ -38,6 +38,22 @@ const failoverCooldownMax = 10 * time.Minute
 // 先比较次数再相乘，避免 count 极大时的乘法溢出。
 const failoverCooldownLadderCap = int(failoverCooldownMax / failoverCooldownBase)
 
+// defaultFailoverDisableMinCount 是写盘禁用门限的默认值。
+//
+// 为什么需要门限：写盘禁用是把账号从宿主路由里彻底摘掉，恢复只能等 10 分钟
+// 禁用探活。qoderwork 生产池通常只有个位数账号（当前 2 个），一次上游抖动就
+// 禁用等于瞬间砍掉 50% 可用池；连续两次抖动即整池不可用，用户看到的就是
+// 「推理各种失败、断开」。瞬时类失败应当先在内存冷却里自愈，连续失败才认定
+// 该号真的坏了。
+const defaultFailoverDisableMinCount = 3
+
+var (
+	// failoverDisableMinCount 是写盘禁用前置的连续失败次数门限。
+	// 配置项 failover_disable_min_count 覆盖；填 1 恢复「首次失败即禁用」旧行为。
+	failoverDisableMinCount   = defaultFailoverDisableMinCount
+	failoverDisableMinCountMu sync.RWMutex
+)
+
 // failoverPruneInterval bounds how often stale (zero-count) failover states
 // are swept from memory. Aligned with the session-binding pruner.
 const failoverPruneInterval = 5 * time.Minute
@@ -81,6 +97,30 @@ func setFailoverEnabled(on bool) {
 	failoverEnabledMu.Lock()
 	failoverEnabled = on
 	failoverEnabledMu.Unlock()
+}
+
+// setFailoverDisableMinCount 设置写盘禁用的连续失败门限。
+// [参数] n：连续失败次数，小于 1 时按 1 处理（等于「首次失败即禁用」）。
+// 最近修改时间：2026-11-07；改动原因：新增门限，避免一次上游抖动禁用健康账号。
+func setFailoverDisableMinCount(n int) {
+	if n < 1 {
+		n = 1
+	}
+	failoverDisableMinCountMu.Lock()
+	failoverDisableMinCount = n
+	failoverDisableMinCountMu.Unlock()
+}
+
+// failoverDisableThreshold 返回当前生效的写盘禁用门限。
+// [返回] 至少为 1 的连续失败次数门限。
+// 最近修改时间：2026-11-07；改动原因：新增，供记账路径判定是否写盘禁用。
+func failoverDisableThreshold() int {
+	failoverDisableMinCountMu.RLock()
+	defer failoverDisableMinCountMu.RUnlock()
+	if failoverDisableMinCount < 1 {
+		return 1
+	}
+	return failoverDisableMinCount
 }
 
 // failoverCooldownFor 返回第 count 次连续失败对应的阶梯冷却时长。
@@ -239,26 +279,93 @@ func recordAccountFailure(authID string, status int, body string) bool {
 	if !isAccountFailure(status, body) && !isTransientThrottle(status, body) {
 		return false
 	}
-	if !recordCooldownState(authID) {
+	recorded, count := recordCooldownState(authID)
+	if !recorded {
 		return false
 	}
 	// 禁用写在内存锁外：disableAccountForFailover 会发宿主 RPC（解析 auth_index、
 	// 读盘、写盘），压在 failoverMu 上会把所有并发记账串行化。
 	//
+	// 是否真的写盘禁用由门限决定（2026-11-07 起）：确定性失败（凭据/权限/额度/
+	// 日限额）在同一账号上必然重演，首次即禁用；瞬时失败（5xx/传输错误/限流文案/
+	// 零字节断流）先只走内存冷却，连续达到 failover_disable_min_count 次才禁用。
+	// 单次抖动就把健康号从宿主路由摘掉，恢复只能靠 10 分钟探活——对 qoderwork
+	// 这种小池（生产 2 个号）等于直接砍半可用容量。
+	//
 	// 模型名传给禁用侧：qoderwork 的冷却没有模型维度，但探活必须回放当初失败的
 	// 模型才最省额度。这里取状态里记住的最近模型（由 noteAccountFailure 写入）。
-	disableAccountForFailover(authID, failoverProbeModelFor(authID))
+	if failureShouldDisableAccount(status, body, count) {
+		disableAccountForFailover(authID, failoverProbeModelFor(authID))
+	}
 	return true
+}
+
+// failureShouldDisableAccount 报告本次失败后是否应把账号写盘禁用。
+//
+// 判据只有两条，顺序不能反：
+//  1. 确定性失败立即禁用：401/403/404/405 凭据或权限问题、402 额度耗尽、
+//     Qoder 110 日请求上限。它们在同一个账号上必然重演，多等两次只会让用户
+//     多失败两次，还白占一个路由位。
+//  2. 瞬时失败看门限：5xx、传输层错误、限流文案、零字节断流在抖动窗口成片
+//     出现，同一个号上可能只是恰好撞上上游抖动。这类失败先走内存冷却，
+//     连续达到门限才认定账号真的坏了。
+//
+// [参数] status：上游 HTTP 状态码，0 表示传输层失败；body：上游响应正文；
+// count：本次失败写入后的连续失败次数（由 recordCooldownState 返回）。
+// [返回] true 表示应写盘禁用。
+// 最近修改时间：2026-11-07；改动原因：新增，把「一次失败即禁用」改为瞬时失败按次数设门限。
+func failureShouldDisableAccount(status int, body string, count int) bool {
+	if !isTransientAccountFailure(status, body) {
+		return true
+	}
+	return count >= failoverDisableThreshold()
+}
+
+// isTransientAccountFailure 报告一次失败是否属于「可能自愈的瞬时故障」。
+//
+// 只用于写盘禁用门限的适用范围，不影响冷却阶梯与分类：
+//   - 瞬时（受门限约束）：传输错误、5xx、软限流文案、零字节断流；
+//   - 确定性（不受门限）：110 日限额、402 额度耗尽、401/403/404/405 凭据或
+//     权限问题。
+//
+// 429 归入瞬时：Qoder 的软限流通常按账号/租户计算，冷却一小时后可能就恢复，
+// 不值得为一次限流把账号从路由里摘掉。
+//
+// [参数] status：上游 HTTP 状态码，0 表示传输层失败；body：上游响应正文。
+// [返回] true 表示该失败可能在短时间内自愈。
+// 最近修改时间：2026-11-07；改动原因：新增，给写盘禁用门限划出适用范围。
+func isTransientAccountFailure(status int, body string) bool {
+	// 确定性故障优先：它们即使带限流文案或 5xx 也不该等。
+	if isDailyCountExceeded(status, body) || isHardCreditError(status, body) {
+		return false
+	}
+	if isAccountLevel4xxExcludingRateLimit(status) {
+		return false
+	}
+	return status == 0 || status >= 500 || isSoftRateLimit(status, body) || isEmptyStreamBody(body)
+}
+
+// isAccountLevel4xxExcludingRateLimit 判定是否为不含 429 的账号级 4xx。
+// 429 在 Qoder 系按瞬时处理（见 isTransientAccountFailure），因此这里必须
+// 排除它，避免同一次失败同时落进「确定性」与「瞬时」两个口径。
+// [参数] status：上游 HTTP 状态码。
+// [返回] true 表示 401/403/404/405。
+// 最近修改时间：2026-11-07；改动原因：新增，供门限判定区分确定性 4xx。
+func isAccountLevel4xxExcludingRateLimit(status int) bool {
+	return isAccountLevel4xx(status) && status != http.StatusTooManyRequests
 }
 
 // recordCooldownState 只写内存阶梯冷却，是冷却侧的唯一写入落点。
 //
 // 从 recordAccountFailure 拆出，只为让宿主 RPC 留在锁外；冷却语义与拆分前完全一致。
 //
+// 返回值带上「本次写入后的连续失败次数」：写盘禁用门限必须基于刚写入的计数
+// 判断，另起一次快照读取会和并发成功清零竞争，得到错误结论。
+//
 // [参数] authID：账号唯一标识。
-// [返回] true 表示已写入冷却。
-// 最近修改时间：2026-10-22；改动原因：拆出锁内部分，供双写在锁外追加禁用。
-func recordCooldownState(authID string) bool {
+// [返回] 已写入时第一个值为 true，第二个值为包含本次失败在内的连续失败次数。
+// 最近修改时间：2026-11-07；改动原因：返回计数供写盘禁用门限判定。
+func recordCooldownState(authID string) (bool, int) {
 	now := time.Now()
 	failoverMu.Lock()
 	st := failoverStates[authID]
@@ -276,7 +383,7 @@ func recordCooldownState(authID string) bool {
 	failoverMu.Unlock()
 	// 锁外落盘：sidecar 写盘要碰文件系统，压在 failoverMu 上会把所有并发记账串行化。
 	failoverStateRecordFailure(authID, until, newCount)
-	return true
+	return true, newCount
 }
 
 // isAccountCoolingDown reports whether the account is currently inside its

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -425,6 +426,28 @@ func noteAccountFailureForModel(authID, model string, status int, body string) b
 		}
 	}()
 	return true
+}
+
+// noteUpstreamErrFrameForModel 记录「HTTP 200 承载的业务错误帧」。
+//
+// 为什么不能继续伪造 403：403 在写盘禁用门限里属于确定性失败（凭据/权限
+// 问题），首次即禁用；而 200 内错误帧的主流成因是软限流、并发冲突、模型暂不
+// 可用，属于几分钟内可能自愈的瞬时抖动。历史实现把三者统一 remap 成 403，
+// 等于一次抖动就把账号从宿主路由摘掉——qoderwork 生产池只有 2 个号，
+// 这个放大效应会直接表现为「推理各种失败」。
+//
+// 额度类错误帧仍按确定性处理（402）：换账号也无用，应当立即摘掉。
+// 模型级故障（后端池不可用）由 recordAccountFailure 的前置判据拦截，不进这里。
+//
+// [参数] authID：账号唯一标识；model：已归一化的上游模型名；body：错误帧文本。
+// [返回] true 表示失败已计入冷却阶梯。
+// 最近修改时间：2026-11-07；改动原因：新增，替代把 200 错误帧伪造 403 的记账方式。
+func noteUpstreamErrFrameForModel(authID, model, body string) bool {
+	status := http.StatusOK
+	if isHardCreditError(http.StatusOK, body) {
+		status = httpStatusPaymentRequired
+	}
+	return noteAccountFailureForModel(authID, model, status, body)
 }
 
 // reconcileAfterExecutorError triggers lifecycle when upstream reports hard credit failure.

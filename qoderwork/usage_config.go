@@ -71,6 +71,9 @@ func configure(raw []byte) {
 	// failover default: enabled. Explicit account_failover: false disables the
 	// whole cooldown mechanism (pre-failover behavior).
 	nextFailoverEnabled := true
+	// failover_disable_min_count: 写盘禁用门限。初始值取当前生效值，
+	// 键缺失时保持不变——无关的 reconfigure 不能把用户设的门限冲回默认。
+	nextDisableMinCount := failoverDisableThreshold()
 	nextMinRoutableCredits := defaultMinRoutableCredits
 	// retry_on_4xx: per-request account-failover budget. Applied ONLY when
 	// the key is present in config_yaml: a valid value is clamped to
@@ -120,6 +123,13 @@ func configure(raw []byte) {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "account_failover:"))
 					v = strings.Trim(v, "\"'")
 					nextFailoverEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "failover_disable_min_count:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "failover_disable_min_count:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextDisableMinCount = n
+					}
 				}
 				if strings.HasPrefix(line, "scheduler_mode:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "scheduler_mode:"))
@@ -279,6 +289,7 @@ func configure(raw []byte) {
 	lifecycleAutoMu.Unlock()
 
 	setFailoverEnabled(nextFailoverEnabled)
+	setFailoverDisableMinCount(nextDisableMinCount)
 
 	if rotationSeen {
 		setLoadedRotationConfig(nextRotationEnabled, nextRotationServe, nextRotationCooldown, nextRotationIdle)

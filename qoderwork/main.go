@@ -348,7 +348,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.13.0"
+var version = "0.13.1"
 
 func wbRegistration() registration {
 	return registration{
@@ -369,6 +369,7 @@ func wbRegistration() registration {
 				{Name: "rotation_serve_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "单账号连续承流多少分钟后让位（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
 				{Name: "rotation_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "轮换让位后停留在冷却的时长（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
 				{Name: "rotation_idle_reset_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "连续使用计时在空闲多少分钟后重新开始（默认 10）。零散流量不会因此触发轮换。"},
+				{Name: "failover_disable_min_count", Type: pluginapi.ConfigFieldTypeInteger, Description: "写盘禁用的连续失败门限（默认 3）：同一账号连续失败达到该次数才把账号写盘禁用。前几次失败只走内存冷却（阶梯 60s 起、10 分钟封顶，任意一次成功即清零），账号仍在路由池内。填 1 恢复「首次失败即禁用」的旧行为。确定性失败（401/403/404/405 凭据问题、402 额度耗尽、110 日请求上限）不受此项约束，首次即禁用；排队帧与模型级故障（上游后端池不可用）始终不罚号。"},
 				{Name: "slow_account_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用慢速账号冷却（默认开启）：某账号在某个模型上的首字延迟中位数显著高于同池同模型水平时，在该模型上进入冷却并让出流量。慢是性能问题不是故障，只走内存冷却，到期自动恢复，不写盘禁用。"},
 				{Name: "slow_ttft_ratio_x10", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速判定倍数阈值 ×10（默认 25 即 2.5 倍）：账号首字延迟中位数达到同模型全池基准的该倍数即判慢。必须大于 10。"},
 				{Name: "slow_window_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "首字延迟样本统计窗口（默认 15 分钟）：只统计窗口内的成功请求样本。"},
@@ -877,14 +878,13 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		if statusCode == 0 {
 			noteAccountFailureForModel(usedAuthID, upstreamModel, 0, completionErr.Error())
 		} else if statusCode == 200 {
-			// SSE error frame on HTTP 200: remap to 403 so isAccountFailure
-			// correctly triggers the laddered failover cooldown.
-			// 模型级故障（provider_error / 后端池不可用）不 remap：否则 403 会绕过
-			// isModelLevelFailure 的语义，把模型故障记成账号故障。
+			// SSE error frame on HTTP 200：按瞬时失败记账，交给写盘禁用门限。
+			// 历史上这里 remap 成 403，导致一次软限流就禁用账号（403 属确定性失败）。
+			// 模型级故障（provider_error / 后端池不可用）不进记账：换号同样失败。
 			if isModelLevelFailure(completionErr.Error()) {
 				return nil, completionErr
 			}
-			noteAccountFailureForModel(usedAuthID, upstreamModel, http.StatusForbidden, completionErr.Error())
+			noteUpstreamErrFrameForModel(usedAuthID, upstreamModel, completionErr.Error())
 		}
 		return nil, completionErr
 	}
@@ -1013,7 +1013,8 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			if statusCode == 0 {
 				noteAccountFailureForModel(req.AuthID, upstreamModel, 0, errCollect.Error())
 			} else if statusCode < 400 {
-				noteAccountFailureForModel(req.AuthID, upstreamModel, http.StatusForbidden, errCollect.Error())
+				// 200 错误帧按瞬时失败记账（不再伪造 403），见 noteUpstreamErrFrameForModel。
+				noteUpstreamErrFrameForModel(req.AuthID, upstreamModel, errCollect.Error())
 			} else {
 				reconcileAfterExecutorErrorForModel(req.AuthID, upstreamModel, statusCode, errCollect.Error())
 			}
