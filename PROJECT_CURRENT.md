@@ -23,16 +23,19 @@
 - 状态：活跃维护中。11 大插件全景（10 Provider + 1 用量统计）。**2026-10-22 下线 doubao-provider 与 notion-provider**（用户裁定移除），叠加此前的 Gemini 插件，两者源码与生产残留均已清空。
 - **生产主机（2026-11-07 起）= 45.207.222.65（`cpa-server`，端口 18998），254（`cpa-server-new`）已弃用**：用户明示「254 已经放弃，改回 65 为主服务器」，全部域名已解析到 65，254 只剩 mysql+nginx（CPA 已停）。部署/验收一律打 65，管理密钥用插件配置 `cpa_management_key`，账号在 `auth-dir=/CLIProxyAPI/mysqlstore/mysqlstore/auths`（62 个）。
 - **2026-11-07 01:27 已在 65 完成全量对齐与启用**：11 个插件全部 `configured/registered/enabled=true` —— workbuddy 0.21.9（20 号）/ coze 0.7.4（23 号）/ qoderwork 0.12.6（2 号）/ workbuddy-ai 0.1.35（6 号）/ token-usage 0.2.8 / traework 0.5.7 / qoder-ai 0.1.35 / zcode 0.3.5 / copilot 0.1.12 / qwenwork 0.2.13 / cursor 0.1.7（首次安装）。install 前 5 个显示 `registered=false` 是「该版本 .so 从未加载」（config 里 enabled 本为 true），install 后日志为 `plugin loaded + plugin registered`，非 hot reload 形态。
-- 以下为 2026-10-25 历史发布批（已过期，仅存档）：
-  - `zcode-provider`: **0.3.1**（0.3.1 修复慢速冷却到期日志重复刷屏；0.3.0 慢速冷却移植 + 非流式 TTFT 采集补齐）
-  - `qoderwork-provider`: **0.12.1**（0.12.1 修复到期日志刷屏；0.12.0 慢速冷却移植 + per-attempt TTFT 隔离）
-  - `traework-provider`: **0.5.1**（0.5.1 修复到期日志刷屏；0.5.0 慢速冷却移植；0.4.0 失败禁用改 sidecar 三层分离 + 模型级故障豁免 + 同步 workbuddy 七项能力）
-  - `workbuddy-provider`: **0.21.2**（0.21.2 修复到期日志刷屏；0.21.1 慢速冷却补判定日志；0.21.0 慢速账号 TTFT 拥堵自动冷却）
-  - `cursor-provider`: **0.1.6**；`qoder-ai-provider`: **0.1.31**；`coze-provider`: **0.6.2**；`qwenwork-provider`: **0.2.9**；`copilot-provider`: **0.1.11**；`workbuddy-ai-provider`: **0.1.30**；`workbuddy-token-usage`: **0.2.8**
+- 2026-10-25 历史发布批（已过期，仅存档）：zcode 0.3.1 / qoderwork 0.12.1 / traework 0.5.1 / workbuddy 0.21.2 / cursor 0.1.6 / qoder-ai 0.1.31 / coze 0.6.2 / qwenwork 0.2.9 / copilot 0.1.11 / workbuddy-ai 0.1.30 / token-usage 0.2.8（细节见 git log 与 CHANGELOG）。
 - 活动工作区：F:\cpa-plugin
-- 当前时间：2026-10-25 (GMT+8)
+- 当前时间：2026-11-07 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 当前会话（2026-11-07 01:10）：**qoderwork 0.13.0 面板批量导入（发布 + 生产热重载验收通过）**：
+  - 诉求：「希望 QoderWork 改成支持批量 json 导入」（截图显示导入弹窗只能单个 PAT）。缺口：旧实现只有单个 PAT 输入框 + 「从备份恢复」单段 textarea，无文件选择器、不认 PAT 列表、不能混排，落后于 workbuddy/traework 已有多文件批量导入。
+  - 实现（纯前端 `panel.html`，后端零改动）：多文件多选（.json/.jsonl/.txt ≤2MB）+ 统一文本识别（PAT 多行/逗号分隔、单凭据、凭据数组、`accounts[].credential` 导出包装、`{pats:[]}`/`{tokens:[]}`、JSONL、混排）；**判定顺序必须先凭据后 PAT**（含 personalToken 的完整凭据若当 PAT，会丢 accessToken 并白打一次上游）；PAT→`/import`、凭据→`/import-cred`；逐条串行 + 150ms 间隔、单项失败不中断、批内去重、部分失败时输入框自动收敛为「仅失败项」。
+  - 验证：`test/qoderwork/panel_batch_import.mjs` 24 条 + `panel_batch_import_e2e.mjs` 26 条（Node vm + DOM 桩真实执行面板 JS）全绿；**5 个变异全部 KILLED**（凭据首判失效 / 端点分流反转 / 吞掉单项异常 / 回填含成功项 / 去重失效）；cgo-shim build+vet+test 全绿；CI run `42260811851` success（12 测试 job + 6 平台构建 + Release）。
+  - 发布：`dfaecb6`(feat) → `8c41737`(registry) → 远端 registry 0.13.0 + 6/6 资产 sha256 匹配；生产 `plugin-store install` → `hot reloaded active_version=0.13.0 retired_version=0.12.6`，落盘 .so sha256 `abc65a15…` 与本地 zip 逐字节一致；`/accounts` 与 `/panel` 均 200，账号数 2 与部署前一致；生产面板 HTML 实测含 `batchImportBtn`/`parseBatchInput`/`runBatchImport`，「importCredText」已清零。
+  - **并发处理（重要教训）**：工作树 registry.json 被并行会话预写了 3 个插件（workbuddy 0.21.10 / workbuddy-ai 0.1.36 / qoder-ai 0.1.36，Release 已建、registry 未提交）。按「非本轮改动默认保护」未纳入：备份完整 registry → 用 HEAD + 仅 qoderwork 条目重建 → 路径限定提交 → 把 peer 三条目写回工作树，对方可继续提交。
+  - 边界：未在生产实际跑一次批量导入（会真实新建账号、污染账号池）；ZIP 不能直接拖入（浏览器无解包库），需先解压；逐条写盘会逐条触发宿主 auth watcher，属既有架构行为。
 
 - 当前会话（2026-10-31 下午）：**宿主 management.html 自动升级导致 10 插件面板集体 401（已修复并批量发生产，热重载验收通过）**：
   - **用户诉求**：贴出生产截图（WorkBuddy 面板「management key 无效或缺失（将自动重试）」，计数器全 0，侧栏「认证文件 44」）问「这是什么问题?」，随后「顺便把其他 10 个同实现的插件一起改掉」。
@@ -44,15 +47,12 @@
   - **待观察**：宿主下次自动升级若再改格式，同类症状会复发；排查入口固定为「`docker cp` 出生产 `management.html` 比对其 `enc::v` 前缀与 `yl()` 派生函数」。project memory 已沉淀 `project-host-key-obfuscation-versioning.md`。
 
 - 会话（2026-10-31 凌晨）：**workbuddy 高峰期拥堵识别与失败分类修正（0.21.8，已提交推送，CI 发布中）**：
-  - **用户诉求**：「workbuddy客户端有一个模型拥堵的状态, 我们插件现在时看不到的…高峰期拥堵几乎导致无法使用? 分析一下」，随后确认「现在的修复支持提交发布生产了吗?」。
-  - **用户三点裁定**：① 参考 `https://github.com/linguo2625469/workbuddy2api-panel` 的处理方式；② 允许生产只读实测但拥堵发生在北京 15–17 点（本轮不在窗口，未取得实证）；③ 只做 `workbuddy-provider`。
-  - **结论：不是「看不到状态」，而是拥堵被系统性误判成账号故障，形成雪崩**。四条缺陷：D1 SSE 错误帧只认 `{"error":...}`，顶层业务码帧 `{"code":6004}` 被当正常正文透传；D2 5xx 不在同请求内换号；D3 一次失败即写盘禁用（无门限）；D4 探活标记缺失时永久跳过（2026-10-29 事故机制）。放大链：拥堵 → 按账号级记账 → 一次即禁用 → 池子缩小 + 会话亲和打散 → 压力转移 → 更多拥堵。
-  - **修复（10 文件 +679/-51，全部在 `workbuddy/`）**：新增 `failureScopeUpstreamBusy`（6021/`queue.full`：不冷却、不禁用、不换号，只透传 `upstreamBusyHint`）与 `failureScopeModelRateLimit`（6004：只隔离账号×模型，永不禁用账号）；`classifyUpstreamFailure` 判定顺序把两者放在通用限流与 5xx **之前**；`sseErrorFrame` 补顶层业务码帧分支（`topLevelCodeText` 处理 float64 去 `.0`）；5xx 纳入同请求换号（`shouldRotateOnStatus`）；写盘禁用加 `failover_disable_min_count`（默认 3，填 1 恢复旧行为），**门限只作用于瞬时类失败**（`isTransientUpstreamFailure` 判确定性的 401/403/404/405、402、11128 直接禁用）；探活无模型时回落 `failoverStateSnapshotModel` → `deepseek-v4.1-flash`。
-  - **实施中的自我修正**：初版门限无差别作用于所有失败，打破 5 个既有测试；审查结论是**设计缺陷而非测试过时**（确定性故障等三次只会让用户多失败两次），故拆出 `recordFailureScopedWithCause` 透传 status/body。另 `TestRunFailoverProbeWithoutFailedModelSkips` 原本断言的正是事故根因机制，已改写为兜底语义并补失败侧用例——该测试在修复前是在固化缺陷。
-  - **验证证据**：`python scripts/cgo-shim-build.py workbuddy` build/vet/test 全绿（33.978s / 升版后复跑 34.094s）；**6 项变异测试全部 KILLED**（顶层码帧分支、6021 分支、免罚、门限、门限越界作用于确定性失败、探活兜底）；gofmt 合规（`usage_config.go` 的 `retry_on_4xx` 缩进为既有问题，非本轮引入，按手术式改动原则不动）。
-  - **发布链进度**：commit `611e340` → push `7d39588..611e340` → CI dispatch run `41120779119`（`plugin=workbuddy-provider version=0.21.8`）；workbuddy 单测 job 已 success，6 平台构建与 Release 排队中。**注意**：本机从 Git Bash 直接走 `https://...` + `git-askpass.sh` 会失败（该脚本已不存在，现存 `~/.github/ghcred.sh` 也不被接受）；正确通道是远端已配的 SSH（`ssh://git@ssh.github.com:443`），直接 `git push origin main`。`gh` 未安装，CI 触发与状态查询一律走 GitHub API + `~/.github/token`。
-  - **边界（如实记录）**：① 拥堵窗口（北京 15–17 点）生产实证未取得，`6004`/`6021` 的真实报文形态依据来自参考仓库 2026-10-15 实案注释，非我方日志；② 下一拥堵窗口需执行 `docker logs cli-proxy-api | grep -E "6004|6021|queue.full"` 补齐；③ 未做面板拥堵状态可视化（用户原始诉求是「高峰期不可用」，本轮只修处置链路）。
-  - **产物**：`doc/2-需求/2026-10-31_040033_workbuddy高峰期拥堵识别与失败分类修正.md`、`doc/3-实施/2026-10-31_040033_workbuddy高峰期拥堵识别与失败分类修正_实施总览.md`。
+  - 诉求：「workbuddy 客户端有模型拥堵状态，插件看不到，高峰期几乎无法使用」；裁定：参考 `linguo2625469/workbuddy2api-panel`、允许生产只读实测、只做 `workbuddy-provider`。
+  - **结论：不是「看不到状态」，而是拥堵被系统性误判成账号故障形成雪崩**。四缺陷：D1 SSE 只认 `{"error":...}`，顶层 `{"code":6004}` 帧被当正文透传；D2 5xx 不换号；D3 一次失败即写盘禁用；D4 探活标记缺失永久跳过。放大链：拥堵 → 账号级记账 → 一次即禁用 → 池缩 + 亲和打散 → 更多拥堵。
+  - **修复（10 文件 +679/-51）**：新增 `failureScopeUpstreamBusy`（6021/`queue.full`：不冷却不禁用不换号）与 `failureScopeModelRateLimit`（6004：只隔离账号×模型），判定顺序放在通用限流与 5xx 之前；`sseErrorFrame` 补顶层业务码帧；5xx 纳入同请求换号；写盘禁用加 `failover_disable_min_count`（默认 3，仅作用于瞬时类失败，确定性 401/403/404/405、402、11128 直接禁用）；探活无模型时回落 `failoverStateSnapshotModel`。
+  - 自查修正：门限初版无差别生效打破 5 个既有测试，判定为设计缺陷而非测试过时，拆 `recordFailureScopedWithCause`；`TestRunFailoverProbeWithoutFailedModelSkips` 原本固化事故根因机制，已改写为兜底语义。
+  - 验证：cgo-shim 全绿；**6 项变异全部 KILLED**；发布链 `611e340` → CI `41120779119`（`plugin=workbuddy-provider version=0.21.8`）。**踩坑**：Git Bash 直连 HTTPS + askpass 不可用，正确通道是 SSH（`ssh://git@ssh.github.com:443`）；`gh` 未装，API 操作走 `~/.github/token`。
+  - 边界：拥堵窗口（京 15–17 点）未取得生产实证，`6004`/`6021` 报文形态依据参考仓库实案注释；未做面板拥堵可视化。产物见 `doc/2-需求` 与 `doc/3-实施` 的同名文档。
 
 - 会话（2026-10-29 深夜）：**deepseek-v4.1-flash 16 点后变慢根因诊断（只读排查，未改代码、未发布）**：
   - **用户诉求**：「下午 16 点左右大量会话请求进来后，deepseek-v4.1-flash 推理很慢，分析一下为什么」。
@@ -137,15 +137,12 @@
 
 - 更早会话（2026-10-24 ~ 2026-10-25，已压缩）：**qoderwork 0.10.1 / qoder-ai 0.1.30 模型清单漏模型修复**（多场景并集 + 上游 `display_name` 权威 + 运行时回译映射）；**coze 0.5.5/0.5.6 每日登录积分自动领取 + 历史账号补注册宿主**（唯一触发器 `GET .../credit/balance/check`）；**workbuddy 0.20.0 连续使用轮换**（满 60 分钟让位、冷却 60 分钟、中断 10 分钟重计时、全冷放开一半）。完整细节见 git log 与 PROJECT_HISTORY.md。
 
-- 更早会话（2026-10-18 ~ 2026-10-23，已按 51200 字节上限压缩，完整记录见 git log 与 PROJECT_HISTORY.md）：
-  - **workbuddy 0.17.1 / 0.18.0**：低额红线 20→400（399/400 分界用例锁死严格 `<`）；下线 Global 耗尽自动删号改为 CN/Global 一视同仁写盘禁用；`min_routable_credits` 补登记进 `ConfigFields`。
-  - **workbuddy-ai 0.1.22 / zcode 0.1.35 版本就绪未启用**：补齐 `5ab431d`（四会话追踪头修国际版 400/11128）与 `00a7e88`（schema 6 防 OAuth URL `&` 转义）。踩坑：`plugin-store install` 必然写 `plugins_enabled:true`，与「只发版不启用」相悖，须再 `PUT config {"enabled":false}`。
-  - **下线 doubao / notion 两插件（13 → 11）**：源码、测试镜像、图标、专属文档、registry、CI 矩阵、生产磁盘残留全部清空。
-  - **coze 0.4.6 → 0.5.4 系列**：64KB content 超限返回 413；积分路由红线走执行入口闸门（非 scheduler）；0.5.3 生图统一 `awaitImages` + 4 分钟上限；0.5.4 整池确定 0 分快速失败 400。
-  - **定时任务并发治理**：6 插件 4h 槽位改 `next*FireTime` + 5m 可注入抖动；traework 签到重试收敛并发 4；六个 watchdog 首轮加抖动。
-  - **账号故障冷却基数 30s → 60s**（线性递增、上限 10 分钟、cap 10 档）。
-  - **Qoder 系模型发现风暴与 OOM 修复**：GET 真携带 `qoderEncode("{}")` 修复恒 403；补负缓存 5min；`pickNextAuth` 50ms 退避 + 错误体截断；缓存按账号分片 + 额度优先；对外 ID 改官方展示名 + 执行链回译。
-  - **其余**：qwenwork 立项；发布矩阵下线 freebsd-amd64（7 → 6 平台）；coze 模型动态发现 + 面板重做 + WS 真流式；五插件签到统一每 4 小时；zcode 中国区与额度领取；copilot 立项；Kiro 裁定不立项；max_tokens 官方规格自适应 + 32768 底线；Qoder 110 日上限 24h 持久化冷却；排队帧不判账号故障；删除 Gemini 插件；Token 用量面板移除 4 图表。
+- 更早会话（2026-10-18 ~ 2026-10-23，完整记录见 git log 与 PROJECT_HISTORY.md）：
+  - workbuddy 0.17.1/0.18.0：低额红线 20→400（严格 `<` 由 399/400 用例锁死）；Global 耗尽不再自动删号，改与 CN 一致写盘禁用；`min_routable_credits` 登记 ConfigFields。
+  - workbuddy-ai 0.1.22 / zcode 0.1.35：补四会话追踪头（修国际版 400/11128）与 schema 6 防 OAuth URL `&` 转义。踩坑：`plugin-store install` 必写 `plugins_enabled:true`，只发版不启用须再 `PUT config {"enabled":false}`。
+  - 下线 doubao/notion（13→11 插件）：源码、测试、图标、文档、registry、CI 矩阵、生产残留全清。
+  - coze 0.4.6→0.5.4：64KB content 返 413；积分红线走执行入口闸门；生图 `awaitImages` + 4 分钟上限；整池 0 分快速失败 400。
+  - 基础设施：6 插件 4h 槽位改 `next*FireTime` + 5m 抖动；账号故障冷却基数 30s→60s；Qoder 系修 GET 必带 `qoderEncode("{}")`（此前恒 403）、补负缓存 5min、`pickNextAuth` 退避、缓存按账号分片；其余含 qwenwork/copilot 立项、发布矩阵去 freebsd、max_tokens 自适应 32768 底线、排队帧不判账号故障、删除 Gemini。
 
 <!-- BEGIN RECENT PROJECT SESSIONS -->
 ## 最近 5 个同项目会话
