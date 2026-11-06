@@ -29,6 +29,16 @@
 
 ## 活动会话进展摘要
 
+- 当前会话（2026-11-07 01:50）：**非推理输出上限 64k → 128k（7 插件发布 + 生产热重载验收通过）**：
+  - **用户诉求**：「默认的最大输出统一提高，现在好像非推理是 64k?」，裁定非推理 64000 → 128000，覆盖 7 个统一体系插件。
+  - **根因层面的关键**：不是单纯放宽。`models.go` 的 `maxOutputTokens()` 自 2026-10-30 起对全部模型恒返回 128000（`lookupOfficialModelSpec` 恒命中且 `ReasoningMax=128000`），而 `computeAdaptiveMaxTokens` 非推理分支只补足 64000，形成「元数据 128k、请求层 64k」的既有矛盾。64k 真实生效点仅：非推理补足/截断、traework `streamDefaultMaxTokens`。
+  - **改动**：7 份 `model_specs.go` 的 `defaultMaxOutputTokens` 64000→128000；`minMaxTokensFloor` 32768 与 `defaultReasoningMaxTokens` 128000 不变。6 个 `max_tokens_test.go` 期望值同步，traework 新增 `TestUnifiedOutputCap`。7 插件 `cgo-shim-build.py` 全绿（改值前后各一轮），gofmt 合规。
+  - **发布阻塞与解法**：macOS 托管 runner 在 UTC 17:00 前后（美西工作日上午）长期排不到机器，darwin job `steps=0` 被 cancelled → Release skipped。新增 `allow_partial` 输入（`0d83256`）：Release 的 `if` 在 partial 模式只要求 build/build-cross 未被 skipped，6 平台完备性校验降级为 WARN；默认 false 不影响既有发布。
+  - **降级事故（已修复）**：批处理按旧版发布时把 registry 的 `qoderwork-provider` 从 0.13.0 写成 0.12.7（peer 会话已发新版）；`publish-assets.py` 不做版本单调性校验。已重新 publish 0.13.0 恢复。
+  - **最终版本**：workbuddy 0.21.10 / workbuddy-ai 0.1.36 / qoder-ai 0.1.36 / qoderwork 0.13.0（沿用，已含 128k）/ traework 0.5.8 / zcode 0.3.6 / qwenwork 0.2.14；commit `59a8fee` + `0d83256` + `cf54224`。
+  - **生产验收（65）**：6 个 install 全 200，日志 7 个 `hot reloaded`（含 qoderwork 01:45），**7/7 落盘 .so sha256 与本地 release zip 内 .so 一致**；11 插件 `version == installed_version`；6 个改动插件 `/accounts` + `/panel` 全 200。行为验收：`glm-5.3` 不传 `max_tokens` 返回 200 + `finish_reason: stop`（若上游校验输出上限，128k 应 400）。
+  - **已知边界**：workbuddy-ai 4/6（缺 darwin 两平台），其余 5 个 5/6（缺 `darwin_arm64`）。**刻意未补发**——当前 registry 与生产已验证稳定，重发同版本会重建 Release 并可能改变资产哈希；补齐应在 macOS runner 空档专门做一轮。
+
 - 当前会话（2026-11-07 01:10）：**qoderwork 0.13.0 面板批量导入（发布 + 生产热重载验收通过）**：
   - 诉求：「希望 QoderWork 改成支持批量 json 导入」（截图显示导入弹窗只能单个 PAT）。缺口：旧实现只有单个 PAT 输入框 + 「从备份恢复」单段 textarea，无文件选择器、不认 PAT 列表、不能混排，落后于 workbuddy/traework 已有多文件批量导入。
   - 实现（纯前端 `panel.html`，后端零改动）：多文件多选（.json/.jsonl/.txt ≤2MB）+ 统一文本识别（PAT 多行/逗号分隔、单凭据、凭据数组、`accounts[].credential` 导出包装、`{pats:[]}`/`{tokens:[]}`、JSONL、混排）；**判定顺序必须先凭据后 PAT**（含 personalToken 的完整凭据若当 PAT，会丢 accessToken 并白打一次上游）；PAT→`/import`、凭据→`/import-cred`；逐条串行 + 150ms 间隔、单项失败不中断、批内去重、部分失败时输入框自动收敛为「仅失败项」。
@@ -128,14 +138,6 @@
 - 更早会话（2026-10-25）：**workbuddy-provider 0.20.2 失败禁用标记保底补回**：宿主每请求结束用内存 `Auth.Metadata` 重建 auth 文件，`failover_disable` 三键不在白名单 → 标记丢失导致 10 分钟探活挑不到候选。修复为 `persistCounterDelta` 落盘前补齐三键（条件严格限定「本进程写过禁用」+「盘上确实 disabled」）；新增 `failover_unconfirmed` 面板徽标暴露分叉。
 
 - 更早会话（2026-10-25）：**qoderwork 0.11.0 失败禁用链路三层分离重构**（故障分类 → 插件自有 sidecar → 路由排除，熔断器兜住分类错误）。管理密钥已落 `.ssh/servers.json` 元信息（用户授权明文持久化，取值全部经文件读取、未在任何回复中回显）。排队帧零误判实证：18 号被逐个打到 `403:10605 isQueued` 后 `disabled=0 / cooling=0 / failover_disabled=0`，sidecar 未生成。
-
-- 更早会话（2026-10-25，已压缩）：**qoderwork 失败禁用两层根因诊断**（已被 0.11.0 重构取代，结论仍有效）：① 宿主以 `auth_store` 为真相源、spool 为单向投影，插件搬标记唯一通道是 `AuthData.Metadata`；② 真根因是 watcher 未监听——改 note / `os.Rename` / 删除重建三项实测零事件。该结论直接促成 0.11.0 三层分离与 traework 0.4.0 的 sidecar 方案。
-
-- 更早会话（2026-10-25，已压缩）：**qoder-ai 0.1.30 模型清单修复的上游取证**：真实国际版账号直连证实响应按 11 场景切分（chat 仅 12 个 key、并集 21 个）；国际版把档位嵌进场景 id 形成 8 个伪模型必须按前缀排除；真正漏掉的只有 `performance`。
-
-- 更早会话（2026-10-25，已压缩）：**qoderwork 生产 Kimi-K3.1-Pro 测试失败排查：上游后端不可用，非插件缺陷**。Qoder 上游返回 HTTP 200 + `All backends failed`（Kimi 后端池全挂），同期 `serviceAvailable:false` / `subCode:RESOURCE_LIMIT`；四项排除均正常。**该案例正是 traework 0.4.0 模型级豁免的动机来源之一**。
-
-- 更早会话（2026-10-24 ~ 2026-10-25，已压缩）：**qoderwork 0.10.1 / qoder-ai 0.1.30 模型清单漏模型修复**（多场景并集 + 上游 `display_name` 权威 + 运行时回译映射）；**coze 0.5.5/0.5.6 每日登录积分自动领取 + 历史账号补注册宿主**（唯一触发器 `GET .../credit/balance/check`）；**workbuddy 0.20.0 连续使用轮换**（满 60 分钟让位、冷却 60 分钟、中断 10 分钟重计时、全冷放开一半）。完整细节见 git log 与 PROJECT_HISTORY.md。
 
 - 更早会话（2026-10-18 ~ 2026-10-23，完整记录见 git log 与 PROJECT_HISTORY.md）：
   - workbuddy 0.17.1/0.18.0：低额红线 20→400（严格 `<` 由 399/400 用例锁死）；Global 耗尽不再自动删号，改与 CN 一致写盘禁用；`min_routable_credits` 登记 ConfigFields。
