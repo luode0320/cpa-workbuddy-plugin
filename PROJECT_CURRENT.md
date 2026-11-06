@@ -20,7 +20,10 @@
 
 ## 项目概况
 
-- 状态：活跃维护中。11 大插件全景（10 Provider + 1 用量统计）。**2026-10-22 下线 doubao-provider 与 notion-provider**（用户裁定移除），叠加此前的 Gemini 插件，两者源码与生产残留均已清空。最新发布/就绪版本（2026-10-25 批）：
+- 状态：活跃维护中。11 大插件全景（10 Provider + 1 用量统计）。**2026-10-22 下线 doubao-provider 与 notion-provider**（用户裁定移除），叠加此前的 Gemini 插件，两者源码与生产残留均已清空。
+- **生产主机（2026-11-07 起）= 45.207.222.65（`cpa-server`，端口 18998），254（`cpa-server-new`）已弃用**：用户明示「254 已经放弃，改回 65 为主服务器」，全部域名已解析到 65，254 只剩 mysql+nginx（CPA 已停）。部署/验收一律打 65，管理密钥用插件配置 `cpa_management_key`，账号在 `auth-dir=/CLIProxyAPI/mysqlstore/mysqlstore/auths`（62 个）。
+- **2026-11-07 01:27 已在 65 完成全量对齐与启用**：11 个插件全部 `configured/registered/enabled=true` —— workbuddy 0.21.9（20 号）/ coze 0.7.4（23 号）/ qoderwork 0.12.6（2 号）/ workbuddy-ai 0.1.35（6 号）/ token-usage 0.2.8 / traework 0.5.7 / qoder-ai 0.1.35 / zcode 0.3.5 / copilot 0.1.12 / qwenwork 0.2.13 / cursor 0.1.7（首次安装）。install 前 5 个显示 `registered=false` 是「该版本 .so 从未加载」（config 里 enabled 本为 true），install 后日志为 `plugin loaded + plugin registered`，非 hot reload 形态。
+- 以下为 2026-10-25 历史发布批（已过期，仅存档）：
   - `zcode-provider`: **0.3.1**（0.3.1 修复慢速冷却到期日志重复刷屏；0.3.0 慢速冷却移植 + 非流式 TTFT 采集补齐）
   - `qoderwork-provider`: **0.12.1**（0.12.1 修复到期日志刷屏；0.12.0 慢速冷却移植 + per-attempt TTFT 隔离）
   - `traework-provider`: **0.5.1**（0.5.1 修复到期日志刷屏；0.5.0 慢速冷却移植；0.4.0 失败禁用改 sidecar 三层分离 + 模型级故障豁免 + 同步 workbuddy 七项能力）

@@ -200,8 +200,10 @@ print('FINAL:', 'ALL PASS' if ok else 'FAIL')
 
 > **授权说明（2026-08-31）**：生产部署是完整发布链路的固有收尾步骤，默认已获授权，agent 不得以"需要额外授权"为由跳过。只要用户在本轮显式提出"发布 / 部署 / 上生产 / 更新生产"等发布意图，或用户此前已明确"不需要授权，默认都是授权的"，Step 13 就应直接执行并验证到位，直到生产插件版本与 registry 对齐（`active_version` = 目标版本、账号/面板接口 200），无需再单独询问。跳过生产部署导致"仓库最新但生产仍旧版"属发布未完成。
 
+> **生产主机固定为 `cpa-server` = 45.207.222.65:18998（2026-11-07 用户裁定：254 已放弃，65 改回主服务器）**。Step 13 的全部 install / 验收命令都在该机执行；`MANAGEMENT_KEY` 取该机 config 插件段的 `cpa_management_key`（65 的 `management.secret-key` 是 bcrypt 哈希、无明文）。账号规模看 `auth-dir=/CLIProxyAPI/mysqlstore/mysqlstore/auths`，不要数宿主机 `auths/`。
+
 ```bash
-# 服务器本机（docker host 网络，端口 8317）；MANAGEMENT_KEY 来自服务器 config 的 remote-management.secret-key
+# 服务器本机（docker host 网络，端口 8317）；MANAGEMENT_KEY 取 65 插件配置的 cpa_management_key
 curl -s -X POST -H "Authorization: Bearer $MANAGEMENT_KEY" \
   "http://127.0.0.1:8317/v0/management/plugin-store/workbuddy-provider/install?version=0.14.16"
 ```
