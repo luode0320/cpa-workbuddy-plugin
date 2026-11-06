@@ -132,6 +132,8 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 .modal-mask{position:fixed;inset:0;background:var(--scrim);display:none;align-items:center;justify-content:center;z-index:9000;padding:16px;backdrop-filter:blur(2px)}
 .modal-mask.show{display:flex}
 .modal{background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-lg);width:min(560px,100%);max-height:min(90vh,640px);display:flex;flex-direction:column;box-shadow:var(--modal-shadow)}
+/* 批量导入弹窗内容更多（多文件清单 + 文本框 + 识别预览 + 失败明细），单独放宽 */
+.modal.modal-lg{width:min(700px,100%);max-height:min(92vh,780px)}
 .modal-hd{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border)}
 .modal-hd h2{font-size:15px;margin:0;color:var(--fg);font-weight:600}
 .modal-x{background:transparent;color:var(--mut);padding:4px 10px;font-size:18px;line-height:1}
@@ -159,6 +161,22 @@ button.danger:hover{background:var(--err);color:#fff}
 .import-result .r-item:first-of-type{border-top:0}
 .import-result .r-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .import-result .r-err{color:var(--err);flex:none;max-width:55%;text-align:right;word-break:break-all}
+/* 批量导入：多文件选择 · 文件清单 · 识别预览 · 进度条 */
+.import-batch{margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
+.file-picker{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.file-picker label.sec{background:var(--btn-sec);color:var(--fg);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;display:inline-block;line-height:1.2}
+.file-picker label.sec:hover{background:var(--btn-sec-hover)}
+.file-list{display:none;max-height:120px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:6px 10px;margin-bottom:8px;background:var(--input-bg)}
+.file-list.show{display:block}
+.file-item{display:flex;justify-content:space-between;gap:10px;padding:4px 0;font-size:12px;border-bottom:1px dashed var(--border)}
+.file-item:last-child{border-bottom:0}
+.file-item .fn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-item .fs{color:var(--mut);flex:none;font-size:11px}
+.file-info{font-size:12px;color:var(--mut);margin-bottom:8px;line-height:1.5}
+.file-info.bad{color:var(--err)}
+.file-info.ok{color:var(--ok)}
+.batch-bar{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap}
+.batch-bar .hint{margin:0;opacity:.7}
 .model-list{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto;border:1px dashed var(--border);border-radius:8px;padding:6px}
 .model-item{display:block;width:100%;text-align:left;background:var(--btn-sec);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:13px;font-family:ui-monospace,monospace;cursor:pointer;word-break:break-all}
 .model-item:hover{background:var(--btn-sec-hover);border-color:var(--acc)}
@@ -242,27 +260,36 @@ button.danger:hover{background:var(--err);color:#fff}
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
 </div>
 <div class="modal-mask" id="importModal" onclick="onImportMaskClick(event)">
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
+  <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
     <div class="modal-hd">
       <h2 id="importModalTitle">导入 QoderWork 凭证</h2>
       <button type="button" class="modal-x" onclick="closeImportModal()" aria-label="关闭">×</button>
     </div>
     <div class="modal-bd">
-      <p class="hint">到 <a href="https://qoder.com.cn/settings/personal-access-tokens" target="_blank" rel="noopener">qoder.com.cn → 设置 → Personal Access Tokens</a> 创建一个 PAT（pt- 开头），粘贴到下方。插件会自动换取 jobToken 并保存为 <code>qoderwork-&lt;uid&gt;.json</code>。</p>
+      <p class="hint">到 <a href="https://qoder.com.cn/settings/personal-access-tokens" target="_blank" rel="noopener">qoder.com.cn → 设置 → Personal Access Tokens</a> 创建一个 PAT（pt- 开头）。单条粘贴到下方输入框；多条或已有备份文件请用下面的「批量导入」。插件会自动换取 jobToken 并保存为 <code>qoderwork-&lt;uid&gt;.json</code>。</p>
       <input id="importPAT" type="password" placeholder="pt-xxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off" style="width:100%;padding:8px 10px;font-family:ui-monospace,monospace;font-size:13px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);"/>
       <p class="hint" style="margin-top:8px;opacity:0.7">PAT 长期有效（可在创建时设置过期时间）。插件存储 PAT 用于 jrt- 过期后自动续期，无需重新导入。</p>
-      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
-        <p class="hint" style="margin-bottom:8px"><b>从备份恢复</b>：粘贴「导出备份」生成的 JSON 文件内容（支持完整备份文件、凭据数组或单个凭据），逐个恢复，不经过上游换 token。</p>
-        <textarea id="importCredText" placeholder='{"version":1,"plugin":"qoderwork-provider","accounts":[...]} 或单个凭据 JSON' style="width:100%;height:84px;resize:vertical;padding:8px 10px;font-family:ui-monospace,monospace;font-size:12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);box-sizing:border-box"></textarea>
-        <div style="margin-top:8px;display:flex;align-items:center;gap:10px">
-          <button type="button" class="sec" id="importCredBtn" onclick="importCred(this)">恢复凭据</button>
-          <span class="hint" id="importCredProgress" style="opacity:0.7"></span>
+      <div class="import-batch">
+        <p class="hint" style="margin-bottom:8px"><b>批量导入</b>：可一次选择多个 JSON 文件，也可把混排内容粘贴到下方——<b>PAT 列表</b>（每行一个 <code>pt-</code>，一行内多个用逗号/空格分隔也认）、<b>单个凭据</b>、<b>凭据数组</b>、<b>导出备份文件</b>、<b>JSONL</b>（每行一个 JSON 对象）全部自动识别；PAT 走上游换 token，凭据直接离线回灌。</p>
+        <div class="file-picker">
+          <label class="sec" for="importFiles" title="可一次选择多个 .json / .jsonl / .txt 文件；重新选择会替换已选清单">📁 选择 JSON 文件（可多选）</label>
+          <input type="file" id="importFiles" multiple accept=".json,.jsonl,.txt,application/json,text/plain" hidden>
+          <button type="button" class="sec" id="clearImportFiles" onclick="clearImportFiles()" style="display:none">清空已选</button>
         </div>
+        <div class="file-list" id="importFileList"></div>
+        <div class="file-info" id="importFileInfo"></div>
+        <textarea id="importBatchText" placeholder='每行一个 pt-xxxxxxxx，或粘贴 {"version":1,"plugin":"qoderwork-provider","accounts":[...]} / 凭据数组 / 单个凭据 / JSONL' style="min-height:110px" oninput="updateBatchPreview()"></textarea>
+        <div class="file-info" id="batchPreview"></div>
+        <div class="batch-bar">
+          <button type="button" id="batchImportBtn" onclick="runBatchImport(this)">批量导入</button>
+          <span class="hint" id="batchProgress"></span>
+        </div>
+        <div class="import-result" id="batchResult"></div>
       </div>
     </div>
     <div class="modal-ft">
       <button type="button" class="sec" onclick="closeImportModal()">取消</button>
-      <button type="button" onclick="importAuth(this)">导入并保存</button>
+      <button type="button" onclick="importAuth(this)">导入并保存（单个 PAT）</button>
     </div>
   </div>
 </div>
@@ -1246,6 +1273,10 @@ async function toggleAuto(on){
 function openImportModal(){
   const m=document.getElementById("importModal");
   m.classList.add("show");
+  // 每次打开清掉上一轮的失败明细与识别预览，避免误导（输入内容与已选文件保留，
+  // 便于修正失败项后原地重试）
+  hideBatchResult();
+  updateBatchPreview();
   const ta=document.getElementById("importPAT");
   if(ta) setTimeout(()=>ta.focus(),50);
 }
@@ -1275,7 +1306,7 @@ async function importAuth(btn){
    GET /export returns {version, exported_at, count, accounts:[...]} where each
    account carries the raw physical credential JSON. The frontend downloads it
    as qoderwork-credentials-YYYY-MM-DD.json; the same file can be restored via
-   the import modal's 备份恢复 (expandCredentials splits it back per account).
+   the import modal's 批量导入 (parseBatchInput expands accounts[].credential).
 */
 async function exportAuth(btn){
   busy(btn,true);
@@ -1346,55 +1377,253 @@ async function exportAuthZip(btn){
   }
 }
 
-/* ---------- backup restore (expand + per-credential import) ----------
-   The import modal's 备份恢复 accepts the export wrapper (accounts[].credential),
-   a bare JSON array, or a single nested/flat credential; all normalize into
-   individual credential objects posted one-by-one to /import-cred so progress
-   and failures are per account.
-*/
-function expandCredentials(text){
-  let obj;
-  try{obj=JSON.parse(text)}catch(_){return null}
-  if(!obj||typeof obj!=="object") return null;
+/* ---------- 批量导入（PAT 列表 / 凭据 JSON / JSONL 混排） ----------
+   为什么需要：QoderWork 的凭据有两种来源——上游换 token 得到的 PAT（pt-），
+   和可直接回灌的完整凭据（auth+account）。旧版弹窗只能一次贴一个 PAT，
+   「从备份恢复」也只认单段 JSON，批量铺号时必须逐个粘贴。
+   现在的输入形态（可混排，整体 JSON 失败后自动逐行解析）：
+     1. PAT 列表：每行一个 pt-...；一行内用逗号/空格分隔多个也认
+     2. 单个凭据：{"auth":{...},"account":{...}} 或 flat {accessToken,uid}
+     3. 凭据数组：[{...},{...}]，元素是 pt- 字符串时按 PAT 处理
+     4. 导出备份包装：{"accounts":[{credential:{...}}]}
+     5. PAT 容器：{"pats":[...]} / {"tokens":[...]}
+     6. JSONL：每行一个 JSON 对象
+   判定顺序很关键：先「像不像完整凭据」（有 accessToken）再「是不是 PAT」，
+   否则带 personalToken 的完整凭据会被误判成 PAT，丢掉可离线回灌的会话令牌。
+   PAT 走 /import（上游换 jobToken），凭据走 /import-cred（不换 token），
+   逐条串行、单项失败不影响其余项。 */
+const PAT_RE=/^pt-[A-Za-z0-9_-]+$/;
+let importFileItems=[]; // [{kind,value,label}] 已选文件展开后的项
+let batchRunning=false;
+const MAX_IMPORT_FILE=2*1024*1024;
+const BATCH_GAP_MS=150; // PAT 会打上游，项间留一点间隔避免突发
+
+function isPATToken(v){return typeof v==="string"&&PAT_RE.test(v.trim())}
+function isCredentialDoc(o){
+  if(!o||typeof o!=="object"||Array.isArray(o)) return false;
+  if(o.auth&&typeof o.auth==="object"&&typeof o.auth.accessToken==="string"&&o.auth.accessToken.trim()) return true;
+  return typeof o.accessToken==="string"&&o.accessToken.trim()!=="";
+}
+function credentialPATToken(o){
+  if(!o||typeof o!=="object"||Array.isArray(o)) return "";
+  const cands=[o.pat,o.personalToken,o.personal_token,o.token];
+  if(o.auth&&typeof o.auth==="object") cands.push(o.auth.personalToken,o.auth.personal_token);
+  for(const c of cands){ if(isPATToken(c)) return String(c).trim(); }
+  return "";
+}
+function looksQoderCredential(o){
+  if(!o||typeof o!=="object"||Array.isArray(o)) return false;
+  if(isCredentialDoc(o)||credentialPATToken(o)) return true;
+  if(o.auth&&typeof o.auth==="object") return true;
+  if(o.account&&typeof o.account==="object") return true;
+  return typeof o.uid==="string"&&o.uid.trim()!=="";
+}
+function parseBatchInput(text){
   const out=[];
-  const push=(c)=>{if(c&&typeof c==="object"&&!Array.isArray(c))out.push(c)};
-  if(Array.isArray(obj)){
-    obj.forEach(push);
-  }else if(Array.isArray(obj.accounts)){
-    // Export wrapper: each entry holds the raw credential under .credential
-    obj.accounts.forEach(a=>{
-      if(a&&a.credential&&typeof a.credential==="object") out.push(a.credential);
-      else push(a);
-    });
-  }else{
-    push(obj);
-  }
+  const raw=String(text||"").trim();
+  if(!raw) return out;
+  const collect=(node)=>{
+    if(node==null) return;
+    if(typeof node==="string"){
+      if(isPATToken(node)) out.push({kind:"pat",value:node.trim()});
+      else out.push({kind:"bad",value:node.slice(0,120)});
+      return;
+    }
+    if(Array.isArray(node)){ node.forEach(collect); return; }
+    if(typeof node!=="object"){ out.push({kind:"bad",value:String(node).slice(0,120)}); return; }
+    if(isCredentialDoc(node)){ out.push({kind:"cred",value:node}); return; }
+    if(Array.isArray(node.accounts)){
+      node.accounts.forEach(a=>{
+        if(a&&typeof a==="object"&&a.credential&&typeof a.credential==="object") out.push({kind:"cred",value:a.credential});
+        else if(looksQoderCredential(a)) out.push({kind:"cred",value:a});
+        else out.push({kind:"bad",value:"accounts[] 中有一条既无 credential 也不像凭据"});
+      });
+      return;
+    }
+    const patList=Array.isArray(node.pats)?node.pats:(Array.isArray(node.tokens)?node.tokens:null);
+    if(patList){ patList.forEach(collect); return; }
+    const pt=credentialPATToken(node);
+    if(pt){ out.push({kind:"pat",value:pt}); return; }
+    if(looksQoderCredential(node)){ out.push({kind:"cred",value:node}); return; }
+    out.push({kind:"bad",value:"JSON 对象不像 QoderWork 凭据（无 accessToken / auth / account / uid）"});
+  };
+  let obj=null, parsed=false;
+  try{obj=JSON.parse(raw);parsed=true}catch(_){}
+  if(parsed){ collect(obj); return out; }
+  raw.split(/\r?\n/).forEach(line=>{
+    const t=line.trim();
+    if(!t) return;
+    if(t.startsWith("{")||t.startsWith("[")){
+      try{ collect(JSON.parse(t)); return; }catch(_){}
+    }
+    const toks=t.split(/[\s,;]+/).filter(Boolean);
+    const pats=toks.filter(isPATToken);
+    if(pats.length){ pats.forEach(p=>out.push({kind:"pat",value:p})); return; }
+    out.push({kind:"bad",value:t.slice(0,120)});
+  });
   return out;
 }
-async function importCred(btn){
-  const raw=(document.getElementById("importCredText").value||"").trim();
-  if(!raw){toast("请先粘贴备份 JSON","warn");return}
-  const items=expandCredentials(raw);
-  if(!items||!items.length){toast("无法解析备份 JSON","err","需要导出备份文件、凭据数组或单个凭据对象");return}
+function describeBatchItems(items){
+  const pats=items.filter(x=>x.kind==="pat").length;
+  const creds=items.filter(x=>x.kind==="cred").length;
+  const bad=items.filter(x=>x.kind==="bad").length;
+  const parts=[];
+  if(pats) parts.push(pats+" 个 PAT（需上游换 token）");
+  if(creds) parts.push(creds+" 个凭据（离线回灌）");
+  if(bad) parts.push(bad+" 行无法识别");
+  return parts.length?("识别到 "+parts.join(" · ")):"未识别到可导入内容";
+}
+function updateBatchPreview(){
+  const el=document.getElementById("batchPreview");
+  if(!el) return;
+  const items=parseBatchInput(document.getElementById("importBatchText").value||"");
+  if(!items.length){ el.textContent=""; el.className="file-info"; return; }
+  el.textContent=describeBatchItems(items);
+  el.className="file-info"+(items.some(x=>x.kind==="bad")?" bad":"");
+}
+function clearImportFiles(){
+  importFileItems=[];
+  const input=document.getElementById("importFiles");
+  if(input) input.value="";
+  const list=document.getElementById("importFileList");
+  if(list){ list.innerHTML=""; list.classList.remove("show"); }
+  const info=document.getElementById("importFileInfo");
+  if(info){ info.textContent=""; info.className="file-info"; }
+  const clearBtn=document.getElementById("clearImportFiles");
+  if(clearBtn) clearBtn.style.display="none";
+  return importFileItems;
+}
+document.getElementById("importFiles").addEventListener("change",async e=>{
+  const input=e.target;
+  const fs=[...(input.files||[])];
+  input.value="";
+  const list=document.getElementById("importFileList");
+  const info=document.getElementById("importFileInfo");
+  const clearBtn=document.getElementById("clearImportFiles");
+  // 重新选择即替换已选清单（与 workbuddy / traework 一致，避免隐性累积）
+  clearImportFiles();
+  if(list) list.innerHTML="";
+  let skipped=0;
+  const added=[];
+  for(const f of fs){
+    const okExt=/\.(json|jsonl|txt)$/i.test(f.name)||f.type==="application/json"||f.type==="text/plain";
+    if(!okExt||f.size>MAX_IMPORT_FILE){skipped++;continue}
+    try{
+      const text=await f.text();
+      if(!text.trim()){skipped++;continue}
+      const items=parseBatchInput(text).filter(x=>x.kind!=="bad");
+      if(!items.length){skipped++;continue}
+      items.forEach((it,i)=>{
+        added.push({kind:it.kind,value:it.value,label:items.length>1?f.name+" #"+(i+1):f.name});
+      });
+      const d=document.createElement("div");
+      d.className="file-item";
+      d.innerHTML='<span class="fn" title="'+esc(f.name)+'">'+esc(f.name)+'</span><span class="fs">'+items.length+' 项 · '+(f.size/1024).toFixed(1)+' KB</span>';
+      if(list) list.appendChild(d);
+    }catch(_){skipped++}
+  }
+  importFileItems=added;
+  if(list) list.classList.toggle("show",added.length>0);
+  if(clearBtn) clearBtn.style.display=added.length?"inline-block":"none";
+  if(!info) return;
+  if(added.length){
+    info.textContent="已选 "+added.length+" 个待导入项"+(skipped?"；跳过 "+skipped+" 个文件（非 JSON/JSONL/TXT、超 2MB、空内容或无可识别凭据）":"");
+    info.className="file-info"+(skipped?" bad":" ok");
+  }else{
+    info.textContent=fs.length?("没有可导入的文件"+(skipped?"（跳过 "+skipped+" 个）":"")):"";
+    info.className="file-info bad";
+  }
+});
+function hideBatchResult(){
+  const r=document.getElementById("batchResult");
+  if(!r) return;
+  r.classList.remove("show");
+  r.innerHTML="";
+}
+function showBatchResult(fail){
+  const r=document.getElementById("batchResult");
+  if(!r||!fail.length) return;
+  const hd='<div class="r-hd err">'+fail.length+' 项失败（修正后可重新导入，已成功的不会重复写入）</div>';
+  const items=fail.map(f=>'<div class="r-item"><span class="r-name">'+esc(f.name)+'</span><span class="r-err">'+esc(f.error)+'</span></div>').join("");
+  r.innerHTML=hd+items;
+  r.classList.add("show");
+}
+async function runBatchImport(btn){
+  if(batchRunning){toast("批量导入进行中","warn");return}
+  hideBatchResult();
+  const typed=parseBatchInput(document.getElementById("importBatchText").value||"");
+  const bad=typed.filter(x=>x.kind==="bad");
+  const raw=typed.filter(x=>x.kind!=="bad").concat(importFileItems);
+  // 批内去重：重复粘贴是批量场景的常态（尤其是「全量重贴重试」），
+  // 同一 PAT 字符串 / 同一凭据 JSON 只导一次，避免重复打上游换 token。
+  const seen=new Set();
+  const items=[];
+  let dup=0;
+  for(const it of raw){
+    const key=it.kind==="pat"?"p:"+it.value:"c:"+JSON.stringify(it.value);
+    if(seen.has(key)){dup++;continue}
+    seen.add(key);
+    items.push(it);
+  }
+  if(!items.length){
+    if(dup) toast("全部为重复项","warn","已跳过 "+dup+" 个与本次输入重复的项");
+    else if(bad.length) toast("粘贴内容无法识别","err","需要 pt- 开头 PAT、凭据 JSON、导出备份或 JSONL");
+    else toast("请粘贴内容或选择文件","warn");
+    updateBatchPreview();
+    return;
+  }
+  const prog=document.getElementById("batchProgress");
+  const ok=[], fail=bad.map(b=>({name:"无法识别的输入",error:b.value,item:null}));
+  batchRunning=true;
   busy(btn,true);
-  const prog=document.getElementById("importCredProgress");
-  let ok=0, fail=0;
   try{
     for(let i=0;i<items.length;i++){
-      if(prog) prog.textContent="恢复中 "+(i+1)+"/"+items.length+" …";
+      const it=items[i];
+      if(prog) prog.textContent="导入中 "+(i+1)+"/"+items.length+" · "+(it.kind==="pat"?"PAT":"凭据");
       try{
-        const d=await api("/import-cred",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cred:items[i]})});
-        if(d&&d.success) ok++;
-        else{ fail++; toast("第 "+(i+1)+" 个恢复失败","err",(d&&d.error)||"unknown"); }
-      }catch(e){ fail++; toast("第 "+(i+1)+" 个恢复失败","err",e.message||String(e)); }
+        const d=it.kind==="pat"
+          ? await api("/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pat:it.value})})
+          : await api("/import-cred",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cred:it.value})});
+        if(d&&d.success){
+          ok.push({name:it.label||(it.kind==="pat"?"PAT":"凭据"),nick:d.nickname||d.uid,uid:d.uid,file:d.file||d.name});
+        }else{
+          fail.push({name:it.label||(it.kind==="pat"?"PAT":"凭据"),error:(d&&d.error)||"unknown error",item:it});
+        }
+      }catch(e){
+        fail.push({name:it.label||(it.kind==="pat"?"PAT":"凭据"),error:e.message||String(e),item:it});
+      }
+      if(i+1<items.length) await new Promise(res=>setTimeout(res,BATCH_GAP_MS));
     }
-    if(prog) prog.textContent="";
-    if(ok){ toast("恢复完成","ok",ok+" 成功"+(fail?" / "+fail+" 失败":"")); document.getElementById("importCredText").value=""; closeImportModal(); load(false); }
-    else toast("恢复失败","err","0 成功 / "+fail+" 失败，请检查备份内容");
   }finally{
+    batchRunning=false;
     if(prog) prog.textContent="";
     busy(btn,false);
   }
+  if(!fail.length){
+    const who=ok.map(o=>o.nick||o.uid||o.name).join("、");
+    toast("批量导入成功："+ok.length+" 个账号","ok",(dup?"已跳过 "+dup+" 个重复项 · ":"")+who.slice(0,220));
+    document.getElementById("importBatchText").value="";
+    clearImportFiles();
+    updateBatchPreview();
+    closeImportModal();
+    load(false);
+    return;
+  }
+  // 部分成功时把输入框收敛成「仅失败项」：用户点重试只导这次失败的，
+  // 已成功的不会重复换 token（服务端本身按 uid 覆盖写，重复也不坏数据，
+  // 但重复导入会拖慢批量并让成功计数失真）。
+  const retry=fail.filter(f=>f.item);
+  if(ok.length&&retry.length){
+    document.getElementById("importBatchText").value=retry.map(f=>
+      f.item.kind==="pat"?f.item.value:JSON.stringify(f.item.value,null,2)
+    ).join("\n");
+    clearImportFiles();
+    updateBatchPreview();
+  }
+  const detail=fail.map(f=>f.name+": "+f.error).join("；");
+  toast("批量导入完成："+ok.length+" 成功 / "+fail.length+" 失败","err",detail.slice(0,300));
+  showBatchResult(fail);
+  if(ok.length) load(false);
 }
 /* ---------- account deletion (二次确认，同步自 workbuddy 0.14.7) ----------
    卡片右上角 × 打开确认框；取消不发送任何请求；确认后 POST /delete

@@ -76,12 +76,22 @@ oauth-model-alias:
 2. 插件面板（`/v0/resource/plugins/qoderwork/panel`）→ 右上角「导入 QoderWork 凭证」→ 粘贴 PAT → 导入
 3. 插件自动换 jobToken（jt-/jrt-）落盘
 
+### 方式三：批量导入（多文件 / 混排 JSON）
+
+同一弹窗的「批量导入」区块支持一次铺多个账号：
+
+- **多文件**：一次选择多个 `.json` / `.jsonl` / `.txt`（单文件 ≤ 2MB），选中即展开为逐条待导入项
+- **统一文本**：可混排 PAT 列表（每行一个 `pt-`，一行内逗号/空格分隔多个）、单个凭据、凭据数组、导出备份文件、`{pats:[]}` 容器、JSONL
+- **分流规则**：PAT 走 `POST /import`（上游换 token）；完整凭据走 `POST /import-cred`（离线回灌，不换 token）
+- **容错**：逐条串行、单项失败不中断，失败明细常驻弹窗可原地重试，已成功项不重复写入
+
 ### 面板
 
 `/v0/resource/plugins/qoderwork/panel`（需 management key）
 
 - 账号卡片：积分余额 / 计划 / 签到按钮（签到后返回最新积分）
 - 「全部签到」批量签到；自动签到开关（00/04/08/12/16/20）
+- 「导入 QoderWork 凭证」：单 PAT 快速导入 + 批量导入（见方式三）
 
 ## 凭证家族与刷新
 

@@ -1,5 +1,19 @@
 # QoderWork Plugin Changelog
 
+## 0.13.0
+
+### Feat - 账号面板支持批量导入（多文件 + PAT/凭据 JSON 混排）
+
+- 背景: 旧导入弹窗只有「单个 PAT 输入框」和一个「从备份恢复」文本框。批量铺号时必须逐个粘贴 PAT；「从备份恢复」虽能拆数组，但没有文件选择器，也无法识别 PAT 列表，与 workbuddy / traework 已有的多文件批量导入能力存在明显差距。
+- 新增（多文件）: 可一次选择多个 `.json` / `.jsonl` / `.txt`（单文件上限 2MB），选中即展开为逐条待导入项并显示「文件名 · N 项 · 大小」清单；重新选择会替换清单，避免隐性累积。任一文件内含数组或导出包装时自动拆成多条。
+- 新增（统一文本识别）: 一个文本框接受并可混排以下形态——PAT 列表（每行一个，或一行内用逗号/空格分隔多个）、单个嵌套凭据 `{auth,account}`、flat 凭据 `{accessToken,uid}`、凭据数组、导出备份包装 `{accounts:[{credential}]}`、PAT 容器 `{pats:[]}` / `{tokens:[]}`、JSONL（每行一个 JSON 对象）。整体 JSON 解析失败时自动退化为逐行解析，因此「JSON 段 + PAT 行」混排也能一次导入。
+- 关键判定顺序: 先判断「是否像完整凭据」（含 `accessToken`）再判断「是否 PAT」。顺序反了会让带 `personalToken` 的完整凭据被当成 PAT，丢掉可离线回灌的会话令牌并白打一次上游。
+- 分流执行: PAT 走 `POST /import`（上游换 jobToken），凭据走 `POST /import-cred`（不换 token、按原始物理文件落盘）；逐条串行、项间 150ms 间隔，单项失败不中断后续项，失败明细常驻弹窗（含业务失败与网络异常两类）。
+- 批内去重与失败收敛: 同一 PAT 字符串 / 同一凭据 JSON 只导一次（重复粘贴在全量重贴重试时很常见，会白白重复换 token）；部分成功时输入框自动收敛为「仅失败项」，用户点重试不会重复导入已成功的账号。
+- 移除: 旧的「从备份恢复」单段入口（`importCred` / `expandCredentials`）被批量导入完全覆盖，代码与其 DOM 一并删除，不留并行实现。
+- 影响范围: 仅前端 `panel.html` + 版本号；后端端点、账号数据格式、路由与鉴权语义零改动。
+- 验证: 新增 `test/qoderwork/panel_batch_import.mjs`（24 条解析与 DOM 契约断言）与 `panel_batch_import_e2e.mjs`（Node vm + DOM 桩真实执行面板 JS，覆盖 PAT 分流、凭据分流、混排、单项失败、空输入、批内去重 6 个场景）；5 个变异（凭据首判失效、端点分流反转、吞掉单项异常、回填含成功项、去重失效）全部 KILLED；`cgo-shim-build.py qoderwork` build/vet/test 全绿。
+
 ## 0.12.7
 
 ### Feat - 非推理输出上限由 64000 抬升至 128000
