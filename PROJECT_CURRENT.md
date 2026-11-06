@@ -29,23 +29,26 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-07 02:00）：**qoderwork 0.13.1 修复「推理各种失败、断开」**（已发布 + 生产热重载验收）：
+  - 用户报「`1846555387` 推理各种失败、断开」。该数字在账号 / CPA 日志（24h+7d）/ new-api 全表 / 仓库中**均无命中**，需用户澄清来源；两账号 `/test-active` 实测 659/570ms 均成功 → **账号健康，问题在失败处置**。
+  - **根因**：① `recordAccountFailure` 无条件写盘禁用 → 一次 5xx/断流/限流就摘号，池仅 2 个号等于砍半；② 流式 `sseErr`、非流式 `completionErr`、collect 三处把 HTTP 200 错误帧 remap 成 **403** → 软限流被当凭据故障，首败即禁。
+  - **修复**：新增 `failover_disable_min_count`（默认 3；瞬时失败连续 3 次才禁，401/403/404/405·402·110 日限额首败即禁）；新增 `noteUpstreamErrFrameForModel`（200 错误帧按瞬时记账、额度升 402）；`recordCooldownState` 返回计数供门限判定。排队帧（10605/isQueued）与模型级故障仍不罚号。
+  - 验证：新增 `failover_disable_threshold_test.go`（11 瞬时 + 7 确定性 + 端到端门限 + 红线 + 不伪 403）；**3 变异全 KILLED**；cgo-shim 全绿。
+  - 发布：`af216de`(fix) → `020313e`(CI: darwin/arm64 换 macos-14) → CI `42272084370`（Release success，`allow_partial`）→ `6c7d253`(registry 0.13.1)；生产 hot reloaded 0.13.1、sha `3ba810a8…` 与 zip 一致、accounts/panel 200、两账号冒烟 608/628ms 成功、配置项已注册进 ConfigFields。
+  - **已知缺口**：`darwin/arm64` 缺资产（`macos-15`/`macos-14` 均 `runner_id=0` 排队后被取消，macOS 配额问题非代码），registry 暂 5 平台。补齐无需新版本号：runner 恢复后重新 dispatch 0.13.1（`allow_partial=false`）→ Release `--clobber` → 重跑 `publish-assets`。
+  - 边界：冷却窗口仍在（两号同时冷却时交宿主换道）；根因来自代码路径对比，无拥堵窗口实证。
+
 - 当前会话（2026-11-07 01:50）：**非推理输出上限 64k → 128k（7 插件发布 + 生产热重载验收通过）**：
   - **用户诉求**：「默认的最大输出统一提高，现在好像非推理是 64k?」，裁定非推理 64000 → 128000，覆盖 7 个统一体系插件。
   - **根因层面的关键**：不是单纯放宽。`models.go` 的 `maxOutputTokens()` 自 2026-10-30 起对全部模型恒返回 128000（`lookupOfficialModelSpec` 恒命中且 `ReasoningMax=128000`），而 `computeAdaptiveMaxTokens` 非推理分支只补足 64000，形成「元数据 128k、请求层 64k」的既有矛盾。64k 真实生效点仅：非推理补足/截断、traework `streamDefaultMaxTokens`。
   - **改动**：7 份 `model_specs.go` 的 `defaultMaxOutputTokens` 64000→128000；`minMaxTokensFloor` 32768 与 `defaultReasoningMaxTokens` 128000 不变。6 个 `max_tokens_test.go` 期望值同步，traework 新增 `TestUnifiedOutputCap`。7 插件 `cgo-shim-build.py` 全绿（改值前后各一轮），gofmt 合规。
-  - **发布阻塞与解法**：macOS 托管 runner 在 UTC 17:00 前后（美西工作日上午）长期排不到机器，darwin job `steps=0` 被 cancelled → Release skipped。新增 `allow_partial` 输入（`0d83256`）：Release 的 `if` 在 partial 模式只要求 build/build-cross 未被 skipped，6 平台完备性校验降级为 WARN；默认 false 不影响既有发布。
-  - **降级事故（已修复）**：批处理按旧版发布时把 registry 的 `qoderwork-provider` 从 0.13.0 写成 0.12.7（peer 会话已发新版）；`publish-assets.py` 不做版本单调性校验。已重新 publish 0.13.0 恢复。
-  - **最终版本**：workbuddy 0.21.10 / workbuddy-ai 0.1.36 / qoder-ai 0.1.36 / qoderwork 0.13.0（沿用，已含 128k）/ traework 0.5.8 / zcode 0.3.6 / qwenwork 0.2.14；commit `59a8fee` + `0d83256` + `cf54224`。
-  - **生产验收（65）**：6 个 install 全 200，日志 7 个 `hot reloaded`（含 qoderwork 01:45），**7/7 落盘 .so sha256 与本地 release zip 内 .so 一致**；11 插件 `version == installed_version`；6 个改动插件 `/accounts` + `/panel` 全 200。行为验收：`glm-5.3` 不传 `max_tokens` 返回 200 + `finish_reason: stop`（若上游校验输出上限，128k 应 400）。
-  - **已知边界**：workbuddy-ai 4/6（缺 darwin 两平台），其余 5 个 5/6（缺 `darwin_arm64`）。**刻意未补发**——当前 registry 与生产已验证稳定，重发同版本会重建 Release 并可能改变资产哈希；补齐应在 macOS runner 空档专门做一轮。
+  - **发布阻塞与解法**：macOS 托管 runner 在 UTC 17:00 前后长期排不到机器（darwin job `steps=0` 被 cancelled → Release skipped）。新增 `allow_partial` 输入（`0d83256`）：Release 只要求 build/build-cross 未被 skipped，完备性校验降级为 WARN。
+  - **降级事故（已修复）**：批处理按旧版发布把 registry `qoderwork` 写成 0.12.7；`publish-assets.py` 不做版本单调性校验，已重新 publish 恢复。
+  - **最终版本**：workbuddy 0.21.10 / workbuddy-ai 0.1.36 / qoder-ai 0.1.36 / qoderwork 0.13.0 / traework 0.5.8 / zcode 0.3.6 / qwenwork 0.2.14；commit `59a8fee`+`0d83256`+`cf54224`。
+  - **生产验收（65）**：6 个 install 全 200，7 个 `hot reloaded`，落盘 .so sha256 与本地 zip 一致；11 插件 `version == installed_version`；`/accounts`+`/panel` 全 200。行为验收：`glm-5.3` 不传 `max_tokens` 返 200 + `finish_reason: stop`。
+  - **已知边界**：workbuddy-ai 4/6（缺 darwin 两平台），其余 5 个 5/6（缺 `darwin_arm64`）。刻意未补发——重发同版本会重建 Release 并可能改资产哈希；补齐应在 macOS runner 空档专门做一轮。
 
-- 当前会话（2026-11-07 01:10）：**qoderwork 0.13.0 面板批量导入（发布 + 生产热重载验收通过）**：
-  - 诉求：「希望 QoderWork 改成支持批量 json 导入」（截图显示导入弹窗只能单个 PAT）。缺口：旧实现只有单个 PAT 输入框 + 「从备份恢复」单段 textarea，无文件选择器、不认 PAT 列表、不能混排，落后于 workbuddy/traework 已有多文件批量导入。
-  - 实现（纯前端 `panel.html`，后端零改动）：多文件多选（.json/.jsonl/.txt ≤2MB）+ 统一文本识别（PAT 多行/逗号分隔、单凭据、凭据数组、`accounts[].credential` 导出包装、`{pats:[]}`/`{tokens:[]}`、JSONL、混排）；**判定顺序必须先凭据后 PAT**（含 personalToken 的完整凭据若当 PAT，会丢 accessToken 并白打一次上游）；PAT→`/import`、凭据→`/import-cred`；逐条串行 + 150ms 间隔、单项失败不中断、批内去重、部分失败时输入框自动收敛为「仅失败项」。
-  - 验证：`test/qoderwork/panel_batch_import.mjs` 24 条 + `panel_batch_import_e2e.mjs` 26 条（Node vm + DOM 桩真实执行面板 JS）全绿；**5 个变异全部 KILLED**（凭据首判失效 / 端点分流反转 / 吞掉单项异常 / 回填含成功项 / 去重失效）；cgo-shim build+vet+test 全绿；CI run `42260811851` success（12 测试 job + 6 平台构建 + Release）。
-  - 发布：`dfaecb6`(feat) → `8c41737`(registry) → 远端 registry 0.13.0 + 6/6 资产 sha256 匹配；生产 `plugin-store install` → `hot reloaded active_version=0.13.0 retired_version=0.12.6`，落盘 .so sha256 `abc65a15…` 与本地 zip 逐字节一致；`/accounts` 与 `/panel` 均 200，账号数 2 与部署前一致；生产面板 HTML 实测含 `batchImportBtn`/`parseBatchInput`/`runBatchImport`，「importCredText」已清零。
-  - **并发处理（重要教训）**：工作树 registry.json 被并行会话预写了 3 个插件（workbuddy 0.21.10 / workbuddy-ai 0.1.36 / qoder-ai 0.1.36，Release 已建、registry 未提交）。按「非本轮改动默认保护」未纳入：备份完整 registry → 用 HEAD + 仅 qoderwork 条目重建 → 路径限定提交 → 把 peer 三条目写回工作树，对方可继续提交。
-  - 边界：未在生产实际跑一次批量导入（会真实新建账号、污染账号池）；ZIP 不能直接拖入（浏览器无解包库），需先解压；逐条写盘会逐条触发宿主 auth watcher，属既有架构行为。
+- 会话（2026-11-07 01:10）：**qoderwork 0.13.0 面板批量导入（已发布 + 生产验收）**：旧弹窗只能单个 PAT，备份恢复不认文件/列表/混排。改为多文件多选（.json/.jsonl/.txt ≤2MB）+ 统一文本识别（PAT 多行、单凭据、数组、`accounts[].credential`、`{pats:[]}`、JSONL、混排）；**判定顺序先凭据后 PAT**（否则含 personalToken 的完整凭据被当 PAT，丢 accessToken）；PAT→`/import`、凭据→`/import-cred`；串行 +150ms、单项失败不中断、批内去重、部分失败收敛为「仅失败项」。验证：两个 .mjs（24+26 断言）+ 5 变异 KILLED + cgo-shim 全绿 + CI `42260811851`；发布 `dfaecb6`→`8c41737`，生产 hot reloaded 0.13.0、sha 一致、accounts/panel 200。边界：未在生产实跑导入（会真建账号）；ZIP 需先解压。
 
 - 当前会话（2026-10-31 下午）：**宿主 management.html 自动升级导致 10 插件面板集体 401（已修复并批量发生产，热重载验收通过）**：
   - **用户诉求**：贴出生产截图（WorkBuddy 面板「management key 无效或缺失（将自动重试）」，计数器全 0，侧栏「认证文件 44」）问「这是什么问题?」，随后「顺便把其他 10 个同实现的插件一起改掉」。
