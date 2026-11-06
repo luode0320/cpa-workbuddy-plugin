@@ -147,7 +147,10 @@ jobs:
               ("linux", "amd64", "ubuntu-24.04", "so"),
               ("linux", "arm64", "ubuntu-24.04-arm", "so"),
               ("darwin", "amd64", "macos-15-intel", "dylib"),
-              ("darwin", "arm64", "macos-15", "dylib"),
+              # arm64 用 macos-14：macos-15 标签的运行器池近两轮排队 15 分钟仍拿不到
+              # runner（runner_id=0 后被系统取消），而 macos-14 同为 Apple Silicon
+              # 架构、镜像稳定。构建产物同为 arm64 dylib，只是镜像版本不同。
+              ("darwin", "arm64", "macos-14", "dylib"),
               ("windows", "amd64", "windows-2025", "dll"),
           ]
 
