@@ -46,6 +46,18 @@
   - **测试**：新增 `qoderwork/policy_test.go`（10 组正文 + 6 组 role 校验）、`traework/request_shape_test.go`（9 组正文 + 6 组 role 校验 + 分类层断言）。变异验证：停用判定后多个用例 KILLED。两插件 cgo-shim build/vet/test 全绿。**修复被既有 `TestClassifyUpstreamFailureMatchesLegacyCountGate`（14 状态 × 15 正文）拦下两次**，最终把豁免收窄到仅 HTTP 200 才通过 —— 该测试是防止悄悄放宽记账范围的有效门禁。
   - **本轮测试自身造成并已修复的生产影响**：`traework-3841050312977305` 被误禁，已通过插件 `POST /enable`（auth_index `0e07cb85e5b67d41`）恢复，盘上 `disabled=false`、sidecar 条目清除。
   - **附带发现（未修，非本轮范围）**：coze 插件每秒约 30 次重写 23 个 auth 文件，把 docker json.log 顶到 1.12GB，严重干扰日志检索。
+  - **第二轮补测（2026-11-08 00:00-00:15，针对 deepseek-flash）**：以下维度全部正常，未发现新缺陷 ——
+    - `reasoning_effort` 六档（minimal/low/medium/high/max/none）+ 不传：全部 200，各档 reasoning 长度单调合理（none 最短 46 字符、medium 最长 140 字符）。**修正旧认知**：此前记忆称「traework 上游不支持 reasoning_effort」，实测各档位均被接受且不报错。
+    - 断连恢复：客户端读 5 个 chunk 后主动断开，后续正常请求 **0 影响**（deepseek-flash 2.86s / dfmodel 1.33s）。
+    - 超长输入 10k/50k/200k/500k 字符：全部 200。10k 那次耗时 38s（冷号 prefill），其余 3.6~10.7s。
+    - 并发 10：deepseek-flash 10/10（2.73s）、dfmodel 10/10（4.06s）。
+    - 多模态图片输入：两插件均 200。
+    - 连续 20 次稳定性：**20/20 成功**。
+    - 会话粘连：同一 session_key 连发 5 次，宿主按轮询分摊到不同账号（qoderwork 4 次 + traework 1 次），属宿主 `routing.strategy` 设计，不是缺陷。
+    - 参数边界：`mt=0/1/-1/1e9` 全部 200 原样透传；`mt="abc"` 本地 500 `payload parse`（未打上游，正确）；`temperature=5` / `top_p=2` / `role=tool 无 id` / `role=空` / `messages=null` / `content=null` 单独发送时均 200。
+    - **连环 14 个畸形请求会把宿主打到瞬时 503**，但账号池 `disabled=0`、无冷却日志，**约 1 分钟内自行恢复**（实测 6/6 全部 200）。属宿主 `request-retry: 30` 被耗尽后的瞬时过载，非插件缺陷。
+  - **workbuddy deepseek-v4.1-flash 补测**：`max_tokens` 严格精确执行（16→16、100→100、500→500→后者正文被 reasoning 吃光）。`eff=none` 时 mt=16/100/300 都正常出正文（`out=1 chars=1 txt='8'`）。**`eff=low/max` + `mt=16` 时 reasoning 吃光全部预算、正文 0 字符（`fin=length`）** —— 经三方对照确认是上游「思考与正文共享预算」语义（qoder/trae 同条件 `mt=16` 因上游对思考另行计费而不复现），不是插件缺陷。
+
   - **workbuddy 侧（只读 sidecar 收集，另一会话在改）**：24h 内 workbuddy 上游失败 0 条（最近 2 小时）；20 个账号盘上 `failover_disable` 标记 16→0 已清净；已知遗留问题 = low-credit 禁用与探活「恢复」无限拉锯（`re-enabled` 累计 6000+ 次）、探活回放不可信模型名 `deepseek-v4.1-flash(备用)`、管理密钥与客户端 API key 同为 9 字符（安全问题）。
 
 - 会话（2026-11-07 21:05-22:25）：**workbuddy 首字延迟/超长长尾根因诊断 + P0/P1 修复（0.21.14）**：
