@@ -73,6 +73,13 @@ func cgoCBytes([]byte) unsafe.Pointer      { return nil }
 func cgoFree(unsafe.Pointer)               {}
 func cgoCallHost(*cliproxy_host_api, *int8, *uint8, uintptr, *cliproxy_buffer) int32 { return 0 }
 func cgoFreeHostBuffer(*cliproxy_host_api, unsafe.Pointer, uintptr)                  {}
+
+// safeguard-killer 用 preamble 里的静态封装（store_host_api / call_host_api /
+// free_host_buffer）间接访问宿主 API，这三个符号也必须给桩，否则 shim 阶段的
+// C.* 替换会留下一半未定义引用。
+func cgoStoreHostAPI(*cliproxy_host_api)                                                {}
+func cgoCallHostAPI(*int8, *uint8, uintptr, *cliproxy_buffer) int32                     { return 0 }
+func cgoFreeHostBufferAPI(unsafe.Pointer, uintptr)                                      {}
 '''
 
 # Ordered longest-first so typed names replace before generic ones.
@@ -92,6 +99,11 @@ C_REPLACEMENTS = [
     ("C.GoString", "cgoGoString"),
     ("C.CString", "cgoCString"),
     ("C.CBytes", "cgoCBytes"),
+    ("C.store_host_api", "cgoStoreHostAPI"),
+    ("C.call_host_api", "cgoCallHostAPI"),
+    # 必须排在 "C.free" 之前：字符串前缀替换会把 C.free_host_buffer 拆成
+    # cgoFree_host_buffer，留下未定义符号。
+    ("C.free_host_buffer", "cgoFreeHostBufferAPI"),
     ("C.free", "cgoFree"),
     ("C.uint32_t", "uint32"),
     ("C.uint8_t", "uint8"),

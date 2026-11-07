@@ -658,6 +658,72 @@
           }
         ]
       }
+    },
+    {
+      "id": "safeguard-killer",
+      "name": "Safeguard Killer",
+      "description": "Neutralize model safeguards and auto-mode classifiers across Claude Code, Claude, OpenAI/Codex and Gemini, strip refusal-taint telemetry, and route around refusals with Smart Groups (5m prompt-cache sticky failover chains, quota-aware credential balancing). Requires management_key in the plugin config.",
+      "author": "luode0320 (ported from esauvisky/CLIProxyAPI-Safeguard-Killer-Plugin)",
+      "version": "0.1.0",
+      "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
+      "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/SafeguardKiller.png",
+      "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/safeguard-killer",
+      "license": "MIT",
+      "tags": [
+        "Scheduler",
+        "Router",
+        "Executor",
+        "Quota",
+        "Management",
+        "Safeguard"
+      ],
+      "install": {
+        "type": "direct",
+        "artifacts": [
+          {
+            "goos": "darwin",
+            "goarch": "amd64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.0/safeguard-killer_0.1.0_darwin_amd64.zip",
+            "sha256": "PLACEHOLDER_SHA256",
+            "size": 0
+          },
+          {
+            "goos": "darwin",
+            "goarch": "arm64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.0/safeguard-killer_0.1.0_darwin_arm64.zip",
+            "sha256": "PLACEHOLDER_SHA256",
+            "size": 0
+          },
+          {
+            "goos": "linux",
+            "goarch": "amd64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.0/safeguard-killer_0.1.0_linux_amd64.zip",
+            "sha256": "PLACEHOLDER_SHA256",
+            "size": 0
+          },
+          {
+            "goos": "linux",
+            "goarch": "arm64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.0/safeguard-killer_0.1.0_linux_arm64.zip",
+            "sha256": "PLACEHOLDER_SHA256",
+            "size": 0
+          },
+          {
+            "goos": "windows",
+            "goarch": "amd64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.0/safeguard-killer_0.1.0_windows_amd64.zip",
+            "sha256": "PLACEHOLDER_SHA256",
+            "size": 0
+          },
+          {
+            "goos": "windows",
+            "goarch": "arm64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.0/safeguard-killer_0.1.0_windows_arm64.zip",
+            "sha256": "PLACEHOLDER_SHA256",
+            "size": 0
+          }
+        ]
+      }
     }
   ]
 }

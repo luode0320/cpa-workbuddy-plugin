@@ -14,6 +14,7 @@
 #   - tag 'copilot-provider-v*'             → release copilot-provider at that version
 #   - tag 'coze-provider-v*'                → release coze-provider at that version
 #   - tag 'qwenwork-provider-v*'            → release qwenwork-provider at that version
+#   - tag 'safeguard-killer-v*'             → release safeguard-killer at that version
 #   - workflow_dispatch                       → pick plugin + version manually
 #   - plain push/PR                          → CI builds for all (artifacts only, no release)
 #
@@ -43,13 +44,14 @@ on:
       - "copilot-provider-v*"
       - "coze-provider-v*"
       - "qwenwork-provider-v*"
+      - "safeguard-killer-v*"
   workflow_dispatch:
     inputs:
       plugin:
         description: "Plugin to release"
         required: true
         type: choice
-        options: [workbuddy-provider, qoderwork-provider, workbuddy-token-usage, traework-provider, workbuddy-ai-provider, cursor-provider, qoder-ai-provider, zcode-provider, copilot-provider, coze-provider, qwenwork-provider]
+        options: [workbuddy-provider, qoderwork-provider, workbuddy-token-usage, traework-provider, workbuddy-ai-provider, cursor-provider, qoder-ai-provider, zcode-provider, copilot-provider, coze-provider, qwenwork-provider, safeguard-killer]
       version:
         description: "Version without v (empty = plugin's VERSION file)"
         required: false
@@ -90,6 +92,7 @@ jobs:
           - dir: copilot
           - dir: coze
           - dir: qwenwork
+          - dir: safeguard-killer
     defaults:
       run:
         working-directory: ${{ matrix.dir }}
@@ -142,6 +145,8 @@ jobs:
               "copilot-provider": "copilot",
               "coze-provider": "coze",
               "qwenwork-provider": "qwenwork",
+              # 源码目录名与 plugin id 同名（上游 safeguard-killer 原样 vendor）。
+              "safeguard-killer": "safeguard-killer",
           }
           NATIVE = [
               ("linux", "amd64", "ubuntu-24.04", "so"),
@@ -412,7 +417,8 @@ jobs:
         startsWith(github.ref, 'refs/tags/zcode-provider-v') ||
         startsWith(github.ref, 'refs/tags/copilot-provider-v') ||
         startsWith(github.ref, 'refs/tags/coze-provider-v') ||
-        startsWith(github.ref, 'refs/tags/qwenwork-provider-v')
+        startsWith(github.ref, 'refs/tags/qwenwork-provider-v') ||
+        startsWith(github.ref, 'refs/tags/safeguard-killer-v')
       )
     needs:
       - test
@@ -452,6 +458,8 @@ jobs:
             P="coze-provider"; V="${GITHUB_REF_NAME#coze-provider-v}"
           elif [[ "${GITHUB_REF_NAME}" == qwenwork-provider-v* ]]; then
             P="qwenwork-provider"; V="${GITHUB_REF_NAME#qwenwork-provider-v}"
+          elif [[ "${GITHUB_REF_NAME}" == safeguard-killer-v* ]]; then
+            P="safeguard-killer"; V="${GITHUB_REF_NAME#safeguard-killer-v}"
           else
             P="workbuddy-token-usage"; V="${GITHUB_REF_NAME#workbuddy-token-usage-v}"
           fi
@@ -546,6 +554,7 @@ jobs:
             copilot-provider)      DISPLAY="GitHub Copilot" ;;
             coze-provider)         DISPLAY="Coze Provider" ;;
             qwenwork-provider)     DISPLAY="QwenWork Provider" ;;
+            safeguard-killer)      DISPLAY="Safeguard Killer" ;;
           esac
           TITLE="${DISPLAY:-$PLUGIN} v${VERSION}"
           # tag 由 gh release create 自动创建（指向当前提交）。
