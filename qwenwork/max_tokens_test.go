@@ -5,134 +5,127 @@ import (
 	"testing"
 )
 
-// TestAdaptiveMaxTokens 验证统一上限下的自适应计算。
+// TestNormalizeMaxTokensInPlace 验证输出上限字段的归一化行为。
 //
-// 2026-10-30 起不再按模型区分：推理与非推理模式统一 128k，
-// 所有模型（含未收录与别称）行为一致。
-// [参数] t: 测试上下文
+// 2026-11-07 按社区共识改造后的契约：只做别名翻译与 GPT 系下限，
+// 其余一律原样透传。改造前存在四类自研控制（统一 32768 地板、统一 128000
+// 上限、推理模式放宽 <=8192、元数据无条件抬至 128000），GitHub 七家
+// WorkBuddy 反代项目无一采用，且本方已有生产事故实证，全部删除。
+// [参数] t：测试上下文
 // [返回] 无
-// 最近修改时间：2026-11-04；改动原因：非推理上限由 64000 抬升至 128000（2026-10-30 全局统一上限的延续）。
-func TestAdaptiveMaxTokens(t *testing.T) {
+// 最近修改时间：2026-11-07；改动原因：删除自研 max_tokens 控制，对齐社区共识。
+func TestNormalizeMaxTokensInPlace(t *testing.T) {
 	cases := []struct {
-		name        string
-		model       string
-		requested   int64
-		isReasoning bool
-		wantTokens  int64
+		name    string
+		body    map[string]any
+		want    int64
+		wantHas bool
 	}{
 		{
-			name:        "非推理模式 + 未传 -> 补足为 128000",
-			model:       "Qwen3.8-Flash",
-			requested:   0,
-			isReasoning: false,
-			wantTokens:  128000,
+			name:    "别名翻译：仅传 max_completion_tokens 8192",
+			body:    map[string]any{"model": "qwen3.8-max", "max_completion_tokens": float64(8192)},
+			want:    8192, wantHas: true,
 		},
 		{
-			name:        "推理模式 + 传 8192 -> 放宽至 128000",
-			model:       "Qwen3.8-Flash",
-			requested:   8192,
-			isReasoning: true,
-			wantTokens:  128000,
+			name: "显式 max_tokens 优先：别名只删不译",
+			body: map[string]any{"model": "qwen3.8-max", "max_tokens": float64(4096),
+				"max_completion_tokens": float64(8192)},
+			want: 4096, wantHas: true,
 		},
 		{
-			name:        "推理模式 + 未传 -> 补足为 128000",
-			model:       "GLM-5.3",
-			requested:   0,
-			isReasoning: true,
-			wantTokens:  128000,
+			name:    "别名 0 不翻译",
+			body:    map[string]any{"model": "qwen3.8-max", "max_completion_tokens": float64(0)},
+			want:    0, wantHas: false,
 		},
 		{
-			name:        "推理模式 + 超限 200000 -> 截断至 128000",
-			model:       "flash",
-			requested:   200000,
-			isReasoning: true,
-			wantTokens:  128000,
+			name:    "别名负数不翻译",
+			body:    map[string]any{"model": "qwen3.8-max", "max_completion_tokens": float64(-1)},
+			want:    0, wantHas: false,
 		},
 		{
-			name:        "非推理模式 + 超限 200000 -> 截断至 128000",
-			model:       "flash",
-			requested:   200000,
-			isReasoning: false,
-			wantTokens:  128000,
+			name:    "未传不补值",
+			body:    map[string]any{"model": "qwen3.8-max"},
+			want:    0, wantHas: false,
+		},
+		{
+			name: "生产事故回归：推理模式 + 显式 2000 原样保留",
+			body: map[string]any{"model": "qwen3.8-max", "reasoning_effort": "high",
+				"max_tokens": float64(2000)},
+			want: 2000, wantHas: true,
+		},
+		{
+			name: "推理模式 + 保守 8192 不再放宽",
+			body: map[string]any{"model": "qwen3.8-max", "reasoning_effort": "high",
+				"max_tokens": float64(8192)},
+			want: 8192, wantHas: true,
+		},
+		{
+			name:    "显式小值不再套 32768 地板",
+			body:    map[string]any{"model": "glm-5.2", "max_tokens": float64(100)},
+			want:    100, wantHas: true,
+		},
+		{
+			name:    "超出统一上限也不再预截断",
+			body:    map[string]any{"model": "qwen3.8-max", "max_tokens": float64(200000)},
+			want:    200000, wantHas: true,
+		},
+		{
+			name:    "GPT 系 <16 抬至 16",
+			body:    map[string]any{"model": "gpt-6-sol", "max_tokens": float64(5)},
+			want:    16, wantHas: true,
+		},
+		{
+			name:    "非 GPT 系 <16 原样保留",
+			body:    map[string]any{"model": "glm-5.2", "max_tokens": float64(5)},
+			want:    5, wantHas: true,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := computeAdaptiveMaxTokens(tc.model, tc.requested, tc.isReasoning)
-			if got != tc.wantTokens {
-				t.Fatalf("computeAdaptiveMaxTokens(%s, %d, %v) = %d, want %d",
-					tc.model, tc.requested, tc.isReasoning, got, tc.wantTokens)
+			normalizeMaxTokensInPlace(tc.body)
+			got, has := tc.body["max_tokens"]
+			if has != tc.wantHas {
+				t.Fatalf("max_tokens 存在性 = %v, want %v; body=%v", has, tc.wantHas, tc.body)
+			}
+			if has {
+				gotNum, ok := positiveIntValue(got)
+				if !ok || gotNum != tc.want {
+					t.Fatalf("max_tokens = %v (%d, ok=%v), want %d", got, gotNum, ok, tc.want)
+				}
+			}
+			if _, leaked := tc.body["max_completion_tokens"]; leaked {
+				t.Fatalf("max_completion_tokens 必须被删除，body=%v", tc.body)
 			}
 		})
 	}
 }
 
-// TestWbModels_OfficialSpecs 验证静态模型表的输出上限按官方规格填充。
-func TestWbModels_OfficialSpecs(t *testing.T) {
-	for _, m := range wbModels() {
-		if m.MaxCompletionTokens < minMaxTokensFloor {
-			t.Fatalf("model %s MaxCompletionTokens = %d, want >= %d",
-				m.ID, m.MaxCompletionTokens, minMaxTokensFloor)
-		}
-	}
-}
+// TestPrepareUpstreamBody_MaxTokensPassthrough 验证端到端请求体不再改写显式值。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-07；改动原因：删除自研 max_tokens 控制，对齐社区共识。
+func TestPrepareUpstreamBody_MaxTokensPassthrough(t *testing.T) {
+	in := []byte(`{"model":"qwen3.8-max","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}],"max_tokens":8192}`)
+	out := prepareUpstreamBody(in, "qwen3.8-max")
 
-// TestPrepareUpstreamBody_ForcesStreamAndRelaxesTokens 验证透传改写：
-// 强制 stream=true，并在思考模式下把保守的 8192 放宽到官方推理上限。
-func TestPrepareUpstreamBody_ForcesStreamAndRelaxesTokens(t *testing.T) {
-	raw := []byte(`{"model":"qwen3.8-max-preview","stream":false,"max_tokens":8192,` +
-		`"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`)
-	out := prepareUpstreamBody(raw, "")
 	var obj map[string]any
 	if err := json.Unmarshal(out, &obj); err != nil {
-		t.Fatalf("prepareUpstreamBody produced invalid JSON: %v", err)
+		t.Fatalf("unmarshal output: %v", err)
 	}
-	if stream, _ := obj["stream"].(bool); !stream {
-		t.Fatal("stream must be forced to true")
+	if got, _ := positiveIntValue(obj["max_tokens"]); got != 8192 {
+		t.Fatalf("max_tokens = %d, want 8192（客户端显式值必须原样保留）; raw: %s", got, string(out))
 	}
-	if got := jsonI64(obj, "max_tokens"); got != 128000 {
-		t.Fatalf("max_tokens = %d, want 128000", got)
-	}
-	// 原请求的其余字段必须原样保留。
-	if _, ok := obj["messages"]; !ok {
-		t.Fatal("messages must be preserved by passthrough rewrite")
-	}
-}
 
-// TestPrepareUpstreamBody_RewritesModelToUpstreamID 验证透传体会把客户端
-// 模型名改写为已反解的上游真实 ID。
-//
-// 缺陷背景（2026-10-18 生产实证）：宿主虽把 ExecutorRequest.Model 反解成
-// 真实 ID，但 Payload 是客户端原文、里面仍是别名。插件此前直接透传 Payload，
-// 上游收到别名后返回 400 invalid_request（param=None）。
-func TestPrepareUpstreamBody_RewritesModelToUpstreamID(t *testing.T) {
-	raw := []byte(`{"model":"qwen-3.8-max","stream":true,` +
-		`"messages":[{"role":"user","content":"hi"}]}`)
-	out := prepareUpstreamBody(raw, "qwen3.8-max-preview")
-	var obj map[string]any
-	if err := json.Unmarshal(out, &obj); err != nil {
-		t.Fatalf("prepareUpstreamBody produced invalid JSON: %v", err)
-	}
-	if got := jsonStr(obj, "model"); got != "qwen3.8-max-preview" {
-		t.Fatalf("body model = %q, want qwen3.8-max-preview (alias must be rewritten)", got)
-	}
-	// 空上游模型名时不得清空原值。
-	out2 := prepareUpstreamBody(raw, "")
+	// 未传 max_tokens -> 不得凭空补值
+	in2 := []byte(`{"model":"qwen3.8-max","messages":[{"role":"user","content":"hi"}]}`)
+	out2 := prepareUpstreamBody(in2, "qwen3.8-max")
+
 	var obj2 map[string]any
 	if err := json.Unmarshal(out2, &obj2); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
+		t.Fatalf("unmarshal output: %v", err)
 	}
-	if got := jsonStr(obj2, "model"); got != "qwen-3.8-max" {
-		t.Fatalf("empty upstreamModel must keep original model, got %q", got)
-	}
-}
-
-// TestPrepareUpstreamBody_InvalidJSONPassthrough 验证非法 JSON 原样返回，
-// 保证请求仍能发到上游由其报错，而不是被插件吞掉。
-func TestPrepareUpstreamBody_InvalidJSONPassthrough(t *testing.T) {
-	raw := []byte(`not-json`)
-	if got := prepareUpstreamBody(raw, ""); string(got) != string(raw) {
-		t.Fatalf("invalid JSON must pass through unchanged, got %q", got)
+	if _, has := obj2["max_tokens"]; has {
+		t.Fatalf("未传 max_tokens 时不得补值，raw: %s", string(out2))
 	}
 }

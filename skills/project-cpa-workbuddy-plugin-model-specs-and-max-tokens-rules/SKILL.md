@@ -1,154 +1,165 @@
 ---
 name: project-cpa-workbuddy-plugin-model-specs-and-max-tokens-rules
-description: 当开发、接入新 AI 服务商插件（如 workbuddy、qoder-ai、qoderwork、traework、zcode、cursor）、新增大模型接入、或排查「模型推理卡死 50~60 秒然后断开/失败」、「长思考链模型输出被截断（finish_reason=length 且正文为空）」、「客户端写死 max_output_tokens=8192 导致思维链吃满配额」、以及「上游报 400 Bad Request: max_tokens exceeds model limit」时强制自动触发。负责落实按模型权威官方规格自适应计算与放宽 max_tokens 机制，坚决杜绝盲目硬编码 8192 与无差别填 128k 两种极端反模式。
+description: 当开发、接入新 AI 服务商插件（如 workbuddy、workbuddy-ai、qoder-ai、qoderwork、traework、zcode）、新增模型接入，或排查「模型推理卡死 50~60 秒后断开」「长思考模型输出被截断（finish_reason=length 且正文为空）」「客户端写死 max_output_tokens 导致思维链吃满配额」「上游报 400 max_tokens 参数非法」时强制自动触发。本规则的方向是「最小干预」：显式值原样透传，只做别名翻译与 GPT 系下限，坚决禁止插件层抬升、放宽、按统一上限截断或补足输出上限。
 ---
 
-# cpa-workbuddy-plugin 大模型官方规格自适应与 max_tokens 放宽规范
+# cpa-workbuddy-plugin max_tokens 最小干预规范
 
-## 1. 适用范围与触发信号
+## 0. 本规则的方向（先读这一条）
 
-- **新插件/新模型接入**：在仓库下新增或维护任何 provider 插件（如 `workbuddy`、`workbuddy-ai`、`qoderwork`、`qoder-ai`、`traework`、`zcode`、`cursor` 等）的请求体处理（`payload.go` / `upstream.go`）与模型目录元数据（`models.go`）；
-- **故障排查信号**：
-  - 用户反馈长上下文任务中「推理进行到 50~60 秒突然报错或断开」；
-  - 客户端报错「工具调用失败」或「生成内容为空」；
-  - new-api 消费日志出现 `content: "上游没有返回计费信息，无法扣费"` 且 `completion_tokens: 0`；
-  - token-usage 底层记录显示 `output_tokens: 8192, reasoning_tokens: 8192`（即输出全部被思维链耗尽，正文 0 token）；
-  - 上游网关返回 `HTTP 400: max_tokens exceeds model limit` 或参数不合法。
+**插件层不得替客户端决定输出上限。** 2026-11-07 起，本仓库七个插件
+（workbuddy / workbuddy-ai / qoder-ai / qoderwork / traework / zcode / qwenwork）统一
+采用 GitHub 上七个 WorkBuddy 反代项目的交集做法：
 
----
+> 显式传值原样透传；只在「客户端未传」时按各插件自身上游语义决定；
+> 只保留两条有硬证据的归一化（别名翻译、GPT 系下限 16）。
 
-## 2. 根因机理与三大极端反模式
+历史上本仓库曾自行设计过四类「输出上限控制」，全部已删除，不得恢复：
 
-### 2.1 思考模型（Reasoning Models）的 Token 吞噬机制
-- 在 `deepseek-v4.1-flash`、`deepseek-reasoner`、`claude-3-7-sonnet (Thinking)`、`o1`、`kimi-k2.6`、`glm-5.3` 等支持深度思考的模型中，**思维链产生的 `reasoning_content` 会计入上游的单次输出总量（`output_tokens`）**；
-- 当上下文庞大（如 30~50 万 tokens）且思考强度为 `high` 时，模型思考链会产生数千乃至上万 tokens；
-- 若请求中限定了较小的 `max_tokens`（如 8192），上游在生成完第 8192 个思考 token 时就会因触顶被 `finish_reason: "length"` 强行截断，**导致正文输出一个字都来不及吐出**，下游客户端直接判定失败。
+1. 统一 `minMaxTokensFloor = 32768` 最低输出底线；
+2. `defaultMaxOutputTokens` / `defaultReasoningMaxTokens = 128000` 统一上限；
+3. 推理模式下把客户端 `<= 8192` 的显式值放宽到 128000；
+4. 对外广播的 `MaxCompletionTokens` 无条件抬至 128000。
 
-### 2.2 必须坚决避免的三大反模式
+## 1. 删除依据（改动前必读，防止改回去）
 
-1. **反模式一：盲目硬编码 `8192`（客户端与早期插件通病）**
-   - 典型表现：Qoder Desktop 客户端在前端代码中将所有自定义模型写死 `max_output_tokens: 8192`；部分早期插件静态列表全部写死 `8192`。
-   - 后果：大模型在长思考下必然触顶截断，造成长卡顿后彻底失败。
-2. **反模式二：无差别填成 `128,000`**
-   - 典型表现：对所有模型不分青红皂白一律改写为 128k。
-   - 后果：部分严格校验入参的上游网关（如原生 OpenAI 接口、部分聚合路由）会直接返回 `400 Bad Request: max_tokens must be <= 8192`，导致请求连首字节都无法产生。
-3. **反模式三：插件层完全不干涉原样透传**
-   - 典型表现：客户端传什么就发给上游什么。
-   - 后果：上游原本支持 64k/128k 的大模型，被客户端自带的保守值（8192）给活活锁死。
+### 1.1 本方生产事故（2026-11-07）
 
----
+`max_tokens=2000` 被旧逻辑放宽到 128000，上游实际生成 12000~22000 tokens、
+耗时 80~145 秒，被调用方判为超时/卡死。输出上限是调用方的显式契约，
+插件单方面放大 64 倍属于越权。
 
-## 3. 核心机制：按模型权威官方规格自适应收敛（Adaptive Max Tokens）
+同类事故在 traework 非流式路径也发生过：显式 2000 被地板抬回 32768，
+实测生成 11203 tokens、耗时 72 秒。
 
-所有插件必须遵守 **「官方规格驱动 + 推理模式识别 + 安全区间收敛」** 算法。
+### 1.2 社区实测事实
 
-### 3.1 权威规格表维护（`model_specs.go`）
-每个插件必须维护一份官方规格表（见 `references/model-specs-matrix.md`），包含三个维度：
-- `ContextWindow`: 上下文总长度（如 1,048,576）
-- `MaxOutputTokens`: 官方常规最大输出 token（如 16,384）
-- `ReasoningMax`: 官方思维链/推理模式下的最大输出 token（如 64,000 或 128,000）
+| 事实 | 来源 | 对旧设计的含义 |
+|---|---|---|
+| 上游对越界 `max_tokens` 是**静默钳制**，不返回 400 | linguo2625469：16 个 CN 模型中 8 个被钳制，最狠声称 1M 实际 32K | 「防上游 400」这个前提不存在，Safety Clamp 防错了对象 |
+| 思考与最终回答**共享** output 预算，上游无独立思考上限字段 | linguo2625469 `internal/upstream/client.go:1283`；ardeyouxipianyi `test_reasoning_tokens_ride_inside_completion` | 抬 `max_tokens` 不是解决正文被思考吃光的杠杆 |
+| `max_tokens` **不计入**上下文窗口 | sixzjd README：`prompt≈70000 + max_tokens=64000` 通过 100000 窗口 | context 与 output 是两套独立预算 |
+| `/v1/models` 声称的输出上限普遍虚高 | linguo2625469 probe 结论 | 按声称值 clamp 无意义 |
+| GPT 系 `max_tokens < 16` 返回 400 `code=11133` | linguo2625469、ardeyouxipianyi 两家独立实测（15 拒、16 过） | 这是唯一需要插件兜的下限 |
 
-### 3.2 自适应四步收敛法（`computeAdaptiveMaxTokens`）
+### 1.3 七家项目的策略分布
 
-```
-                     客户端输入 requestedTokens
-                               │
-               ┌───────────────┴───────────────┐
-               ▼                               ▼
-       未传入（<= 0）                     显式传入（> 0）
-               │                               │
-               │                               ▼
-               │                是否思考模式 且 requested <= 8192
-               │                且 官方 ReasoningMax > 8192 ?
-               │                     /               \
-               │                  是/                 \否
-               │                   ▼                   ▼
-               │         提升至该模型官方 ReasoningMax  是否超出官方上限
-               │         (如 DeepSeek 64k, GLM 128k)  requested > targetMax ?
-               │                                       /       \
-               │                                    是/         \否
-               ▼                                     ▼           ▼
-        补足为官方目标上限                      截断至官方上限   保留原值
-      (TargetMax: 常规或推理)                 (Safety Clamp)
-```
+| 项目 | 显式值处理 | 未传处理 | 上限处理 |
+|---|---|---|---|
+| tonny0812/workbuddy2api | 纯透传 | 不补 | 无 |
+| lovingfish/workbuddy-cliproxy | 无相关代码 | — | — |
+| dingminhua/dsh-connect-workbuddy | 明确不改 | 不补 | 无 |
+| sixzjd/dsh-workbuddy-connect | 别名翻译 | 不补 | 无 |
+| linguo2625469/workbuddy2api-panel | 别名翻译 + GPT<16→16 | 不补 | 只抬下限 |
+| ardeyouxipianyi/workbuddy2api-hub | 别名翻译 + GPT<16→16 | 按目录补 | 探测值只标注不覆盖 |
+| ithtelab/workbuddy-manager | 三字段统一钳 1e6 | 不补 | 防 int32 溢出 |
+| **本仓库（改造后）** | 别名翻译 + GPT<16→16 | 按各插件上游语义 | 不预截断 |
 
-1. **未传参数补足**：客户端未传入 `max_tokens` 时，自动补足为该模式下的官方最大推荐值；
-2. **破除客户端保守死锁**：处于思考/推理模式时，若客户端传入保守过小值（`<= 8192`），且官方推理上限更大，**自动提升至该模型官方推理上限（如 DeepSeek 提升至 64k，GLM 提升至 128k，Claude 提升至 64k）**；
-3. **防止上游 400 截断（Safety Clamp）**：若客户端传入数值超过了该模型官方允许的最大上限，自动截断收敛到官方上限，避免上游网关报错 400；
-4. **合理区间原样保留**：客户端在合法区间内指定的数值，原样尊重并保留。
+**七家无一做「抬升显式小值」或「统一地板」。**
 
-### 3.3 全模型统一最低输出底线（`minMaxTokensFloor = 32768`）
+## 2. 核心机制：最小干预三原则
 
-在自适应收敛的**所有出口之后**，必须再套一层统一最低输出底线，保证任何路径（含官方规格本身 `< 32768` 的模型、兜底 fallback 规格、广播层元数据）都不会对外给出低于 32768 的输出上限。
+### 2.1 原则一：显式值零干预
+
+客户端传入的 `max_tokens` 一律原样发给上游：
+
+- 不按 `reasoning_effort` 或模型名放宽；
+- 不套最低地板；
+- 不按统一上限或模型上限预截断（上游静默钳制，预截断只会掩盖真实规格）。
+
+### 2.2 原则二：未传时按各插件自身上游语义
+
+| 插件 | 未传时的行为 | 依据 |
+|---|---|---|
+| workbuddy / workbuddy-ai / zcode / qwenwork | 不写该字段 | 上游有自己的默认值 |
+| qoder-ai / qoderwork | 不覆盖模板，保留 `baseprompt.json` 的 32768 | 该值来自官方客户端模板，非自研魔数 |
+| traework（流式） | 补 `streamDefaultMaxTokens` | trae 上游对未传会给极小上限，长任务刚开口就 done（独立实测） |
+| traework（非流式） | 不写该字段 | 沿用既有语义 |
+
+### 2.3 原则三：只保留两条有硬证据的归一化
+
+1. **别名翻译**：`max_completion_tokens` → `max_tokens`。
+   - 上游只认 `max_tokens`，别名透传会被忽略后回落上游默认（实测 32000）；
+   - 显式 `max_tokens` 优先，别名无论是否翻译一律删除；
+   - 非正整数（0 / null / 负数 / 字符串 / 小数）不翻译，不把畸形值洗成合法值。
+2. **GPT 系下限**：`gpt-` 前缀模型且 `< 16` 时抬至 16。
+   - 两家独立实测：15 拒、16 过，`code=11133 model_param_invalid`；
+   - 非 GPT 模型无此限制，不得套用。
+
+## 3. 插件实施规范
+
+### 3.1 策略层（`model_specs.go`，六插件逐字节同源）
 
 ```go
-// minMaxTokensFloor 是所有模型对外输出的统一最低 max_tokens 底线。
-const minMaxTokensFloor int64 = 32768
+const defaultContextWindow int64 = 1048576 // 仅用于 ContextLength 元信息兜底
+const gptMinMaxTokens int64 = 16
 
-// applyMaxTokensFloor 将低于统一底线的输出上限抬升至底线。
-func applyMaxTokensFloor(v int64) int64 {
-	if v < minMaxTokensFloor {
-		return minMaxTokensFloor
+func normalizeMaxTokensInPlace(obj map[string]any) bool {
+	changed := false
+	// 1. 别名翻译：显式 max_tokens 优先，别名一律删除
+	if alias, has := obj["max_completion_tokens"]; has {
+		delete(obj, "max_completion_tokens")
+		changed = true
+		if _, explicit := obj["max_tokens"]; !explicit {
+			if v, ok := positiveIntValue(alias); ok {
+				obj["max_tokens"] = v
+			}
+		}
 	}
-	return v
+	// 2. GPT 系下限
+	if v, ok := positiveIntValue(obj["max_tokens"]); ok && v < gptMinMaxTokens {
+		model, _ := obj["model"].(string)
+		if strings.Contains(strings.ToLower(model), "gpt-") {
+			obj["max_tokens"] = gptMinMaxTokens
+			changed = true
+		}
+	}
+	return changed
 }
 ```
 
-强制契约：
-1. **计算层**：`computeAdaptiveMaxTokens` 的**四个出口**（未传补足 / 保守放宽 / 超限 clamp / 区间保留）返回前**全部**经 `applyMaxTokensFloor` 收敛；
-2. **兜底规格**：`lookupOfficialModelSpec` 的 fallback `ReasoningMax` 必须对齐 32768（禁止沿用历史 8192）；
-3. **广播层**：`models.go` 的静态列表、动态发现、配置覆盖路径的 `MaxCompletionTokens` 一律经 `applyMaxTokensFloor` 保底；
-4. **请求体层（payload 层）**：如 traework `upstream.go`，`streamDefaultMaxTokens` 与 emit 点 `payload["max_tokens"]` 必须经 floor 抬升；
-5. **探活负载**：测试探活的 `max_tokens` 同样经 floor 抬升，避免过小上限被上游业务拒绝。
-6. **六插件同构**：`minMaxTokensFloor` / `applyMaxTokensFloor` 在 workbuddy / workbuddy-ai / qoder-ai / qoderwork / traework / zcode 六插件中同名同义、逐字节同源。
+### 3.2 请求体层
 
----
+- **workbuddy / workbuddy-ai / zcode / qwenwork**：`prepareUpstreamBody`（或 `mutateModel`）调用 `normalizeMaxTokensInPlace`。
+- **qoder-ai / qoderwork**：`body.go` 里 `if req != nil && req.MaxTokens > 0 { params["max_tokens"] = int64(req.MaxTokens) }`，未传不覆盖模板。
+- **traework**：`upstream.go` 里 `if maxTokens > 0 { payload["max_tokens"] = maxTokens } else if stream { payload["max_tokens"] = int(streamDefaultMaxTokens) }`。
 
-## 4. 插件双层实施规范（标准落地模板）
+### 3.3 元数据层（`models.go`）
 
-新插件或存量插件改造时，必须在以下两个位置同时落地：
+- 上游给了 `maxOutputTokens` → 原样广播；
+- 上游没给 → 留 0（未知），**不猜值、不虚报**；
+- 配置来源的 `max_tokens` → 原样透传，不过地板；
+- qoder 系上游只提供 `max_input_tokens`，输出上限如实留空。
 
-### 4.1 第一层：请求体重写层（`payload.go` / `upstream.go`）
-在序列化发送给上游网关前调用，作为请求预处理的必备环节：
+### 3.4 探活负载
 
-```go
-func relaxMaxTokensInPlace(obj map[string]any) bool {
-	model := jsonStr(obj, "model")
-	effort := strings.ToLower(strings.TrimSpace(jsonStr(obj, "reasoning_effort")))
-	isReasoning := effort != "" && effort != "none"
-	if !isReasoning {
-		mLower := strings.ToLower(model)
-		if strings.Contains(mLower, "reasoner") || strings.Contains(mLower, "thinking") || strings.HasPrefix(mLower, "o1") || strings.HasPrefix(mLower, "o3") {
-			isReasoning = true
-		}
-	}
-	val := jsonI64(obj, "max_tokens", "max_completion_tokens")
-	finalTokens := computeAdaptiveMaxTokens(model, val, isReasoning)
-	if finalTokens != val || obj["max_tokens"] == nil {
-		obj["max_tokens"] = finalTokens
-		if _, hasMCT := obj["max_completion_tokens"]; hasMCT {
-			delete(obj, "max_completion_tokens")
-		}
-		return true
-	}
-	return false
-}
-```
+固定 `max_tokens = gptMinMaxTokens`（16）：探活只需首帧，同时避开 gpt- 系列
+的 11133 下限。禁止再用「写 1 靠地板抬升」的写法。
 
-### 4.2 第二层：模型目录元数据层（`models.go`）
-在向宿主暴露模型列表（`MethodModelStatic` / `MethodModelForAuth`）时：
-- 对静态定义模型：必须按照官方规格填写真实 `MaxCompletionTokens`（禁止全量写死 8192）；
-- 对动态拉取模型：若上游返回的 `maxOutputTokens` 为空或较小，必须用 `resolveOfficialModelSpec(model).ReasoningMax` 予以保底，确保对外广播的元数据具备充足输出上限。
+## 4. 验收标准
 
----
+收口前必须在 `max_tokens_test.go` 覆盖以下断言：
 
-## 5. 验收与回归标准
+1. **生产事故回归**：推理模式 + 显式 2000 → 输出 2000（不得变成 128000/32768）；
+2. **保守值不放宽**：推理模式 + 显式 8192 → 输出 8192；
+3. **不套地板**：显式 100 → 输出 100；
+4. **不预截断**：显式 200000 → 输出 200000；
+5. **未传语义**：按第 2.2 节各插件自己的约定断言（不写 / 模板值 / trae 缺省值）；
+6. **别名翻译**：仅传别名 → 译为 `max_tokens`；两者都有 → 显式优先、别名删除；
+7. **畸形值不洗白**：别名为 0 / 负数 / 字符串 / 小数 → 不写 `max_tokens`；
+8. **GPT 下限**：`gpt-` 模型传 5 → 16；非 GPT 模型传 5 → 5。
 
-所有涉及模型规格或 token 处理的改动收口前，必须在 `max_tokens_test.go` 中完成以下 7 维单元测试回归：
-1. **思考模式 + 8192**：断言提升至该模型官方推理上限（如 DeepSeek 64k）；
-2. **常规模式 + 未传**：断言补足为官方常规上限（如 16k）；
-3. **常规模式 + 8192**：断言保持原值（且不低于 32768 底线；官方上限低于 32768 的模型断言抬升至 32768）；
-4. **超限传值**：断言安全截断至官方允许最大值（不超纲）；
-5. **双字段归一化**：断言 `max_completion_tokens` 正确提升并清除冲突冗余键；
-6. **请求体序列化端到端验证**：断言 `prepareUpstreamBody` 输出符合预期；
-7. **统一底线**：断言任一出口（含兜底规格与广播层）均不低于 32768。
+另需保证：
+
+- 七个插件 `model_specs.go` 的 md5 完全一致（逐字节同源）；
+- 全仓库不再出现 `applyMaxTokensFloor` / `minMaxTokensFloor` /
+  `defaultMaxOutputTokens` / `defaultReasoningMaxTokens` /
+  `computeAdaptiveMaxTokens` / `lookupOfficialModelSpec` 的**代码引用**
+  （注释中说明历史可以保留）。
+
+## 5. 已知遗留（不阻塞，待决策）
+
+对外广播的输出上限仍是上游声称值，而社区实测多数模型被静默钳制在 32K。
+可选做法：照 linguo2625469 引入探测脚本，测出真实钳制值后**只标注不覆盖**
+（`output_clamp` / `max_output_tokens_clamped`）。当前按「不虚报也不额外猜」
+处理，即原样透传上游值。

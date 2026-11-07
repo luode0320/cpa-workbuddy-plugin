@@ -212,18 +212,10 @@ func allConfiguredModels() []pluginapi.ModelInfo {
 
 	var result []pluginapi.ModelInfo
 	for id := range modelsSet {
-		spec := resolveOfficialModelSpec(id)
-		ctxLen := spec.ContextWindow
-		if ctxLen <= 0 {
-			ctxLen = 200000
-		}
-		maxTokens := spec.MaxOutputTokens
-		if spec.ReasoningMax > maxTokens {
-			maxTokens = spec.ReasoningMax
-		}
-		if maxTokens <= 0 {
-			maxTokens = 128000
-		}
+		// 2026-11-07 按社区共识改造：zcode 的模型来自用户配置，没有上游输出
+		// 上限元数据，故 MaxCompletionTokens 如实留零值（未知），不再用统一
+		// 128000 虚构。上下文长度仍用高估值兜底——低估会让客户端误判上下文
+		// 不足而提前截断历史。
 		result = append(result, pluginapi.ModelInfo{
 			ID:                         id,
 			Object:                     "model",
@@ -231,8 +223,7 @@ func allConfiguredModels() []pluginapi.ModelInfo {
 			DisplayName:                id,
 			Name:                       mappedModel(id, cfg),
 			SupportedGenerationMethods: []string{"chat"},
-			ContextLength:              ctxLen,
-			MaxCompletionTokens:        applyMaxTokensFloor(maxTokens),
+			ContextLength:              defaultContextWindow,
 			UserDefined:                true,
 		})
 	}

@@ -130,7 +130,7 @@ func modelInfoFromConfig(id, name string, ctxLen, maxTok int64) pluginapi.ModelI
 		ID:                         id,
 		Name:                       name,
 		ContextLength:              ctxLen,
-		MaxCompletionTokens:        applyMaxTokensFloor(maxTok),
+		MaxCompletionTokens:        maxTok,
 		OwnedBy:                    providerName,
 		SupportedGenerationMethods: []string{"chat"},
 	}
@@ -481,23 +481,25 @@ func (m upstreamModelEntry) contextWindowVal() *int64 {
 // [返回] 上下文长度；缺失时 0
 // 最近修改时间 2026-09-18（兼容上游 contextWindow 对象与数值双形态）
 func (m upstreamModelEntry) contextLength() int64 {
-	return firstPositive(m.MaxInputTokens, m.MaxAllowedSize, m.MaxContextLength, m.contextWindowVal())
+	if v := firstPositive(m.MaxInputTokens, m.MaxAllowedSize, m.MaxContextLength, m.contextWindowVal()); v > 0 {
+		return v
+	}
+	// 上游未上报上下文长度时用高估值兜底：低估会让客户端误判上下文不足而
+	// 提前截断历史，高估只会让客户端多塞一些再被上游按真实值拒绝。
+	return defaultContextWindow
 }
 
 // maxOutputTokens 取最大输出 token 数，优先真实字段，兼容旧字段别名。
+//
+// 2026-11-07 按社区共识改造：原样透传上游给出的值，不再与统一上限比较后
+// 抬升至 128000，也不再套 32768 地板。旧实现会把上游如实上报的 32000
+// 覆盖成 128000（虚报 4 倍），掩盖了「多数模型真实输出上限就是 32K」这一
+// 社区实测事实。上游未提供时返回 0（元信息如实缺省），不猜值。
 // [参数] 无（接收者为上游条目）
 // [返回] 最大输出 token 数；缺失时 0
-// 最近修改时间 2026-09-12（对齐上游 maxOutputTokens）
+// 最近修改时间 2026-11-07（删除统一上限与地板抬升）
 func (m upstreamModelEntry) maxOutputTokens() int64 {
-	val := firstPositive(m.MaxOutputTokens, m.MaxCompletionToken, m.MaxTokens)
-	spec, known := lookupOfficialModelSpec(m.ID)
-	if known && spec.ReasoningMax > 0 && val < spec.ReasoningMax {
-		return applyMaxTokensFloor(spec.ReasoningMax)
-	}
-	if val <= 0 {
-		return applyMaxTokensFloor(spec.MaxOutputTokens)
-	}
-	return applyMaxTokensFloor(val)
+	return firstPositive(m.MaxOutputTokens, m.MaxCompletionToken, m.MaxTokens)
 }
 
 func cacheModelAliases(host pluginapi.HostConfigSummary) {

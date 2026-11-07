@@ -83,9 +83,9 @@ func TestParseModelsConfig_StringAndObject(t *testing.T) {
 	if got[0].SupportedGenerationMethods == nil || len(got[0].SupportedGenerationMethods) != 1 {
 		t.Fatalf("models[0].SupportedGenerationMethods = %v, want [chat]", got[0].SupportedGenerationMethods)
 	}
-	// 配置里的 max_tokens 低于全局输出底线时统一抬升至 32768
-	if got[1].ContextLength != 131072 || got[1].MaxCompletionTokens != 32768 {
-		t.Fatalf("custom-model context/max_tokens = %d/%d, want 131072/32768",
+	// 2026-11-07 按社区共识改造：配置里的 max_tokens 原样透传，不再抬升至 32768
+	if got[1].ContextLength != 131072 || got[1].MaxCompletionTokens != 4096 {
+		t.Fatalf("custom-model context/max_tokens = %d/%d, want 131072/4096",
 			got[1].ContextLength, got[1].MaxCompletionTokens)
 	}
 }
@@ -282,8 +282,9 @@ models: [
 `))
 	got := getConfiguredModels()
 	assertModelIDs(t, got, "hy4-preview", "hy3")
-	if got[0].ContextLength != 2000000 || got[0].MaxCompletionTokens != 32768 {
-		t.Fatalf("hy4-preview context/max_tokens = %d/%d, want 2000000/32768",
+	// 2026-11-07 按社区共识改造：配置值原样透传，不再抬升至 32768
+	if got[0].ContextLength != 2000000 || got[0].MaxCompletionTokens != 20000 {
+		t.Fatalf("hy4-preview context/max_tokens = %d/%d, want 2000000/20000",
 			got[0].ContextLength, got[0].MaxCompletionTokens)
 	}
 }
@@ -321,8 +322,8 @@ checkin_auto: true
 `))
 	got := getConfiguredModels()
 	assertModelIDs(t, got, "hy4-preview", "hy3")
-	if got[0].Name != "Hy4 preview" || got[0].ContextLength != 2000000 || got[0].MaxCompletionTokens != 32768 {
-		t.Fatalf("models[0] = %+v, want name=Hy4 preview context=2000000 max_tokens=32768", got[0])
+	if got[0].Name != "Hy4 preview" || got[0].ContextLength != 2000000 || got[0].MaxCompletionTokens != 20000 {
+		t.Fatalf("models[0] = %+v, want name=Hy4 preview context=2000000 max_tokens=20000", got[0])
 	}
 }
 

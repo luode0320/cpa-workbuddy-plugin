@@ -189,8 +189,10 @@ func TestParseChatModesCatalog(t *testing.T) {
 	if models[0].ContextLength != 1000000 {
 		t.Fatalf("context = %d, want 1000000", models[0].ContextLength)
 	}
-	if models[0].MaxCompletionTokens < minMaxTokensFloor {
-		t.Fatalf("MaxCompletionTokens = %d, want >= %d", models[0].MaxCompletionTokens, minMaxTokensFloor)
+	// 2026-11-07 按社区共识改造：上游 catalog 只提供 max_input_tokens，
+	// 不提供输出上限，故 MaxCompletionTokens 如实留空（0 表示未知）。
+	if models[0].MaxCompletionTokens != 0 {
+		t.Fatalf("MaxCompletionTokens = %d, want 0（上游未提供输出上限）", models[0].MaxCompletionTokens)
 	}
 }
 
@@ -206,24 +208,5 @@ func TestParseChatModesCatalog_NoUsableModels(t *testing.T) {
 	}
 }
 
-// TestOfficialSpecsCoverQwenWorkTiers 验证上游真实下发的三档模型都拿到统一规格。
-//
-// 2026-10-30 起所有模型共用统一上限（ContextWindow 固定 1048576、
-// 推理 128k / 非推理 64k），不再区分已收录与未收录。
-// [参数] t: 测试上下文
-// [返回] 无
-// 最近修改时间：2026-10-30；改动原因：对齐全局统一上限。
-func TestOfficialSpecsCoverQwenWorkTiers(t *testing.T) {
-	for _, id := range []string{"flash", "pro", "qwen3.8-max-preview"} {
-		spec := resolveOfficialModelSpec(id)
-		if spec.ContextWindow != defaultContextWindow {
-			t.Errorf("%s ContextWindow = %d, want %d", id, spec.ContextWindow, defaultContextWindow)
-		}
-		if spec.ReasoningMax != defaultReasoningMaxTokens {
-			t.Errorf("%s ReasoningMax = %d, want %d", id, spec.ReasoningMax, defaultReasoningMaxTokens)
-		}
-		if spec.MaxOutputTokens != defaultMaxOutputTokens {
-			t.Errorf("%s MaxOutputTokens = %d, want %d", id, spec.MaxOutputTokens, defaultMaxOutputTokens)
-		}
-	}
-}
+// TestOfficialSpecsCoverQwenWorkTiers 已于 2026-11-07 随逐模型规格体系一并删除：
+// 按社区共识改造后不再有统一规格兜底，模型输出上限一律以上游实际下发为准。

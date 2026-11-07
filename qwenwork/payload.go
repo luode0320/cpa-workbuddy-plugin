@@ -31,8 +31,9 @@ func prepareUpstreamBody(bodyRaw []byte, upstreamModel string) []byte {
 	if m := strings.TrimSpace(upstreamModel); m != "" {
 		obj["model"] = m
 	}
-	// 3. max_tokens 自适应：思考模型被客户端传入保守小值时放宽到官方上限。
-	relaxMaxTokensInPlace(obj)
+	// 3. max_tokens 归一化：别名翻译 + GPT 系下限，其余原样透传。
+	// 2026-11-07 按社区共识改造：不再放宽或抬升客户端显式值（详见 model_specs.go）。
+	normalizeMaxTokensInPlace(obj)
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return bodyRaw
@@ -40,29 +41,8 @@ func prepareUpstreamBody(bodyRaw []byte, upstreamModel string) []byte {
 	return out
 }
 
-// relaxMaxTokensInPlace 原地按模型官方规格放宽 max_tokens。
-//
-// [参数] obj: 已解析的请求体。
-// [返回] 无。
-// 最近修改时间：2026-10-18 00:36:00；改动原因：从 zcode 同步透传式改写。
-func relaxMaxTokensInPlace(obj map[string]any) {
-	model := jsonStr(obj, "model")
-	effort := strings.ToLower(strings.TrimSpace(jsonStr(obj, "reasoning_effort")))
-	isReasoning := effort != "" && effort != "none"
-	if !isReasoning {
-		mLower := strings.ToLower(model)
-		if strings.Contains(mLower, "reasoner") || strings.Contains(mLower, "thinking") {
-			isReasoning = true
-		}
-	}
-	val := jsonI64(obj, "max_tokens", "max_completion_tokens")
-	finalTokens := computeAdaptiveMaxTokens(model, val, isReasoning)
-	if finalTokens != val || obj["max_tokens"] == nil {
-		obj["max_tokens"] = finalTokens
-		// OpenAI 兼容端点只认 max_tokens；同时存在时移除另一形态避免冲突。
-		delete(obj, "max_completion_tokens")
-	}
-}
+// normalizeMaxTokensInPlace 已迁移至 model_specs.go：
+// 该函数只做别名翻译与 GPT 系下限，不再放宽/抬升客户端显式值。
 
 // jsonStr 读取对象里的字符串字段。
 //

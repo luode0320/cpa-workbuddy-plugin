@@ -80,11 +80,12 @@ func TestParseModelsAPIResponse(t *testing.T) {
 	if models1[0].ID != "gpt-5" || models1[1].ID != "o3" {
 		t.Fatalf("unexpected model IDs: %+v", models1)
 	}
-	if models1[0].ContextLength != 128000 || models1[0].MaxCompletionTokens != 128000 {
+	// 2026-11-07 按社区共识改造：输出上限原样透传上游值（gpt-5 上游为 4096）
+	if models1[0].ContextLength != 128000 || models1[0].MaxCompletionTokens != 4096 {
 		t.Fatalf("unexpected token limits for gpt-5: %+v", models1[0])
 	}
-	// 2026-10-30：所有模型对外声明的输出上限统一为推理模式上限 128000。
-	if models1[1].ContextLength != 200000 || models1[1].MaxCompletionTokens != 128000 {
+	// 2026-11-07 按社区共识改造：不再把输出上限统一抬至 128000
+	if models1[1].ContextLength != 200000 || models1[1].MaxCompletionTokens != 100000 {
 		t.Fatalf("unexpected token limits for o3: %+v", models1[1])
 	}
 
@@ -105,7 +106,8 @@ func TestParseModelsAPIResponse(t *testing.T) {
 	if len(models2) != 1 || models2[0].ID != "gemini-2.5-pro" {
 		t.Fatalf("expected 1 active model, got %+v", models2)
 	}
-	if models2[0].ContextLength != 1000000 || models2[0].MaxCompletionTokens != 128000 {
+	// 2026-11-07 按社区共识改造：输出上限原样透传上游值（gemini 上游为 8192）
+	if models2[0].ContextLength != 1000000 || models2[0].MaxCompletionTokens != 8192 {
 		t.Fatalf("unexpected token limits for gemini: %+v", models2[0])
 	}
 }
@@ -150,7 +152,8 @@ func TestParseModelsAPIResponseV3Config(t *testing.T) {
 	for _, m := range models {
 		if m.ID == "auto" {
 			foundAuto = true
-			if m.ContextLength != 176000 || m.MaxCompletionTokens != 128000 {
+			// 2026-11-07 按社区共识改造：auto 继承上游主模型的真实上限 24000
+			if m.ContextLength != 176000 || m.MaxCompletionTokens != 24000 {
 				t.Fatalf("auto alias did not inherit limits from default-model: %+v", m)
 			}
 		}
@@ -187,7 +190,8 @@ func TestParseModelsAPIResponseV3ConfigNestedAgent(t *testing.T) {
 	for _, m := range models {
 		if m.ID == "auto" {
 			foundAuto = true
-			if m.ContextLength != 200000 || m.MaxCompletionTokens != 128000 {
+			// 2026-11-07 按社区共识改造：auto 继承上游主模型的真实上限 24000
+			if m.ContextLength != 200000 || m.MaxCompletionTokens != 24000 {
 				t.Fatalf("auto alias did not inherit limits from default: %+v", m)
 			}
 		}

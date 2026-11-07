@@ -45,8 +45,9 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 	// 5. rewriteModel: swap client model name to upstream model id.
 	rewriteModelInPlace(obj, upstreamModel)
 
-	// 6. relaxMaxTokens: 放宽 max_tokens 至 128,000，防止长思考链被客户端保守上限截断。
-	relaxMaxTokensInPlace(obj)
+	// 6. normalizeMaxTokens: 别名翻译 + GPT 系下限，其余原样透传。
+	// 不再放宽或抬升客户端显式值（2026-11-07 按社区共识改造，详见 model_specs.go）。
+	normalizeMaxTokensInPlace(obj)
 
 	out, err := json.Marshal(obj)
 	if err != nil {
@@ -483,31 +484,5 @@ func isEmptyValue(v any) bool {
 	return false
 }
 
-// relaxMaxTokensInPlace 根据模型官方规格自适应计算并放宽 max_tokens。
-// 当客户端未传入、或在推理模式下传入保守小值（如 Qoder 客户端写死的 8192）时，
-// 自动提升至该模型官方允许的推理上限（例如 DeepSeek 64k，GLM 128k），防止长思维链被截断；
-// 超过官方允许最大值时进行安全截断（clamp），防止上游网关报错 400。
-// [参数] obj：反序列化后的请求对象 map
-// [返回] 是否对 obj 产生了修改
-// 最近修改时间 2026-10-13 02:00:00（升级为按模型权威官方规格自适应计算）
-func relaxMaxTokensInPlace(obj map[string]any) bool {
-	model := jsonStr(obj, "model")
-	effort := strings.ToLower(strings.TrimSpace(jsonStr(obj, "reasoning_effort")))
-	isReasoning := effort != "" && effort != "none"
-	if !isReasoning {
-		mLower := strings.ToLower(model)
-		if strings.Contains(mLower, "reasoner") || strings.Contains(mLower, "thinking") || strings.HasPrefix(mLower, "o1") || strings.HasPrefix(mLower, "o3") {
-			isReasoning = true
-		}
-	}
-	val := jsonI64(obj, "max_tokens", "max_completion_tokens")
-	finalTokens := computeAdaptiveMaxTokens(model, val, isReasoning)
-	if finalTokens != val || obj["max_tokens"] == nil {
-		obj["max_tokens"] = finalTokens
-		if _, hasMCT := obj["max_completion_tokens"]; hasMCT {
-			delete(obj, "max_completion_tokens")
-		}
-		return true
-	}
-	return false
-}
+// normalizeMaxTokensInPlace 已迁移至 model_specs.go：
+// 该函数只做别名翻译与 GPT 系下限，不再放宽/抬升客户端显式值。

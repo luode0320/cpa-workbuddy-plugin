@@ -90,7 +90,7 @@ func modelInfoFromConfig(id, name string, ctxLen, maxTok int64) pluginapi.ModelI
 		ID:                         id,
 		Name:                       name,
 		ContextLength:              ctxLen,
-		MaxCompletionTokens:        applyMaxTokensFloor(maxTok),
+		MaxCompletionTokens:        maxTok,
 		OwnedBy:                    providerName,
 		SupportedGenerationMethods: []string{"chat"},
 	}
@@ -217,19 +217,20 @@ func (m upstreamModelEntry) contextWindowVal() *int64 {
 }
 
 func (m upstreamModelEntry) contextLength() int64 {
-	return firstPositive(m.MaxInputTokens, m.MaxAllowedSize, m.MaxContextLength, m.contextWindowVal(), m.MaxInputTokensSnake, m.RecommendedContextSnake)
+	if v := firstPositive(m.MaxInputTokens, m.MaxAllowedSize, m.MaxContextLength, m.contextWindowVal(), m.MaxInputTokensSnake, m.RecommendedContextSnake); v > 0 {
+		return v
+	}
+	// 上游未上报上下文长度时用高估值兜底：低估会让客户端误判上下文不足而
+	// 提前截断历史，高估只会让客户端多塞一些再被上游按真实值拒绝。
+	return defaultContextWindow
 }
 
+// maxOutputTokens 原样透传上游给出的输出上限。
+// 2026-11-07 按社区共识改造：不再抬升至统一 128000，也不再套 32768 地板。
+// 旧实现会把上游如实上报的 32000 覆盖成 128000（虚报 4 倍），掩盖「多数模型
+// 真实输出上限就是 32K」这一社区实测事实。上游未提供时返回 0，不猜值。
 func (m upstreamModelEntry) maxOutputTokens() int64 {
-	val := firstPositive(m.MaxOutputTokens, m.MaxCompletionToken, m.MaxTokens, m.MaxOutputTokensSnake, m.MaxTokensSnake)
-	spec, known := lookupOfficialModelSpec(m.ID)
-	if known && spec.ReasoningMax > 0 && val < spec.ReasoningMax {
-		return applyMaxTokensFloor(spec.ReasoningMax)
-	}
-	if val <= 0 {
-		return applyMaxTokensFloor(spec.MaxOutputTokens)
-	}
-	return applyMaxTokensFloor(val)
+	return firstPositive(m.MaxOutputTokens, m.MaxCompletionToken, m.MaxTokens, m.MaxOutputTokensSnake, m.MaxTokensSnake)
 }
 
 func parseModelsAPIResponse(body []byte) ([]pluginapi.ModelInfo, error) {

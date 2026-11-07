@@ -25,8 +25,10 @@ const (
 	maxBodyBytes = 4 << 20 // 4 MiB non-streamed body cap
 	// streamDefaultMaxTokens 是流式请求缺省 max_tokens。客户端不传时上游
 	// Trae 会给极小上限，导致 solo 长任务（如 qwen3.8-max 分析项目）刚开口
-	// 就 done。取非推理模式的统一上限（2026-10-30 由全局底线 32768 抬升）。
-	streamDefaultMaxTokens = defaultMaxOutputTokens
+	// 就 done，故必须由插件补一个缺省值。
+	// 2026-11-07 按社区共识改造后，该常量只作用于「客户端未传」的场景；
+	// 客户端显式传值一律原样透传，不再经过任何自适应计算或地板抬升。
+	streamDefaultMaxTokens int64 = 128000
 )
 
 // UpstreamError carries the upstream HTTP status and truncated body so the
@@ -134,18 +136,16 @@ func buildTraePayload(messages []map[string]any, model string, stream bool, maxT
 	if toolChoice != "" {
 		payload["tool_choice"] = toolChoice
 	}
-	// 自适应 max_tokens：客户端显式传入时原样尊重（仅做上限截断）；流式未传时
-	// 补足统一上限，非流式未传保持不设该字段（沿用既有语义）。
-	// 2026-11-07 修复：原实现只在 stream 分支调用 computeAdaptiveMaxTokens，且随后
-	// 无条件 applyMaxTokensFloor，把显式小值又抬回 32768——非流式 max_tokens=2000
-	// 实测透传 32768、生成 11203 tokens、耗时 72 秒。输出上限是调用方显式契约，
-	// 插件不得单方面放大。
-	mLower := strings.ToLower(configName)
-	isReasoning := strings.Contains(mLower, "reasoner") || strings.Contains(mLower, "thinking")
+	// 客户端显式传入时原样透传；流式未传时补 trae 缺省值；非流式未传
+	// 保持不设该字段（沿用既有语义）。
+	// 2026-11-07 按社区共识改造：删除 computeAdaptiveMaxTokens（推理模式放宽、
+	// 统一上限截断、最低地板抬升），显式值不再被任何逻辑改写。
+	// 历史教训：旧实现无条件 applyMaxTokensFloor，把显式小值抬回 32768——
+	// 非流式 max_tokens=2000 实测透传 32768、生成 11203 tokens、耗时 72 秒。
 	if maxTokens > 0 {
-		payload["max_tokens"] = int(computeAdaptiveMaxTokens(configName, int64(maxTokens), isReasoning))
+		payload["max_tokens"] = maxTokens
 	} else if stream {
-		payload["max_tokens"] = int(computeAdaptiveMaxTokens(configName, 0, isReasoning))
+		payload["max_tokens"] = int(streamDefaultMaxTokens)
 	}
 	if temperature != nil {
 		payload["temperature"] = *temperature

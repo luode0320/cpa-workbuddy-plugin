@@ -216,14 +216,9 @@ func wbModels() []pluginapi.ModelInfo {
 		{ID: "dfmodel", Name: "", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "mmodel", Name: "", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 	}
-	for i := range list {
-		spec := resolveOfficialModelSpec(list[i].ID)
-		if spec.ReasoningMax > 0 {
-			list[i].MaxCompletionTokens = applyMaxTokensFloor(spec.ReasoningMax)
-		} else {
-			list[i].MaxCompletionTokens = applyMaxTokensFloor(spec.MaxOutputTokens)
-		}
-	}
+	// 2026-11-07 按社区共识改造：qoder 上游目录只提供 max_input_tokens，
+	// 不提供输出上限，故不再用统一 128000 虚构 MaxCompletionTokens；
+	// 如实留空（0 表示未知），不猜值。
 	return list
 }
 
@@ -391,7 +386,7 @@ func modelInfoFromConfig(id, name string, ctxLen, maxTok int64) pluginapi.ModelI
 		ID:                         id,
 		Name:                       name,
 		ContextLength:              ctxLen,
-		MaxCompletionTokens:        applyMaxTokensFloor(maxTok),
+		MaxCompletionTokens:        maxTok,
 		OwnedBy:                    providerName,
 		SupportedGenerationMethods: []string{"chat"},
 	}
@@ -800,13 +795,8 @@ func parseModelsResponse(body []byte) ([]pluginapi.ModelInfo, error) {
 				Name:          modelDisplayName(key),
 				DisplayName:   strings.TrimSpace(m.DisplayName),
 				ContextLength: ctxLen,
-				MaxCompletionTokens: func() int64 {
-					spec := resolveOfficialModelSpec(key)
-					if spec.ReasoningMax > 0 {
-						return applyMaxTokensFloor(spec.ReasoningMax)
-					}
-					return applyMaxTokensFloor(spec.MaxOutputTokens)
-				}(),
+				// 2026-11-07 按社区共识改造：上游不提供输出上限，如实留空，
+				// 不再用统一 128000 虚构。
 				OwnedBy:                    providerName,
 				SupportedGenerationMethods: []string{"chat"},
 			})

@@ -29,6 +29,23 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-07 18:06-19:10）：**七插件 max_tokens 改为社区共识（减法改造）**：
+  - **触发**：用户明示「按 GitHub 众多开源反代项目的方案改造，不要做自己想出来的控制」。实拉 7 家源码取证：tonny0812/workbuddy2api、lovingfish/workbuddy-cliproxy、sixzjd/dsh-workbuddy-connect、dingminhua/dsh-connect-workbuddy、linguo2625469/workbuddy2api-panel、ardeyouxipianyi/workbuddy2api-hub、ithtelab/workbuddy-manager。
+  - **社区事实**：①上游对越界 max_tokens 是**静默钳制不报 400**（linguo2625469 实测 16 个 CN 模型 8 个被钳，最狠声称 1M 实际 32K）；②思考与最终回答**共享** output 预算，上游无独立思考上限字段（linguo2625469 `client.go:1283` 独立确认）；③max_tokens **不计入**上下文窗口（sixzjd 实测 70000+64000 通过 100000 窗口）；④GPT 系 <16 报 `code=11133`（两家独立实测 15 拒 16 过）；⑤**七家无一做「抬升显式小值」或「统一地板」**。
+  - **改动**：删除四类自研控制 —— `minMaxTokensFloor=32768`、`defaultMaxOutputTokens/defaultReasoningMaxTokens=128000`、推理模式放宽 `<=8192`、广播层无条件抬至 128000。**共 7 个插件**（workbuddy / workbuddy-ai / qoder-ai / qoderwork / traework / zcode / qwenwork）的 `model_specs.go` **逐字节同源**（md5 一致），只保留 `normalizeMaxTokensInPlace`（别名翻译 + GPT<16→16）。请求侧：workbuddy/workbuddy-ai/zcode/qwenwork 走该函数；qoder-ai/qoderwork 显式才写、未传保留 `baseprompt.json` 官方模板的 32768；traework 显式透传、流式未传补 `streamDefaultMaxTokens`。元数据层 `maxOutputTokens()` 改为原样透传，上游不给则留 0（不虚报）。qwenwork/copilot/cursor 中仅 qwenwork 有同类控制，已一并改造；copilot/cursor 本无此机制。
+  - **验证**：七插件 `python scripts/cgo-shim-build.py <plugin>` 全绿（build/vet/test），`model_specs.go` md5 唯一；`max_tokens_test.go` 全部重写，覆盖生产事故回归（显式 2000 → 2000）、不放宽（8192 → 8192）、不套地板（100 → 100）、不预截断（200000 → 200000）、别名翻译、畸形值不洗白、GPT 下限。
+  - **规则同步**：`skills/project-cpa-workbuddy-plugin-model-specs-and-max-tokens-rules/SKILL.md` 全文重写为「最小干预」，原「反模式三=不干涉」「§3.2 放宽」「§3.3 统一地板」「§5 验收第 1 条」全部推翻。
+  - **待办**：①对外广播输出上限仍是上游声称值（多数被钳到 32K），可选引入探测脚本只标注不覆盖；②发布链路（13 步）本轮尚未执行。
+
+- 会话（2026-11-07 18:05-18:40）：**traework 0.5.11 —— 0.5.10 未真正生效 + 上游 reasoning 不受控的定性**：
+  - 诉求：「先修复 trae 的问题」。
+  - **根因**：`traework/upstream.go` 的 `buildTraePayload` ①只在 `stream` 分支调用 `computeAdaptiveMaxTokens`，**非流式直接跳过**；②随后**无条件** `applyMaxTokensFloor`，把客户端显式值抬回 32768。0.5.10 只改了 compute 函数本体，被这两处抵消。生产实证：非流式 `max_tokens=2000` 实际透传 32768，`deepseek-v4.1-flash` 生成 **11203 tokens / 72.1s**（同条件 workbuddy 2000/15s）。
+  - **0.5.11 修复**：显式值统一原样透传、仅做上限截断；未传时流式补统一上限、非流式保持不设字段（沿用既有语义）；探活改为显式传 `streamDefaultMaxTokens`，不再依赖 floor 抬值。测试断言同步（流式 4096 / 非流式 2000 / 推理 8192 均原样）。
+  - **发布**：`261d0da` → CI `42363141090`（Release success，5 平台，darwin/arm64 cancelled）→ `86cc607`（registry 0.5.11，5 artifacts）→ 生产 `hot reloaded active_version=0.5.11 / retired 0.5.10`。
+  - **核心定性（改变认知）**：**Trae 上游的 `max_tokens` 只约束正文、完全不约束 reasoning**。实测 `max_tokens=16` → 正文 18（16+2 tokenizer 差）、reasoning 仍 1311；`max_tokens=2000` → 正文约 2000、reasoning 3000~6000、总耗时 38~94s。qoderwork 上游同语义（2000 正文 + 2213 reasoning）。**workbuddy 上游把 reasoning 计入总额度**（精确 2000，其中 2000 全为 reasoning）。因此 traework/qoderwork 的延迟瓶颈是 reasoning 生成，**插件层无法解决**；traework 真正降延迟只能靠客户端缩短 prompt 或上游支持 thinking 开关（payload 无任何 thinking/budget 字段）。
+  - **路由真相再更正（重要）**：同名模型不是固定落 workbuddy，宿主按周期在同名 provider 间轮换——同一 key 连续 10 次短请求分布 traework 6 / qoderwork 4 / workbuddy 3；另一窗口 6 次全 qoder、随后 5 次全 traework+workbuddy。**此前所有基于 1~2 次采样的「永远被 workbuddy 抢走」结论均作废**，定向验证必须多次采样。
+  - **接口事实**：`/v0/management/plugins/traework-provider/models` 需 `auth_index` 但返回 `{"models":null}`（缓存空）；traework 10 个账号全部 active，非账号故障。
+
 - 会话（2026-11-07 17:42-17:50）：**方案 1 定向隔离引发生产 400，已完整回滚 + 零改动定向验证成功**：
   - 故障：为隔离 qoder/trae，把 `deepseek-v4.1-flash` 加入 `oauth-excluded-models` 的 `workbuddy-provider` + `workbuddy-ai-provider`（`PUT /v8/management/config/oauth/excluded-models`，整表覆盖）。17:42~17:48 期间 `deepseek-flash` 与 `deepseek-v4.1-flash` 全部返回 `400 unknown provider for model deepseek-v4.1-flash`，用户报「现在无法使用了」。
   - **根因**：`/v1/models` 的 `owned_by` 显示该模型 ID **只有 `workbuddy-provider` 注册**（workbuddy 11 个 / workbuddy-ai 3 个 / qoderwork 仅 `dfmodel` / traework 仅 `deepseek-flash` / coze 5 个）。别名把 `deepseek-flash` 改写为 `deepseek-v4.1-flash` 后，路由键就是这个 ID；摘除 workbuddy 系后**没有任何 provider 认领** → 400。方案 1 的前提「摘除后 qoder/trae 能接住」从一开始就不成立。

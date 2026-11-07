@@ -295,15 +295,13 @@ func buildQoderBody(req *openAIRequest, modelKey, userType string) ([]byte, erro
 		mc["key"] = modelKey
 	}
 
-	// parameters: 按模型官方规格自适应计算放宽 max_tokens，避免长思维链被截断
+	// parameters: 客户端显式传入时原样透传输出上限；未传则不写该字段，
+	// 由上游用自己的默认值。2026-11-07 按社区共识改造：删除自适应放宽、
+	// 未传补足与按统一上限截断（详见 model_specs.go）。
 	if params, ok := base["parameters"].(map[string]any); ok {
-		mLower := strings.ToLower(modelKey)
-		isReasoning := strings.Contains(mLower, "reasoner") || strings.Contains(mLower, "thinking") || (req != nil && req.ReasoningEffort != "" && req.ReasoningEffort != "none")
-		val := int64(0)
 		if req != nil && req.MaxTokens > 0 {
-			val = int64(req.MaxTokens)
+			params["max_tokens"] = int64(req.MaxTokens)
 		}
-		params["max_tokens"] = computeAdaptiveMaxTokens(modelKey, val, isReasoning)
 	}
 
 	// tools: 把工具声明权归还请求方，消除模板硬编码工具集导致的 agent 劫持。

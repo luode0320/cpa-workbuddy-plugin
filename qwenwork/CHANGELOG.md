@@ -1,5 +1,17 @@
 # QwenWork Plugin Changelog
 
+## 0.2.15
+
+### Fix - 删除自研 max_tokens 控制，改为「显式值零干预」（对齐社区共识）
+
+- 背景: 实拉 GitHub 七家 WorkBuddy 反代项目（tonny0812/workbuddy2api、lovingfish/workbuddy-cliproxy、sixzjd/dsh-workbuddy-connect、dingminhua/dsh-connect-workbuddy、linguo2625469/workbuddy2api-panel、ardeyouxipianyi/workbuddy2api-hub、ithtelab/workbuddy-manager）源码核对，**无一做「抬升客户端显式 max_tokens」或「统一输出地板」**；叠加本方 2026-11-07 生产事故（`max_tokens=2000` 被放宽到 128000，实际生成 12000~22000 tokens / 80~145 秒被判超时）。
+- 删除的四类控制: ①`minMaxTokensFloor=32768` 统一最低输出底线；②`defaultMaxOutputTokens` / `defaultReasoningMaxTokens=128000` 统一上限；③推理模式下把客户端 `<=8192` 放宽到 128000；④模型元数据 `MaxCompletionTokens` 无条件抬至 128000。
+- 保留的两条归一化: `max_completion_tokens` → `max_tokens` 别名翻译（显式 `max_tokens` 优先，别名一律删除、非正整数不翻译）、GPT 系 `max_tokens < 16` 抬至 16（上游 `code=11133`，两家独立实测 15 拒 / 16 过）。
+- 元数据: `maxOutputTokens()` 改为原样透传上游值，上游未提供时留 0（不虚报、不猜值）。
+- 未传语义: 客户端不传时不写 `max_tokens`；上游 catalog 只提供 `max_input_tokens`，输出上限如实留 0。
+- 验证: `python scripts/cgo-shim-build.py qwenwork` 的 build / vet / test 全绿；`max_tokens_test.go` 重写，覆盖生产事故回归（显式 2000 → 2000）、不放宽（8192 → 8192）、不套地板（100 → 100）、不预截断（200000 → 200000）、别名翻译、畸形值不洗白、GPT 下限。
+- 涉及文件: `model_specs.go`（重写为最小干预）、请求侧（`payload.go` / `body.go` / `upstream.go` / `executor.go` 之一）、`models.go`（元数据侧）、`max_tokens_test.go`。
+
 ## 0.2.14
 
 ### Feat - 非推理输出上限由 64000 抬升至 128000

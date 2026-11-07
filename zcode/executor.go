@@ -397,7 +397,9 @@ func mutateModel(raw []byte, model string) []byte {
 	if model != "" {
 		body["model"] = model
 	}
-	relaxMaxTokensInPlace(body)
+	// 2026-11-07 按社区共识改造：只做别名翻译与 GPT 系下限，
+	// 不再放宽/抬升客户端显式值（详见 model_specs.go）。
+	normalizeMaxTokensInPlace(body)
 	out, err := json.Marshal(body)
 	if err != nil {
 		return append([]byte(nil), raw...)

@@ -147,8 +147,11 @@ func sendActivePingWorkbuddy(sa *storedAuth, chosenModel string) error {
 		"messages": []map[string]any{
 			{"role": "user", "content": "hi"},
 		},
-		"stream":     true,
-		"max_tokens": int(applyMaxTokensFloor(5)),
+		"stream": true,
+		// 探活只需首帧即可断开；取 GPT 系下限 16 是为了同时兼容 gpt- 系列
+		// （<16 会被上游 11133 拒绝）。旧实现写 5 再经统一地板抬到 32768，
+		// 属自研控制副作用，2026-11-07 随地板一并删除。
+		"max_tokens": int(gptMinMaxTokens),
 	}
 	raw, err := json.Marshal(reqMap)
 	if err != nil {

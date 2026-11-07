@@ -146,10 +146,12 @@ func pingUpstreamOnce(sa *StoredAuth, model string) (ok bool, statusCode int, er
 	target := targets[0]
 	upstreamModel := mappedModel(model, cfg)
 
-	// 2. 构造流式最小探活负载（stream=true，max_tokens 抬升至全局输出底线）
+	// 2. 构造流式最小探活负载（stream=true）。max_tokens 取 GPT 系下限 16：
+	// 探活只需首帧即可断开，而 gpt- 系列对 <16 会返回 11133 参数错误。
+	// 旧实现写 1 再经统一地板抬到 32768，属自研控制副作用，2026-11-07 随地板删除。
 	pingPayload := map[string]any{
 		"model":      upstreamModel,
-		"max_tokens": int(applyMaxTokensFloor(1)),
+		"max_tokens": int(gptMinMaxTokens),
 		"stream":     true,
 		"messages": []map[string]string{
 			{"role": "user", "content": "ping"},

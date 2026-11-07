@@ -108,9 +108,9 @@ func TestParseModelsConfig_StringAndObject(t *testing.T) {
 	if got[0].SupportedGenerationMethods == nil || len(got[0].SupportedGenerationMethods) != 1 {
 		t.Fatalf("models[0].SupportedGenerationMethods = %v, want [chat]", got[0].SupportedGenerationMethods)
 	}
-	// 配置里的 max_tokens 低于全局输出底线时统一抬升至 32768
-	if got[1].ContextLength != 131072 || got[1].MaxCompletionTokens != 32768 {
-		t.Fatalf("custom-model context/max_tokens = %d/%d, want 131072/32768",
+	// 2026-11-07 按社区共识改造：配置里的 max_tokens 原样透传，不再抬升至 32768
+	if got[1].ContextLength != 131072 || got[1].MaxCompletionTokens != 4096 {
+		t.Fatalf("custom-model context/max_tokens = %d/%d, want 131072/4096",
 			got[1].ContextLength, got[1].MaxCompletionTokens)
 	}
 }
