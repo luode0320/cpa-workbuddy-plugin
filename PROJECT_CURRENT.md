@@ -29,6 +29,14 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-07 17:42-17:50）：**方案 1 定向隔离引发生产 400，已完整回滚 + 零改动定向验证成功**：
+  - 故障：为隔离 qoder/trae，把 `deepseek-v4.1-flash` 加入 `oauth-excluded-models` 的 `workbuddy-provider` + `workbuddy-ai-provider`（`PUT /v8/management/config/oauth/excluded-models`，整表覆盖）。17:42~17:48 期间 `deepseek-flash` 与 `deepseek-v4.1-flash` 全部返回 `400 unknown provider for model deepseek-v4.1-flash`，用户报「现在无法使用了」。
+  - **根因**：`/v1/models` 的 `owned_by` 显示该模型 ID **只有 `workbuddy-provider` 注册**（workbuddy 11 个 / workbuddy-ai 3 个 / qoderwork 仅 `dfmodel` / traework 仅 `deepseek-flash` / coze 5 个）。别名把 `deepseek-flash` 改写为 `deepseek-v4.1-flash` 后，路由键就是这个 ID；摘除 workbuddy 系后**没有任何 provider 认领** → 400。方案 1 的前提「摘除后 qoder/trae 能接住」从一开始就不成立。
+  - **回滚**：备份目录 `/root/cpa-cfg-backup-20261107_174231`（`config.yaml` + `oauth_excluded_models.json`）；用备份 JSON 原样 PUT 回写，17:47:56 日志确认 `workbuddy-ai-provider 28->27`、`workbuddy-provider 15->14`。验证：GET 与备份**逐字一致**（`config-version:8`）、`config.yaml` 1328 行且非空行多重集零差异（仅行序/空白重排，语义等价）、两个模型真实请求均 `200`、模型表 21 个、三插件版本 0.21.11 / 0.13.4 / 0.5.10 不变。临时脚本 `/root/iso.py` 已删除，备份目录保留。
+  - **铁律（新增）**：动 `excluded-models` 前必须先用 `/v1/models` 的 `owned_by` 确认**目标模型 ID 至少还有另一家 provider 能提供**；路由键是 **alias 改写后的名字**，不是插件注册名。仅凭「feed 里见过该 provider + 该模型」不足以推断可承接。
+  - **零改动定向验证（qoderwork 成功）**：直接用其专属模型 `dfmodel` 发同 prompt + `max_tokens=2000` + `reasoning_effort=max` → feed `provider=qoderwork-provider`、`model=dfmodel`（未被别名劫持）、`out=1311`（≤2000，放大已消除）、`finish=stop`、耗时 **12.2s**（修复前 7029 tokens / 94s）。证明 0.13.4 的修复在 qoderwork 上真实生效。
+  - **traework 与 workbuddy 原生 ID 硬冲突，配置层无解（17:54-17:58 两次实测）**：alias 结构为 `{alias, fork, name}`，是 **`alias → name` 改写**，`name` 必须是插件原生 ID。实测映射：qoderwork `deepseek-flash → DeepSeek-Flash`、traework `deepseek-flash → deepseek-v4.1-flash`、workbuddy `gpt-5.6-luna → deepseek-v4.1-flash`。**traework 的对外名被改写成 workbuddy 的原生 ID，流量必落 workbuddy**；`/v1/models` 的 `owned_by` 展示的是 alias 归属而非原生注册 ID，不能据此判断承接方。两次安全尝试均 `400 unknown provider` 且已自动恢复：①临时解禁 traework 排除项 `deepseek-v4-pro-official`（排除名≠已注册原生 ID，被排除模型根本不注册）；②在 traework 分组新增探测别名 `trae-ds-flash-probe → deepseek-flash`（alias 不能创造原生注册，`deepseek-flash` 本身不是原生 ID）。**结论：定向 traework 只有两条路——摘除 workbuddy（已实测 400，禁止）或改插件代码暴露专属模型 ID（需发版）**。收口：4 模型全 200、模型表 21、探测别名零残留、alias GET 与备份完全一致、config.yaml 仅 alias 字段顺序互换（语义等价）。
+
 - 会话（2026-11-07 17:25）：**长推理 80~145 秒卡死根因修复（workbuddy 0.21.11 / qoderwork 0.13.4 / traework 0.5.10）**：
   - 诉求：高强度测试 qoderwork / traework 的 `deepseek-v4.1-flash` 推理请求，要求不测到 workbuddy；随后明确判定标准「首字延迟和生成时间过长的都是 bug」。
   - **压测基线（修复前）**：同 prompt、`max_tokens=2000`、`reasoning_effort=max` 下，traework 生成 9908 tokens / 72s、qoderwork 7029 tokens / 94s。**对照实验推翻了「只有这两个插件慢」的前提**：直连 workbuddy 同名模型生成 12030~21943 tokens / 81~145s，比另两个更慢。
@@ -36,7 +44,7 @@
   - **修复**：显式传入 `max_tokens` 时原样尊重、仅做上限截断；只有未传（`<=0`）才补足统一上限。三插件同源同步修改，测试断言同步（推理档 8192/2000 保留、非推理档 8192 保留、`relaxMaxTokensInPlace` 对显式值不再改写 payload）。
   - **发布**：`5c1f4c6`（代码）→ CI `42358546508`/`42358554570`/`42358566325`（三条 run 均 `cancelled` 但 Release `success`，仅缺 `darwin/arm64`）→ `41d680f`（registry）。生产热重载三插件到 `active_version` 0.21.11 / 0.13.4 / 0.5.10。
   - **修复效果（workbuddy 实测）**：`out=2000` 精确卡上限（修复前 12030~21943），单请求耗时 **13.8~15.2s**（修复前 81~145s），token 降 90%、耗时降 89%。
-  - **遗留（需用户决策）**：`oauth-model-alias` 里 `deepseek-flash` 只是把名字改写成 `deepseek-v4.1-flash`，随后仍按模型名匹配**所有**提供方，workbuddy 优先级更高会把流量抢走（实测响应体 `"model":"deepseek-v4.1-flash"`、feed `provider=workbuddy-provider`）。因此 qoderwork/traework 拿不到独立样本，**隔离未成立**。要真正定向测试，需把 workbuddy 的该模型从路由池摘除，或使用 provider 专属模型名。
+  - **隔离结论（17:47 修正，原「摘除 workbuddy 该模型」建议已作废）**：`oauth-model-alias` 把 `deepseek-flash` 改写成 `deepseek-v4.1-flash` 后仍按模型名匹配所有提供方，workbuddy 优先级更高会抢走流量（响应体 `"model":"deepseek-v4.1-flash"`、feed `provider=workbuddy-provider`）。`/v1/models` 的 `owned_by` 实测证明 **`deepseek-v4.1-flash` 只有 `workbuddy-provider` 提供**，qoderwork 仅注册 `dfmodel`、traework 仅注册 `deepseek-flash`，二者都不含该 ID —— 摘除 workbuddy 系必然 `unknown provider`，**方案 1 不可行且已造成 5 分钟生产 400**（详见下条会话）。正确做法：直接用 provider 专属模型名（`dfmodel` 可零改动定向测 qoderwork）；traework 需先处理 alias 劫持。
   - **附带的第二处差异**：`traework/usage_feed.go:159` 明确记录 Trae 上游不支持 `reasoning_effort`，该参数从不透传；`max_tokens` 是其唯一推理深度收口，被放大后等于完全失控。
 
 - 会话（2026-11-07 16:00）：**慢速冷却池准入闸门 20→10 发布（qoderwork 0.13.3 / traework 0.5.9）**：

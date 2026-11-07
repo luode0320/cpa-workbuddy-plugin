@@ -1,5 +1,14 @@
 # TraeWork Plugin Changelog
 
+## 0.5.11
+
+### Fix - 显式 max_tokens 在请求路径上被二次抬升（0.5.10 修复未真正生效）
+
+- 根因：`buildTraePayload` 只在 `stream` 分支调用 `computeAdaptiveMaxTokens`，随后又无条件执行 `applyMaxTokensFloor`，把客户端显式值抬回 32768 底线。0.5.10 只改了 `computeAdaptiveMaxTokens` 本身，被这两处抵消。
+- 生产实证：非流式 `max_tokens=2000` 实际透传 32768，`deepseek-v4.1-flash` 生成 **11203 tokens、耗时 72.1 秒**（同条件 workbuddy 为 2000 tokens / 15 秒）。
+- 修复：显式值统一原样透传、仅做上限截断；未传时流式补足统一上限、非流式保持不设该字段（沿用既有语义）；探活请求改为显式传 `streamDefaultMaxTokens`，不再依赖 floor 抬值。
+- 测试：`TestBuildTraePayloadStreamDefaultMaxTokens` 补充非流式显式 2000 用例、`TestBuildTraePayloadAdaptiveMaxTokens` 断言改为原样 8192。
+
 ## 0.5.10
 
 ### Fix - 客户端显式 max_tokens 不再被放大到 128k（本插件唯一可用的推理深度收口）

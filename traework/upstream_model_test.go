@@ -75,10 +75,16 @@ func TestBuildTraePayloadStreamDefaultMaxTokens(t *testing.T) {
 		t.Fatalf("stream max_tokens = %v, want %d", got, streamDefaultMaxTokens)
 	}
 
-	// 2. 流式 + 显式 max_tokens 低于底线：抬升至 32768。
+	// 2. 流式 + 显式 max_tokens：原样尊重，不再抬升至底线（2026-11-07 修复）。
 	payload = buildTraePayload(nil, "qwen3.8-max", true, 4096, nil, nil, nil, "")
-	if got := payload["max_tokens"]; got != int(minMaxTokensFloor) {
-		t.Fatalf("explicit stream max_tokens = %v, want %d", got, minMaxTokensFloor)
+	if got := payload["max_tokens"]; got != 4096 {
+		t.Fatalf("explicit stream max_tokens = %v, want 4096", got)
+	}
+
+	// 2b. 非流式 + 显式 max_tokens：同样原样尊重（原实现经 applyMaxTokensFloor 抬到 32768）。
+	payload = buildTraePayload(nil, "qwen3.8-max", false, 2000, nil, nil, nil, "")
+	if got := payload["max_tokens"]; got != 2000 {
+		t.Fatalf("explicit non-stream max_tokens = %v, want 2000", got)
 	}
 
 	// 3. 非流式 + 未传 max_tokens：不补默认值，保持无 max_tokens 字段。
@@ -94,9 +100,9 @@ func TestBuildTraePayloadStreamDefaultMaxTokens(t *testing.T) {
 // [返回] 无。
 // 最近修改时间：2026-10-13 02:40:00；改动原因：验证 Trae 流式推理模型自适应扩展 token 上限。
 func TestBuildTraePayloadAdaptiveMaxTokens(t *testing.T) {
-	// 1. 推理模型传入 8192 时，应自适应扩展至官方规格上限 (如 deepseek-reasoner 为 65536)
+	// 推理模型显式传入 8192：原样透传（2026-11-07 修复，不再放宽至 128k/32768）。
 	payload := buildTraePayload(nil, "deepseek-reasoner", true, 8192, nil, nil, nil, "")
-	if got, ok := payload["max_tokens"].(int); !ok || got < 32768 {
-		t.Fatalf("deepseek-reasoner max_tokens = %v, want >= 32768", payload["max_tokens"])
+	if got, ok := payload["max_tokens"].(int); !ok || got != 8192 {
+		t.Fatalf("deepseek-reasoner max_tokens = %v, want 8192", payload["max_tokens"])
 	}
 }

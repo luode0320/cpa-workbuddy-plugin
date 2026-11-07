@@ -160,11 +160,13 @@ func pickRandomTraeModel(sa *traeAuth) string {
 // [返回] error: 传输失败、HTTP 非 2xx 或 SSE 返回 event:error 时返回错误；收到首个有效 output/done 事件即刻成功返回 nil。
 // 最近修改时间：2026-10-11 21:50:00 改用流式直连并在收到首个有效 output 时立即中止关闭流，消除思考模型生成整段思维链导致的 5~8 秒耗时
 func sendActivePingTrae(sa *traeAuth, chosenModel string) error {
-	// 1. 构造最小流式探活负载（stream=true，max_tokens 抬升至全局输出底线）
+	// 1. 构造最小流式探活负载（stream=true，max_tokens 取缺省上限）
+	// 2026-11-07：原传 1 依赖 buildTraePayload 内部的 applyMaxTokensFloor 抬值；
+	// 该抬升已移除（会抵消客户端显式上限），探活改为显式传缺省上限，保持既有语义。
 	msgs := toTraeMessages([]map[string]any{
 		{"role": "user", "content": "hi"},
 	})
-	payload := buildTraePayload(msgs, chosenModel, true, 1, nil, nil, nil, "")
+	payload := buildTraePayload(msgs, chosenModel, true, int(streamDefaultMaxTokens), nil, nil, nil, "")
 
 	raw, err := json.Marshal(payload)
 	if err != nil {

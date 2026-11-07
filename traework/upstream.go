@@ -134,15 +134,18 @@ func buildTraePayload(messages []map[string]any, model string, stream bool, maxT
 	if toolChoice != "" {
 		payload["tool_choice"] = toolChoice
 	}
-	// 流式路径自适应 max_tokens：统一上限（推理 128k / 非推理 64k）
-	if stream {
-		mLower := strings.ToLower(configName)
-		isReasoning := strings.Contains(mLower, "reasoner") || strings.Contains(mLower, "thinking")
-		maxTokens = int(computeAdaptiveMaxTokens(configName, int64(maxTokens), isReasoning))
-	}
-	// 统一抬升至全局输出底线，任何路径下发往上游的 max_tokens 不低于 32768
+	// 自适应 max_tokens：客户端显式传入时原样尊重（仅做上限截断）；流式未传时
+	// 补足统一上限，非流式未传保持不设该字段（沿用既有语义）。
+	// 2026-11-07 修复：原实现只在 stream 分支调用 computeAdaptiveMaxTokens，且随后
+	// 无条件 applyMaxTokensFloor，把显式小值又抬回 32768——非流式 max_tokens=2000
+	// 实测透传 32768、生成 11203 tokens、耗时 72 秒。输出上限是调用方显式契约，
+	// 插件不得单方面放大。
+	mLower := strings.ToLower(configName)
+	isReasoning := strings.Contains(mLower, "reasoner") || strings.Contains(mLower, "thinking")
 	if maxTokens > 0 {
-		payload["max_tokens"] = int(applyMaxTokensFloor(int64(maxTokens)))
+		payload["max_tokens"] = int(computeAdaptiveMaxTokens(configName, int64(maxTokens), isReasoning))
+	} else if stream {
+		payload["max_tokens"] = int(computeAdaptiveMaxTokens(configName, 0, isReasoning))
 	}
 	if temperature != nil {
 		payload["temperature"] = *temperature
