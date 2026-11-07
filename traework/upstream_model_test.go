@@ -2,12 +2,27 @@ package main
 
 import "testing"
 
+// resetTraeModelFunctions 清空全局通道映射。
+//
+// 模型目录合并会把 config_name -> 通道 写入全局 sync.Map；测试用例之间共享该
+// 状态会造成断言互相污染，因此需要显式清理。
+//
+// [返回] 无。
+// 最近修改时间：2026-11-07；改动原因：新增双通道目录后隔离用例状态。
+func resetTraeModelFunctions() {
+	traeModelFunctions.Range(func(key, _ any) bool {
+		traeModelFunctions.Delete(key)
+		return true
+	})
+}
+
 // TestResolveModelOptionsMapsSeedAliases 验证 Seed 客户端短 ID 会映射为上游精确 config_name。
 //
 // [参数] t: 当前测试。
 // [返回] 无。
 // 最近修改时间：2026-08-30 02:55:11；改动原因：补齐 Seed 别名兼容路径的回归覆盖与注释契约。
 func TestResolveModelOptionsMapsSeedAliases(t *testing.T) {
+	resetTraeModelFunctions() // 清全局通道映射，避免其它用例残留影响回退断言
 	// 1. 枚举所有已确认的 Seed 短 ID 与上游精确 ID。
 	tests := []struct {
 		clientID string
@@ -39,6 +54,7 @@ func TestResolveModelOptionsMapsSeedAliases(t *testing.T) {
 // [返回] 无。
 // 最近修改时间：2026-08-30 02:55:11；改动原因：锁定 qwen3.8-max 等真实模型 ID 的透传语义。
 func TestResolveModelOptionsPassesThroughExactConfigName(t *testing.T) {
+	resetTraeModelFunctions() // 无通道记录时必须回退默认 SOLO 池
 	// 1. 精确模型 ID 必须继续使用 SOLO 池并保持原值。
 	fn, configName := resolveModelOptions("qwen3.8-max")
 	if fn != soloWorkLite {
@@ -46,6 +62,25 @@ func TestResolveModelOptionsPassesThroughExactConfigName(t *testing.T) {
 	}
 	if configName != "qwen3.8-max" {
 		t.Fatalf("config_name = %q, want qwen3.8-max", configName)
+	}
+}
+
+// TestResolveModelOptionsUsesRecordedCatalogFunction 验证目录记录的通道优先于默认池。
+//
+// 上游按「配置 × 通道」判定模型是否上架，拿未上架通道的模型去问会回 4001，
+// 因此目录合并时记录的通道必须被聊天请求采用。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-11-07；改动原因：新增 chat_v3 / solo_agent 双通道目录。
+func TestResolveModelOptionsUsesRecordedCatalogFunction(t *testing.T) {
+	resetTraeModelFunctions()
+	t.Cleanup(resetTraeModelFunctions)
+	traeModelFunctions.Store("qwen3.8-max", traeCatalogChat)
+
+	fn, configName := resolveModelOptions("qwen3.8-max")
+	if fn != traeCatalogChat || configName != "qwen3.8-max" {
+		t.Fatalf("function = %q config_name = %q, want %q/qwen3.8-max", fn, configName, traeCatalogChat)
 	}
 }
 

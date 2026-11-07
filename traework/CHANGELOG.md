@@ -1,5 +1,17 @@
 # TraeWork Plugin Changelog
 
+## 0.5.13
+
+### Feat - 模型目录双通道 + 目录过滤、签到 status 预查与 9074 冷却、版本头对齐真机
+
+- 模型目录: `get_detail_param` 由单通道 `solo_work_lite` 改为 `chat_v3` + `solo_agent` 并发拉取，按 `chat_v3` 优先顺序确定性合并；补齐此前完全缺失的过滤（`is_invisible_to_user`、`config_switch=false`、`display_config.is_custom_model`、内部 usage 标签、内部前缀、`-auto` 后缀），避免内部模型混入目录。
+- 通道归属: 目录合并时记录每个模型的上架通道（`traeModelFunctions`），`resolveModelOptions` 在聊天时选用同一通道——上游按「配置 × 通道」判定上架，拿未上架通道的模型去问会回 4001；无记录时仍回退 `solo_work_lite`。
+- 签到: 新增 `checkin_credits/status` 预查，已签或 `enable=false` 直接跳过，不再对已签账号发无效 claim；9074 后按账号记冷却（本地 00:00-00:10 早窗 12 分钟、平时 55 分钟），冷却期内零请求，账号间不连坐；请求头补齐 `x-app-version-code` / `x-ide-version-code` / `X-User-Region: CN` / `x-device-cpu`。
+- 版本头: `x-app-version` 默认 `0.1.58` → `1.107.1`；`x-app-version-code` 由「当天日期」改为固定 `20260901`——上游按该数值做灰度（实测 20260401 只回 42 条目录、≥20260901 才回完整目录），且必须为纯整数，日期值会与版本号不自洽。
+- 测试: `models_dynamic_test.go` 覆盖双通道合并、过滤与通道映射；`upstream_model_test.go` 新增通道优先用例并隔离全局映射；`test/traework/checkin_device_rotation_test.go` 区分 status 与 claim 的请求序列。
+- 依据: GitHub `JsonLing/trae-cn-provider`（chat_v3 + solo_agent 双查与多层过滤）、`crush1994/Trae-AutoCheckin`（status 预查、9074 换号与冷却）、`bluechonk/trae-credential-reverse-engineering`（UG checkin 端点与设备头）。
+- 说明: 本版包含 0.5.12 的「显式 max_tokens 零干预」改造（基于 `aee52c0`）。
+
 ## 0.5.12
 
 ### Fix - 删除自研 max_tokens 控制，改为「显式值零干预」（对齐社区共识）

@@ -14,11 +14,27 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-const traeModelDetailPath = "/api/ide/v1/get_detail_param"
+const (
+	traeModelDetailPath = "/api/ide/v1/get_detail_param"
+	// traeCatalogChat / traeCatalogSolo 是模型目录的两条上架通道。
+	// 上游按「配置 × 通道」判定模型是否上架：只问一个通道会漏掉仅在另一通道
+	// 上架的模型（对标开源 trae-cn-provider 的 chat_v3 + solo_agent 双查）。
+	traeCatalogChat = "chat_v3"
+	traeCatalogSolo = "solo_agent"
+)
+
+// traeCatalogFunctions 是模型发现的通道集合：两份目录并发拉取后按
+// config_name 去重合并，先到先得。
+var traeCatalogFunctions = []string{traeCatalogChat, traeCatalogSolo}
+
+// traeModelFunctions 记录每个模型最近一次上架的通道，供聊天请求选择对应的
+// function。拿未在该通道上架的模型去问，上游会回 4001。
+// key 为 config_name 小写。
+var traeModelFunctions sync.Map
 
 // traeModelDetailRequest 对齐 Trae get_detail_param 的模型发现请求结构。
 type traeModelDetailRequest struct {
-	Function          string   `json:"function"`            // 模型池功能类型，固定使用 solo_work_lite。
+	Function          string   `json:"function"`            // 模型池功能类型，取 traeCatalogFunctions 中的通道。
 	ConfigNames       []string `json:"config_names"`        // nil 表示请求账号可用的完整模型列表。
 	NeedPrompt        bool     `json:"need_prompt"`         // 模型发现不需要返回提示词正文。
 	CurrentConfigInfo any      `json:"current_config_info"` // 当前模型配置；全量发现时为空。
@@ -32,15 +48,40 @@ type traeModelDetailResponse struct {
 	ConfigInfoList []traeModelConfigInfo `json:"config_info_list"` // 账号当前可用的模型配置。
 }
 
-// traeModelConfigInfo 保存可直接用于 llm_utils_chat 的精确模型标识和展示信息。
+// traeModelConfigInfo 保存可直接用于 llm_utils_chat 的精确模型标识和展示信息，
+// 以及判定「是否对用户可选」所需的元数据。
 type traeModelConfigInfo struct {
-	ConfigName    string                 `json:"config_name"`    // 上游精确模型 ID，必须原样用于 config_name。
-	DisplayConfig traeModelDisplayConfig `json:"display_config"` // 客户端展示信息。
+	ConfigName        string                 `json:"config_name"`          // 上游精确模型 ID，必须原样用于 config_name。
+	DisplayConfig     traeModelDisplayConfig `json:"display_config"`       // 客户端展示信息。
+	IsInvisibleToUser bool                   `json:"is_invisible_to_user"` // true 表示已对用户隐藏（退役/内部）。
+	ConfigSwitch      *bool                  `json:"config_switch"`        // false 表示开关关闭；缺省视为开启。
+	Usage             string                 `json:"usage"`                // 用途标签，非 chat_completion 多为内部模型。
+	RawChatFunction   string                 `json:"raw_chat_function"`    // 上游标注的聊天通道，优先于请求通道。
 }
 
-// traeModelDisplayConfig 保存 Trae 提供的模型展示名称。
+// traeModelDisplayConfig 保存 Trae 提供的模型展示名称与能力标记。
 type traeModelDisplayConfig struct {
-	DisplayName string `json:"display_name"` // 面向客户端模型选择器的名称。
+	DisplayName   string `json:"display_name"`    // 面向客户端模型选择器的名称。
+	IsCustomModel bool   `json:"is_custom_model"` // true 表示用户自定义模型，不进入公共目录。
+	MaxMode       bool   `json:"max_mode"`        // true 表示该配置存在 __max 变体。
+	Multimodal    bool   `json:"multimodal"`      // true 表示支持图片输入。
+}
+
+// traeInternalModelUsage 是内部用途标签集合，带这些标签的模型不可作为聊天模型暴露。
+var traeInternalModelUsage = map[string]struct{}{
+	"summary":           {},
+	"fast_apply":        {},
+	"fast_apply_new":    {},
+	"title_generation":  {},
+	"input_optimization": {},
+	"compact_prompt":    {},
+	"query_rewrite":     {},
+	"custom_model":      {},
+}
+
+// traeInternalModelPrefixes 是内部模型的前缀黑名单。
+var traeInternalModelPrefixes = []string{
+	"custom_", "search_agent", "browser_use", "computer_use", "file_search", "explore_",
 }
 
 // defaultTraeModels 原为精选兜底列表。现已完全剔除写死模型，
@@ -315,15 +356,84 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 	})
 }
 
-// fetchTraeModels 从 get_detail_param 获取当前账号可用的精确 config_name。
+// traeCatalogEntry 是单通道目录中的一条可选模型及其归属通道。
+type traeCatalogEntry struct {
+	model    pluginapi.ModelInfo
+	function string
+}
+
+// fetchTraeModels 并行拉取 chat_v3 / solo_agent 两条通道的账号模型目录，
+// 过滤内部与自定义模型后按 config_name 去重合并。
+//
+// 上游按「配置 × 通道」判定模型是否上架：只问一个通道会漏掉仅在另一通道
+// 上架的模型，且拿未上架通道的模型去聊天会回 4001，因此合并时记录每个模型
+// 的归属通道（traeModelFunctions），由 resolveModelOptions 在聊天时取用。
 //
 // [参数] auth: 已解析且包含访问令牌的 Trae 账号。
-// [返回] 去重后的模型列表；请求、非 2xx、响应解析或空列表均返回错误。
-// 最近修改时间：2026-08-30 02:43:13；改动原因：建立账号级动态模型事实源并拒绝把空响应当成功。
+// [返回] 去重后的可选模型列表；两条通道都失败或均无可选模型时返回错误。
+// 最近修改时间：2026-11-07；改动原因：单通道 solo_work_lite 无法覆盖
+// chat_v3 / solo_agent 上架的模型，且原实现零过滤导致内部模型混入目录。
 func fetchTraeModels(auth *traeAuth) ([]pluginapi.ModelInfo, error) {
-	// 1. 按 Trae 桌面端契约请求 SOLO 模型详情，不指定 config_names 以获取完整账号模型池。
+	type catalogResult struct {
+		function string
+		entries  []traeCatalogEntry
+		err      error
+	}
+	results := make(chan catalogResult, len(traeCatalogFunctions))
+	for _, function := range traeCatalogFunctions {
+		go func(function string) {
+			entries, err := fetchTraeCatalog(auth, function)
+			results <- catalogResult{function: function, entries: entries, err: err}
+		}(function)
+	}
+
+	collected := make(map[string]catalogResult, len(traeCatalogFunctions))
+	for range traeCatalogFunctions {
+		result := <-results
+		collected[result.function] = result
+	}
+
+	seen := make(map[string]struct{}, 64)
+	models := make([]pluginapi.ModelInfo, 0, 64)
+	failures := make([]string, 0, len(traeCatalogFunctions))
+	// 按 traeCatalogFunctions 的固定顺序合并（chat_v3 优先），保证模型顺序与
+	// 通道归属不随 goroutine 完成时机漂移。
+	for _, function := range traeCatalogFunctions {
+		result, ok := collected[function]
+		if !ok {
+			continue
+		}
+		if result.err != nil {
+			failures = append(failures, function+": "+result.err.Error())
+			continue
+		}
+		for _, entry := range result.entries {
+			key := strings.ToLower(entry.model.ID)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			models = append(models, entry.model)
+			traeModelFunctions.Store(key, entry.function)
+		}
+	}
+	if len(models) == 0 {
+		if len(failures) > 0 {
+			return nil, fmt.Errorf("get_detail_param failed on all channels: %s", strings.Join(failures, "; "))
+		}
+		return nil, fmt.Errorf("get_detail_param returned no models")
+	}
+	return models, nil
+}
+
+// fetchTraeCatalog 拉取单条通道的模型目录并剔除不可选条目。
+//
+// [参数] auth: 已解析账号；function: chat_v3 或 solo_agent。
+// [返回] 该通道下对用户可选的模型；请求失败、非 2xx、解析失败或过滤后为空均返回错误。
+// 最近修改时间：2026-11-07；改动原因：从 fetchTraeModels 拆出单通道实现。
+func fetchTraeCatalog(auth *traeAuth, function string) ([]traeCatalogEntry, error) {
 	payload := traeModelDetailRequest{
-		Function:          soloWorkLite,
+		Function:          function,
 		NeedPrompt:        false,
 		CurrentConfigInfo: nil,
 		PolyPrompt:        true,
@@ -340,7 +450,7 @@ func fetchTraeModels(auth *traeAuth) ([]pluginapi.ModelInfo, error) {
 	}
 	req.Header = buildTraeAuthHeaders(auth)
 
-	// 2. 通过宿主 HTTP 桥接执行请求，保证生产代理与请求观测策略继续生效。
+	// 通过宿主 HTTP 桥接执行请求，保证生产代理与请求观测策略继续生效。
 	resp, err := hostHTTPDo(req)
 	if err != nil {
 		return nil, fmt.Errorf("get_detail_param transport: %w", err)
@@ -349,37 +459,76 @@ func fetchTraeModels(auth *traeAuth) ([]pluginapi.ModelInfo, error) {
 		return nil, &UpstreamError{Status: resp.StatusCode, Body: truncateRedacted(string(resp.Body), 300)}
 	}
 
-	// 3. 结构化解析并按 config_name 去重；展示名缺失时使用精确 ID，空列表触发上层回退。
 	var detail traeModelDetailResponse
 	if err := json.Unmarshal(resp.Body, &detail); err != nil {
 		return nil, fmt.Errorf("decode get_detail_param response: %w", err)
 	}
-	seen := make(map[string]struct{}, len(detail.ConfigInfoList))
-	models := make([]pluginapi.ModelInfo, 0, len(detail.ConfigInfoList))
+	entries := make([]traeCatalogEntry, 0, len(detail.ConfigInfoList))
 	for _, item := range detail.ConfigInfoList {
-		// 3.1 空 ID 和重复 ID 不进入客户端模型列表，避免暴露不可调用或重复选项。
-		if item.ConfigName == "" {
+		if !isSelectableTraeModel(item) {
 			continue
 		}
-		if _, exists := seen[item.ConfigName]; exists {
-			continue
-		}
-		seen[item.ConfigName] = struct{}{}
 		name := item.DisplayConfig.DisplayName
 		if name == "" {
 			name = item.ConfigName
 		}
-		models = append(models, pluginapi.ModelInfo{
-			ID:                         item.ConfigName,
-			Name:                       name,
-			OwnedBy:                    providerName,
-			SupportedGenerationMethods: []string{"chat"},
+		// 上游若标注了 raw_chat_function，以它为准；否则回落到本次请求的通道。
+		functionForModel := function
+		if rawFunction := strings.TrimSpace(item.RawChatFunction); rawFunction != "" {
+			functionForModel = rawFunction
+		}
+		entries = append(entries, traeCatalogEntry{
+			model: pluginapi.ModelInfo{
+				ID:                         item.ConfigName,
+				Name:                       name,
+				OwnedBy:                    providerName,
+				SupportedGenerationMethods: []string{"chat"},
+			},
+			function: functionForModel,
 		})
 	}
-	if len(models) == 0 {
-		return nil, fmt.Errorf("get_detail_param returned no models")
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("%s returned no selectable models", function)
 	}
-	return models, nil
+	return entries, nil
+}
+
+// isSelectableTraeModel 判定目录条目是否可以暴露给客户端。
+//
+// 过滤维度对标开源实现：对用户隐藏、开关关闭、自定义模型、内部用途标签、
+// 内部模型前缀，以及 -auto 兜底条目。放宽这些过滤不会多出可用模型，
+// 只会把内部模型暴露成噪音（并诱发 4001/4023）。
+//
+// [参数] item: 上游 config_info_list 中的单条配置。
+// [返回] 可作为聊天模型暴露时返回 true。
+// 最近修改时间：2026-11-07；改动原因：新增，补齐此前完全缺失的目录过滤。
+func isSelectableTraeModel(item traeModelConfigInfo) bool {
+	name := strings.TrimSpace(item.ConfigName)
+	if name == "" {
+		return false
+	}
+	if item.IsInvisibleToUser {
+		return false
+	}
+	if item.ConfigSwitch != nil && !*item.ConfigSwitch {
+		return false
+	}
+	if item.DisplayConfig.IsCustomModel {
+		return false
+	}
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, "-auto") {
+		return false
+	}
+	if _, internal := traeInternalModelUsage[strings.ToLower(strings.TrimSpace(item.Usage))]; internal {
+		return false
+	}
+	for _, prefix := range traeInternalModelPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return false
+		}
+	}
+	return true
 }
 
 // authModelsForIndex 返回指定账号当前可用的模型列表，供面板「测试」弹窗选择。

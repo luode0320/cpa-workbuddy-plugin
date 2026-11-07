@@ -18,7 +18,16 @@ import (
 
 const (
 	claimPath  = "/trae/api/v2/ug/checkin_credits/claim"
+	statusPath = "/trae/api/v2/ug/checkin_credits/status"
 	pointsPath = "/trae/api/v2/pay/user_current_entitlement_list"
+)
+
+// 签到 9074（"当前参与用户太多"）后的账号级冷却时长。
+// 实测与开源结论一致：早窗（本地 00:00-00:10）12 分钟即可再签，平时约需 55 分钟；
+// 冷却期内持续请求只会把惩罚窗口越拉越长，因此必须在插件侧记冷却而不是硬重试。
+const (
+	checkinPeakCooldown   = 12 * time.Minute
+	checkinNormalCooldown = 55 * time.Minute
 )
 
 // checkinResult is the outcome of one check-in attempt.
@@ -27,6 +36,73 @@ type checkinResult struct {
 	Message string `json:"message"`
 	Points  int64  `json:"points,omitempty"`
 	Already bool   `json:"already,omitempty"`
+}
+
+// checkinCooldownUntil 保存账号级 9074 冷却到期时间（Unix 秒）。
+// key 优先用 uid，退化到凭据 ID：同一账号的多份凭据共享同一冷却，
+// 不同账号互不连坐（开源实测：一个账号撞限流不应让其余账号收工）。
+var checkinCooldownUntil sync.Map
+
+// checkinCooldownKey 返回账号的冷却键。
+//
+// [参数] a: Trae 账号凭据。
+// [返回] 稳定账号键；凭据为空时返回空串。
+// 最近修改时间：2026-11-07；改动原因：新增账号级 9074 冷却。
+func checkinCooldownKey(a *traeAuth) string {
+	if a == nil {
+		return ""
+	}
+	if uid := a2UID(a); uid != "" {
+		return uid
+	}
+	return a.UserID
+}
+
+// isCheckinPeakWindow 判定当前是否处于签到早窗（本地 00:00-00:10）。
+//
+// [参数] now: 当前本地时间。
+// [返回] 早窗内返回 true。
+// 最近修改时间：2026-11-07；改动原因：早窗与平时的 9074 冷却时长不同。
+func isCheckinPeakWindow(now time.Time) bool {
+	return now.Hour() == 0 && now.Minute() < 10
+}
+
+// markCheckinCooldown 记录账号 9074 冷却。
+//
+// [参数] a: Trae 账号凭据。
+// [返回] 本次冷却时长，供调用方回报。
+// 最近修改时间：2026-11-07；改动原因：新增账号级 9074 冷却。
+func markCheckinCooldown(a *traeAuth) time.Duration {
+	duration := checkinNormalCooldown
+	if isCheckinPeakWindow(time.Now()) {
+		duration = checkinPeakCooldown
+	}
+	if key := checkinCooldownKey(a); key != "" {
+		checkinCooldownUntil.Store(key, time.Now().Add(duration).Unix())
+	}
+	return duration
+}
+
+// checkinCooldownRemaining 返回账号剩余冷却时长。
+//
+// [参数] a: Trae 账号凭据。
+// [返回] 剩余时长；无冷却或已过期返回 0。
+// 最近修改时间：2026-11-07；改动原因：新增账号级 9074 冷却。
+func checkinCooldownRemaining(a *traeAuth) time.Duration {
+	key := checkinCooldownKey(a)
+	if key == "" {
+		return 0
+	}
+	value, ok := checkinCooldownUntil.Load(key)
+	if !ok {
+		return 0
+	}
+	until, _ := value.(int64)
+	if until <= time.Now().Unix() {
+		checkinCooldownUntil.Delete(key)
+		return 0
+	}
+	return time.Until(time.Unix(until, 0))
 }
 
 // isValidCheckinDeviceID 校验设备标识是否符合客户端 16 位数字号段格式。
@@ -124,9 +200,56 @@ func checkinAuthHeaders(a *traeAuth, deviceID string) http.Header {
 	}
 	if v := ideVersion(); v != "" {
 		h.Set("x-app-version", v)
+		h.Set("x-ide-version", v)
 	}
+	// 版本码与版本号必须自洽：上游按 x-app-version-code 的数值做灰度，
+	// 缺该头或取值异常会被判定为非真机客户端（开源实测）。
+	if v := ideVersionCode(); v != "" {
+		h.Set("x-app-version-code", v)
+		h.Set("x-ide-version-code", v)
+	}
+	h.Set("x-device-cpu", "Intel")
+	h.Set("X-User-Region", "CN")
 	h.Set("User-Agent", checkinUserAgent)
 	return h
+}
+
+// checkinStatus 查询账号今日签到状态。
+//
+// 先查状态再决定是否 claim，能避免每天对已签账号发无效请求——无效 claim
+// 会消耗风控额度并抬高 9074 概率（开源实现同样采用 status + claim 双层幂等）。
+//
+// [参数] a: Trae 账号凭据；deviceID: 本次使用的 16 位设备标识。
+// [返回] checkedIn 今日是否已签、credits 当前积分、enabled 是否开放签到、
+//        ok 查询本身是否可信。ok=false 时调用方应继续尝试 claim，
+//        不能因查询失败而阻断签到。
+// 最近修改时间：2026-11-07；改动原因：新增 status 预查，减少无效 claim。
+func checkinStatus(a *traeAuth, deviceID string) (checkedIn bool, credits int64, enabled bool, ok bool) {
+	if a == nil || !a.hasToken() {
+		return false, 0, false, false
+	}
+	host := a.checkinHost()
+	payload, _ := json.Marshal(checkinClaimRequest{ReqSource: 2})
+	req, err := http.NewRequest(http.MethodPost, host+statusPath, bytes.NewReader(payload))
+	if err != nil {
+		return false, 0, false, false
+	}
+	req.Header = checkinAuthHeaders(a, deviceID)
+	resp, err := hostHTTPDo(req)
+	if err != nil || isDefiniteHTTPFailure(resp.StatusCode) || len(resp.Body) == 0 {
+		return false, 0, false, false
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resp.Body, &data); err != nil || !apiSucceeded(data) {
+		return false, 0, false, false
+	}
+	checkedIn, _ = data["checked_in"].(bool)
+	credits = toInt64(data["credits"])
+	enabled = true
+	if value, hasEnable := data["enable"].(bool); hasEnable {
+		enabled = value
+	}
+	return checkedIn, credits, enabled, true
 }
 
 // isDefiniteHTTPFailure reports whether the bridge status code is a definite
@@ -153,14 +276,29 @@ const checkinMaxAttempts = 4
 // [返回] checkinResult: 签到执行结果。
 // 最近修改时间：2026-10-10 22:00:00；改动原因：遇到 9074 限流或设备拦截时自动切换新 16 位数字设备号重试。
 func checkinAccount(a *traeAuth) checkinResult {
-	// 1. 校验账号凭据有效性并准备初始请求参数
+	// 1. 校验账号凭据有效性
 	if a == nil || !a.hasToken() {
 		return checkinResult{OK: false, Message: "no credential"}
 	}
+	// 2. 账号级 9074 冷却期内直接跳过：持续请求只会把惩罚窗口越拉越长
+	if remaining := checkinCooldownRemaining(a); remaining > 0 {
+		return checkinResult{OK: false, Message: fmt.Sprintf("限流冷却中，约 %d 分钟后重试", int(remaining.Minutes())+1)}
+	}
 	host := a.checkinHost()
 	deviceID := deviceIDFor(a.DeviceID, a.UserID)
+
+	// 3. 先查今日状态：已签或未开放都不再发 claim，减少无效请求与风控额度消耗
+	if checkedIn, _, enabled, ok := checkinStatus(a, deviceID); ok {
+		if checkedIn {
+			return checkinResult{OK: true, Message: "今日已签到", Already: true}
+		}
+		if !enabled {
+			return checkinResult{OK: false, Message: "该账号未开放签到"}
+		}
+	}
+
 	claimPayload, _ := json.Marshal(checkinClaimRequest{ReqSource: 2})
-	// 2. 发起签到请求并在 9074 限流或设备去重冲突时轮换设备号重试
+	// 4. 发起签到请求并在 9074 限流或设备去重冲突时轮换设备号重试
 	for attempt := 0; attempt < checkinMaxAttempts; attempt++ {
 		if attempt > 0 {
 			deviceID = randomDeviceID()
@@ -199,9 +337,13 @@ func checkinAccount(a *traeAuth) checkinResult {
 			}
 			return checkinResult{OK: false, Message: msg + "（设备级拦截，稍后重试）"}
 		}
-		if isBusyThrottleMsg(msg) && attempt+1 < checkinMaxAttempts {
-			time.Sleep(300 * time.Millisecond)
-			continue
+		if isBusyThrottleMsg(msg) {
+			if attempt+1 < checkinMaxAttempts {
+				time.Sleep(300 * time.Millisecond)
+				continue
+			}
+			cooldown := markCheckinCooldown(a)
+			return checkinResult{OK: false, Message: fmt.Sprintf("%s（已进入 %d 分钟冷却）", msg, int(cooldown.Minutes()))}
 		}
 		return checkinResult{OK: false, Message: msg}
 	}

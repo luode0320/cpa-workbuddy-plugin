@@ -14,7 +14,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 const (
@@ -92,12 +91,18 @@ func buildTraeAuthHeaders(a *traeAuth) http.Header {
 
 // ideVersionCode returns the configured code or today's YYYYMMDD (the SOLO
 // client convention, e.g. 20260827).
+// ideVersionCode 返回 x-app-version-code / x-ide-version-code 的取值。
+//
+// 上游按该数值做灰度：实测 20260401 只回 42 条目录、>=20260901 才回完整目录，
+// 且取值必须是纯整数（带点的版本号会被 400 bad request 拒绝）。因此缺省值固定为
+// 与 ideVersion 1.107.1 对齐的 20260901，而不是随当天日期漂移——日期值会与
+// 版本号不自洽，可能被判定为非真机客户端。
 func ideVersionCode() string {
 	cfg := loadedConfig()
 	if cfg.IDEVersionCode != "" {
 		return cfg.IDEVersionCode
 	}
-	return time.Now().Format("20060102")
+	return "20260901"
 }
 
 // ideVersion returns the configured IDE version, or the version auto-detected
@@ -110,7 +115,7 @@ func ideVersion() string {
 	if v := DetectIDEVersion(); v != "" {
 		return v
 	}
-	return "0.1.58" // last known default; keep in sync with Trae releases
+	return "1.107.1" // 与 ideVersionCode 的 20260901 对齐，见开源实测：版本码决定灰度档位
 }
 
 // buildTraePayload converts a normalized chat request into the Trae
@@ -274,6 +279,13 @@ func resolveModelOptions(model string) (fn, configName string) {
 	}
 	if upstream, ok := traeConfigNameAliases[model]; ok {
 		model = upstream
+	}
+	// 模型目录合并时记录了每个模型的上架通道（chat_v3 / solo_agent）。
+	// 聊天必须走同一通道，拿未上架通道的模型去问会回 4001。
+	if value, ok := traeModelFunctions.Load(strings.ToLower(model)); ok {
+		if recorded, _ := value.(string); recorded != "" {
+			return recorded, model
+		}
 	}
 	return soloWorkLite, model
 }

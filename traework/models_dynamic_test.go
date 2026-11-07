@@ -78,9 +78,11 @@ func modelRequestWithToken(t *testing.T) []byte {
 // [返回] 无。
 // 最近修改时间：2026-08-30 02:43:13；改动原因：覆盖动态模型发现的请求契约和成功解析路径。
 func TestHandleModelForAuthDynamicSuccess(t *testing.T) {
-	// 1. 配置本地动态模型上游并核对请求契约。
+	// 1. 配置本地动态模型上游并核对双通道请求契约。
 	resetTraeConfiguredModels(t)
 	resetTraeDynamicCache(t)
+	resetTraeModelFunctions()
+	t.Cleanup(resetTraeModelFunctions)
 	withTraeModelServer(t, func(w http.ResponseWriter, r *http.Request) {
 		// 1. 验证动态发现使用正确路径、认证头和完整模型池请求参数。
 		if r.Method != http.MethodPost || r.URL.Path != traeModelDetailPath {
@@ -91,15 +93,36 @@ func TestHandleModelForAuthDynamicSuccess(t *testing.T) {
 		}
 		var payload traeModelDetailRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode request: %v", err)
+			t.Errorf("decode request: %v", err)
+			return
 		}
-		if payload.Function != soloWorkLite || payload.ConfigNames != nil || !payload.PolyPrompt {
+		if payload.ConfigNames != nil || !payload.PolyPrompt {
 			t.Errorf("unexpected payload: %+v", payload)
 		}
 
-		// 2. 返回重复、缺失展示名和空 ID，验证解析层只保留有效唯一模型。
+		// 2. 两条通道各返回一份目录：chat_v3 侧重过滤，solo_agent 补一个独有模型。
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"config_info_list":[{"config_name":"Doubao-Seed-2.1-Pro","display_config":{"display_name":"Seed 2.1 Pro"}},{"config_name":"qwen3.8-max","display_config":{}},{"config_name":"Doubao-Seed-2.1-Pro","display_config":{"display_name":"重复项"}},{"config_name":"","display_config":{"display_name":"空项"}}]}`))
+		switch payload.Function {
+		case traeCatalogChat:
+			_, _ = w.Write([]byte(`{"config_info_list":[
+				{"config_name":"Doubao-Seed-2.1-Pro","display_config":{"display_name":"Seed 2.1 Pro"}},
+				{"config_name":"qwen3.8-max","display_config":{}},
+				{"config_name":"Doubao-Seed-2.1-Pro","display_config":{"display_name":"重复项"}},
+				{"config_name":"","display_config":{"display_name":"空项"}},
+				{"config_name":"retired-model","is_invisible_to_user":true},
+				{"config_name":"custom_internal","display_config":{"is_custom_model":true}},
+				{"config_name":"title-gen","usage":"title_generation"},
+				{"config_name":"chat-auto"}
+			]}`))
+		case traeCatalogSolo:
+			_, _ = w.Write([]byte(`{"config_info_list":[
+				{"config_name":"qwen3.8-max","display_config":{"display_name":"Qwen 3.8 Max"}},
+				{"config_name":"solo-only-model","display_config":{"display_name":"Solo Only"}}
+			]}`))
+		default:
+			t.Errorf("unexpected function %q", payload.Function)
+			_, _ = w.Write([]byte(`{"config_info_list":[]}`))
+		}
 	})
 
 	raw, err := handleModelForAuth(modelRequestWithToken(t))
@@ -107,8 +130,10 @@ func TestHandleModelForAuthDynamicSuccess(t *testing.T) {
 		t.Fatalf("handleModelForAuth: %v", err)
 	}
 	resp := decodeTraeModelResponse(t, raw)
-	if len(resp.Models) != 2 {
-		t.Fatalf("model count = %d, want 2: %+v", len(resp.Models), resp.Models)
+	// 3. chat_v3 优先合并：保留其顺序与展示名，solo_agent 只补独有模型，
+	//    内部/隐藏/自定义/-auto 条目全部被过滤。
+	if len(resp.Models) != 3 {
+		t.Fatalf("model count = %d, want 3: %+v", len(resp.Models), resp.Models)
 	}
 	if resp.Models[0].ID != "Doubao-Seed-2.1-Pro" || resp.Models[0].Name != "Seed 2.1 Pro" {
 		t.Fatalf("models[0] = %+v", resp.Models[0])
@@ -121,6 +146,17 @@ func TestHandleModelForAuthDynamicSuccess(t *testing.T) {
 	}
 	if resp.Models[1].ID != "qwen3.8-max" || resp.Models[1].Name != "qwen3.8-max" {
 		t.Fatalf("models[1] = %+v", resp.Models[1])
+	}
+	if resp.Models[2].ID != "solo-only-model" || resp.Models[2].Name != "Solo Only" {
+		t.Fatalf("models[2] = %+v", resp.Models[2])
+	}
+
+	// 4. 通道归属必须被记录，聊天请求才能走对 function（错通道会回 4001）。
+	if got, ok := traeModelFunctions.Load("qwen3.8-max"); !ok || got != traeCatalogChat {
+		t.Fatalf("qwen3.8-max function = %v, want %q", got, traeCatalogChat)
+	}
+	if got, ok := traeModelFunctions.Load("solo-only-model"); !ok || got != traeCatalogSolo {
+		t.Fatalf("solo-only-model function = %v, want %q", got, traeCatalogSolo)
 	}
 }
 
