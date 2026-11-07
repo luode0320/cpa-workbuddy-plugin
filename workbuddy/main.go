@@ -352,7 +352,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.21.13"
+var version = "0.21.14"
 
 func wbRegistration() registration {
 	return registration{
@@ -730,8 +730,15 @@ func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi
 
 // -----------------------------------------------------------------------------
 
+// handleExecExecute 处理非流式执行：上游仍走流式，聚合后折叠成 chat.completion。
+// 解析用 executorStreamRequest 而非裸 ExecutorRequest，因为宿主对
+// executor.execute 同样下发 host_callback_id（见宿主 rpc_client.go 的
+// Execute 分支），只解析裸结构会把这个字段丢掉，客户端断连就无法传播到上游。
+// [参数] raw：宿主 RPC 请求原文。
+// [返回] 折叠后的 completion 响应信封；错误时返回错误。
+// 最近修改时间：2026-11-07 21:50:00；改动原因：补 HostCallbackID 接收。
 func handleExecExecute(raw []byte) ([]byte, error) {
-	var req pluginapi.ExecutorRequest
+	var req executorStreamRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
@@ -822,7 +829,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 
 	for attempt := 0; attempt <= budget; attempt++ {
 		var attemptTTFT uint64
-		completion, attemptTTFT, completionErr = doExecuteOnce(curBody, curSA, req.Model, upstreamModel)
+		completion, attemptTTFT, completionErr = doExecuteOnce(curBody, curSA, req.Model, upstreamModel, req.HostCallbackID)
 		if completionErr == nil {
 			completionTTFT = attemptTTFT
 			authUID = curSA.Account.UID
@@ -957,7 +964,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// No async stream id → fall back to synchronous chunk collection.
 	if req.StreamID == "" {
 		collector := &sseUsageCollector{}
-		chunks, statusCode, servedAuthID, errCollect := collectUpstreamStream(body, sa, sseFramed, collector, upstreamModel)
+		chunks, statusCode, servedAuthID, errCollect := collectUpstreamStream(body, sa, sseFramed, collector, upstreamModel, req.HostCallbackID)
 		if errCollect != nil {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error(), reasoningEffort, collector.ttftNS(started), accountLabel, sessionKey)
 			// statusCode >= 400 already went through reconcileByUID inside
@@ -999,7 +1006,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		return okEnvelope(streamResponse{Headers: headers})
 	}
 	backendHeaders(httpReq, sa)
-	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, reasoningEffort, accountLabel, sessionKey)
+	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, reasoningEffort, accountLabel, sessionKey, req.HostCallbackID)
 	return okEnvelope(streamResponse{Headers: headers})
 }
 

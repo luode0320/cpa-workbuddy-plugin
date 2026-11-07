@@ -96,7 +96,7 @@ func streamHeaders() http.Header {
 // the outbound call and host transport policy applies. The host bridge emits
 // arbitrary 32KB chunks, so we adapt to io.Reader and keep the bufio.Scanner
 // SSE line framing unchanged.
-func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID, reasoningEffort, accountLabel, sessionKey string) {
+func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID, reasoningEffort, accountLabel, sessionKey, hostCallbackID string) {
 	// Always close the host stream exactly once on every exit path.
 	closed := false
 	closeOnce := func() {
@@ -149,7 +149,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		// 每次换号尝试单独计时：请求级 started 早于当前 attempt，直接用它算 TTFT
 		// 会把上一个账号的失败耗时算进当前账号。
 		attemptStarted = time.Now()
-		stream, statusCode, _, err := hostHTTPDoStream(curReq)
+		stream, statusCode, _, err := hostHTTPDoStream(curReq, hostCallbackID)
 		if err != nil {
 			publishUsage(requestedModel, upstreamModel, curAuthUID, started, usage.Detail{}, true, 0, err.Error(), reasoningEffort, 0, curAccountLabel, sessionKey)
 			noteAccountFailureForModel(curAuthID, upstreamModel, 0, err.Error())
@@ -398,7 +398,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 // [参数] body：上游请求体；sa：初始账号凭据；sseFramed：是否需自带 SSE 帧前缀；
 // collector：用量采集器；model：已归一化的上游模型名，用于模型级熔断判定。
 // 最近修改时间：2026-10-18 23:40:00；改动原因：新增 model 参数以支持模型级风控熔断。
-func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector, model string) ([]pluginapi.ExecutorStreamChunk, int, string, error) {
+func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector, model, hostCallbackID string) ([]pluginapi.ExecutorStreamChunk, int, string, error) {
 	budget := loadedRetryOn4xx()
 	curSA := sa
 	var lastStatus int
@@ -432,7 +432,7 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 		// 同异步路径：每次换号尝试重置 TTFT 计时基准，避免前一账号的失败耗时
 		// 叠加到当前账号的首字延迟上。
 		collector.markAttemptStart(time.Now())
-		chunks, statusCode, errOnce := collectUpstreamStreamOnce(body, curSA, sseFramed, collector, model)
+		chunks, statusCode, errOnce := collectUpstreamStreamOnce(body, curSA, sseFramed, collector, model, hostCallbackID)
 		usedID = storedAuthID(curSA)
 		if errOnce == nil {
 			// 真实成功即证明模型已恢复，清掉该模型上残留的冷却。
@@ -529,14 +529,14 @@ func storedAuthID(sa *storedAuth) string {
 // against sa: build the request, route via host.http.do_stream, decide
 // success vs 4xx/5xx. Pulled out of collectUpstreamStream so the retry
 // loop can rebuild the request against a different account on failure.
-func collectUpstreamStreamOnce(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector, model string) ([]pluginapi.ExecutorStreamChunk, int, error) {
+func collectUpstreamStreamOnce(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector, model, hostCallbackID string) ([]pluginapi.ExecutorStreamChunk, int, error) {
 	httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(sa), bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
 	}
 	backendHeaders(httpReq, sa)
 	// Compliance: route via host.http.do_stream so request-log captures the call.
-	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+	stream, statusCode, _, err := hostHTTPDoStream(httpReq, hostCallbackID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("http_error: %w", err)
 	}
@@ -571,14 +571,14 @@ func collectUpstreamStreamOnce(body []byte, sa *storedAuth, sseFramed bool, coll
 //
 // [返回] 聚合后的 completion、首字延迟纳秒值、错误。
 // 最近修改时间：2026-10-25；改动原因：上抛首字延迟，补齐非流式路径 TTFT 采集。
-func doExecuteOnce(body []byte, sa *storedAuth, requestedModel, upstreamModel string) ([]byte, uint64, error) {
+func doExecuteOnce(body []byte, sa *storedAuth, requestedModel, upstreamModel, hostCallbackID string) ([]byte, uint64, error) {
 	attemptStarted := time.Now()
 	httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(sa), bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
 	}
 	backendHeaders(httpReq, sa)
-	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+	stream, statusCode, _, err := hostHTTPDoStream(httpReq, hostCallbackID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("http_error: %w", err)
 	}

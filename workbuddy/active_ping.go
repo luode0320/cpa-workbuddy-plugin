@@ -169,7 +169,8 @@ func sendActivePingWorkbuddy(sa *storedAuth, chosenModel string) error {
 	}
 	backendHeaders(httpReq, sa)
 
-	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+	// 后台探活不属于任何客户端请求，没有 request-scoped callback context 可绑定。
+	stream, statusCode, _, err := hostHTTPDoStream(httpReq, "")
 	if err != nil {
 		return fmt.Errorf("hostHTTPDoStream: %w", err)
 	}
