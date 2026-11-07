@@ -58,6 +58,11 @@
     - **连环 14 个畸形请求会把宿主打到瞬时 503**，但账号池 `disabled=0`、无冷却日志，**约 1 分钟内自行恢复**（实测 6/6 全部 200）。属宿主 `request-retry: 30` 被耗尽后的瞬时过载，非插件缺陷。
   - **workbuddy deepseek-v4.1-flash 补测**：`max_tokens` 严格精确执行（16→16、100→100、500→500→后者正文被 reasoning 吃光）。`eff=none` 时 mt=16/100/300 都正常出正文（`out=1 chars=1 txt='8'`）。**`eff=low/max` + `mt=16` 时 reasoning 吃光全部预算、正文 0 字符（`fin=length`）** —— 经三方对照确认是上游「思考与正文共享预算」语义（qoder/trae 同条件 `mt=16` 因上游对思考另行计费而不复现），不是插件缺陷。
 
+  - **第三轮补测（2026-11-08 00:15-00:35）：非流式路径 + 工具多轮闭环**（均正常，未发现插件缺陷）——
+    - 非流式：两插件均正确返回 `object=chat.completion`、`finish_reason`、`usage`；traework 响应体 `model` 为 `deepseek-v4.1-flash`、qoderwork 为 `auto`（后者是上游原样透传，非缺陷）。
+    - 工具多轮闭环：两插件第一轮均 `finish=tool_calls` 且 `tool_calls=1`；把 `role=tool` 结果回传后第二轮均 `finish=stop`，**tool result 被正确消费**（deepseek-flash 10 字符 / dfmodel 12 字符）。
+  - **traework `max_tokens` 在长输出任务上不生效（定性为上游模型行为，非插件缺陷）**：同 prompt「列出 1 到 300」+ `mt=50` 时 qwen3.8-flash / step-5-preview / mimo-v2.6-flash / kimi-k3 均返回 1091 字符（feed_out 1204/787/1115/713）；但**同批模型换短 prompt 后正常受控**（kimi-k3：说hi→21、解释HTTP→58、列3种颜色→51 字符）。排除插件侧：`grep kimi|kmodel traework/*.go` 零命中、`buildTraePayload` 对所有模型同一路径、deepseek-flash 短任务 `chars=54` 正常。结论：上游「长列表任务弱化 max_tokens」的模型级语义，插件层不应强行截断。
+
   - **workbuddy 侧（只读 sidecar 收集，另一会话在改）**：24h 内 workbuddy 上游失败 0 条（最近 2 小时）；20 个账号盘上 `failover_disable` 标记 16→0 已清净；已知遗留问题 = low-credit 禁用与探活「恢复」无限拉锯（`re-enabled` 累计 6000+ 次）、探活回放不可信模型名 `deepseek-v4.1-flash(备用)`、管理密钥与客户端 API key 同为 9 字符（安全问题）。
 
 - 会话（2026-11-07 21:05-22:25）：**workbuddy 首字延迟/超长长尾根因诊断 + P0/P1 修复（0.21.14）**：
