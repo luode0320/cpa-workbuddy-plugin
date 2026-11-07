@@ -209,7 +209,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		toolChoice = ""
 	}
 	// 显式 max_tokens 优先，其次别名 max_completion_tokens（新客户端只发别名）。
-	payload := buildTraePayload(messages, upstreamModel, false, effectiveMaxTokens(oa), oa.Temperature, oa.TopP, tools, toolChoice)
+	payload := buildTraePayload(messages, upstreamModel, false, effectiveMaxTokens(oa), tempPtr(oa.Temperature), tempPtr(oa.TopP), tools, toolChoice)
 
 	budget := loadedRetryOn4xx()
 	curSA := a
@@ -347,7 +347,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		toolChoice = ""
 	}
 	// 显式 max_tokens 优先，其次别名 max_completion_tokens（新客户端只发别名）。
-	payload := buildTraePayload(messages, upstreamModel, true, effectiveMaxTokens(oa), oa.Temperature, oa.TopP, tools, toolChoice)
+	payload := buildTraePayload(messages, upstreamModel, true, effectiveMaxTokens(oa), tempPtr(oa.Temperature), tempPtr(oa.TopP), tools, toolChoice)
 	headers := streamHeaders()
 	sseFramed := clientNeedsSSEFrame(req.Metadata)
 

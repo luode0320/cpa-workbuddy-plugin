@@ -183,3 +183,96 @@ func (n *flexNumber) UnmarshalJSON(raw []byte) error {
 
 // Int 返回解析后的整数值（0 表示未声明或非法）。
 func (n flexNumber) Int() int64 { return int64(n) }
+
+// flexBool 是一个容错的布尔字段类型。
+//
+// 背景（2026-11-08 生产实证）：`openAIRequest.Stream` 用 bool 强类型时，
+// 客户端发 `{"stream":"yes"}` 这类字符串会让整个 `json.Unmarshal` 失败，
+// 宿主把解析错误当成「账号不行」并遍历整池——实测日志中 18 条
+// `cannot unmarshal string into Go struct field openAIRequest.stream of type bool`，
+// 同一 requestId 扇出 6 个账号。
+//
+// 接受：true/false、"true"/"false"、"1"/"0"、1/0。其余一律 false（=非流式）。
+// [参数] 无（由 json.Unmarshal 调用 UnmarshalJSON）
+// [返回] 无
+// 最近修改时间：2026-11-08 01:30:00；改动原因：新增，堵住 stream 畸形值打穿整池。
+type flexBool bool
+
+// UnmarshalJSON 宽容解析布尔：认 true/false、"true"/"false"、"1"/"0"、1/0。
+// [参数] raw：JSON 原始字节
+// [返回] 恒为 nil
+func (b *flexBool) UnmarshalJSON(raw []byte) error {
+	s := strings.TrimSpace(string(raw))
+	switch strings.ToLower(strings.Trim(s, "\"")) {
+	case "true", "1":
+		*b = true
+	default:
+		*b = false
+	}
+	return nil
+}
+
+// Bool 返回解析后的布尔值。
+func (b flexBool) Bool() bool { return bool(b) }
+
+// tempPtr 把 flexFloat 转成 buildTraePayload 需要的 *float64。
+// 客户端未声明或声明了非法值时返回 nil，语义与旧的 *float64 一致（不写该字段）。
+// [参数] f：柔型浮点字段
+// [返回] 声明了则返回指针，否则 nil
+func tempPtr(f flexFloat) *float64 {
+	v, set := f.Float()
+	if !set {
+		return nil
+	}
+	return &v
+}
+
+// flexFloat 是一个容错的可选浮点字段类型。
+//
+// 背景（2026-11-08 生产实证）：`openAIRequest.Temperature` / `TopP` 用
+// `*float64` 强类型时，客户端发 `{"temperature":"abc"}` 会让整个
+// `json.Unmarshal` 失败——日志实测 14 条 temperature + 1 条 top_p 的
+// `cannot unmarshal string into ... of type float64`，同样扇出整池。
+//
+// 接受：数字、数字字符串。其余（"abc"/对象/数组/布尔）→ nil（=未声明）。
+// 用 nil 表示未声明，与 `*float64` 的语义一致：调用方据此决定是否写该字段。
+// [参数] 无（由 json.Unmarshal 调用 UnmarshalJSON）
+// [返回] 无
+// 最近修改时间：2026-11-08 01:30:00；改动原因：新增，堵住采样参数畸形值打穿整池。
+type flexFloat struct {
+	val flexFloatValue
+	set bool
+}
+
+// flexFloatValue 是 flexFloat 的内部数值载体（避免自引用类型的算术歧义）。
+type flexFloatValue float64
+
+// UnmarshalJSON 宽容解析浮点：数字与数字字符串取值，其余保持「未声明」。
+// set=true 表示客户端确实声明了该字段（即使是 0），调用方据此决定是否写 payload。
+// [参数] raw：JSON 原始字节
+// [返回] 恒为 nil
+func (f *flexFloat) UnmarshalJSON(raw []byte) error {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return nil
+	}
+	if v, err := strconv.ParseFloat(s, 64); err == nil {
+		f.val = flexFloatValue(v)
+		f.set = true
+		return nil
+	}
+	if strings.HasPrefix(s, "\"") {
+		var inner string
+		if err := json.Unmarshal(raw, &inner); err == nil {
+			if v, err2 := strconv.ParseFloat(strings.TrimSpace(inner), 64); err2 == nil {
+				f.val = flexFloatValue(v)
+				f.set = true
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
+// Float 返回数值与客户端是否声明了该字段。
+func (f flexFloat) Float() (float64, bool) { return float64(f.val), f.set }

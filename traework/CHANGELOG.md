@@ -1,5 +1,25 @@
 # TraeWork Plugin Changelog
 
+## 0.5.18
+
+### Fix - stream / temperature / top_p 畸形值不再让整包解析失败（同一类扇出缺陷的其余入口）
+
+- 背景（2026-11-08 生产实证）: 0.5.17 修掉 `max_tokens` 后，系统排查同一类风险的其余强类型字段，
+  用畸形值矩阵实测确认还有 **3 个入口**会打穿整池：
+  | 客户端输入 | 旧行为 | 日志实证 |
+  |---|---|---|
+  | `{"stream":"yes"}` | 整包解析失败 → 扇出 6 个账号 | 18 条 `stream of type bool` |
+  | `{"temperature":"abc"}` | 整包解析失败 → 扇出 9 个账号 | 14 条 `temperature of type float64` |
+  | `{"top_p":"abc"}` | 整包解析失败 → 扇出 2 个账号 | 1 条 `top_p of type float64` |
+- 根因: 与 0.5.16（role）、0.5.17（max_tokens）完全同型——**客户端参数畸形经强类型解析放大成账号级故障**。
+- 修复: 新增两个容错类型并替换对应字段：
+  - `flexBool`（`stream`）：认 `true/false`、`"true"/"false"`、`"1"/"0"`、`1/0`，其余一律 false。
+  - `flexFloat`（`temperature` / `top_p`）：数字与数字字符串取值，其余保持「未声明」
+    （自带 `set` 标记，区分「显式 0」与「未声明」，语义与旧 `*float64` 一致）。
+- 测试: 新增 `TestOpenAIRequest_MalformedScalarFieldsDoesNotFailParse`（11 组）。
+  变异验证：把 `flexBool` 退化为严格解析后 **5 个用例 KILLED**（含生产实测的 `"stream":"yes"`）。
+  `cgo-shim-build.py traework` build/vet/test 全绿。
+
 ## 0.5.17
 
 ### Fix - max_tokens 畸形数值不再让整包解析失败（生产整池被扇出的第二个来源）

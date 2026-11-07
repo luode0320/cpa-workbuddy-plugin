@@ -239,7 +239,9 @@ func normalizeToolChoice(tc any) (choice string, suppress bool) {
 type openAIRequest struct {
 	Model  string          `json:"model"`
 	Messages []openAIMessage `json:"messages"`
-	Stream bool            `json:"stream"`
+	// Stream 用 flexBool：客户端发 `"stream":"yes"` 时 bool 强类型会让整包解析失败，
+	// 宿主据此遍历整池（2026-11-08 实证扇出 5 个账号）。见 model_specs.go。
+	Stream flexBool `json:"stream"`
 	// MaxTokens 是 OpenAI 旧字段；MaxCompletionTokens 是新别名。
 	// 2026-11-07 实测：部分新客户端（DSH / Codex 系）只发别名，缺该字段会
 	// 导致上限被丢弃、上游回落默认值（实测 max_completion_tokens=300 时

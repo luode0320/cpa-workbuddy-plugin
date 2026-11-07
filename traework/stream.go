@@ -991,7 +991,9 @@ func stripProviderPrefix(model string) string {
 type openAIRequest struct {
 	Model    string           `json:"model"`
 	Messages []map[string]any `json:"messages"`
-	Stream   bool             `json:"stream"`
+	// Stream 用 flexBool：客户端发 `"stream":"yes"` 时 bool 强类型会让整包解析失败，
+	// 宿主据此遍历整池（2026-11-08 实证日志 18 条 stream of type bool）。见 model_specs.go。
+	Stream flexBool `json:"stream"`
 	// MaxTokens 是 OpenAI 旧字段；MaxCompletionTokens 是新别名。
 	// 2026-11-07 生产实测：DSH / Codex 系新客户端只发 max_completion_tokens，
 	// 结构体缺该字段时该值被 json.Unmarshal 直接丢弃，等价于客户端从未声明上限，
@@ -1002,8 +1004,11 @@ type openAIRequest struct {
 	// flexNumber 对数字 / 数字字符串取整，其余降级为 0（=未声明），见 model_specs.go。
 	MaxTokens           flexNumber `json:"max_tokens"`
 	MaxCompletionTokens flexNumber `json:"max_completion_tokens"`
-	Temperature         *float64 `json:"temperature"`
-	TopP                *float64 `json:"top_p"`
+	// 采样参数用 flexFloat：客户端发 `"temperature":"abc"` 时 *float64 会让整包解析失败
+	// （2026-11-08 实证日志 14 条 temperature + 1 条 top_p）。flexFloat 自带 set 标记，
+	// 调用方用 Float() 同时拿到「值」和「客户端是否声明」。
+	Temperature flexFloat `json:"temperature"`
+	TopP        flexFloat `json:"top_p"`
 	Tools               []map[string]any `json:"tools"`
 	ToolChoice          any      `json:"tool_choice"`
 }

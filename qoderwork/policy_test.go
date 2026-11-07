@@ -108,3 +108,39 @@ func TestOpenAIRequest_MalformedMaxTokensDoesNotFailParse(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenAIRequest_MalformedStreamDoesNotFailParse 锁定「stream 畸形不整包失败」。
+//
+// 生产缺陷回归（2026-11-08）：`stream` 用 bool 强类型时，客户端发
+// `{"stream":"yes"}` 会让整个 json.Unmarshal 失败，宿主把解析错误当成账号故障
+// 并遍历整池（实测同一 requestId 扇出 5 个账号）。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-08 01:30:00；改动原因：新增，堵住 stream 畸形打穿整池的回归。
+func TestOpenAIRequest_MalformedStreamDoesNotFailParse(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "正常 true", raw: `{"stream":true}`, want: true},
+		{name: "字符串 yes（生产实测）", raw: `{"stream":"yes"}`, want: false},
+		{name: "字符串 true", raw: `{"stream":"true"}`, want: true},
+		{name: "数字 1", raw: `{"stream":1}`, want: true},
+		{name: "数字 0", raw: `{"stream":0}`, want: false},
+		{name: "null", raw: `{"stream":null}`, want: false},
+		{name: "对象", raw: `{"stream":{}}`, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var req openAIRequest
+			if err := json.Unmarshal([]byte(tc.raw), &req); err != nil {
+				t.Fatalf("json.Unmarshal 不应因 stream 畸形而失败: %v (raw=%s)", err, tc.raw)
+			}
+			if got := req.Stream.Bool(); got != tc.want {
+				t.Fatalf("Stream = %v, want %v (raw=%s)", got, tc.want, tc.raw)
+			}
+		})
+	}
+}

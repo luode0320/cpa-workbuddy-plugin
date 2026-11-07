@@ -194,3 +194,52 @@ func TestOpenAIRequest_MalformedMaxTokensDoesNotFailParse(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenAIRequest_MalformedScalarFieldsDoesNotFailParse 锁定「标量畸形不整包失败」。
+//
+// 生产缺陷回归（2026-11-08）：`stream` / `temperature` / `top_p` 用强类型时，
+// 客户端发 `"stream":"yes"` / `"temperature":"abc"` 会让整个 json.Unmarshal 失败，
+// 宿主把解析错误当成账号故障并遍历整池（实测日志 18 条 stream + 14 条 temperature
+// + 1 条 top_p，单请求扇出 6~9 个账号）。修复后这些字段一律宽容解析。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-08 01:30:00；改动原因：新增，堵住标量畸形打穿整池的回归。
+func TestOpenAIRequest_MalformedScalarFieldsDoesNotFailParse(t *testing.T) {
+	cases := []struct {
+		name      string
+		raw       string
+		wantStream bool
+		wantTempSet bool
+		wantTemp  float64
+	}{
+		{name: "stream 正常 true", raw: `{"stream":true}`, wantStream: true},
+		{name: "stream 字符串 yes（生产实测）", raw: `{"stream":"yes"}`, wantStream: false},
+		{name: "stream 字符串 true", raw: `{"stream":"true"}`, wantStream: true},
+		{name: "stream 数字 1", raw: `{"stream":1}`, wantStream: true},
+		{name: "stream null", raw: `{"stream":null}`, wantStream: false},
+		{name: "temperature 正常 0.7", raw: `{"temperature":0.7}`, wantTempSet: true, wantTemp: 0.7},
+		{name: "temperature 字符串 abc（生产实测）", raw: `{"temperature":"abc"}`, wantTempSet: false},
+		{name: "temperature 数字字符串 0.5", raw: `{"temperature":"0.5"}`, wantTempSet: true, wantTemp: 0.5},
+		{name: "temperature 对象", raw: `{"temperature":{}}`, wantTempSet: false},
+		{name: "temperature 显式 0", raw: `{"temperature":0}`, wantTempSet: true, wantTemp: 0},
+		{name: "top_p 字符串 abc", raw: `{"top_p":"abc"}`, wantTempSet: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var req openAIRequest
+			// 核心断言：整包解析必须成功 —— 修复前这里就是整池扇出的起点。
+			if err := json.Unmarshal([]byte(tc.raw), &req); err != nil {
+				t.Fatalf("json.Unmarshal 不应因标量畸形而失败: %v (raw=%s)", err, tc.raw)
+			}
+			if got := req.Stream.Bool(); got != tc.wantStream {
+				t.Fatalf("Stream = %v, want %v (raw=%s)", got, tc.wantStream, tc.raw)
+			}
+			if v, set := req.Temperature.Float(); set != tc.wantTempSet {
+				t.Fatalf("Temperature set = %v, want %v (raw=%s)", set, tc.wantTempSet, tc.raw)
+			} else if set && v != tc.wantTemp {
+				t.Fatalf("Temperature = %v, want %v", v, tc.wantTemp)
+			}
+		})
+	}
+}
