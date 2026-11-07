@@ -232,7 +232,7 @@ curl -s -X PUT -H "Authorization: Bearer $KEY" -H "Content-Type: application/jso
 |---|---|---|---|---|
 | OAuth device（qoderwork） | `dt-` | `drt-` | at ~30d / rt **~1y（rotating）** | **可**，一年内都能刷活 |
 | PAT（qoderwork 旧） | `jt-` | `jrt-` | at 24h / rt **48h** | **不可**，超 48h 全死 |
-| traework | `token` | `refreshToken` | 按上游，需实测 | 以实测为准 |
+| traework | `token` | `refreshToken` | at 15d / **rt ~6 个月** | **可**，见下方轮换语义 |
 
 qoderwork 2026-11-07 实证：18 个账号全为 `dt-/drt-`，删除 13 天后 `dt-` 仍在有效期（到 11-23），上游 `GET /sash/api/v1/me/campaigns` **18/18 返回 200 且 `uid` 与文件名逐一匹配**。
 
@@ -243,6 +243,27 @@ qoderwork 2026-11-07 实证：18 个账号全为 `dt-/drt-`，删除 13 天后 `
 `qoderwork` 走插件直写 spool（`writeAuthFileDirect`），不经宿主 `auth.save`。实证：恢复前 `auth_store` 中 qoderwork = **0**，而 spool 有 **2** 个在役账号——**这 2 个从未进过 MySQL**。
 
 后果：若宿主从 `auth_store` 重建 spool（重启/迁移），这 2 个账号会消失。**恢复时必须补写**，且要用**当前 spool 的最新内容**，绝不能用 dump 里的旧 token（那会把已轮换的凭据回滚到 13 天前）。判定命令：`auth_store` 条数 vs `ls spool | grep -c '<prefix>'`，不等即需 backfill。
+
+### 坑 9：「轮换」不等于「一次性作废」，别因怕消费而放弃实测
+
+traework 的 `ExchangeToken` **每次都返回新的 `refreshToken`**（2026-10-25 那份刷新结果里 16/16 全部与备份值不同），很容易误判成「旧 RT 已被消费、13 天后必然全死」。**实测证伪**：
+
+- 同一份 10-25 的 RT，13 天后逐个重放：**12/16 仍返回 200**
+- 对同一个 RT **连续调用两次**，两次都 200 并各自返回新 RT —— 说明旧 RT 在有效期内**可重复使用**，轮换是「发新值」而非「作废旧值」
+
+**这条改写了操作准则**：不能因为「刷新会消费凭据」就不敢试。正确做法是**每成功一个立即落盘**（`Token`/`RefreshToken`/`TokenExpireAt`/`RefreshExpireAt`），最坏情况也只是拿到新值而没保存，重放一次即可恢复。
+
+**判定真死的唯一信号**：`401 / 20101`（2026-11-07 实测 4 个）。`note` 里的 "Session expired (refresh token dead)" **不可作为判据**——同一批里 6 个带这个 note，其中 3 个照样刷新成功，note 只是 10-25 当时的旧状态快照。
+
+### 坑 10：`excluded-models` 会让恢复后的账号「看起来完全不可用」
+
+账号恢复到 12 个、探活 9 个通过，但 `POST /v1/chat/completions` 报 `unknown provider for model X`，`/v1/models` 里也找不到该插件任何模型。**这不是恢复失败，是 `config.yaml` 的 `excluded-models` 在挡**。
+
+2026-11-07 实测：`excluded-models.traework-provider` 列了 **52 个**模型名，而插件动态拉到 **44 个**，其中 **43 个被排除**，只剩 `kimi-k3.1-pro` 一个对外暴露。
+
+**恢复后的验收顺序必须补这一步**：账号层通过 → **再查 `excluded-models` 与 `/v1/models` 的交集** → 最后才做真实入口。否则会把配置层的模型过滤误判成「账号恢复无效」，白折腾一轮。
+
+判据命令：`grep -A60 '"traework-provider"' config.yaml | grep -c '^\s*-'` 对比插件 `/models` 的实际条数；剩余为 0 时该插件对外等于不可用。
 
 ## 相关 skill 与文档
 

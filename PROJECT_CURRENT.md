@@ -29,6 +29,16 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-07 14:45）：**traework 12 个被删账号找回（账号数据恢复 + 插件启用，未改代码）**：
+  - 诉求：「tear 的好像也有，看看能不能还原」。`traework` 池恢复前仅 1 个账号且**插件处于 `enabled=false / registered=false`**（`/accounts` 返回空）。
+  - **恢复源**：`/root/traework-recovery/restored/`（10-25 误删恢复时产出的 17 个账号文件）+ `refreshed_tokens.json`（10-25 的 16 个刷新结果）。**10-25 的全表 dump 里 traework=0**，因为那是「恢复 traework 之前」建的还原点——按前缀查会得出「无源可恢复」的错误结论。
+  - **刷新实测**：对 16 个逐个重放 `POST api.trae.cn/cloudide/api/v3/trae/oauth/ExchangeToken`（ClientID 用 `en1oxy7wnw8j9n`，不是代码常量 `ono9krqynydwx5`）→ **12 成功 / 4 失败（401/20101，真死）**。失败 uid：`1712389365702043`、`1941087193676826`、`2046641643717561`、`2750333044403947`。
+  - **关键新事实（推翻旧假设）**：traework 的 `refreshToken` 每次都返回新值（16/16 全部不同），但**旧值在有效期内可重复使用**——同一 RT 连续两次调用均返回 200。因此「轮换 ≠ 一次性作废」，不能因怕消费而放弃实测；正确做法是每成功一个立即落盘。`note` 的 "Session expired" 不能作判据（6 个带此 note 的账号里 3 个照样刷新成功）。
+  - **写回与验收**：还原点 `PRE2_auth_store_20261107_143807.sql`（220KB）+ `PRE2_spool_*.tar.gz`（59KB）+ 基线 `traework=1/1`；写 auth_store 12 行 + 原子写 spool 12 个 → `auth_store=13 / spool=13`；启用插件后 `enabled=true / registered=true`，`/accounts` 加载 **12** 条（旧的 `3313287900183084` 未加载：spool 文件是 `str` 而非 dict，且 note 为 session expired）。
+  - **探活**：12 个全量 `test-active` → **9 通过 / 3 上游业务态失败**（`1114256688551036` quota exceeded、`3841050312977305` 与 `4491956683805020` all models failed），**0 个凭据失效**。
+  - **踩坑（新）**：`/v1/models` 看不到任何 traework 模型、真实入口报 `unknown provider for model` —— 根因是 `config.yaml` 的 `excluded-models.traework-provider` 列了 **52 个**模型名，而插件动态拉到 **44 个**，其中 **43 个被排除**，只剩 `kimi-k3.1-pro`。用该模型真实入口 `finish_reason=stop`、正文「正常」、119 tokens，证明链路通。**excluded-models 待用户决策是否清理**（属配置策略变更，未擅自改）。
+  - 产物：`/root/traework-recovery/restored_v2/`（12 个 600）、`restored_tokens_v2.json`（12 条新凭据）、`restore_traework.sql`。
+
 - 会话（2026-11-07 14:15）：**qoderwork 16 个被删账号全量找回（账号数据恢复，未改代码）**：
   - 诉求：「qoder 之前有很多账号，后来被删了，254、65 都有删除，可以找回吗」。
   - **结论：16 个账号完整找回，上游 18/18 存活**。恢复后 qoderwork 池 2 → 18，全部 `active / disabled=false / exhausted=false`。
