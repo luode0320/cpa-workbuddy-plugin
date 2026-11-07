@@ -29,6 +29,16 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-07 16:00）：**慢速冷却池准入闸门 20→10 发布（qoderwork 0.13.3 / traework 0.5.9）**：
+  - 诉求：「qoder 和 trae 的插件，慢速冷却的『池大于 20』阈值改成 10」。
+  - 改动 4 处：两插件 `slow_account.go` 的 `defaultSlowMinPoolSize 20 → 10`（注释补改动原因）、`main.go` 的 ConfigField 描述「默认 20」→「默认 10」；另同步 `slow_account_test.go` 里 `TestSlowAccount_PoolSizeGateBlocksJudgement` 的硬编码 20/21（此断言漏在第一轮 grep 之外，靠 cgo-shim 失败才暴露，改为 10/11）。
+  - 依据：生产 `config.yaml` **未显式配置** `slow_min_pool_size`，故改默认值即生效；当前池规模 qoderwork 18 / traework 12，均大于 10。
+  - 发布：`6992ba2`（代码）→ CI `42349569872` / `42349577549` → `f29ac91`（registry）。**首轮 CI 两条 run 均 `cancelled`**：`darwin/arm64` 在 macOS runner 池排队超时被系统取消（`runner=` 为空），导致 Release `skipped`；带 `allow_partial=true` 重新 dispatch 后 Release `success`，产物 5 平台（缺 darwin/arm64），`publish-assets.py --allow-missing` 正常发布。
+  - 生产：热重载 `active_version=0.13.3`（retired 0.13.2）/ `0.5.9`（retired 0.5.8）；落盘 `.so` sha256 `451a3bf6…` / `1c998739…` 与本地 release zip 内二进制逐一相同；`config_fields` 元数据两者均显示「默认 10」。
+  - **重要澄清（本次踩坑）**：热重载后 `/v1/models` 从 25 降到 19、qoderwork 全部对外模型（`QoDuck`/`lmodel`/`jmodel`/`mmodel`/`kmodel_latest`/`Kimi-K3.1-Pro`）消失，一度误判为「宿主热重载跳过 `callRegister`」，为此重启了容器（15:42，已获用户当轮授权）。**重启未恢复，真相是配置**——管理 API 审计日志显示 `14:53:32 oauth-excluded-models[qoderwork-provider]: updated (13 -> 20 entries)`（同批 `traework-provider: 52 -> 54`），即**并行会话在 14:53 通过 `PUT /v8/management/config/oauth/excluded-models` 主动收紧了模型暴露**。排除清单现有 19 条，含 qoduck/lmodel/mmodel/jmodel/kmodel_latest/kimi-k3.1-pro 等。**结论：账号恢复与本次发布均无问题（探活 `ok=True`），qoderwork 当前对外无可用模型是配置策略所致，是否解除排除待用户决定。**
+  - 生产现状：6 插件 enabled+registered（coze 0.7.4 / qoderwork 0.13.3 / traework 0.5.9 / workbuddy-ai 0.1.36 / workbuddy 0.21.10 / token-usage 0.2.8），账号 qoderwork 18 / traework 12 / workbuddy 21 / coze 23，模型 19 个；真实入口 `glm-5.3`、`kimi-k3.1-pro` 均 `finish_reason=stop`。
+  - **可迁移教训**：模型从 `/v1/models` 消失时，**先查 `excluded-models` 与管理 API 审计日志（`config_reload.go` 的 `updated (A -> B entries)` 行）**，再怀疑热重载/注册链路。本次为错误假设复了一次容器重启，成本不必要。
+
 - 会话（2026-11-07 14:45）：**traework 12 个被删账号找回（账号数据恢复 + 插件启用，未改代码）**：
   - 诉求：「tear 的好像也有，看看能不能还原」。`traework` 池恢复前仅 1 个账号且**插件处于 `enabled=false / registered=false`**（`/accounts` 返回空）。
   - **恢复源**：`/root/traework-recovery/restored/`（10-25 误删恢复时产出的 17 个账号文件）+ `refreshed_tokens.json`（10-25 的 16 个刷新结果）。**10-25 的全表 dump 里 traework=0**，因为那是「恢复 traework 之前」建的还原点——按前缀查会得出「无源可恢复」的错误结论。

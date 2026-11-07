@@ -265,6 +265,16 @@ traework 的 `ExchangeToken` **每次都返回新的 `refreshToken`**（2026-10-
 
 判据命令：`grep -A60 '"traework-provider"' config.yaml | grep -c '^\s*-'` 对比插件 `/models` 的实际条数；剩余为 0 时该插件对外等于不可用。
 
+**先查审计日志，再怀疑热重载**（2026-11-07 二次实证，代价是一次多余的重启）：排除项可能不是静态写在文件里的，而是运行时通过管理 API 改的。容器日志里有明确留痕：
+
+```
+[2026-11-07 14:53:32] [info] [config_reload.go:130] oauth-excluded-models[qoderwork-provider]: updated (13 -> 20 entries)
+```
+
+看到 `/v1/models` 突然少了一批模型、而插件自身 `/models` 仍有全部条目时，**正确顺序是**：① `grep` 日志里的 `excluded-models.*updated` → ② 读 `excluded-models` 对应 provider 段 → ③ 最后才怀疑插件注册链路。宿主 `host.go` 里那段「热重载跳过 `callRegister`」的分支极具迷惑性，容易让人得出错误的宿主缺陷结论并重启容器——但重启救不回被配置排除的模型。
+
+**注意配置有两套**：`excluded-models`（静态文件）与 `oauth-excluded-models`（管理 API 可写，日志前缀带 `oauth-`）。只查前者会漏掉后者的改动。
+
 ## 相关 skill 与文档
 
 - binlog 二进制解析的通用细节（含可复用的 Python 解析要点）：知识库《MySQL-binlog恢复被误删行数据-二进制JSON与偏移基准》
