@@ -25,11 +25,24 @@
 - **2026-11-07 01:27 已在 65 完成全量对齐与启用**：11 个插件全部 `configured/registered/enabled=true` —— workbuddy 0.21.9（20 号）/ coze 0.7.4（23 号）/ qoderwork 0.12.6（2 号）/ workbuddy-ai 0.1.35（6 号）/ token-usage 0.2.8 / traework 0.5.7 / qoder-ai 0.1.35 / zcode 0.3.5 / copilot 0.1.12 / qwenwork 0.2.13 / cursor 0.1.7（首次安装）。install 前 5 个显示 `registered=false` 是「该版本 .so 从未加载」（config 里 enabled 本为 true），install 后日志为 `plugin loaded + plugin registered`，非 hot reload 形态。
 - **2026-11-07 19:40 当前生产版本（max_tokens 最小干预批次）**：workbuddy-ai **0.1.37** / qoder-ai **0.1.37** / qoderwork **0.13.5** / traework **0.5.13** / zcode **0.3.7** / qwenwork **0.2.15** —— 上述插件 `configured/registered/enabled/effective_enabled` 全 true，`.so` sha256 与 release zip 逐字节一致。**管理 API 端口是 8317（不是 18998，18998 是 sshd）**。
 - **2026-11-07 20:33 workbuddy 已升级 0.21.12 → 0.21.13**（失败禁用与手动启用联动，`hot reloaded active_version=0.21.13 retired 0.21.12`，落盘 sha256 `574f6921…` 与本地 zip 一致）。
+- **2026-11-07 21:25 三插件同步升级**：workbuddy-ai **0.1.38** / traework **0.5.14** / qoderwork **0.13.7**（同型缺陷整改），三者 `hot reloaded` 且 `.so` sha256 与 release zip 一致。
 - 2026-10-25 历史发布批（已过期，仅存档）：zcode 0.3.1 / qoderwork 0.12.1 / traework 0.5.1 / workbuddy 0.21.2 / cursor 0.1.6 / qoder-ai 0.1.31 / coze 0.6.2 / qwenwork 0.2.9 / copilot 0.1.11 / workbuddy-ai 0.1.30 / token-usage 0.2.8（细节见 git log 与 CHANGELOG）。
 - 活动工作区：F:\cpa-plugin
 - 当前时间：2026-11-07 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 会话（2026-11-07 20:45-21:35）：**三插件同步整改「失败禁用 ↔ 手动启用」同型缺陷（workbuddy-ai 0.1.38 / traework 0.5.14 / qoderwork 0.13.7）**：
+  - 诉求：workbuddy 0.21.13 修复后，其余三个插件的 `failover_disable.go` 存在同型缺陷（恢复走 API 不清盘上标记、对账不独立/不清标记），要求一并修。
+  - **改动（三插件按各自结构适配，非整文件覆盖）**：
+    - **workbuddy-ai**：新增 `isChannelBlockError` → `failureScopeUpstreamBusy` + `noteUpstreamBlockHit`（main/stream 三处调用点）；恢复路径无条件落盘清三键；探活候选去重；对账重写（按 auth_index 去重读盘、只认盘上 `disabled:false`、清标记、仅对 wasOurs 重置计数）+ 独立 2 分钟循环；全池保底；归属丢失自愈。无 sidecar，故只清本地集合。
+    - **traework**：同 workbuddy 全套（含 sidecar）；executor.go **六处** 11128 分支统一改走 `noteUpstreamBlockHit`；对账清本地 + sidecar + 盘上标记 + 计数。
+    - **qoderwork**：无 11128 链路，故只做恢复落盘清标记、对账判据收紧为「盘上确实 enabled」、清标记 + 计数/探活配额、独立 2 分钟循环；**保留既有池级熔断**（`failoverDisableBudgetExceeded` + 本轮回滚，已覆盖整池清零）。
+  - **测试**：新增三个 `failover_sync_test.go`（workbuddy-ai 10 组 / traework 12 组 / qoderwork 5 组）；同步修正 `traework/failover_disable_test.go`（池保底需第三个常驻号）与 `test/traework/failover_marker_restore_test.go`（对账判据需桩出盘上 enabled）。三插件 `cgo-shim-build.py` build/vet/test 全绿。
+  - **发布**：`c8b2ae7`（代码）→ 三条 CI run `42375968431`/`42375972582`/`42375977067`（结论均 `cancelled`，但 **Release job 全 success、0 failure**，darwin/arm64 cancelled 属已知取舍）→ assets 各 5/5 checksum OK → `7bb0c38` registry（**只改这三个条目，48 增 48 删，无并行会话污染**）→ 生产 install 三插件全部 200。
+  - **生产验证**：`hot reloaded` 三条（workbuddy-ai 0.1.38 / traework 0.5.14 / qoderwork 0.13.7），落盘 `.so` sha256 与本地 zip 逐字节一致（`19616e5e…` / `313d6964…` / `1d4c3525…`）；三插件 `configured/registered/enabled/effective_enabled` 全 true；qoderwork 无 stale 标记、traework 仅 1 个真在禁用的号、workbuddy-ai 归零；无探活风暴。
+  - **生产实测请求**：traework `minimax-m3` 200/stop 2.8s、qoderwork `dfmodel` 200/stop 0.7s。
+  - **重要发现（非本次改动引入）**：workbuddy-ai 6 个账号上游全部返回 `403 code=11140 "Your account has been restricted due to unusual activity"`，该池自 11-02 起已无成功流量。本次请求走遍 6 个号，**新全池保底只允许禁掉 5 个、保留最后 1 个**（日志 `would empty the pool`），旧版本会把 6 个全禁。**结论：workbuddy-ai 需要补充新账号，代码侧无回归。**
 
 - 会话（2026-11-07 19:56-20:50）：**qoder / trae 生产高强度压测 —— 发现并修复 2 个真实缺陷**：
   - **矩阵**：qoderwork(`dfmodel`) / traework(`qwen3.8-max`) × {显式 2000、显式 100、别名 300、不传、显式 200000} + 并发（3 / 6）。

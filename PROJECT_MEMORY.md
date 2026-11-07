@@ -21,7 +21,7 @@
 
 ### 插件架构事实
 
-- **账号「失败禁用」是三源状态，任何一侧变更都必须同步（2026-11-07 workbuddy 0.21.13 定稿）**：三源 = 宿主 `disabled`（路由真相源，经 `PATCH /v0/management/auth-files/status` 写） + 物理文档三键 `failover_disable` / `failover_disable_model` / `failover_disable_at`（探活候选枚举依据） + sidecar `data/<plugin>-failover.json`（跨重启与宿主回写的权威排除来源）。
+- **账号「失败禁用」是三源状态，任何一侧变更都必须同步（2026-11-07 workbuddy 0.21.13 定稿；同批已推广到 workbuddy-ai 0.1.38 / traework 0.5.14 / qoderwork 0.13.7）**：三源 = 宿主 `disabled`（路由真相源，经 `PATCH /v0/management/auth-files/status` 写） + 物理文档三键 `failover_disable` / `failover_disable_model` / `failover_disable_at`（探活候选枚举依据） + sidecar `data/<plugin>-failover.json`（跨重启与宿主回写的权威排除来源；workbuddy-ai 无 sidecar，只有前两源）。
   - **铁律 1**：恢复走 API 成功后**也必须落盘清三键**，否则 `disabled:false + failover_disable:true` 的幽灵标记会让探活每轮把已启用的号重新「恢复」一次，`resetCooldownState` 顺带清零连续失败计数 → 真实失败永远攒不到门限（表现为「失败不再禁用」）。
   - **铁律 2**：探活候选判据是「盘上 `disabled:true` 且带本机制标记」或「sidecar 记禁用」，**不能只看标记**；同一轮按 `auth_index` 去重。
   - **铁律 3**：外部启用对账必须独立于探活周期（workbuddy 用 2 分钟 + 启动即跑），并同时清内存集合、sidecar、盘上标记；计数只对「确曾归属本机制」的号重置。
