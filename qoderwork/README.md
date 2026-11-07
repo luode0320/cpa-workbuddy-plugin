@@ -92,6 +92,9 @@ oauth-model-alias:
 - 账号卡片：积分余额 / 计划 / 签到按钮（签到后返回最新积分）
 - 「全部签到」批量签到；自动签到开关（00/04/08/12/16/20）
 - 「导入 QoderWork 凭证」：单 PAT 快速导入 + 批量导入（见方式三）
+- 签到按钮显示「未下发」= 上游按账号下发了活动框架但没有 `CLAIM_BENEFIT` 条目（部分账号本来就没有签到活动），不是插件失败；「不可签」= 该账号不参与活动
+- 签到排查看日志：`docker logs cli-proxy-api | grep '\[qoderwork\] checkin'`，可见 `ok credit=+N` / `skip reason=already` / `skip reason=no_campaign` / 失败原因
+- 上游 campaigns **不提供连续签到天数**，面板不再显示「连续 N 天」（此前为编造值）
 
 ## 失败处置
 

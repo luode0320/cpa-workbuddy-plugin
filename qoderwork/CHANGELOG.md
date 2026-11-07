@@ -1,5 +1,23 @@
 # QoderWork Plugin Changelog
 
+## 0.13.2
+
+### Fix - 签到可观测性 + 移除「连续 N 天」编造值
+
+- 背景: 用户反馈「生产的 qoderwork 签到是不是有问题」。生产取证（2026-11-07 13:40，只读探测上游 campaigns）：
+  - 账号 `01a1595b…`：上游返回 `CLAIM_BENEFIT + CREDITS 100`，窗口 11-07 10:00 → 11-08 09:59，`claimStatus=CLAIMED` —— 今天 12:03 已领取成功，积分包已生效。
+  - 账号 `01a15e9a…`：上游只返回 `VIEW_DETAILS` 推广活动，**没有 CLAIM_BENEFIT 条目** → 面板「未下发」是上游按账号下发的真实结果，不是插件失败。
+  - 两个 auth 文件 mtime 均为 12:03（12:00 槽位 + 抖动），调度器正常触发。
+- **结论：签到链路正常，没有漏签**。但取证过程暴露三处真实缺陷：
+  - **D1 编造连续天数**：`fetchCheckinStatus` 把 `StreakDays` 硬编码为 1。上游 campaigns 响应根本没有该字段（campaign 只有 campaignId/actionType/claimStatus/startAt/endAt/benefit），面板显示的「连续 1 天」是假数据。
+  - **D2 成功分支缺字段**：`checkinOneAccount` 的成功分支不返回 `streak_days`，面板 toast 的 `res.streak_days ?? "?"` 退化成「连续 ? 天」。
+  - **D3 签到零日志**：定时路径对 status 失败、claim 失败、无活动、成功全部静默；用户问「是不是有问题」时运维无从查证。
+- 修复一（去编造）: 移除 `StreakDays = 1`，该字段恒 0 表示「上游未提供」；`checkinSummary` 为 `StreakDays` / `TotalCredits` / `WeekCheckinDays` / `Season` 补注释，标明上游不提供、保留字段仅为兼容旧面板。
+- 修复二（面板文案）: 签到成功 toast 改为「+N 积分」/「今日签到完成」，不再宣称连续天数；success 与 already 两种分支语义统一。
+- 修复三（补日志）: 新增 `[qoderwork] checkin` 日志行——手动路径覆盖 `skip already` / `skip no_campaign` / `ok credit=+N` / claim 失败，自动路径覆盖 `auto-status` / `auto-claim` 失败与 `auto checkin ok`、定时跳过。
+- 影响范围: 签到摘要字段语义与日志输出；领取流程、槽位调度、活动窗口判定零改动。
+- 验证: 新增 `checkin_streak_test.go`（3 种活动形态下 streak 恒 0 + 今日积分只取活动 amount + 过期窗口不可签）；**2 个变异 KILLED**（恢复硬编码 streak、忽略 endAt 窗口）；`cgo-shim-build.py qoderwork` build/vet/test 全绿。
+
 ## 0.13.1
 
 ### Fix - 瞬时失败不再一次即写盘禁用，200 错误帧不再伪造 403

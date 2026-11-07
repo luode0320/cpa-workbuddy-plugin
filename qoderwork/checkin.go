@@ -7,6 +7,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/rand/v2"
 	"net/http"
 	"strings"
@@ -162,8 +163,19 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 		}
 		// CN: daily check-in when enabled.
 		ci, err := fetchCheckinStatus(sa)
+		if err != nil {
+			// 定时路径此前对 status 失败完全静默：运维只能靠面板空白猜原因。
+			logCheckinFailure("auto-status", sa, err)
+		}
 		if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {
-			if _, callErr := performCheckinCall(sa, ci.CampaignID); callErr == nil {
+			callRes, callErr := performCheckinCall(sa, ci.CampaignID)
+			if callErr != nil {
+				// 领取失败必须留痕：否则「今天没签上」在生产完全不可查。
+				logCheckinFailure("auto-claim", sa, callErr)
+			} else {
+				credit, _ := callRes["rewardCredits"].(float64)
+				log.Printf("[qoderwork] auto checkin ok account=%s campaign=%s credit=+%d",
+					checkinLogTag(sa), ci.CampaignID, int64(credit))
 				// Refresh once after a successful checkin call so cache reflects
 				// the post-call state. If the status call fails keep the pre-call
 				// snapshot rather than dropping it (v0.6.31: avoid shadowing ci
@@ -185,6 +197,15 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 					}
 				}
 			}
+		} else if err == nil && ci != nil {
+			// 定时跳过（无活动 / 今日已签）也留一行：这是「为什么今天没加积分」
+			// 的唯一可查证据。已签分支只在首个槽位有价值，其余槽位会重复，
+			// 因此统一压成一行 info。
+			reason := "no_campaign"
+			if ci.TodayCheckedIn {
+				reason = "already"
+			}
+			log.Printf("[qoderwork] auto checkin skip account=%s reason=%s show_campaign=%v", checkinLogTag(sa), reason, ci.ShowCampaign)
 		}
 		// Refresh cache with latest checkin status (merge, don't wipe credits/plan).
 		if ci != nil {
@@ -324,14 +345,19 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 		out["skipped"] = true
 		out["reason"] = "already"
 		out["message"] = "今日已签到"
-		out["streak_days"] = ci.StreakDays
 		out["total_credits"] = ci.TotalCredits
+		// 不返回 streak_days：上游 campaigns 不提供连续天数，编造值曾让面板
+		// 显示「连续 1 天」（见 billing.go fetchCheckinStatus 注释）。
+		log.Printf("[qoderwork] checkin skip account=%s reason=already campaign=%s", checkinLogTag(sa), ci.CampaignID)
 		return out
 	}
 	if !ci.Active {
 		out["success"] = false
 		out["reason"] = "global"
 		out["message"] = checkinNoActivityMessage(ci)
+		// 无活动是「上游按账号下发」的结果，不是失败：必须留可查证日志，
+		// 否则运维无法区分「没活动」与「签到链路坏了」（2026-11-07 反馈）。
+		log.Printf("[qoderwork] checkin skip account=%s reason=no_campaign show_campaign=%v", checkinLogTag(sa), ci.ShowCampaign)
 		return out
 	}
 
@@ -339,6 +365,7 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 	res, err := performCheckinCall(sa, ci.CampaignID)
 	if err != nil {
 		out["error"] = "claim: " + err.Error()
+		logCheckinFailure("claim", sa, err)
 		return out
 	}
 	// claim 返回 status=CLAIMED + replayed=true 表示本轮已领过，归一为 already
@@ -354,6 +381,11 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 		}
 		if rc, ok := res["rewardCredits"].(float64); ok {
 			out["reward_credits"] = int64(rc)
+			log.Printf("[qoderwork] checkin ok account=%s campaign=%s credit=+%d already=%v",
+				checkinLogTag(sa), ci.CampaignID, int64(rc), out["reason"] == "already")
+		} else {
+			log.Printf("[qoderwork] checkin ok account=%s campaign=%s credit=unknown already=%v",
+				checkinLogTag(sa), ci.CampaignID, out["reason"] == "already")
 		}
 		// Refresh the credits snapshot so the panel shows the post-checkin
 		// balance immediately (check-in grants new credits). Best-effort:

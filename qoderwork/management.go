@@ -59,13 +59,13 @@ type checkinSummary struct {
 	Active          bool     `json:"active"`
 	ShowCampaign    bool     `json:"show_campaign"`
 	TodayCheckedIn  bool     `json:"today_checked_in"`
-	StreakDays      int64    `json:"streak_days"`
+	StreakDays      int64    `json:"streak_days"`       // 上游 campaigns 不提供，恒 0；面板不得据此宣称「连续 N 天」
 	DailyCredit     int64    `json:"daily_credit"`
 	TodayCredit     int64    `json:"today_credit"`
-	TotalCredits    int64    `json:"total_credits"`
-	WeekCheckinDays int64    `json:"week_checkin_days"`
+	TotalCredits    int64    `json:"total_credits"`     // 同上，保留字段仅为兼容旧面板
+	WeekCheckinDays int64    `json:"week_checkin_days"` // 同上
 	ActivityName    string   `json:"activity_name"`
-	Season          int64    `json:"season"`
+	Season          int64    `json:"season"` // 同上
 	CampaignID      string   `json:"campaign_id,omitempty"`
 	CheckinDates    []string `json:"checkin_dates,omitempty"`
 }

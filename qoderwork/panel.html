@@ -1005,7 +1005,14 @@ function checkinResultToast(res, who){
   if(res.reason==="already"||(res.skipped&&/already|已签|今日/.test(String(res.message||"")))){
     toast(name+"：今日已签到","ok",res.message||"");return;
   }
-  if(res.success){toast(name+"：签到成功","ok","+"+(res.credit??res.daily_credit??res.reward_credits??"")+" 积分 · 连续 "+(res.streak_days??"?")+" 天");return}
+  if(res.success){
+    const gain=res.credit??res.daily_credit??res.reward_credits;
+    // 不再宣称「连续 N 天」：上游 campaigns 响应没有连续签到天数字段，
+    // 此前 success 分支缺该字段会显示「连续 ? 天」，already 分支显示后端
+    // 硬编码的「连续 1 天」——两种都让用户误判签到断签（2026-11-07 反馈）。
+    toast(name+"：签到成功","ok",gain!=null?("+"+gain+" 积分"):"今日签到完成");
+    return;
+  }
   toast(name+"："+(res.message||"未知结果"),"warn");
 }
 function isCheckinDoneResult(res){

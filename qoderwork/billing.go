@@ -182,7 +182,11 @@ func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
 	}
 	if todayChecked {
 		sum.TodayCredit = dailyCredit
-		sum.StreakDays = 1
+		// 上游 campaigns 响应里没有「连续签到天数」字段（campaign 结构只有
+		// campaignId/actionType/claimStatus/startAt/endAt/benefit）。历史实现
+		// 把 StreakDays 硬编码为 1，面板据此显示「连续 1 天」——一个永远为 1
+		// 的编造值比不显示更糟：用户会以为签到断签了（2026-11-07 生产反馈）。
+		// 这里保持 0 表示「上游未提供」，面板不再宣称连续天数。
 	}
 	return sum, nil
 }
