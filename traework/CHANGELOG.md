@@ -1,6 +1,5 @@
 # TraeWork Plugin Changelog
 
-
 ## 0.5.16
 
 ### Fix - 请求体 role 前置校验（畸形请求打穿整池的根因修复）
@@ -20,23 +19,6 @@
 - 保留 0.5.15 的正文判据作为第二道防线（覆盖 role 之外的请求形状错误），但它不再是主防线。
 - 测试: 新增 `TestValidateOpenAIMessageRoles`（6 组：正常/工具/非法 role/空 role/role 非字符串/空列表）。
   `cgo-shim-build.py traework` build/vet/test 全绿。
-
-### Docs - 附：kimi-k3 对 max_tokens 无反应的定性（无代码改动）
-- 背景：2026-11-08 生产压测发现 traework 的 `kimi-k3` 对 `max_tokens` 完全无反应。
-- 实测（同一 prompt「请详细介绍一下人工智能的发展历史」）：
-  | max_tokens | 正文 | output_tokens | finish_reason |
-  |---|---|---|---|
-  | 5 | 8522 字符 | 6023 | stop |
-  | 20 | 13017 字符 | 8743 | stop |
-  | 50 | 11431 字符 | 6791 | stop |
-  | 5000 | 1091 字符 | 678 | stop |
-- 插件侧已排除：新增 `TestBuildTraePayload_KimiK3IncludesMaxTokens`（mt=5/20/50/5000 四组），
-  断言 `buildTraePayload` 产出的 `max_tokens` 原样存在且未被改写、`config_name` 同时在位；
-  `grep kimi|kmodel traework/*.go` 零命中，无模型级特判。
-- 对照：同批 `deepseek-flash` / `qwen3.8-flash` 在短任务下正常受控（54 / 20 字符），
-  说明是**模型级差异**而非整个上游忽略。
-- 处置：属上游模型行为，插件层**不做人为截断**（会破坏正文完整性，且无法区分
-  「模型自己停」与「被截断」）。客户端若需硬约束请改用遵守 max_tokens 的模型。
 
 ## 0.5.15
 
@@ -95,3 +77,1093 @@
 - 说明: 本版包含 0.5.12 的「显式 max_tokens 零干预」改造（基于 `aee52c0`）。
 
 ## 0.5.12
+
+### Fix - 删除自研 max_tokens 控制，改为「显式值零干预」（对齐社区共识）
+
+- 背景: 实拉 GitHub 七家 WorkBuddy 反代项目（tonny0812/workbuddy2api、lovingfish/workbuddy-cliproxy、sixzjd/dsh-workbuddy-connect、dingminhua/dsh-connect-workbuddy、linguo2625469/workbuddy2api-panel、ardeyouxipianyi/workbuddy2api-hub、ithtelab/workbuddy-manager）源码核对，**无一做「抬升客户端显式 max_tokens」或「统一输出地板」**；叠加本方 2026-11-07 生产事故（`max_tokens=2000` 被放宽到 128000，实际生成 12000~22000 tokens / 80~145 秒被判超时）。
+- 删除的四类控制: ①`minMaxTokensFloor=32768` 统一最低输出底线；②`defaultMaxOutputTokens` / `defaultReasoningMaxTokens=128000` 统一上限；③推理模式下把客户端 `<=8192` 放宽到 128000；④模型元数据 `MaxCompletionTokens` 无条件抬至 128000。
+- 保留的两条归一化: `max_completion_tokens` → `max_tokens` 别名翻译（显式 `max_tokens` 优先，别名一律删除、非正整数不翻译）、GPT 系 `max_tokens < 16` 抬至 16（上游 `code=11133`，两家独立实测 15 拒 / 16 过）。
+- 元数据: `maxOutputTokens()` 改为原样透传上游值，上游未提供时留 0（不虚报、不猜值）。
+- 未传语义: 流式请求未传时补 `streamDefaultMaxTokens`（Trae 上游对未传会给极小上限，长任务刚开口就 done，有独立实测依据）；非流式未传不设该字段。
+- 验证: `python scripts/cgo-shim-build.py traework` 的 build / vet / test 全绿；`max_tokens_test.go` 重写，覆盖生产事故回归（显式 2000 → 2000）、不放宽（8192 → 8192）、不套地板（100 → 100）、不预截断（200000 → 200000）、别名翻译、畸形值不洗白、GPT 下限。
+- 涉及文件: `model_specs.go`（重写为最小干预）、请求侧（`payload.go` / `body.go` / `upstream.go` / `executor.go` 之一）、`models.go`（元数据侧）、`max_tokens_test.go`。
+
+## 0.5.11
+
+### Fix - 显式 max_tokens 在请求路径上被二次抬升（0.5.10 修复未真正生效）
+
+- 根因：`buildTraePayload` 只在 `stream` 分支调用 `computeAdaptiveMaxTokens`，随后又无条件执行 `applyMaxTokensFloor`，把客户端显式值抬回 32768 底线。0.5.10 只改了 `computeAdaptiveMaxTokens` 本身，被这两处抵消。
+- 生产实证：非流式 `max_tokens=2000` 实际透传 32768，`deepseek-v4.1-flash` 生成 **11203 tokens、耗时 72.1 秒**（同条件 workbuddy 为 2000 tokens / 15 秒）。
+- 修复：显式值统一原样透传、仅做上限截断；未传时流式补足统一上限、非流式保持不设该字段（沿用既有语义）；探活请求改为显式传 `streamDefaultMaxTokens`，不再依赖 floor 抬值。
+- 测试：`TestBuildTraePayloadStreamDefaultMaxTokens` 补充非流式显式 2000 用例、`TestBuildTraePayloadAdaptiveMaxTokens` 断言改为原样 8192。
+
+## 0.5.10
+
+### Fix - 客户端显式 max_tokens 不再被放大到 128k（本插件唯一可用的推理深度收口）
+
+- 背景: 2026-11-07 生产压测（`deepseek-flash` 别名即本插件 `deepseek-v4.1-flash`，同一 prompt、`max_tokens=2000`、`reasoning_effort=max`）实测单请求生成 9908 tokens、耗时 72 秒，调用方判为超时。
+- 根因: `computeAdaptiveMaxTokens` 在思考模式下把客户端传入的 <=8192 一律放宽至 `defaultReasoningMaxTokens`（128000），2000 被放大 64 倍。本插件情况更严重——Trae 上游不支持 `reasoning_effort`（见 `usage_feed.go` 注释），该参数从不透传，`max_tokens` 是唯一能约束推理深度的字段，被放大后等于完全失控。
+- 修复: 客户端显式传入 `max_tokens` 时原样尊重，仅做上限截断；只有未传（<=0）时才补足为该模式统一上限。
+- 影响面: 显式传 `max_tokens` 的请求；未传时行为不变（仍补足 128000）。
+- 验证: `cgo-shim-build.py traework` build/vet/test 全绿（本插件测试无放宽断言，行为变更由共享用例覆盖）。
+
+## 0.5.9
+
+### Chore - 慢速冷却账号池准入闸门由 20 下调至 10
+
+- 变更: `defaultSlowMinPoolSize` 由 20 下调至 10；配置字段 `slow_min_pool_size` 的面板描述同步改为「默认 10」。
+- 动机: 账号池恢复后实际规模为 12 个（2026-11-07 已从 1 个恢复至 13 个、加载 12 个），20 的闸门使慢速冷却在生产上从未触发。
+- 影响: 账号总数（启用 + 停用）严格大于 10 即开始判定；≤10 的池子仍被闸门挡住——小池下四分位基线会退化成「取较小值」，两号互相顶替。
+- 配置兼容: 生产 `config.yaml` 未显式配置该键，插件重新加载后直接采用新默认值；显式写了 `slow_min_pool_size` 的部署不受影响。
+- 验证: `python scripts/cgo-shim-build.py traework` 的 build/vet/test 全绿；`slow_account_test.go` 全部引用 `defaultSlowMinPoolSize`，无硬编码 20 的断言。
+
+## 0.5.8
+
+### Feat - 非推理输出上限由 64000 抬升至 128000
+
+- 变更: `defaultMaxOutputTokens` 由 64000 抬升至 128000，与 `defaultReasoningMaxTokens` 齐平；`minMaxTokensFloor` 保持 32768、`defaultContextWindow` 保持 1048576 不变。
+- 动机: 模型元数据广播层（`models.go` 的 `maxOutputTokens()`）自 2026-10-30 起对全部模型已宣称 128000，而请求体自适应层在非推理模式仍只发 64000，形成「元数据 128k、实际 64k」的自相矛盾，长总结与上下文压缩场景被提前截断。
+- 影响: 客户端未传 `max_tokens` 时，非推理请求的补足值由 64000 变为 128000；传入超过 128000 的值截断至 128000；传入低于 32768 的值仍抬升至 32768 底线；推理模式行为不变。
+- 验证: `python scripts/cgo-shim-build.py traework` 的 build/vet/test 全绿；`max_tokens_test.go` 全部期望值同步更新。
+- 附带: `streamDefaultMaxTokens` 引用同一常量，流式请求缺省上限同步由 64000 变为 128000；新增 `TestUnifiedOutputCap` 锁定常量与流式缺省值对齐。
+
+## 0.5.7
+
+### Fix - 失败治理对齐：5 维度分类 + 写盘禁用门限 + 探活兜底
+
+- 背景: 本插件的失败处理长期停留在 3 个冷却维度（none / account / account×model），且「一次失败即写盘禁用」、失败模型标记缺失时探活永久跳过。三者在高峰期叠加会造成两类事故：单个健康号被一次上游抖动摘出路由（2026-10-29 单次 429 后禁用 8 小时零探活），以及误把非账号故障按账号级罚号。
+- 修复一（分类维度）: `failure_scope` 扩展为 5 值，新增 `failureScopeModelRateLimit`（上游 6004 模型级限流：账号健康、只隔离该账号×模型，切模型即可用）与 `failureScopeUpstreamBusy`（上游 6021 渠道满载：不冷却、不罚号，罚号只会缩小可用池并放大拥堵）。判定顺序把这两个更具体的信号放在通用限流与 5xx 之前。新增 `recordsCooldown()` / `disablesAccount()` 两个派生判据，把「是否冷却」与「是否写盘禁用」从维度枚举中解耦，避免后续新增维度时漏改其中一侧。
+- 修复二（禁用门限）: 新增 `failover_disable_min_count` 配置项（默认 3，填 1 恢复旧行为）。瞬时类失败（传输错误 / 5xx / 限流文案 / 零字节断流）需连续达到门限才写盘禁用；确定性失败（401/403/404/405 凭据问题、402 额度耗尽、11128 模型拦截）不受门限约束——它们在同一个号上必然重演，多等只会让用户多失败两次。
+- 修复三（探活兜底）: 盘上标记、sidecar 与内存都没记失败模型时，不再永久跳过探活，而是兜底回放一个可解析的模型：探通即解禁，探不通保持禁用。代价是可能探错一次模型，远小于健康号永久失联。
+- 影响范围: 失败记账、冷却维度、写盘禁用与 10 分钟禁用探活；请求转发、鉴权与账号数据格式不变。默认配置下行为变化为「更少误罚号」，需要旧行为时配置 `failover_disable_min_count: 1`。
+- 验证: `cgo-shim-build.py` build/vet/test 全绿；新增分类边界表、维度×副作用矩阵、门限端到端（1/2/3 次阶梯、确定性失败豁免、6004 豁免优先于门限）、探活兜底成功/失败双侧、拥堵免罚等用例，并改写两个固化旧缺陷的既有测试。
+
+## 0.5.6
+
+### Fix - 兼容宿主主面板 enc::v2:: 密钥格式（修复面板 401）
+
+- 背景: 宿主主面板 `management.html` 于 2026-10-31 自动更新后，把 `cli-proxy-auth` 的密钥混淆格式从 `enc::v1::` 升级为 `enc::v2::`，XOR key 由 `salt|host|userAgent` 改为 `salt|host`。
+- 问题: 插件面板 `deobfuscate()` 只识别 `enc::v1::`，遇到 v2 前缀时原样返回密文，`JSON.parse` 失败导致取不到管理密钥。若 sessionStorage 里还残留旧流程写入的密文，面板会持续用错误 Bearer 请求管理接口，停在「management key 无效或缺失（将自动重试）」并无法自愈。
+- 修复: 新增 `ENC_PREFIX_V2` 与带版本参数的 `_keyBytes(v2)`；`deobfuscate()` 先按 v2 解、再回退 v1，兼容升级前写入的旧值；新增 `readSessionKey()`，读取 sessionStorage 时若命中 `enc::` 密文前缀即判定为脏值并清除，让 `getKey()` 回落到 localStorage / URL / 手动输入。
+- 影响范围: 仅前端 `panel.html`，后端零改动；账号数据、路由与鉴权语义不变。
+- 验证: 复刻宿主真实算法构造 v1 / v2 双格式密文，10 个插件面板在「干净 v2」「sessionStorage 残留 v2」「旧版 v1」三种场景下均解出正确密钥；`node new Function` 语法校验通过；`cgo-shim-build.py` build/vet/test 全绿。
+
+## 0.5.5
+
+### Feat - 输出上限统一为推理 128k / 非推理 64k
+
+- 变更: 删除逐模型官方规格表，改为四个全局常量（`minMaxTokensFloor=32768`、`defaultMaxOutputTokens=64000`、`defaultReasoningMaxTokens=128000`、`defaultContextWindow=1048576`）。所有模型一律按「推理模式 128000 / 非推理模式 64000」自适应，动态发现（上游 /models 返回但未收录）的模型同样适用。
+- 自适应规则: 客户端未传 max_tokens（<=0）取目标上限；推理模式且客户端传 <=8192 时放宽到 128000，避免思维链吃满配额提前截断；客户端传值超过目标上限时安全截断，防止上游 400；其余保留客户端原值但受 32768 底线保护。
+- 影响: 净删除约 340 行逐模型规格代码；`lookupOfficialModelSpec` 保留签名，恒返回可用规格，调用方零改动。
+
+### Feat - 新增每账号一个 JSON 的 zip 导出
+
+- 新增 `GET /export/zip` 管理接口：把每个账号的原始凭证打成 zip，包内每个账号一个独立 JSON 文件，便于按账号分发或迁移。
+- 与既有 `/export` 的区别：`/export` 返回单个汇总 JSON（accounts[] 数组），适合整库备份；`/export/zip` 解压后直接得到一组 `<name>.json`，可逐个拖进导入弹窗，也可直接放进 auth 目录。
+- 容错: 单账号读取失败不影响其余账号，失败项以 `<name>.error.txt` 记录原因；无账号时返回 404 JSON 错误。
+- 文件名: 取宿主 auth 文件名 basename，为空回退 auth_index，再回退固定名；同名冲突追加 `-2`、`-3` 序号，避免 zip 内条目覆盖。
+- 面板: 账号工具栏新增「导出 ZIP」按钮，走原生 `fetch` + `blob()` 下载。
+
+### 验证
+
+- `cgo-shim-build.py traework` build / vet / test 全绿；新增 `credits_export_zip_test.go` 覆盖文件名生成、同名去重、每账号一文件、单账号失败容错、空账号列表、宿主列表报错六条路径。
+
+## 0.5.4
+
+### Fix - 禁用状态改由 CPA 管理接口写入宿主路由真相源
+
+- 缺陷(生产实证 2026-10-28): 失败禁用／低额禁用／额度耗尽禁用原本只直写物理 auth 文件的 `disabled` 字段。宿主用 MySQL 存储时物理文件只是镜像，路由真相源在 DB；宿主下一次 persist 会把镜像覆盖回 `disabled:false`，插件写的归属标记也被白名单裁剪丢弃，导致插件认为已禁用、宿主照样把请求发过来。
+- 修复: 新增 `cpa_disable_sync.go`，三处禁用/恢复改为调用 `PATCH /v0/management/auth-files/status`——与认证文件管理页 toggle 同一条链路，宿主内存态与 MySQL 同时被改写。
+- 兜底: 未配置密钥时该通道整体不启用（行为与 0.5.3 完全一致）；配置了但调用失败时回落原写盘路径，并打 `cpa disable api failed, fallback to disk` 降级日志。
+- 配置: 新增 `cpa_management_url`（默认 `http://127.0.0.1:8317`）与 `cpa_management_key`（config_yaml 优先 → env `WB_CPA_MANAGEMENT_KEY`）。密钥只用于请求头，任何日志与回显都不输出其值。
+- 边界: 只改造插件自动写入的禁用；manual_disable（用户在宿主手动关的号）不由本插件调用该接口。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增用例锁定三条路径（走 API 不写盘／未配密钥写盘零回归／API 失败回落写盘）。
+
+## 0.5.3
+
+### Feat - 进面板不再触发上游刷新，改为纯读积分快照
+
+- 变更: 面板进入时只渲染 `/accounts` 返回的内存缓存与落盘快照（`data/traework-credits.json`），不再打 `POST /refresh`；前端 10 分钟定时刷新一并移除。与 workbuddy 0.14.17（2026-10-23 用户裁定）同口径。
+- 后端配套: `handleAccounts` 的双未命中分支由「同步现查上游」改为「保持未知」，面板打开绝不触发全量 billing 调用。这是同一诉求的第三处入口——只删前端仍会在首屏对每个无快照账号各打一次上游。
+- 新鲜度来源: 后端 `watchdogLoop` 每 10 分钟全量刷新（`watchdogIntervalDefault`，不依赖面板是否打开），与调度排序共用同一份真相；单卡「刷新」按钮仍可手动拉取（traework 无顶部批量刷新入口）。
+- 清理: 删除已无调用点的 `startBackgroundRefresh` / `pollRefreshStatus` / `setCardRefreshState` / `finalizeCardState` / `updateRefreshProgress` 及配套 `data-refresh-state` / `ref-tag` / `ref-progress` 样式与 `#refreshProgress` 占位元素。workbuddy 侧这些函数体仍在但已无调用点，不照搬该形态。
+- 验证: 两段内联 `<script>` node `--check` 通过；`cgo-shim-build.py traework` 的 build / vet / test 全绿；`grep` 复核 `api("/refresh"` 零命中、`PERIODIC_REFRESH_MS` 零命中、`accountCredits(` 仅剩手动刷新 / watchdog / 签到链路。
+
+## 0.5.2
+
+### Feat - 账号池准入闸门（默认 > 20）
+
+- 背景: 慢速判据是各账号中位数的下四分位（P25）。池子太小时该统计量退化成「取较小值」——两个账号里任一次网络抖动就会让其中一个被判慢、两号互相顶替；池内单个毛刺账号即可拉低基准。2026-10-25 生产实证：激进参数下池内 TTFT 仅 1.26 倍差却持续判慢，冷却主体在两号之间反复跳变。
+- 闸门: 账号总数（**启用 + 停用**）须严格大于 `slow_min_pool_size`（默认 20）才触发判定。计数含停用账号——停用多是临时的（额度耗尽、探活中），池子真实规模应按归属算；否则一次批量临时禁用就会让机制忽开忽关。
+- 位置: 闸门放在**打点之前**而非只在判定里。账号数不足时连样本都不记——池子长大后若拿着欠账的陈旧样本立刻判一轮，等于用不成立的历史数据误判。
+- 取数: 账号枚举走宿主 RPC（跨进程），绝不能放每请求热路径。改为独立 ticker 每 10 分钟探测一次，判定入口只读内存缓存。探测失败保留上一次已知值（RPC 偶发失败不该让闸门忽开忽关）；首轮立即探测，不留盲区。
+- 未探测状态: 缓存零值一律视为不达标（保守关闭）。宁可晚一个刷新周期生效，也不能在未知规模下用退化基准误判。
+- 配置: 新增 `slow_min_pool_size` 配置项与面板字段。
+- 验证: 新增 4 个用例（≤20 不判 / 21 放行 / 闸门在打点前 / 未探测保守关闭 / 阈值可配置）；变异「闸门恒放行」「闸门只拦判定不拦打点」「> 改 >=」全部 KILLED。
+
+## 0.5.1
+
+### Fix - 冷却到期日志重复刷屏
+
+- 缺陷: `recordSlowSample` 检测到冷却已过期后只打日志、不清零 `cooldownUntil`。该条件在后续每条成功请求上持续成立，同一账号到期后每次成功都再打一条「slow cooldown expired」。生产实证：同一账号 1 分钟内刷 8 条，日志被淹没。
+- 修复: 判定过期后立即 `st.cooldownUntil = time.Time{}`，让「已过期」成为一次性事件。到期判定仍必须先于「冷却中」判断——否则过期后第一条样本会被当成仍在冷却而提前返回，恢复事件永远不会被记录。
+- 验证: 新增 `TestSlowCooldownExpiryLogsOnce` 连续打两条样本断言只产生一条到期日志；变异「去掉清零」KILLED。
+
+## 0.5.0
+
+### Fix - per-attempt TTFT 计时隔离（阻断项，先于慢速冷却）
+
+- 缺陷: `ttftNSBetween(ctx.Started, result.FirstOutputAt)` 的首参是**请求级**时间戳，跨重试 attempt 复用。账号 A 失败耗时 10s 后换到 B、B 首帧 2s，被记成 **12s**——A 的失败耗时算到健康号 B 头上。
+- 影响: 慢速判据直接吃这个样本会误禁健康账号，比不加该机制更糟。故先修计时再加冷却。
+- 修复: 新增 `attemptTTFTNS(attemptStarted, requestStarted, firstOutputAt)`，每个 attempt 起点记录 `attemptStarted`；异步流经 `traeStreamPumpContext.AttemptStarted` 传入，同步流直接用局部变量。
+- 验证: 新增 `ttft_attempt_test.go` 4 用例锁定「A 失败 10s → B 首帧 2s 应记 2s」；变异「退回请求级基准」KILLED。
+
+### Feat - 慢速账号 TTFT 拥堵自动冷却（账号 × 模型级）
+
+- 背景: workbuddy-provider 0.21.0 上线的慢速冷却机制横向铺开。同一模型下首字延迟显著高于同池水平的账号，在该模型上让出流量；这类账号每次都能返回 200，既有失败冷却完全抓不到。
+- 判据: 同模型、窗口内样本达标的账号，其 TTFT 中位数达到「全池基准 × 倍数阈值」且高于绝对下限时判慢。基准取各账号中位数的**下四分位（P25）**——用中位数会在「慢号占多数」的池子里被抬到慢号水平、一个也判不出来。
+- 状态: 独立 `slow_account.go`，与失败冷却、轮换冷却三者互不干扰。慢速冷却**只走内存、不写盘禁用**——慢是性能问题不是故障，写盘禁用要求探活恢复，对慢账号过重。到期自动恢复。
+- 配置: 6 个键全部登记进 `ConfigFields`（`slow_account_enabled` / `slow_ttft_ratio_x10` / `slow_window_minutes` / `slow_min_samples` / `slow_cooldown_minutes` / `slow_min_ttft_ms`），默认 2.5 倍 / 15 分钟窗 / 5 样本 / 10 分钟冷却 / 3s 下限。
+- 面板: 新增 `slow_cooling_models` 清单字段与「慢速让位 · <模型>」徽标。慢速冷却按账号×模型生效，不是账号整体停用，因此必须逐模型列出。
+- 可观测性: 四类日志——判定取证（中位数/基线/倍数/阈值/样本数）、防抽干放开清单、到期恢复、配置变更生效值。日志全部在解锁后写，避免持锁 I/O 阻塞路由判定。
+- 验证: cgo-shim build+vet+test 全绿；变异验证全部 KILLED。
+
+## 0.4.0
+
+### Fix - 失败禁用真正生效（sidecar 为权威源）+ 模型级故障不再误伤账号
+
+- 两个真实缺陷:
+  1. 写盘禁用可能是名义生效：生产实证宿主 fsnotify 不监听 mysqlstore spool（qoderwork 48 小时零 watcher 事件而 mtime 持续变化），「写盘 disabled → 宿主毫秒级感知」这个前提不成立。现改为插件自有 sidecar `data/traework-failover.json` 作为路由判据的权威来源，宿主写盘降级为尽力而为。
+  2. 模型级故障被记成账号级故障：HTTP 200 的 SSE 错误帧被无条件改写成 403，`All backends failed` 这类后端池级故障因此走进账号级判据 → 整池自禁（与 qoderwork 0.11.0 生产事故同机理）。现于记账唯一漏斗与换号判据两处同时豁免，且硬额度（402/额度标记）优先级最高不被吞。
+- 同步 workbuddy 的能力:
+  3. 故障 sidecar：跨重启存活、损坏容错、只动目标；判据接进 `isAccountCoolingDown` / `isAuthModelCoolingDown`，路由与换号都直读它。
+  4. 宿主 persist 抹标记后补回：周期落盘（counter）时按「本地记录 + 盘上仍 disabled + 缺标记」三条件补回三键；探活候选改以 sidecar 为准，不再依赖盘上标记。
+  5. 外部启用对账：sidecar 记禁用但盘上明确 enabled（无本机制标记）时清 sidecar，防止外部启用后账号永久卡在排除集合。
+  6. 轮换冷却：单账号连续承流满 60 分钟主动让位，冷却 60 分钟（中断 10 分钟重新计时、全池将冷时先放开一半防抽干）。状态独立于失败冷却——`resetAccountFailover` 每次成功都清零失败计数，复用会让轮换被第一次成功立刻抹掉。四处成功打点（非流式聚合 / 异步流 / 同步 collect / 直通 stream）缺一不可。
+  7. 积分快照持久化：`data/traework-credits.json`，插件热重载后面板首屏不再是整片「未知」。与故障 sidecar 分文件——高频积分替换会冲掉低频禁用状态。
+  8. 积分双阈值分级：保活线 `min_routable_credits`（默认 20）从「硬排除」降级为「排序降级」；新增硬禁用线 `low_credit_disable_below`（默认 0 = 关闭，刻意不同于 workbuddy 的 100，避免现网 remain 20–99 的账号首轮被批量禁用）。
+  9. 积分扫描并入既有 10 分钟刷新链（不新建 1 小时扫描器，避免同一账号一轮被刷两遍）；禁用号同样刷新，否则「积分回升 → 自动启用」等不到数据。
+  10. 面板新增徽章：轮换让位倒计时 / 承流 Nm / 积分档位（积分停用、保活档），筛选口径加入「轮换」并让可用计数与实际可路由数一致。
+  11. 配置登记：新增 11 个 `ConfigFields` 条目（6 个原隐藏键 + 5 个新键），管理端可见可改。
+- 涉及文件: 新增 `failover_state.go` `credits_snapshot.go` `usage_rotation.go` `credit_disable.go`；修改 `accountFailover.go` `active_auth.go` `cache.go` `config.go` `counter.go` `executor.go` `failover_disable.go` `failover_retry.go` `failure_class.go` `host_auth.go` `main.go` `management.go` `panel.html` `policy.go` `refresh_runner.go` `scheduler.go` `stream.go` `min_routable_credits_test.go` `VERSION`；新增测试 `test/traework/` 下 9 个文件
+
+## 0.3.0
+
+### Feat - 账号故障改为写盘禁用 + 每 10 分钟只探失败模型
+
+- 变更要点:
+  1. 失败双写：一次上游失败同时写内存阶梯冷却与盘上 `disabled: true`（宿主路由判据），冷却只负责写盘生效前的毫秒窗口与写盘失败时的兜底。
+  2. 探活只回放失败的那一个模型，它探通才写回 `disabled: false`；没有记录到失败模型则跳过该账号，不退化为全量轮测。
+  3. 探活周期固定 10 分钟（账号规模将到 200 个，60 秒扫一轮不可行）；单轮串行、上一轮未完成则本轮直接跳过。
+  4. 删除冷却探活（`cooldown_probe*.go`）与 `failover_disable` 之外的第二条恢复通道。
+  5. 写盘后轮询 `host.auth.list` 确认宿主内存已吸收新状态：写盘成功但宿主未吸收等于「写了就算禁了」，请求仍会打到已知坏号。
+  6. token 刷新与保活路径原样带回 `disabled` 与本机制标记：宿主挑刷新候选不看 `Disabled`，插件若在回传里固定 `disabled:false`，禁用中的号会被一次后台刷新静默解封、完全绕开探活。
+  7. 面板新增「禁用探活中」徽章与失败筛选口径，与冷却倒计时分开显示。
+- 涉及文件: `failover_disable.go`（新增）`failover_disable_test.go`（新增）`accountFailover.go` `active_auth.go` `auth_model_cooldown_test.go` `executor.go` `failover_accounting.go` `failure_class.go` `host_auth.go` `management.go` `model_circuit.go` `model_circuit_test.go` `panel.html` `watchdog.go` `main.go` `VERSION`，删除 `cooldown_probe*.go`（3 个）
+
+## 0.2.16
+
+### Fix - 11128 模型级拦截并入账号×模型冷却，移除独立熔断
+
+- 变更要点:
+  1. 根因：`classifyUpstreamFailure(400, 11128)` 返回 `failureScopeNone`——11128 从未进入冷却体系。旧实现另建独立熔断状态机（跨 3 账号命中 → 打开 60 秒闸门），但该闸门只拒绝请求、**不改变路由**，宿主仍把请求派给已被拦截的账号×模型，且逐条在本地失败（生产实测 duration 55–160ms），形成「一整片账号全失败」的记录。
+  2. 改造：11128 归入 `failureScopeAuthModel`，写入账号×模型冷却，由既有阶梯（60s×次数、上限 10 分钟）与冷却探活复用同一套恢复验证；`model_circuit.go` 由状态机降为记账薄（`noteModelBlockedHit` / `resetModelBlockedState`），独立熔断状态与 `model circuit open` 短路闸门全部删除。
+  3. 探活覆盖模型维度：`cooldownProbeTargets` 同时挑账号级与账号×模型级冷却，同一账号多条记录按归一化键去重、只探最近到期那条；探活成功按候选来源精确清除对应维度（模型级成功不清账号级冷却）。
+  4. 探活周期标记改用归一化键：生产日志证实同一账号以原始键与别名键成对存在时会被重复探测（间隔约 1 秒），修复后按 `normalizeFailoverKey` 统一标记。
+  5. 探活调度参数：提前量 5s → 20s、粒度 5s → 1s。原组合下窗口宽度恰等于 tick 间隔，窗口内只落得进一个 tick，一旦被「上一轮未结束就跳过」吃掉，该冷却周期永不再被探测；现窗口内 20 个机会，并新增 `TestCooldownProbeIntervalFitsWindow` 防回退。
+
+- 涉及文件: `failure_class.go` `model_circuit.go` `accountFailover.go` `cooldown_probe.go` `executor.go` 及对应测试
+
+## 0.2.14
+
+### Fix - 账号故障冷却改为 30s 递增阶梯、上限 10 分钟
+
+- 变更要点:
+  1. 根因：`failoverCooldownFor` 此前对所有失败一律返回固定 15 秒，无法区分「偶发单次抖动」与「账号持续不可用」。连续失败时账号每 15 秒就被重新拉回路由、再次失败，形成「快速轮转但始终打不通」的抖动，既浪费配额也放大上游压力。
+  2. 冷却窗口改为随连续失败次数线性递增：`30s × 连续失败次数`，在 10 分钟封顶（`failoverCooldownLadderCap = 10min / 30s = 20` 档）。偶发单次失败只冷 30 秒，持续失败的账号逐步退到 10 分钟，一次成功即清零回落。
+  3. 软失败与硬失败共用同一计数阶梯：429 无额度标记、软限流文案、零字节断流三类瞬时限流形态，此前只做固定冷却、不推进连续失败计数；现统一计入阶梯，与硬失败口径一致。
+  4. 阶梯时长按「先比较后相乘」计算，避免计数极大时整数溢出。
+  5. 回归用例补强：`TestRecordAccountFailure_LadderCapsAtMax` 覆盖封顶档位；软失败用例改为断言计数推进与阶梯时长，`test/traework/` 镜像用例同步。
+- 边界说明: 业务类 4xx（400 等）仍不计入阶梯。
+- 涉及文件: traework/accountFailover.go、traework/accountFailover_test.go、test/traework/account_failover_softfail_test.go、traework/policy.go、traework/executor.go、traework/anomaly_purge.go、traework/keepalive.go、traework/retry_config.go、traework/main.go、traework/VERSION
+
+## 0.2.13
+
+### Chore - 修正面板签到时刻文案漂移（后端调度本为每 4 小时）
+
+- 变更要点:
+  1. `panel.html` 副标题、自动签到开关提示与开关成功提示由 `09:00/21:00` 修正为 `00/04/08/12/16/20`：后端 `autoCheckinTimes` 一直是每 4 小时六槽，面板文案自早期版本起即未同步，属纯文案漂移修正，调度行为无任何变化。
+- 验证: 面板内联 JS 经 vm + DOM 桩真实执行无 ReferenceError；`cgo-shim-build.py traework` build/vet/test 全绿（文案改动经 `go:embed` 进二进制，无 Go 逻辑变更）。
+- 涉及文件: traework/panel.html、traework/VERSION
+
+## 0.2.12
+
+### Chore - 定时探活降频至 4 小时并修正失败账号节流缺陷
+
+- 变更要点:
+  1. `defaultActivePingInterval` 由 30 分钟放宽至 4 小时：真实推理与探活共享账号调用配额，探活只服务 `test_failed` 标签的健康判定，30 分钟一轮过于频繁。
+  2. 修正失败账号节流缺陷：`recordActivePing` 由「仅成功时刷新」改为「无论成败都刷新」。此前失败账号不计时，会在每个 watchdog tick（10 分钟）被反复全量重测，反而比健康账号更频繁地消耗账号配额。
+  3. 新增 `TestDoActivePingFailureStillThrottles` 回归用例：断言失败后立即再次调用被节流拦截、不再发起模型请求。
+- 涉及文件: traework/active_ping.go、traework/active_ping_test.go
+
+## 0.2.11
+
+### Feat - max_tokens 统一 32768 最低输出底线 + 定时探活改全量模型按序测试
+
+- 变更要点:
+  1. 设立 `minMaxTokensFloor=32768` 统一最低输出底线：`model_specs.go` 新增该常量与 `applyMaxTokensFloor` 纯函数，`computeAdaptiveMaxTokens` 四个出口全部经其收敛。
+  2. payload 层同步：`upstream.go` 的 `streamDefaultMaxTokens` 由 20000 提至 32768，流式建包 emit 点统一经 `applyMaxTokensFloor` 抬升，杜绝任何请求以 32768 以下的过小上限发出。
+  3. 广播层同步：动态模型发现的 `MaxCompletionTokens` 保底。
+  4. 定时探活改为全量模型按序测试：废除「随机取 ≤5 个」与整轮预算熔断，取该账号全部候选模型（保留内部非对话模型过滤）依次测试；任一成功即判定健康并立即终止本轮，仅当全部失败才打 `test_failed` 标签。
+  5. 新增 `TestDoActivePingAllModelsBeyondLegacyCap` 回归用例。
+- 涉及文件: traework/model_specs.go、traework/upstream.go、traework/active_ping.go、traework/*_test.go
+
+## 0.2.10
+
+### Feat & Fix - 设立安全缓冲额度红线 (minRoutableCredits=20)、健康平摊调度与换号过滤
+
+- 变更要点:
+  1. 设立安全缓冲额度红线 (`min_routable_credits`，默认 20，可配置)：低于阈值的残血账号硬排除出路由池，防止推理中途断开。
+  2. 调度策略逆转：废除残血优先（Low-Credit-First）升序排序，存活健康候选平摊轮询（Round-Robin）。
+  3. 请求内换号链过滤：`pickNextAuth` 跳过 `remain < min_routable_credits` 账号。
+  4. 面板状态与视觉对齐：新增 `low_credits` 状态与「低额保护」徽标。
+
+## 0.2.9
+
+### Feat - 引入官方规格矩阵自适应 max_tokens 计算
+
+- 变更要点:
+  1. 引入 `model_specs.go`：维护 Trae 官方及主流推理模型规格矩阵（`qwen3.8-max`, `deepseek-reasoner` 等）。
+  2. 动态自适应补齐与放宽：流式路径下客户端未传 `max_tokens` 时，优先使用官方规格上限（如 `qwen3.8-max` 20000），推理模型且客户端传 <= 8192 时放宽至 ReasoningMax，超限截断，替代旧有的单一 20000 硬编码。
+  3. 模型动态发现同步：`fetchTraeModels()` 将每个模型的 `MaxCompletionTokens` 从官方规格矩阵中动态填充，废除盲给默认值。
+  4. 门禁验证：`cgo-shim-build.py traework` 编译与单测全绿。
+
+## 0.2.8
+
+### Fix - 测试模型与定时探活改为流式首包即停 + Keep-Alive 预热，消除思考模型 5~8s 思维链等待
+
+- 变更要点:
+  1. 根因：0.2.6 修复了 `scanSSE`（主聊天路径），但面板「测试」按钮（`/test-active` -> `sendActivePingTrae`）及后台定时探活仍调用 `hostHTTPDo(req)`（`stream: false`）；宿主 `host.http.do` 内部执行 `io.ReadAll(resp.Body)`，而上游 `llm_utils_chat` 对思考型模型（如 `glm-5.3-flash`、`qwen3.8-max`）忽略 `max_tokens: 5` 对 `reasoning_content` 的限制，导致测试 `glm-5.3-flash` 时必须等待其完整生成 264 个思考 token（269 个 SSE 事件）后才返回，耗时达 5.6~8.1 秒；且 `sendActivePingTrae` 仅检查 HTTP 200 状态码而未解析 SSE `event: error`，导致额度耗尽（4008）或内部非对话配置（2001）被误判为活跃成功。
+  2. 修复：`sendActivePingTrae` 改走流式通道（`stream: true, max_tokens: 1`）并调用 `verifyActivePingTraeStream` 逐帧扫描 SSE；一旦收到首个有效 `event: output`（无论是正文还是思考首词）立即终止扫描并异步关闭流，不再等待后续数百个思考 token；若收到 `event: error` 则如实返回错误。
+  3. 连接池预热与候选清洗：打开测试弹窗（`handleModelsQuery`）及每次测试结束时，后台异步发送轻量 `HEAD` 请求预热 `streamHTTPClient` 的 TLS Keep-Alive 连接池，省去跨国 TCP+TLS 握手耗时（约 1s）；同时过滤 `get_detail_param` 返回的内部非对话子代理占位项（`custom_model_placeholder`、`browser_use_subagent` 等）。
+  4. 回归测试：在 `active_ping_test.go` 新增 `TestSendActivePingTrae_ExitsImmediatelyOnFirstOutput` 与 `TestSendActivePingTrae_DetectsEventErrorOnHTTP200`，并通过哨兵必失败反证确证生效。
+- 涉及文件: traework/active_ping.go、traework/models.go、traework/active_ping_test.go、traework/VERSION、traework/main.go、traework/CHANGELOG.md
+
+## 0.2.7
+
+### Fix - 补齐 oauth-excluded-models 过滤，使多服务商同名模型可从 traework 摘除
+
+- 变更要点:
+  1. 根因：`deepseek-v4.1-flash` 被 workbuddy-provider 与 traework-provider 同时动态认领（无任何插件把它写进静态列表），宿主 `oauth-excluded-models` 未配置且 traework 根本没有实现该过滤（workbuddy / workbuddy-ai / qoder-ai / qoderwork 均已实现），因此无法把该模型从配额枯竭的 Trae 号池摘掉；会话粘性又把会话钉在挂起的 Trae 账号上，单号 open 阶段串行消耗 30s 桥接 + 30s 降级直连共 60s 且期间不向客户端产出任何字节，客户端在 69~104s 零首字节后取消（new-api 侧 `end_reason=client_gone`、`frt=-1000`、`completion_tokens=0`）。
+  2. 修复：新增 `filterExcludedModels` 并在 `model.static` 与 `model.for_auth` 的全部返回出口应用，宿主 `oauth-excluded-models."traework-provider"` 自此对 traework 完整生效；未配置排除项时原样返回入参，默认行为零变化。宿主侧只在 `model.for_auth` 的按账号注册路径过滤（`sdk/cliproxy/service_executors.go` 的 `applyExcludedModels`），`model.static` 返回列表会被原样登记进全局模型目录（`internal/pluginhost/adapters.go` 的静态注册段不过滤），所以插件出口过滤不可省略。
+  3. 过滤返回新切片而非就地压缩，避免把已过滤列表写回 `dynamicTraeModelsCache` 造成后续全量列表被永久污染（与兄弟插件同源的 P0 别名缺陷）。
+  4. 回归测试：新增 `models_excluded_test.go` 覆盖静态出口过滤、缺省配置零变化、provider 键大小写漂移、账号级出口过滤和动态缓存不被就地写回；用「排除项永不命中」语义变异反证 3 个用例全部失败后还原，确认测试真实进入编译且具备判别力。
+- 涉及文件: traework/models.go、traework/models_excluded_test.go、traework/VERSION、traework/main.go、traework/CHANGELOG.md
+
+## 0.2.6
+
+### Fix - 修复推理流扫描收到 done 后死等 Keep-Alive 导致推理收尾极慢的问题
+
+- 变更要点:
+  1. 根因：`upstream.go` 中的 `scanSSE` 在收到 `event: done` 时仅通过 `recordDone()` 标记布尔值，未立即退出读取大循环；由于上游网关保持 HTTP Keep-Alive 连接闲置，扫描器持续死等网络 EOF 直到网关超时（几十秒到几分钟），导致客户端在模型早已生成完毕后仍处于漫长的转圈等待状态，直观感受推理极慢。
+  2. 修复：引入 `errTraeStreamDone` 语义，在所有三条响应处理路径（`collectTraeStream`、`aggregateTraeCompletion`、`pumpTraeStreamAttempt`）中，当收到 `event: done` 时记录完成并立即退出大循环，`scanSSE` 即刻成功返回 `nil` 并主动完成收尾，彻底杜绝 Keep-Alive 闲置死等。
+  3. 回归测试：新增 `stream_done_immediate_test.go`，模拟 Keep-Alive 闲置阻塞连接，验证收到 done 即刻退出（耗时 < 50ms），并通过哨兵必失败反证确证生效。
+- 涉及文件: traework/upstream.go、traework/stream.go、traework/stream_done_immediate_test.go、traework/VERSION、traework/main.go、traework/CHANGELOG.md
+
+### Feat - 默认调度模式对齐为会话级粘性路由（session）
+
+- 变更要点:
+  1. 将 `scheduler_mode` 默认值从 `off` 改为 `session`（对齐 workbuddy 基线）：默认启用同一会话（1 小时内）固定同一账号的会话级粘性路由，并在账号故障时自动换号。
+  2. 同步更新 `traework/config.go` 中的 `defaultTraeConfig().SchedulerMode` 与 `traework/main.go` 中的 ConfigFields 描述与枚举顺序。
+  3. 新增 `TestSchedulerMode_DefaultIsSession` 单测断言，确保默认调度策略行为不漂移。
+- 涉及文件: traework/scheduler.go、traework/config.go、traework/main.go、traework/session_auth_test.go、traework/CHANGELOG.md
+
+## 0.2.5
+
+### Fix - 修复签到 x-device-id 拼接与尾零风控 9074 拦截并支持设备号轮换重试
+
+- 变更要点:
+  1. 修复 `deviceIDFor`：移除 `<baseDeviceID>-<userID>` 连字符拼接（该形态被上游 `/trae/api/v2/ug/checkin_credits/claim` 判定为非法设备标识并 100% 返回 9074「当前参与用户太多，请稍后再试」），改为按 `(baseDeviceID, userID)` SHA-256 确定性派生符合客户端号段的 16 位纯数字设备标识（首位 1~3、末位 1~9、无连续尾零），兼顾存量尾零畸形设备号归一化与同机多账号去重隔离。
+  2. 修复 `browserlogin.go` 的 `randomDeviceID`：改用 `crypto/rand` 直接映射 16 位十进制数字（首位 1~3、末位 1~9），消除 `randomHex(8)` 过滤非数字字符后末尾填充连续 `0` 及首位越界（6~9）导致的新授权账号签到 9074 风控拦截。
+  3. 增强 `checkinAccount` 重试：当首次签到遇到 9074 限流或 9095 设备级去重拦截时，自动切换为新生成的随机 16 位合规数字设备标识重试（最多 4 次尝试），避免复用同一被拦截设备号。
+- 涉及文件: traework/checkin.go、traework/browserlogin.go、traework/checkin_headers_test.go、traework/browserlogin_test.go、traework/main.go、traework/VERSION、traework/CHANGELOG.md、test/traework/checkin_device_rotation_test.go
+
+### Fix - 修复自动签到调度器相位错配导致从未触发
+
+- 变更要点:
+  1. 修复 `autoCheckinLoop`：原实现用 `time.NewTicker(1 * time.Minute)` 每 60 秒唤醒并判断 `now.Hour()==槽位 && now.Minute()==0` 才触发；ticker 的秒相位由 `init()` 时刻锚定且恒定，仅当进程启动秒相位恰为 0（60 个相位中 1 个）时才命中整点的 `:00` 窗口，其余 98%+ 的启动下自动签到永不执行（2026-10-10 生产实证：手动签到成功，自动签到在整个生产日志历史中零次触发）。
+  2. 改为 `nextAutoCheckinTime(now)` 计算下一个签到槽位绝对时间（本地 00/04/08/12/16/20 整点，已过则顺延次日）+ `time.NewTimer(time.Until(next))` 精确对齐，到点触发与进程启动时刻无关，对齐 workbuddy 的 `nextCheckinTime` 正确调度模式。
+  3. 新增 `traework/checkin_schedule_test.go` 覆盖槽位对齐、跨日顺延、逐槽位覆盖、整点不自相等。
+- 涉及文件: traework/checkin.go、traework/checkin_schedule_test.go、traework/CHANGELOG.md
+
+## 0.2.4
+
+### Feat - 自动探活支持随机 5 模型轮测与 20s 超时
+
+- 变更要点:
+  1. 定时活跃探活改为随机挑选最多 5 个模型依次测试，单次请求超时从 10s 放宽至 20s，叠加 30s 整轮预算熔断。
+  2. 探活成功判定改为 any-success：任意一个模型成功即判定账号健康并立即终止后续测试，只有全部候选模型均失败才判定为探活失败。
+  3. 大幅降低因单模型瞬时故障或下线导致的正常账号被误打「测试」标签并被调度硬排除的误杀率。
+  4. 面板手动「测试」按钮保持指定模型或随机兜底行为不变。
+  5. 修复 TraeWork 签到协议对齐官方 Trae 客户端：请求体增加 {"req_source": 2}，请求头补齐客户端设备指纹（x-device-brand、x-device-type、x-os-version、x-app-version、x-app-id）并移除网页端 Origin/Referer，解决被服务端风控判定为未知/网页端导致的 9074（当前参与用户太多，请稍后再试）拦截。
+- 涉及文件: traework/active_ping.go、traework/active_ping_test.go、traework/checkin.go、traework/checkin_headers_test.go、traework/main.go、traework/VERSION、traework/CHANGELOG.md
+
+## 0.2.3
+
+### Feat - 「测试」按钮支持选择指定模型
+
+- 变更要点:
+  1. 面板卡片「测试」按钮改为弹出模型小窗口：点击后按账号拉取可用模型列表，点选指定模型即按该模型发起一次活跃测试。
+  2. 新增只读路由 GET /models?auth_index=：优先读动态模型缓存，缺失时回退实时拉取，末尾兜底追加随机模型，去空去重后返回 {"models":[...]}。
+  3. POST /test-active 新增可选 model 字段：非空用指定模型，为空保持随机模型（兼容旧面板与定时 watchdog）。
+  4. 新增面板回归脚本 test/traework/panel_test_model_repro.mjs（Node vm + DOM 桩，4 场景）。
+- 涉及文件: traework/panel.html、traework/models.go、traework/active_ping.go、traework/management.go、traework/active_ping_test.go、traework/management_test.go、traework/main.go、traework/VERSION、traework/CHANGELOG.md、test/traework/panel_test_model_repro.mjs
+
+## 0.2.2
+
+### Feat - 生命周期自动停用默认关闭
+
+- 变更要点:
+  1. lifecycle_auto 默认值由 true 改为 false：新装 / 未显式配置的部署不再自动停用积分耗尽的账号，也不再自动重新启用回血账号。
+  2. 两处默认值同步：包级 lifecycleAuto 初值、ConfigField 描述文案（「默认开启」→「默认关闭」）；traework 的 configure() 沿用「缺省键保持当前值」语义，默认值来自包级初值。
+  3. 显式 lifecycle_auto: true 行为不变。
+- 涉及文件: traework/lifecycle.go、traework/main.go、traework/VERSION
+
+## 0.2.1
+
+### Fix - 面板筛选标签计数随积分回填重算
+
+- 根因：`updateFilterCounts()` 只在 `load()` 里调用一次，后台刷新回填积分后只经 `renderSummary()` 重画汇总卡，筛选标签计数不再重算，长期停在首屏旧值。
+- 修复：标签计数挂到统一渲染入口 `renderSummary()`，`load()` 去掉重复调用；「耗尽」判定保持该面板既有口径不变。
+- 验证：`node test/workbuddy/panel_filter_counts_repro.mjs traework` PASS；`cgo-shim-build.py` build/vet/test 全绿。
+- 涉及文件: traework/panel.html
+
+## 0.2.0
+
+### Breaking Change - 移除保号池（preserve），路由健康闸门改由「测试」标签承担
+
+- 变更要点:
+  1. 删除保号池机制: `preserve.go` 整文件删除；`watchdog` 不再按 `preserve_threshold` 翻转账号状态，只保留「刷新积分 + 定时活跃测试」两项职责。
+  2. 配置项移除: `config.go` 不再解析 `preserve_threshold` / `preserve_watchdog_interval` / `preserve_watchdog_enabled`，`main.go` 去掉对应 ConfigFields，`management.go` 不再输出 `preserve` 字段。
+  3. 路由硬排除收敛为两类: `scheduler.go` 删除 `isAccountPreserved` 与保号过滤链，只保留 `test_failed` 与 failover cooldown；`accountRoutable`、`pickNextAuth`、会话选号同步收敛。
+  4. 面板移除保号 UI: 删除保号徽标、保号筛选按钮、`filterClass` / `accountsForFilter` 的 preserve 分支与 `保号 N` 计数；「测试」标签与筛选保持既有行为。
+  5. 保留定时活跃测试与 token 保号: 定时探测失败且 `TotalRemain > 0` 时仍写 `test_failed: true`，成功时清除；`token_keepalive`（面板「保号刷新」按钮）属于登录态续期，本轮不动。
+- 涉及文件: traework/preserve.go（删除）、traework/watchdog.go、traework/scheduler.go、traework/active_auth.go、traework/failover_retry.go、traework/management.go、traework/config.go、traework/main.go、traework/panel.html、traework/watchdog_test.go、traework/routing_exclusion_test.go、traework/auth_delete_test.go
+
+## 0.1.68
+
+### Feat - 路由「硬排除三类标签 + 低积分优先」，可用账号优先承载流量
+
+- 变更要点:
+  1. 硬排除：`test_failed`（测试）/ 保号（preserve）/ 冷却（failover cooldown）三类账号不再参与任何路由，全部候选被排除时直接 `Handled:false` 交还宿主机做跨 provider 失败切换；移除旧版「全部保号时保留全量列表」的兜底（该兜底会让已声明不可用的账号重新承载流量）。
+  2. 低积分优先：存活候选按缓存剩余积分升序排序（未测积分排最后），先把临近耗尽的账号用完，再交由保号 watchdog 归池。
+  3. 统一判定：新增 `accountRoutable` / `accountLowerCredits`，`pickActiveAuth`、`ensureDefaultActiveAuth`、`pickSessionAuth` 与 `scheduler.pick` 共用同一「可用」口径；请求内换号 `pickNextAuth` 同样跳过测试/保号账号，但保持宿主顺序不排序以保证重试链可预测。
+  4. 修复保号镜像缺失：`handleAccounts` 与 `runPreserveWatchdogTick` 补齐 `refreshPreserveSetFromDisk`（此前全仓无调用点，重启后保号账号仍会被路由命中）；面板 `TestFailed` 改读 `isTestFailed(f.ID)` 内存镜像。
+  5. 修复 `cachedCreditsScore` 空指针：缓存条目存在但 credits 未拉取时原代码直接解引用 `entry.credits.TotalRemain` 会 panic，现归一为「未知积分 (-1)」。
+- 涉及文件: traework/scheduler.go、traework/active_auth.go、traework/session_auth.go、traework/failover_retry.go、traework/management.go、traework/watchdog.go、traework/active_ping.go、traework/test_failed_tag.go、traework/cache.go
+
+## 0.1.67
+
+### Fix - 测试标签账号排除出可用过滤 + 计数与汇总同步修正
+
+- 「可用」过滤计数：test_failed 账号优先归入「测试」计数，不再计入「可用」
+- 汇总卡不可用判定加入 test_failed（测试失败账号积分归入「剩余(不可用)」）
+- 涉及文件：traework/panel.html
+
+## 0.1.66
+
+### Fix - 移除管理层令牌桶限流 + 刷新改并发 10
+
+- 变更要点:
+  1. 彻底移除管理层 per-IP 令牌桶限流，面板并发操作不会再被限流误杀。
+  2. 账号刷新队列从串行（1 账号/秒）改为并发 10（`refreshConcurrency = 10`）。
+  3. 通过 `inFlight` 标志保留幂等性。
+- 涉及文件: traework/management.go、traework/refresh_runner.go。
+
+## 0.1.65
+
+### Feat - 定时活跃测试失败自动标记「测试」标签 + 面板支持按测试标签过滤
+
+- 变更要点:
+  1. 定时活跃测试失败且账号仍有积分时，自动向物理 auth JSON 直写顶层 `test_failed: true` 标签，便于人工识别和清理后续无法使用的账号；积分未知或已耗尽的账号不打标签。
+  2. 定时活跃测试成功后自动清除既有 `test_failed` 标签；字段不存在时不产生额外写盘。
+  3. 面板手动「测试」按钮失败不会打标签，保持手动测试与定时自动标记职责分离。
+  4. 账号列表新增 `test_failed` 字段，面板过滤条新增「测试」标签按钮、计数、卡片 badge、显隐过滤与用量汇总标题联动。
+- 涉及文件: traework/test_failed_tag.go、traework/test_failed_tag_test.go、traework/active_ping.go、traework/active_auth.go、traework/management.go、traework/panel.html。
+
+## 0.1.64
+
+### Feat - 账号刷新自动发起轻量活跃探测(hi) + 面板新增手动测试按钮
+
+- 变更要点:
+  1. 刷新自动活跃探测: 在账号积分刷新(Watchdog 周期巡检、单卡刷新按钮、面板全量刷新)后，若该账号距上次活跃超过 30 分钟，自动挑选该账号可用的动态模型随机发起一次轻量推理探测(user: "hi", max_tokens: 5)，保持账号活跃度。
+  2. 故障与生命周期隔离: 自动活跃探测采用异步安全模式，失败仅记录 warning 日志，绝不阻断正常刷新链路，亦不污染账号的连续失败计数与故障降级状态。
+  3. 面板新增手动「测试」按钮: 在面板每张卡片底部的操作栏(刷新与签到按钮右侧)新增「测试」按钮，点击通过 POST /test-active 立即发起一次真实推理探测(绕过 30 分钟防抖限制)，成功后即时展示探测模型与响应耗时并更新最后活跃时间，失败友好反馈错误原因。
+- 涉及文件: traework/active_ping.go、traework/active_ping_test.go、traework/refresh_runner.go、traework/management.go、traework/panel.html。
+
+## 0.1.63
+
+### Fix — 彻底剔除写死模型完全由自动获取 + 补齐 ModelInfo 归属与静态路径主动拉取
+
+- **变更要点**：
+  1. **彻底剔除写死模型**：清空 `defaultTraeModels` 硬编码模型列表（原包含 6 个写死模型），无配置且动态未命中时返回空切片，模型 100% 依赖上游 `get_detail_param` 实时拉取。
+  2. **补齐模型归属与方法声明**：在 `fetchTraeModels` 与 `parseModelsConfig` 中为生成的 `pluginapi.ModelInfo` 补充 `OwnedBy: providerName`（`"traework-provider"`）与 `SupportedGenerationMethods: []string{"chat"}`，确保模型注册到宿主时归属明确，修复在 `/v1/models` 中 `owned_by` 缺失的问题。
+  3. **静态路径主动探测补位**：`handleModelStatic` 接入 `dynamicTraeModelsFromCacheOrAuth()`，全局缓存未命中时主动遍历宿主可用凭据向外部拉取一次并填补缓存，保证无论是冷启动的 `model.static` 还是 `model.for_auth` 均可完整呈现最新模型目录。
+- **测试**：`models_dynamic_test.go` 新增 `TestHandleModel_NoConfigAndNoDynamicReturnsEmpty` 与 `OwnedBy`/`chat` 属性断言；`cgo-shim-build.py traework` 全部通过。
+
+## 0.1.62
+
+### Fix — 执行器前置冷却拦截 + 多形态账号别名规范化匹配（对齐 workbuddy 0.14.33）
+
+- **根因**：执行器收到冷却中账号时未前置拦截直接打上游导致持续报错；`isAccountCoolingDown` 跨别名未匹配。
+- **修复**（与 workbuddy 对称）：
+  - `runTraeAsyncStream` / `runTraeSyncStream` / 非流式执行器在首次网络请求前无条件检查冷却并前置换号
+  - `accountFailover.go` / `failover_retry.go` 引入 `normalizeFailoverKey` 与跨别名规范化匹配
+- 测试：新增 `TestIsAccountCoolingDown_NormalizedAlias` 与 `TestRunTraeAsyncStream_SkipsCoolingInitialAuth`。cgo-shim 全绿。
+
+## 0.1.61
+
+### Fix — SSE 错误帧 HTTP 200 在 `reconcileAfterExecutorError` 内不再绕过冷却
+
+- **根因**：traework 的 SSE 错误帧（如 `event:error` 承载的 4011/14018）发生在 HTTP 200 响应内，所有错误路径经统一的 `reconcileAfterExecutorError` 入口。该入口把 `status=200` 直接传给 `noteAccountFailure`，`isAccountFailure(200, body)` 在不含 rate-limit/credit 关键词时返回 false → 冷却永不触发。
+- **修复**：`reconcileAfterExecutorError` 内部自动将 `status=200` 映射为 403，`isAccountLevel4xx(403)` 返回 true → 15s 冷却正确触发（`executor.go`）。
+- **`forwardUsageToCPAMP`**：失败路径 `statusCode=200` 映射为 403，CPAMP 不再看到误导性的 `status_code: 200`（`usage.go`）。
+- 验证：cgo-shim build+vet+test 全绿。
+
+## 0.1.60
+
+### Fix — 全部账号失败后调度器不再阻塞宿主跨平台失败切换（对齐 workbuddy 0.14.31）
+
+- **背景**：与 workbuddy 插件同装且两插件注册了重叠模型（如 `deepseek-v4-flash` / `glm-5.2`）时，会话首次选中 traework 账号；当**全部 traework 账号**失败（15s 失败冷却 / 积分耗尽）后，本插件调度器仍以 `Handled: true` 返回 pin/第一个候选（一个必死账号），宿主内置调度器的跨平台兜底被短路——请求把重试预算全部烧在 traework 死账号上后直接失败，workbuddy 的健康账号全程没机会接管。
+- **修复**（三处，与 workbuddy 对称）：
+  - `scheduler.go`：cooldown 过滤全滤光时不再"保留全列表回退 pin"，直接 `Handled: false` 延迟给宿主；preserve 过滤语义不变（preserved 账号是活账号，兜底路由保留）。
+  - `session_auth.go` `pickSessionAuth`：`len(usable)==0`（全部 exhausted/cooling）时返回 `""` 而非 pin/first；会话绑定保留，账号恢复后 sticky 命中自动回到原绑定。
+  - `active_auth.go` `pickActiveAuth`：无健康候选时返回 `""` 且**不改面板选中账号**（恢复后钉选自动生效）。
+- **效果**：traework 全灭 → 宿主内置调度器在全部平台可用候选（含 workbuddy）里轮询重试；若另一平台也无账号，则由宿主返回标准 cooldown/unavailable 错误（含恢复时间），语义干净。单插件部署行为等价（宿主本来也只能选这些账号）。
+- 测试：`TestPickSessionAuth_AllExhaustedDefers`（含恢复再绑定断言）、`TestSchedulerPick_AllCoolingDown_DefersForCrossProviderFailover`（候选混入 workbuddy 账号的回归用例）、`TestSchedulerPick_AllExhausted_DefersForCrossProviderFailover`（credits 模式）。
+- 验证：cgo-shim build+vet+test 全绿。
+
+### Fix — 终态错误改走宿主流错误通道（chunk.Err），请求内池耗尽可跨平台自动接管
+
+- **背景**（生产实证 2026-09-13 stream 1253/1298/1326，traework 全部账号失败）：异步流终态错误（`upstream account pool exhausted`、伪完成、上游 SSE error 等）原以 payload 数据帧（`{"error": ...}` SSE 事件）发到宿主流，宿主 conductor 把它当**正常流内容**——请求以 HTTP 200 "成功"告终，conductor 全程不知情：不轮换下一个凭据、不冷却记账、**不切换 workbuddy 账号**，客户端直接收到内嵌错误的流。
+- **修复**：`streamEmitError` / `emitTraeAsyncError` 改为经 `host.stream.emit` 信封的 `error` 字段发送（宿主 `rpcStreamEmitRequest.Error` → 执行器流 `chunk.Err`）。conductor 收到真正的错误 chunk 后：首包前失败 → 同请求内 `continue` 换下一个账号（可跨 provider）；流中失败 → 记账 + 下发错误。`traeAsyncStreamDeps` 新增 `EmitError` 注入点。
+- 测试：`stream_error_envelope_test.go`（信封字段断言 + payload 泄漏哨兵 + `EmitError` 注入断言）；`test/traework/async_stream_failover_test.go` 四用例与 `executor_open_failover_test.go` 400 直通用例迁移到错误通道断言，并新增"错误不得混入 payload 数据帧"反向哨兵。
+- 验证：cgo-shim build+vet+test 全绿（与调度器修复同树合并验证）。
+
+## 0.1.59
+
+### Fix — 模型优先级统一为「动态 > 配置 > 静态」并打通静态路径（对齐 workbuddy 0.14.28）
+
+- **背景**：`handleModelForAuth` 原为"动态成功即完全替换"，`handleModelStatic` 则**从不使用动态发现**（只返回配置 / `defaultTraeModels`），两路径语义不一致；且配置一旦存在就会遮蔽上游新增模型。
+- **优先级链**：新增 `resolveTraeModels(dynamic, configured, fallback)`：**动态发现有结果时完全忽略配置与静态默认**（上游 `config_name` 是唯一可精确调用的模型事实源）；动态不可用时用配置；配置为空才回退 `defaultTraeModels`。原 `loadedModels()` 下线。
+- **新增动态缓存**：`dynamicModelsCache` + `cachedTraeDynamicModels` / `storeTraeDynamicModels`，供没有账号凭据的 `model.static` 复用最近一次成功发现结果；`model.for_auth` 只用**本次拉取**结果，不读历史缓存——否则动态失败将永远命中上一次成功的值，配置兜底语义失效。
+- **`handleModelStatic` 接入动态发现**：消除静态路径与账号路径的行为不对称。
+- 测试：`models_dynamic_test.go` 新增优先级链 4 态用例 + 静态路径动态优先 / 无缓存回退配置 2 例；`config_models_test.go` 访问器改用优先级链并新增 `resetTraeDynamicCache` 隔离全局缓存。
+- 验证：cgo-shim build+vet+test 全绿。
+
+## 0.1.58
+
+### Feat — 耗尽自动停用 + 每 4 小时签到自动恢复（策略更新：耗尽停用保留，但必须能自愈）
+
+- **策略反转**（2026-09-08 用户指令）：耗尽→停用机制保留，但增加自动恢复——账号积分耗尽（remain<=0）自动写 `disabled:true` + **新标记 `exhausted_disable:true`**（独立顶层字段，不依赖 note 文本匹配）；每 4 小时签到循环刷新积分后自动 reconcile，**积分恢复>0 即清除标志对并重新启用**。手动停用（`manual_disable:true`）与宿主侧无标记停用永不自动覆盖。
+- **lifecycle.go 重写**：原 `reconcileAllAccounts` 只报告不写盘（且无调用方，实为死代码）。新增 `reconcileOneAccount`（force 时上游实查积分并刷缓存）双向决策：未停用+耗尽 → `persistExhaustedDisable`（disabled+exhausted_disable+note "耗尽停用 · 余X 已用Y"，同时释放面板钉选与会话粘绑定）；`exhausted_disable` 且非 `manual_disable` 且积分>0 → `persistExhaustedReenable`（清标志、note "恢复启用 · 签到积分到账"）。两个 persist 均先重读磁盘现状再写（并发手动 toggle 不被覆盖），走 `persistAuthDirect`（host.auth.save 丢未知顶层字段，exhausted_disable 会丢）。
+- **恢复/停用触发点全覆盖**：`runFleetCheckin`（4h 签到主循环）、`doFetchOne`（面板刷新 runner）、手动签到、`/credits` 单账号与全量查询——所有 `cacheCredits` 落点后接 `reconcileAfterCreditsRefresh`，停用与恢复都在同一 4h 周期内完成。
+- **persistDisabledToggle 加意图标记**：手动停用写 `manual_disable:true`，手动启用同时清除 `manual_disable` 与 `exhausted_disable`（用户显式操作优先于任何自动状态）；写通道从 host.auth.save 切换为 `persistAuthDirect`（同 keeper/counter/preserve 规则，防标记丢失）。
+- **legacy purge 防误伤**：`stripLegacyDisabledFlag` 对携带 `manual_disable` / `exhausted_disable` 的文件直接跳过（标记文件是现行机制的合法状态，不是 ≤0.1.54 遗留证据）；新增 `authDocFlags` 单解析三标记读取。
+- panel.html 停用筛选 title 同步（手动停用 / 耗尽自动停用可恢复 / refresh token 失效三类）；`lifecycle_auto` 配置描述同步。
+- 验证：`TestAuthDocFlags` + `TestStripLegacyDisabledFlag` 扩展用例（标记文件七态）；cgo-shim build/vet/test 全绿。
+
+## 0.1.57
+
+### Fix — 泄漏旧实例 22:00 重写停用标志事故：遗留 disabled 标志启动清扫 + refresh-token 失效指纹归类
+
+- **事故复盘**（2026-09-08 22:00，生产）：容器 09-06 启动后历经 0.1.55（03:00）/ 0.1.56（21:54）两次热重载，但 Go 插件 retire 后 goroutine 无法被杀死——**4 个 ≤0.1.54 旧实例的 keepaliveLoop（keepaliveHours={22}，每晚 22:00 触发）与 authFlagGuardLoop 仍在后台运行**。22:00:50 一个 pre-0.1.53 实例按旧版 markSessionDead 逻辑把 3 个 refresh token 已失效的账号写成 `disabled:true` + "Session expired" note，并注册 guard 循环每 5 分钟重放——0.1.55 的 MANUAL-TOGGLE-ONLY 修复只删了代码路径，清不掉已落盘的标志，更拦不住泄漏实例的再写入。
+- **新增 `purgeLegacyDisabledFlags`**（anomaly_purge.go，watchdog 启动时与 anomaly purge 同点执行一次）：指纹清扫遗留自动停用对——`disabled:true` 且 note 以 "Session expired" 开头（所有 ≤0.1.54 markSessionDead 的唯一指纹；现行代码写同款 note 时绝不携带 disabled）→ 重启为 `disabled:false`，note 保留（如实描述 refresh token 状态）。无 note / 其他 note 的 disabled 一律不碰（可能是合法手动停用，purge 不猜）。幂等、坏文件不盲写；`stripLegacyDisabledFlag` 纯函数七态单测覆盖（含生产指纹原样样本）。
+- **isRefreshDeadError 新增指纹**：HTTP 400 body 含 `refresh token is not matched to the client`（Trae 业务层明确拒绝，2026-09-08 生产观测）归类为 session-dead——此前被当作可重试 failed，每账号每天空转 50 次重试预算；归类后只写 re-login note（绝不写 disabled），重试预算停止消耗。
+- keepalive 文件头过期描述修正（"flagged disabled" → manual-toggle-only note-only）；session-dead 返回消息同步改写，不再误导排障。
+- 运维注记：插件热重载的 goroutine 泄漏是结构性约束——**发布后需重启 cli-proxy-api 容器**以收敛旧实例（本次已执行，22:34 重启 + 手工清除 3 个账号的遗留标志，备份在 `/usr/local/src/cli-proxy-api/auth-backup-20260908/`）。
+
+## 0.1.56
+
+### Fix — 面板 scopeLabel 未定义导致账号加载失败（0.1.55 回归）
+
+- 根因：0.1.55 清理 panel.html 异常筛选时，`renderSummary` 内 `const scopeLabel=` 三元链被误删前缀，残留一条语法合法但语义残缺的孤立表达式——`node --check` 无法拦截，运行时抛 `ReferenceError: scopeLabel is not defined`，面板整体报"加载账号失败，已保留上次数据"。
+- 修复：重建完整定义，覆盖全部 6 个筛选分支（all/available/preserve/exhausted/failed/disabled）+ fallback；括号由程序生成并断言平衡。
+- 验证升级：新增 vm + DOM stub 真实执行面板 JS 顶层（node --check 只查语法，抓不到未定义标识符）；traework/workbuddy/qoderwork 三面板顶层执行全过，scopeLabel 运行时 7 分支断言全过。
+
+## 0.1.55
+
+### Feat — 移除异常池机制：失败一律走固定 15s 冷却，停用入口固化 MANUAL-TOGGLE-ONLY POLICY
+
+- 背景：用户确认异常池容易误触发（连续失败即永久隔离，需手动解冻），决定彻底移除；账号故障统一交给固定 15s 失败冷却 + 换号兜底。
+- **删除** `anomaly.go` / `anomaly_config.go`：连败冻结（`freezeAccountForAnomaly`）、异常集合（`anomalySet`）、每日 00:00 自动复活（`anomalyRefreshLoop`）、`/unfreeze` 管理路由与 `anomaly_pool_threshold` / `anomaly_refresh_enabled` 配置全部下线。
+- `accountFailover.go`：`bumpFailoverState` 删除冻结判定，任何失败只推进冷却；连败计数保留（面板展示用），不再触发任何冻结。
+- `scheduler.go` / `active_auth.go` / `failover_retry.go` / `session_auth.go`：删除全部 anomaly 过滤层与谓词，路由过滤只剩 preserve + cooldown。
+- `usage_config.go`：删除 anomaly 两个配置键的解析与应用（Seen-pattern 块整体移除）。
+- **新增** `anomaly_purge.go`：watchdog 启动时一次性遍历物理 auth 文件剥离遗留 `anomaly:true` 死字段（`stripAnomalyKey` 纯函数 + 幂等清扫，坏文件不盲写）；配套 `anomaly_purge_test.go` 四态断言。
+- `panel.html`：删除异常徽标 / 解冻按钮 / 异常筛选 chip / 异常计数与汇总口径中的 anomaly 维度（JS node --check 全绿）。
+- 停用复扫：全插件 `disabled:true` 唯一写入口为 `persistDisabledToggle`（仅面板手动 toggle 可达），`authguard.go` 只重放手动标记；两处入口固化 **MANUAL-TOGGLE-ONLY POLICY** 注释（任何自动路径——请求失败 / 401/403 / token 失效 / 连败 / 耗尽 / session-dead——均不得写 disabled）。
+- 验证：cgo-shim build+vet+test 全绿。
+
+## 0.1.54
+
+### Feat — 自动签到与 token 保活调度从每日改为每 4 小时
+
+- `checkin.go`：`autoCheckinTimes` 从每日两班（09:00 / 21:00）改为每 4 小时六班（00:00 / 04:00 / 08:00 / 12:00 / 16:00 / 20:00，本地时间），签到频次提升 3 倍，降低断签与积分过期风险；文件头与调度器注释同步。
+- `keepalive.go`：`keepaliveHours` 从每日 22:00 单次改为与签到同节奏的每 4 小时（0/4/8/12/16/20），access-token 临近过期时提前续期，缩小离线会话失效窗口；`token_keepalive` / `checkin_auto` 面板 ConfigFields 描述同步。
+- 测试：`keepalive_test.go` 的 `TestShouldRunKeepaliveNow` 窗口用例对齐新首槽 00:00（23:59 否 / 00:00 是 / 00:30 是 / 01:00 否）。
+- 验证：cgo-shim build+vet+test 全绿。
+
+## 0.1.53
+
+### Fix — open 阶段 transport 超时（status=0）同请求换号，trae 会话一次失败不再直接失败
+
+生产实锤（2026-09-06 23:11，stream 4553，账号 1993858382824235 / DeepSeek-V4-Flash）：trae 会话连续请求中上游对单账号挂起 **60s 不回响应头**（`net/http: timeout awaiting response headers`，宿主桥 TTFB 超时，status=0），旧判定 `isAccountLevel4xx(0)=false` 视为「非账号级」直接 `emitTraeAsyncError` 终局——**池中健康候选（auth_hash=e99c8102 同期正常服务）未被尝试**，客户端一次失败即整请求失败、重试列为空。这是 0.1.51「HTTP 200 SSE 业务错误」之外的又一漏换号路径：open 阶段判定用 `isAccountLevel4xx`，而 pump 阶段（0.1.51 起）用 `isAccountFailure`（status=0/5xx → 换号），两阶段判据不一致。
+
+- **`executor.go`** 三处对齐：
+  - `runTraeAsyncStream` open error 分支：换号判定 `isAccountLevel4xx` → `isAccountFailure`——transport（status=0）/ 5xx / 429 / 账号级 4xx 同责换号；400 业务错仍直通（kill switch 契约不变）。换号路径无条件 `evictSessionBindingsForAuth` 防会话亲和钉死死号（对齐 pump 分支与 0.1.30 FIX-B 语义）。
+  - `runTraeSyncStream` callErr 分支：同款判定对齐；换号路径补核算入账与绑定驱逐（原换号路径两者皆缺）。
+  - 非流式 completion 路径 callErr 分支：同款判定对齐 + 换号前驱逐绑定。
+- **核算口径不变**：open 错误的故障核算由 `upstream.go`（`callLLM`/`callLLMStream` 的 `noteAccountFailure`）统一记账，executor 端不重复计数（transport/5xx 单计）；4xx 维持既有二次核算（快速隔离死号）。transport 状态 0 归硬通道（0.1.52 软硬拆分语义不变），连续抖动最多推进冷却计数，成功一次即 `resetAccountFailover` 清零。
+- **设计边界**：workbuddy / qoderwork 的 open 阶段 5xx/transport 直通是各自有注释的策略决策（v0.14.2 / v0.9.1：同请求换号不保证下一个上游不是 5xx，跨请求冷却处理），本次不动；traework 因生产实证单账号挂起 + 池中健康候选 + pump 阶段既有同语义，判定为内部不一致修复。
+- 测试：新增 `executor_open_failover_test.go`——`TestAsyncOpenTransportTimeoutRotatesAuth`（A 超时→B 健康输出，超时错误不透传客户端）、`TestSyncOpenTransportTimeoutRotatesAuth`（sync 同构）、`TestAsyncOpenBusiness400DoesNotRotate`（400 业务错单次尝试直通，烧预算回归保护）。cgo-shim build+vet+test 全绿。
+
+## 0.1.52
+
+### Fix — 瞬时过载类失败（429/soft rate limit/零字节断流）与硬失败拆分
+
+- 新增 `isTransientThrottle`（policy.go）：429 非 credit marker、soft rate limit 文案（含 Trae WAF 4011 码）、上游零字节断流文案（宿主 empty_stream 口径 / collect 层 invalid SSE 口径）归为瞬时过载；429 + credit marker 仍判账号耗尽（硬）。
+- `recordAccountFailure` 拆软/硬双通道（accountFailover.go）：瞬时过载只做固定 15s 冷却 + 换号（新增 `coolDownAccount`），**不推进连续失败计数、不冻结异常池**；硬失败（credit / 401/403/404/405 / 5xx / transport）维持原语义。
+- 背景：2026-09-06 生产实证，Trae 网关瞬时故障窗口内 4 个健康账号相继零字节断流（宿主判 empty_stream 并跨账号兜底成功），硬计数会把整池误冻结进异常池。traework collect 层零字节 EOF 已按错误收尾并经 `reconcileAfterExecutorError` 记账，软分类在记账层自动生效，泵收尾行为不变。
+- 测试：新增 `test/traework/account_failover_softfail_test.go`（软失败不推进计数、零字节文案软通道、429+credit 保持硬、硬失败回归、分类边界表驱动）；既有记账测试 429 fixture 改 403 以匹配硬语义。
+
+## 0.1.51
+
+### Fix — HTTP 200 承载的 SSE 业务错误（配额/限流）不再漏换号
+
+生产实锤（feed 记录「失败（HTTP 200）」，日志 `status=200 emitted=false err=upstream 200: Your requests have exceeded the quota.`）：上游把配额/限流类业务错误以 **HTTP 200 + SSE 错误帧**下发（OpenAI 惯例 `{"error":{"message":...}}`），HTTP 层成功、业务层失败；而异步流式路径 `runTraeAsyncStream` 只在 4xx 时换号，200 错误帧被当作普通失败直接透传——客户端看到「失败（HTTP 200）」且账号不轮换，同一耗尽账号被反复命中。
+
+- **`executor.go`**：`runTraeAsyncStream` 的 `result.Err` 分支补齐同请求换号——零泄漏（`emitted=false`，客户端未收到任何分片）且 `isAccountFailure(200, body)` 命中且预算允许时，`evictSessionBindingsForAuth` 防会话亲和钉死后 `pickNextAuth` 换号重试；已泄漏分片时透传错误（防输出重复/拼接错乱）。同步路径原有换号不受影响。
+- **`test/traework/async_stream_failover_test.go`**：新增 2 个测试——`TestRunTraeAsyncStreamRetriesSSEQuotaErrorOnSameRequest`（200+quota 错误 A→B 换号零泄漏，健康账号完整输出）与 `TestRunTraeAsyncStreamSSEErrorAfterEmitDoesNotRotate`（泄漏后不换号）。
+- 同构修复同步至 workbuddy-provider 0.14.22 / qoderwork-provider 0.9.10。
+
+## 0.1.50
+
+### Fix — keepalive 误杀：ExchangeToken 用错 host，404 被判「refresh token 死亡」批量停用账号
+
+生产实锤（2026-09-06 01:20，`[keepalive] daily run: refreshed=0 failed=0 session_dead=3 total=5`）：每日 22:00 保活任务把 3 个健康账号（2808303731/0424871282/36360053870）误标停用，非人工操作、不在异常/保号池。根因链：这批账号导入时凭证源缺 `expiredAt` → keepalive 按「宁可错杀」强制刷新 → ExchangeToken 走 `sa.Host`/`defaultChatAPIHost`（trae-api-cn.mchost.guru）→ **该 host 上 `/cloudide/api/v3/trae/oauth/ExchangeToken` 不存在（实测 TLB 404 页）** → `isRefreshDeadError` 把 404 也判 token 死 → `markSessionDead` 写 `disabled=true`。正确 host 是 `api.trae.cn`（假 token 实测返回 401 业务 JSON）。2 个带健康 `expiredAt` 的账号只是被 skipped 才幸免——同为定时炸弹。
+
+- **`keepalive.go`**：
+  - `keepaliveExchange` auth host **固定为 `defaultAPIHost`（api.trae.cn）**，不再复用 `sa.Host`（chat/account host，语义不同——本事故根源）；
+  - `isRefreshDeadError` 收紧为**只认 HTTP 401/403**（业务层拒绝）：404=网关路由缺失、400=参数校验、5xx/网络=瞬态，一律归 `failed` 不判死；
+  - 新增**重试调度**：daily run 后每 10 分钟对失败账号重试，每账号每日最多 50 次（22:00 daily run 重置），同账号刷新禁止并发（`refreshAuthGuarded` in-flight 互斥，用户指定节奏）；
+  - daily run 汇总行后逐账号打印 `Nickname: Status (Detail)` 进容器日志（此前只有计数行，误杀无法事后诊断）。
+- **`authguard.go`（新增）**：disabled 标记守护——生产同时实锤 core 的 15 分钟 auto-refresh 重建 auth 文件会**抹掉插件写入的 disabled/note**（「磁盘 enabled、面板停用」错位根源，且磁盘标记被抹后 keepalive 次日会再杀一遍）。手动停用与 session-dead 登记进守护注册表，每 5 分钟核对物理文件，发现标记丢失则 fold 写回（读最新→只改 disabled/note→写，保留宿主轮换的其他字段）；面板「启用」即解除守护。config 开关 `auth_flag_guard`（默认开启）。注册表在内存，插件重启后由下一次停用事件重建。
+- **已知限制**：JWT 型 refreshToken（新版 Trae 客户端，含 `.-_=` 字符）对正确 host 也返回 400 参数无效（10101），**ExchangeToken 无法为其续命**——access token 有效期内（约 6 天）账号正常服务，到期后需重新导入；重试调度会持续以 10 分钟间隔尝试（若上游日后兼容即自动恢复）。
+- 测试：`TestIsRefreshDeadError` 补 404/400→不判死断言；新增 `TestKeepaliveExchangeHostFixed`（seam `hostHTTPDoFn` 断言 host 固定 api.trae.cn）、`TestRefreshRetryBudget`（50 次预算耗尽→调度器不再选中；成功→清零）、`TestPerAuthRefreshMutex`（同账号 10 并发→峰值在飞数=1，9 个被拒非排队）、`TestReapplyDisabledFlag`（fold 保留宿主全部字段）。哨兵：404 判死复活→判定测试 FAIL；guard 返回原文→fold 测试 FAIL；均还原全绿。
+- 涉及文件：`keepalive.go` / `keepalive_test.go` / `authguard.go`（新）/ `authguard_test.go`（新）/ `management.go` / `config.go` / `main.go` / `VERSION` / `CHANGELOG.md`
+
+## 0.1.49
+
+### Fix — 失败冷却改为固定 15s，不再指数退避（1/3/10 分钟）
+
+账号失败后的冷却窗口从「按连续失败次数指数退避（1/3/10 分钟封顶）」改为**每次失败一律固定 15s**。连续失败计数 count 仍保留并继续驱动异常池冻结（anomaly 阈值默认连续 10 次不变），只是 count 不再拉长冷却时间——路由层更快放行账号参与再次调度，缓解上游限流窗口比分钟级冷却更短时的可用性损失。
+
+- 涉及文件：`accountFailover.go`（删 `failoverTiers` 档位数组，改常量 `failoverCooldown = 15 * time.Second`；`failoverCooldownFor` 固定返回）、`accountFailover_test.go`（断言同步为固定 15s）、`retry_config.go`/`stream.go` 注释同步。
+- 同构同步自 workbuddy-provider 0.14.21 / qoderwork-provider 0.9.9。
+
+## 0.1.48
+
+### Fix — 宿主「登录」按钮走通后账号不落盘：插件侧写盘兜底（宿主 savePluginLoginRecords 未生效）
+
+0.1.45-0.1.47 生产实锤（2026-09-05 23:43，state=trw-b7a3…）：宿主原生「登录」走完桥接页，页面「登录成功 / 账号已导入 用户53849661984」，但管理页「认证文件管理」与 TraeWork 面板**都没有该账号**。根因：0.1.45 把宿主 OAuth 流程改为「插件只返回 AuthData 给宿主、由宿主 `savePluginLoginRecords` 落盘」，但**本服务器 CLIProxyAPI 的 `savePluginLoginRecords` 并不真正写盘**——关键反证：qoderwork 走完全相同的契约，本服务器零 `qoderwork-*.json` 文件，证实是宿主侧实现问题而非插件契约。日志无 CREATE 事件、无 save/error 痕迹，宿主确认成功但未触盘。
+
+- **`browserlogin.go`**：`finishBrowserLogin` 的 `hostPersists=true` 分支增加**与面板流完全一致的 dedup-by-uid + 写盘**——`hostAuthList`/`hostAuthGetBundle` 按 `UserID` 查重 → `buildAuthFileJSON`（note 用「imported via host OAuth login」标识走的是宿主登录流）→ `hostAuthSaveJSON(authFileNameFor(a))` 落盘 `traework-<uid>.json`；`AuthData` 仍随 `outcome.HostAuth` 回传 PollLogin，宿主版本未来修好后可无缝接管（dedup 保证单 uid 单文件，不双写）
+  - 新增 seam `hostAuthSaveJSONFn = hostAuthSaveJSON`（镜像 `browserLoginExchangeFn` 模式）供 cgo-shim 沙箱测试 stub 落盘成功
+  - `toAuthDataOpts`/`buildAuthFileJSON`/`authFileNameFor`/`hostAuthList`/`hostAuthGetBundle` 等依赖复用现有，无新增
+- 测试：新增 `TestHostLoginBridgeWritesAuthFile`（**回归测试**：覆盖 save seam 捕获文件名+payload → 断言 hostPersists 流确实调用 `hostAuthSaveJSON`、文件名 `traework-438080225149472.json`、payload 可解析）；`hostLoginTestEnv` 默认 stub save 成功以保 happy-path 契约测试通过；哨兵：注释掉 save 调用 → 回归测试 FAIL（复现生产症状）→ 还原全绿
+- 涉及文件：`browserlogin.go` / `login_test.go` / `VERSION` / `main.go` / `CHANGELOG.md`
+
+## 0.1.47
+
+### Fix — 账号面板导出按钮失效（`/export` 路由未注册）+ UX 简化导入流程
+
+- **导出 bug 根因**：`/export` 在 `handleManagement` 的 switch-case 有 handler、`mutatingManagementPath` 有声明，但**唯独漏了 `managementRegistration()` 的 Routes 注册表**——宿主不知道该路由存在，GET `/export` 永远 404，面板「导出备份」点击无下载。
+- **导入流程简化**：删除账号面板底部「Trae SOLO 凭据目录…」提示文字、`复制路径`/`选择目录`按钮、`fileInput`/`dirInput` 隐藏 input，以及整套旧导入 JS（`copyStorageDir`/`fallbackCopy`/`pickFile`/`pickDir`/`findStorageJson`/`doImport`/`idbGet`/`idbPut`/`IDB_NAME`/`TRAE_STORAGE_PATH`/`showDirectoryPicker`）与拖拽上传 handler。
+- **导入改为 workbuddy 同款模态框**：新增「导入凭证」按钮 + 导入模态框（粘贴 JSON textarea + 多选 `.json` 文件 + 批量展开 + 导入结果展示），支持 `storage.json` 整文件（提取 `iCubeAuthInfo://icube.cloudide`）、单条凭据、导出备份文件三种形态；适配后端 `{ok,label,message}` 契约。
+- **panel.go 清理**：`servePanel` 直接返回嵌入 HTML，删除 `bytes`/`json` import、`traeStoragePath` 常量与 `__STORAGE_DIR_*` 双占位替换。
+- 涉及文件：`management.go` / `panel.go` / `panel.html` / `VERSION` / `main.go` / `CHANGELOG.md`
+
+## 0.1.46
+
+### Fix — 桥接页 JS 只提取 code 丢失 userInfo，GetUserInfo 401 回落在宿主登录流失效（回归 0.1.44 修复）
+
+0.1.45 生产实测（2026-09-05 22:59，state=trw-94d9…）：宿主原生「登录」走完桥接页粘贴提交后报「获取用户信息失败：HTTP 401 "The user is not logged in"」——与 0.1.44 已修复的 panel 流症状相同。生产日志实锤根因：桥接页重载 URL 只有 `?state=&code=`，**没有 userInfo**。0.1.45 桥接页 JS 的 `extractCode` 只解析 `code`/`authCodeInfo` 的 AuthCode，把回调 URL 里的 `userInfo` 参数丢了 → `settleBrowserLogin` 收到空 `bounceUserInfo` → `parseBounceUserInfo("")` 返回空 → 401 回落分支不进 → 直接报错。同一时段 panel 流（23:00:15 `account imported`）正常，证明回落代码本身无恙，纯参数断链。
+
+**修复方式（架构级，消除整类漂移）**：粘贴 URL 不再由客户端 JS 解析，**整段透传回桥接页服务端解析**——JS 只做 `?url=<encodeURIComponent(整段)>` 重载；服务端 `handleBrowserLoginBridge` 镜像 panel submit 路径（`url.Parse` → `extractAuthCode` + `error`/`error_description`/`userInfo` 提取），单一事实源，Go 测试可直接覆盖（0.1.45 的洞正是 JS 解析逻辑不在测试面）。
+
+- **`browserlogin.go`**：
+  - `handleBrowserLoginBridge` 新增 `url` 参数服务端解析（`://` 缺失自动补 `http://localhost/?` 前缀，与 submit 路径同规）；`?code=`/`?userInfo=` 直传参数保留兼容（旧标签页缓存 JS 仍可用）
+  - 粘贴到达但解析不出授权码 → 渲染明确错误页（不再静默重显引导页，避免"按钮没反应"错觉）
+  - 桥接页 JS 删除客户端 `extractCode` 解析器，改为整段 URL 透传
+- 测试：新增 `TestHostLoginBridgeURLParamUserInfoFallback`（**回归测试**：真实回调形状 url 参数 + GetUserInfo 401 → userInfo 回落 → 登录成功 + PollLogin success 携带 AuthData 空ID）、`TestHostLoginBridgeURLParamNoCodeErrors`（粘贴无码 → 错误页）；改写 `TestHostLoginGuidePageSubmitsWholeURL`（断言 `&url='+encodeURIComponent(` 提交形状 + 无 extractCode 残留）
+- 哨兵：禁用 url→userInfo 传播 → 回归测试精确 FAIL（复现生产症状）→ 还原全绿
+- 涉及文件：`browserlogin.go` / `login_test.go` / `VERSION` / `main.go` / `CHANGELOG.md`
+
+## 0.1.45
+
+### Feat — 宿主管理界面原生「登录」按钮接入浏览器授权登录（桥接页闭环）
+
+宿主（CLIProxyAPI v7.2.129）OAuth 框架对支持 `supports_oauth` 的插件渲染原生「登录」卡片：`GET /v0/management/traework-provider-auth-url` → `auth.login.start`，UI 轮询 `get-auth-status` → `auth.login.poll`。0.1.44 前该入口是 data: 引导页假实现（恒报错误）；本版把它接到与面板导入同一套浏览器授权流程。
+
+**核心结论（宿主源码 + 线上 management.html 取证）**：Trae 回调是非标准形状（`authCodeInfo` JSON 参数、永不回传 state、落在死 loopback `/authorize`），宿主卡片自带粘贴框经 `$M` 直通后由 `handleOAuthCallback` 提取 code/state——两者皆空必 400，**宿主通用粘贴通道对 Trae 形状是死路**，闭环必须由插件自己的桥接页完成。因此 StartLogin 返回**桥接页相对 URL**（`/v0/resource/plugins/<id>/browser-login/bridge?state=...`，宿主 UI 从管理域 origin 打开，本地/远程部署都正确解析），而非 Trae 授权页 URL——否则用户登录完落在死 loopback 页无路可走。
+
+- **`login.go`**（整体重写）：
+  - `mintBrowserLoginSession`：从面板 start 流程抽出（PKCE S256 + 一次性 EC P-256 设备密钥 + loopback `/authorize` 回调白名单形状 + `trw-` 前缀 state）
+  - `handleStartLogin`：真实铸造会话，返回桥接页 URL + state + `Metadata{logo, bridge_url, prompt}`
+  - `handlePollLogin` 状态机：pending（未 settle）→ success（返回 `AuthData`，**由宿主持久化凭据**）/ error（缺会话/过期/结果缺凭据）；success 为 read-once 语义
+  - `browserLoginBridgeURL`：桥接页相对路径构造
+- **`browserlogin.go`**：
+  - `browserLoginSession` 新增 `AuthURL`；`browserLoginOutcome` 新增 `HostAuth *pluginapi.AuthData`（`json:"-"` 不进面板结果）
+  - `finishBrowserLogin`/`settleBrowserLogin` 增加 `hostPersists` 参数：host 流程构造 `AuthData`（`ID` 留空——宿主按文件路径派生，防重复账号铁律）交宿主落盘，插件不双写；面板流程保持原 dedup+`hostAuthSaveJSON` 行为
+  - 新增 `handleBrowserLoginBridge`（资源路由 GET 免 key）：引导模式（登录链接 + 粘贴框，前端 JS 解析 `?code=` 或 `authCodeInfo` JSON 后重载带参 URL）→ settle（hostPersists=true）→ 结果页；防重放（已 settle 会话重放结果）
+- **`management.go`**：`Resources` 注册 `/browser-login/bridge`，`handleManagement` 资源分发接桥接页
+- 兑换链完整复用面板流程：exchange（api.trae.cn）→ GetUserInfo → 回调 `userInfo` 回落 → 导入
+- 测试：新增 `login_test.go` 8 用例（start 契约含桥接页 URL/会话 AuthURL、poll pending/未知/过期、桥接页 settle+poll success、错误结果传播、guards、面板流程不变性）
+- 涉及文件：`login.go` / `browserlogin.go` / `management.go` / `login_test.go` / `VERSION` / `main.go` / `CHANGELOG.md`
+
+## 0.1.44
+
+### Fix — 浏览器授权登录 GetUserInfo 401 时回落回调 URL 的 userInfo（SOLO 客户端同款策略）
+
+0.1.43 生产实测：exchange 已成功换到 token（不再报 HTML 解析错误），但下一步 GetUserInfo 报 `HTTP 401 {"Code":"20310","Message":"The user is not logged in"}`——该路由基于 cookie 会话鉴权，新换的 bearer token 不被认。SOLO 客户端 main.js 取证：`o = r ?? await this.getUserInfo(...)`——**客户端优先用回调 URL 里的 `userInfo` JSON 参数（含 UserID/ScreenName 完整档案），根本不依赖 GetUserInfo**。而 TRAE 授权页的回调 URL 恰好携带 `userInfo={"UserID":"...","ScreenName":"..."}`。
+
+- **`browserlogin.go`**：
+  - 新增 `parseBounceUserInfo`：从回调 URL `userInfo` JSON 参数提取 UserID/ScreenName（大小写变体容错）
+  - `finishBrowserLogin` 签名加 `bounceUserInfo`：GetUserInfo 失败时回落到回调 userInfo 提供身份（仍先尝试 GetUserInfo 保序）；两者都无才报错
+  - callback/submit 双通道把 `q.Get("userInfo")` 传入 settle 链
+- 测试：新增 `TestBrowserLoginSubmitUserInfoFallback`（exchange 成功 + GetUserInfo 401 + 回调带 userInfo → 流程必须越过获取用户信息阶段进入导入；GetUserInfo 必须先被尝试一次）
+- 涉及文件：`browserlogin.go` / `browserlogin_test.go` / `VERSION` / `main.go` / `CHANGELOG.md`
+
+## 0.1.43
+
+### Fix — 浏览器授权登录 ExchangeToken 打错域（www.trae.cn 返回 SPA HTML）
+
+0.1.42 生产实测：AuthCode 解析链已通（不再报缺 state），但 exchange 报「响应解析失败: invalid character '<'」——`www.trae.cn` 是官网/SPA 域，对 `/trae/api/v3/oauth/ExchangeToken` 返回 HTML 首页（实测 200 text/html 37KB），根本不是 API 域。用户回调 URL 里的 `host=https://api.trae.com.cn` 参数即 API host 提示；实测 `api.trae.cn` 与 `api.trae.com.cn` 双域都返回真 JSON API（400/401 凭据错误响应）。选 `api.trae.cn`：与生产凭据 `"host":"https://api.trae.cn"`、签到默认域 `defaultAPIHost` 同域。
+
+- **`browserlogin.go`**：
+  - 新增常量 `browserLoginAuthHost = "https://api.trae.cn"`（API 域）；`browserLoginHost`（www.trae.cn）只用于授权页 URL `auth_url`
+  - `browserLoginExchange` / `browserLoginUserInfo` 两处请求切到 `browserLoginAuthHost`
+  - `browserLoginUserInfo` 响应解析增强：补 `ResponseMetadata.Error` 上游错误分支 + `result`（camelCase）envelope 回落，与 exchange 解析同级容错
+- 涉及文件：`browserlogin.go` / `VERSION` / `main.go` / `CHANGELOG.md`
+
+## 0.1.42
+
+### Fix — 浏览器授权登录适配 TRAE 授权页真实回调形状（authCodeInfo，非标准 OAuth）
+
+生产实测（2026-09-05 00:06，用户真实浏览器登录成功后粘贴回调地址）实锤：TRAE 授权页登录成功后的跳转**不是标准 OAuth 302**——不回传 `code`/`state` query 参数，而是前端 JS 把授权码放进 `authCodeInfo` JSON 参数拼向 redirect_uri。0.1.40 的 submit 只按 `?code=&state=` 形状解析，真实回调必报「回调地址缺少 state 参数」。真实回调形状：
+
+```
+http://127.0.0.1:<port>/authorize?isRedirect=true&scope=solo
+  &authCodeInfo={"AuthCode":"...","ExpireAt":<ms>,"ExpireDuration":600000}
+  &loginTraceID=<uuid>&host=https://api.trae.com.cn&userRegion=cn&userInfo={...UserID...}
+```
+
+- **`browserlogin.go`**：
+  - 新增 `extractAuthCode`：标准 `?code=` 优先，回落解 `authCodeInfo`（含 `AuthCodeInfo` 大小写变体）JSON 的 `AuthCode` 字段；`ExpireAt`/`ExpireDuration` 不做客户端预检（exchange 失败自然报错）
+  - 新增 `newestPendingSession`：TRAE 页面永不回传 state，submit/callback 的会话定位链 = **body.state（面板记住）→ URL state → 最新未处理 pending 会话兜底**（单操作者面板，最新 start 即用户刚登录的会话；已处理/过期会话跳过）
+  - `/browser-login/start` 响应新增 `state` 字段（面板提交时带回，主定位键）
+  - callback（resource 自动回跳通道）与 submit 双通道同构适配；错误消息更新（缺 code 提示语、无法定位会话提示语）
+- **`panel.html`**：`browserLogin()` 记住 start 返回的 `state`（模块级 `browserLoginState`），提交 body 带 `{url, state}`；粘贴卡片注释更新
+- 测试：新增 `TestBrowserLoginSubmitTraeAuthCodeInfoShape`（真实回调形状 + body.state/最新兜底/双 pending 取新/无会话报错 4 断言）、`TestBrowserLoginStartReturnsState`、`TestBrowserLoginCallbackTraeShapeFallback`；改写 submit 编排测试缺参用例（无 state 现走兜底，断言缺授权码报错 + 会话存活）
+- 附带：并行会话 0.1.41（`767029e`）只含前端带 state 改动（panel.html 被并行 commit 带走），后端解析在本版闭环——0.1.41 若先发布，粘贴提交仍报「缺少 state」，本版为完整修复
+- 涉及文件：`browserlogin.go` / `browserlogin_test.go`（`panel.html` 的 browserLogin 段已随 0.1.41 入库）
+
+## 0.1.41
+
+### Fix — 删除确认按钮 busy 状态泄漏导致无法连续删除账号
+
+与 workbuddy-provider 0.14.20 同构修复（逐函数适配）：删除账号成功后确认弹窗按钮停留在「处理中…」禁用态且从未复位，弹窗 DOM 静态复用导致下次打开不可点击。
+
+- 涉及文件：`panel.html`（`confirmDeleteAuth()` 成功分支补 `busy(btn,false)`；`openDeleteModal()` 打开时防御性复位按钮）。
+
+## 0.1.40
+
+### Fix — 浏览器授权登录回调形状适配 TRAE 授权页白名单（面板引导式粘贴闭环）
+
+浏览器实测（2026-09-04，headless + 用户真实浏览器双通道一致）证实 TRAE 授权页对 `auth_callback_url` 的白名单判据是**回环 host AND 路径恰好 `/authorize`**（五组对照：公网域名 https/http 与路径形状均被拒，回环 + 任意端口 + `/authorize` 放行）。0.1.38/0.1.39 把 callback 挂在 `/v0/resource/plugins/<id>/browser-login/callback` 的形状无论本机还是远程宿主都过不了白名单，宿主主端口又没有 `/authorize` 路由（插件无法注册宿主级路径）——唯一零依赖出路是「登录后浏览器落在打不开的回环地址（地址栏保留 `?code=&state=`），用户复制地址栏完整网址回面板粘贴提交」，与宿主本体 `POST /v0/management/oauth/callback`（`redirect_url` 整段粘贴）的手动通道同构。
+
+- **`browserlogin.go`**：
+  - start 的 `auth_callback_url` 改拼 `http://127.0.0.1:<面板 origin 端口>/authorize`（无显式端口回退 8317；新 helper `browserLoginLocalCallback`）——恰好满足白名单双条件，无需任何监听进程；`redirect_origin` 仍校验裸 origin
+  - 新增 `POST /browser-login/submit`（management key 鉴权，`mutatingManagementPath` 覆盖）：body `{url}` 接受整段回调地址或裸 query（`code=...&state=...`），解析 code/state/error 后复用既有 state 会话链路（换 token → GetUserInfo → UserID 去重入库 → 结果写回 state 键读后即焚）；授权服务器 `error` 参数短路不触 exchange；重复提交同一 URL 拒绝（code 单次有效，结果只保留一次）
+  - callback 与 submit 共享 `settleBrowserLogin`（消费会话 → exchange → 存回 outcome）；`error`/`error_description` query 参数支持；`state` 日志前缀加长度 guard（粘贴路径 state 长度不可信）
+  - resource callback 自动回跳路由保留（本地转发器场景仍可自动闭环）
+  - 新增测试 seam：`browserLoginExchangeFn`/`browserLoginUserInfoFn`（宿主 HTTP 桥上游注入）
+- **`panel.html`**：打开授权页后动态显示粘贴引导卡片（三步说明 + 输入框 + 提交按钮，主题变量自适应）；提交走 `/browser-login/submit` 成功后刷新账号列表；按钮 tooltip 与提示文案同步改为粘贴流程；`?auth_cb=` 自动回跳轮询通道保留
+- 测试更新 3 项：start 断言改为回环 + `/authorize` 形状（含无端口 origin 回退 8317）；注册表新增 submit 路由 + mutating 覆盖断言；submit 编排链 6 断言（缺 body/缺 state/未知会话/error 短路不触 exchange/exchange 失败存回/重复提交拒绝）。哨兵验证：临时破坏 callback 形状 → 测试 FAIL → 还原全绿，证明断言真实编译执行
+- 验证：cgo-shim build/vet/test 全绿（1.288s）；panel.html 双 script 块 node --check OK；gofmt 干净；git diff --check 干净
+
+## 0.1.39
+
+### Fix — 浏览器授权登录三个生产级缺陷（0.1.38 端到端验证发现）
+
+- **callback 改挂免鉴权 resource 前缀**：0.1.38 把 `GET /browser-login/callback` 注册在 management 前缀下，宿主（CLIProxyAPI v7.2.129 `pluginManagementNoRoute`）对 management 全路由（含 GET）强制 management key 中间件，TRAE 登录页跳回的普通浏览器 GET 无法携带 key，回调在生产必 401。修复：callback 移入 `managementRegistration().Resources`（`/v0/resource/plugins/traework-provider/browser-login/callback`，宿主对该前缀不走鉴权中间件；无 Menu 标签不进管理 UI 菜单），`handleManagement` 的 resPrefix 分支加子路径分发，management 路由表删除该条目
+- **授权 URL 补 OAuth `state` 参数**：start 生成的授权 URL 此前未携带 `state`，授权服务器无法按 RFC 6749 原样回传，callback 的 state 查会话必然落空。修复：`q.Set("state", state)`，回传值与 minted 会话键一致
+- **面板 `auth_url` 还原 HTML 实体**：宿主 `ServeManagementHTTP` 对 management JSON 响应体强制 `htmlsanitize`（递归 `html.EscapeString`），`&` 全部变成 `&amp;`，浏览器按字面打开会把 `amp;xxx` 当独立参数，授权页参数解析必挂。修复：面板 `browserLogin()` 打开前 `replaceAll("&amp;","&")`（resource 路由响应不转义，callback 回跳页不受影响）
+- 测试新增 2 项契约：start 指向 resource 回调 + 携带 state + S256；注册表 callback 仅存在于 Resources 且无 Menu
+- 验证：cgo-shim build/vet/test 全绿
+
+## 0.1.38
+
+### Feat — 面板「浏览器授权登录」：免 IDE 完整 OAuth 导入账号
+
+traework 此前仅支持从 storage.json 粘贴/选文件导入凭据（0.1.38 之前 login.go 判定"Trae 无浏览器 OAuth 端点"）。2026-09-04 逆向 TRAE SOLO CN 0.1.62 客户端确认其登录走标准浏览器授权码 + PKCE(S256) 流程，本版在插件侧完整复刻该流程：面板一键发起，浏览器登录 TRAE 后 code 自动回到插件服务器换 token 入库，全程无需安装 IDE。
+
+- `browserlogin.go`（新增）：
+  - `POST /browser-login/start`：服务器生成 RFC 7636 PKCE 对（64B verifier → S256 challenge）、一次性 EC P-256 设备密钥（SPKI PEM，对应客户端 DevicePublicKey）、随机设备指纹（machine_id 64hex / device_id 16 位数字），返回 `www.trae.cn/authorization` 授权 URL（参数形状照抄 SOLO 客户端：auth_from=solo、client_id=en1oxy7wnw8j9n、hide_saas_login=true 等）；body `{redirect_origin}` 仅接受裸 origin（开放跳转防护）
+  - `GET /browser-login/callback`：TRAE 登录页导航回调（免 Bearer——一次性 state 即凭证），服务端 `POST /trae/api/v3/oauth/ExchangeToken` 换 token（body `{ClientID, AuthCode, CodeVerifier, DeviceInfo, IDEVersion}`，响应 Result 双大小写容错）→ `POST /cloudide/api/v3/trae/GetUserInfo` 取 userId/昵称 → UserID 去重后入库（authFileNameFor 命名，Host 留空走插件默认链路）；凭据只落 auth 文件，回跳 URL 仅带 `?auth_cb=<state>`
+  - `POST /browser-login/result`：面板回跳后读一次性结果快照（读后即焚、不含凭据）；过早轮询返回 pending 且不消费会话；会话 TTL 10 分钟
+- `management.go`：注册 3 条路由；mutatingManagementPath 补 start/result（面板 Bearer 鉴权）
+- `panel.html`：工具栏新增「🔑 浏览器授权登录」按钮（弹窗拦截提示）；`?auth_cb=` 回跳检测（清参数、等 management key 就绪后取结果、成功后刷新账号列表）
+- `browserlogin_test.go`（新增）：PKCE RFC 7636 形状、origin 校验（8 非法样本）、设备指纹形状、结果会话读后即焚契约、回跳页三重跳转机制
+- 验证：cgo-shim build/vet/test 全绿；panel 内联 JS node 逐块语法通过
+- 已知边界：真机端到端待生产验证（解析层已做 PascalCase/camelCase 双容错）；客户端版本常量（2.3.79943 / 0.1.62）上游收紧版本校验时需同步更新
+
+## 0.1.37
+
+### Feat — 解析上游 event:token_usage 真实用量，dashboard Token 列不再依赖估算
+
+traework 此前从不解析上游 token 用量，usage feed 全靠 content 字符估算（InputTokens/ReasoningTokens 恒 0，OutputTokens=chars/4），导致 dashboard 的 trae 模型行输入/输出/思考/总 Token 无真实数据（2026-09-03 截图 qwen3.8-max 行）。2026-09-04 直连取证确认 llm_utils_chat 在 done 前发送 `event:token_usage`，data 为 OpenAI 风格 usage JSON 且 reasoning_tokens 位于顶层。本版三条路径（collect / aggregate / pump）统一接入真实用量，缺失时回退估算，行为与 0.1.36 一致。
+
+- `stream.go`：
+  - 新增 `traeUsageCollector`（feed/detail）与 `usageDetailFromTraeMap`：解析 prompt/completion/reasoning/total/cache 计数，数值类型容错（float64/int64/json.Number）；reasoning 顶层缺失时回退 `completion_tokens_details` 子对象（CodeBuddy 形态）；data 带 usage 包装键时自动解包
+  - `collectTraeStream` / `aggregateTraeCompletion` 增加 detail 返回值（5 值 / 3 值）；`traeStreamAttemptResult` 新增 Usage 字段；collect/aggregate/pump 三处 scanSSE 回调新增 `case "token_usage"` 分支
+  - 新增兜底 helper `usageDetailForAttempt`（流式）/ `usageDetailForCompletion`（非流式）：真实 total>0 原样发布，缺失回退 `estimateUsageFromChunks` / `estimateUsageFromCompletion`
+- `executor.go`：`handleExecExecute`（非流式）、`runTraeSyncStream`（同步流，pseudo/成功分支）、`runTraeAsyncStream`（异步协调 5 处）全部改发 usageDetailFor*；失败路径维持空 Detail 语义不变
+- 测试：9 处 collect/aggregate 调用点适配 5/3 返回值；新增 `token_usage_test.go` 8 用例（取证 JSON 顶层/嵌套解析、别名键、usage 包装解包、collect/aggregate 带出、无事件空 Detail、两 helper 兜底语义）
+- 验证：cgo-shim build/vet/test 全绿；gofmt 干净（本轮改动文件）
+
+## 0.1.36
+
+### Fix — 纠正 0.1.35 删除方向：恢复「用量汇总」，改删「子系统状态」
+
+0.1.35 误删了面板顶部「用量汇总 · 全部账号」5 卡片与消耗进度条（截图红框指向理解偏差）。本版纠正：**恢复用量汇总区块，删除下方「子系统状态」区块**（保号池 watchdog / keepalive / lifecycle / 异常池 4 卡 + 上次保号刷新行）。账号卡内各自的积分进度条保留。
+
+- `panel.html`：恢复 `renderSummary()` 完整用量汇总渲染（含 `accountsForFilter()` / `creditOf()` 辅助函数、`.summary .pb` CSS）；删除 `renderSubsystem()` 函数与其调用、`.summary-item .d` 死 CSS；同步注释
+- 基线核对：与 0.1.34 diff 仅剩「子系统状态」相关删除，用量汇总逻辑与 0.1.34 完全一致
+- 验证：node --check 双 script 块 PASS、cgo-shim build/vet/test 全绿
+
+## 0.1.35
+
+> ⚠️ 本版删除方向错误（误删「用量汇总」，应删「子系统状态」），已被 0.1.36 纠正，请勿基于本版面板行为判断。
+
+### Fix — 面板移除「用量汇总」区块（方向错误，已回退）
+
+按用户要求删除面板顶部「用量汇总 · 全部账号」5 卡片与消耗进度条（剩余可用/剩余不可用/已用/额度池/消耗占比）。账号卡内各自的积分进度条保留；「子系统状态」（保号池/keepalive/生命周期/异常池）保留。
+
+- `panel.html`：`renderSummary()` 只渲染子系统状态；删除 `accountsForFilter()` / `creditOf()` 专属辅助函数；删除死 CSS `.summary .pb` 与过时注释
+- 验证：node --check 双 script 块 PASS
+
+## 0.1.34
+
+### Feat — 面板功能对齐 workbuddy（B 组 9 项）+ 修复 3 处前后端契约断裂
+
+traework 面板是 0.1.16 从 workbuddy 一次性裁剪的快照，0.14.10~0.14.18 期间 workbuddy 面板的多轮迭代未同步，且存在 3 处复制前端时未同步后端 handler 形态的契约 bug（差异全量清单见知识库《traework面板与workbuddy面板差异清单》）。
+
+**契约修复（前端功能的生效前置）**：
+
+1. `/refresh/status` 去掉 `{"refresh": ...}` 包装层，平铺返回 `globalRefresh.Snapshot()`（management.go）——前端按平铺读 `running/total/done/failed/per_account`，包装导致整个异步刷新轮询链第一次 tick 即静默停止：进度文本、卡片三态、逐卡局部刷新从未运行过。
+2. `pollRefreshStatus` 不再丢弃 `/credits` 返回值：新增 `fetchAndPatchCredits`（合并 credits/exhausted 进本地态）+ `updateOneCard`（排序激活时全量重排，否则原地替换卡片）——后台刷新 done 后卡片积分立即更新，不再等整页 load()。
+3. `window.__traeThemeSync` 补上启动调用——此前只定义未调用，嵌入 CPA 主面板切换暗色主题时面板不跟随（首屏 sync() 在 IIFE 内已跑，故仅后续变化失效）。
+
+**面板功能对齐（panel.html 重写核心区块）**：
+
+1. 账号卡积分改进度条（`.pb` 系列，与 workbuddy 同构）：可用/已用/占比/额度池/包数/快照时间，>60% 黄 >85% 红；成功/失败/连败/冷却段并入进度条首行。
+2. 汇总卡改为真"用量汇总"：剩余(可用)/剩余(不可用)/已用/额度池/消耗占比 5 卡 + 消耗进度条，随筛选 chip 联动（`accountsForFilter`）；保号池/keepalive/lifecycle/异常池子系统卡下移为"子系统状态"行（仅全部视图），消除"用量汇总"名下渲染子系统状态的错位。
+3. 签到状态化：后端新增 `checkinDoneToday` 内存记录（auth_index→当日日期，签到成功即写入），`/accounts` 返回 per-account `checkin_today`；前端"已签到"禁用态 + `markCheckinDone` 即时置灰（覆盖 busy 恢复快照防闪回）+ 乐观写本地态。
+4. 签到结果细分：`checkinResult` 增加 `Already`；批量 `/checkin` 返回 `summary{success,already,fail,eligible}`（契约同 workbuddy）；results 补 `already/auth_index/nickname` 字段；`checkinResultToast` 区分新签（+积分）/今日已签/失败。
+5. 排序三态切换：工具栏"积分 ↕/↑/↓"，激活时按 `credits.total_remain` 排序（未知 = -1 沉到"最少"端），积分变化触发全量重排；关闭时保留原停用>异常>保号>耗尽沉底默认序。
+6. 搜索扩为 nickname/label/name/uid 四字段并联动汇总卡；`traeAccountView` 补 `label/name` 字段。
+7. 凭据导出：`GET /export`（`{version, exported_at, plugin, count, accounts:[{name, auth_index, uid, nickname, credential}]}`）+ 前端一键下载 `traework-credentials-YYYY-MM-DD.json`；`/export` 列入 `mutatingManagementPath`（含凭据原文，GET 也强制 management key——比 workbuddy 现状更严格）。
+8. 冷却倒计时：`cool_until` 从 RFC3339 字符串改为 Unix 秒（对齐 workbuddy 字段名与语义），前端 1s ticker 原地刷新"冷却 Ns"。
+9. `api()` 健壮性：无 key 前置拦截、`authFailUntil` 请求前熔断、403 IP-banned 解析上游等待窗口（"Try again in Xm Ys"正则）全局退避（静默请求同样退避）、空/非 JSON/解析失败返回结构化 `{error}`（不 throw SyntaxError）；toast 上限 5 条 + err 6s。
+
+**后端配套**：`traeCredits` 扩展 `total_used/total_size/pack_count`（同一 entitlement 响应的 `quota.credits_limit`/`usage.credits_amount` 解析，旧缓存零值向后兼容）；`accountCredits` 四元组查询替代 `accountPoints`+手拼快照（缓存写入点 4 处升级）；`/credits?auth_index=` 返回补 `credits/exhausted/nickname`，新增 `track=1` 入队后台刷新（`EnqueueOne`，refresh_runner 注释预留的契约补齐）。
+
+## 0.1.33
+
+### Feat — usage feed 补齐会话与首字延迟：dashboard「会话」「首字延迟」列支持 traework 流量
+
+token-usage-tracker dashboard 上 traework 请求的「会话」「首字延迟」两列恒为「—」：traework 的 `recordUsageFeed` 把 `session_key` / `ttft_ns` 硬编码为零值（0.1.15 适配 feed 时的遗留），而 workbuddy 侧早已上报真实值。消费端 token-usage-tracker 的 feed 解析与 dashboard 列无需任何改动（字段一直在 schema 里，只是 traework 恒写空值）。
+
+对齐 workbuddy 的 12 参数 `publishUsage` 链路（`traework/usage.go` + `usage_feed.go` + `executor.go` + `stream.go`）：
+
+1. **会话列**：执行器入口（`handleExecExecute` / `handleExecStream`）用与 `scheduler.pick` 同一优先链的 `extractSessionKeyFromSources(req.Headers, req.Metadata)` 提取会话亲和键，经 `traeSyncStreamContext` / `traeAsyncStreamContext` / `traeStreamPumpContext` 泵入全部 22 处 `publishUsage` 调用点，跨换号尝试冻结（req 不随 attempt 变化），写入 feed 的 `session_key` 列。
+2. **首字延迟列**：`collectTraeStream` 改四值返回带出首个有效 output 事件到达时间；`pumpTraeStreamAttempt` 结果结构新增 `FirstOutputAt`；新增 `ttftNSBetween`（零值/负差返回 0，与 workbuddy `sseUsageCollector.ttftNS` 语义一致），流式路径按真实观测写 `ttft_ns`；非流式与开启即失败路径写 0（与 workbuddy 行为对齐）。
+3. `reasoning_effort` 保持空串（Trae 上游无此旋钮），参数链对齐 workbuddy 保持 feed schema 一致；`source` 列语义不变（traework 传账号 UID 作 label）。
+
+验证：新增 `TestTtftNSBetween`（4 断言）+ `TestCollectTraeStreamReportsFirstOutputAt`（观测点非零/空流零值）+ `TestRecordUsageFeedAppendsNDJSON` 扩展 session_key/ttft_ns 落盘断言；既有 8 处 `collectTraeStream` 测试调用适配四值解构。cgo-shim build/vet/test 全绿。
+
+## 0.1.32
+
+### Fix — 工具调用链路 P1+P0：伪完成豁免工具短流 + Trae 私有协议完整工具链转换
+
+P1 止血：`collectTraeStream` 三值返回带出 `hasToolCalls`，含结构化 tool_calls 的短流永不判伪完成（上游取证：正常工具调用流 ~1.9s / 3 output 事件即 done+tool_calls，被 600 字符健康门槛误判换号/裁剪）；pump gate 收到 tool-call 信号即放行。P0 根治：上行 `tools`/`tool_choice` 透传（parameters object→JSON string、tool_choice 规范化）、历史 assistant tool_calls 键 function→function_call 翻译、role=tool 原样回填、下行 function_call→function 键 + arguments 空回退 partial_arguments、collect/aggregate/pump 三路径注入 tool_calls delta、工具流 finish="tool_calls"。新增 toolchain_test.go 8 用例 + pseudo_toolcalls_test.go 4 用例；真实上游双阶段 e2e 闭环。
+
+## 0.1.31
+
+### Fix — 思考型长推理 reasoning 阶段零字节 504：pump gate 纳入 reasoning 双轴健康度流式放行
+
+生产验收 0.1.30（2026-09-02，CYCLE-04）短请求与常规长推理全绿后，深度思考请求（quickselect 算法推导，prompt 要求「深入思考后完整作答」）触发 **504**：`stream_id=2878` scheduled 后 5 分钟零字节、无 done/error/degrade，nginx `proxy_read_timeout 300s` 掐断。根因：`pumpTraeStreamAttempt` 的伪完成保护 gate **只累计 content**（`contentChars += len(text)`），思考型模型 reasoning 阶段的 reasoning-only 分片被无限压入 pending 缓存、永不转发——上游 reasoning 持续流入宿主桥（无 90s 降级，证明桥健康），但插件→nginx→客户端方向 300s 无字节 → 504。0.1.30 的 `isPseudoCompletion` 已把 reasoning 长流豁免为健康（reasoning ≥600 不判伪），gate 却不放行 reasoning，判据与转发放行不一致。
+
+修复（`traework/stream.go`）：
+
+4. **FIX-D · pump gate 双轴健康度**：`pumpTraeStreamAttempt` 门槛累计从 `contentChars += len(text)` 改为 `healthChars += len(text) + len(reasoning)`——reasoning 达到 600 字符（健康思考轨迹）即 gate 打开、按序释放已缓冲分片并转实时转发，reasoning 阶段客户端持续收到字节，不再触发 300s 读超时。伪完成保护不回归：真伪完成是 content+reasoning **双轴都短**（合计 <600），gate 不打开 → 全程 pending → done 后 `isPseudoCompletion` 判伪 → 丢弃 + 换号，零泄漏语义保留。reasoning-only 短流（content==0）仍走既有豁免不判伪。
+
+验证：新增 `TestPumpTraeStreamAttemptReasoningFlushes`（reasoning-only ≥600 按序放行不判伪 / 双轴短真伪完成零下发 / reasoning 达标后 content 实时放行 / reasoning-only 短流豁免释放），哨兵先 FAIL 后删除证明真实编译。cgo-shim build+vet+test 全绿 + gofmt（LF 转换）CLEAN + UTF-8 OK。
+
+## 0.1.30
+
+### Fix — 池耗尽根因三缺陷修复：async 401 核算驱逐 + 伪完成单号池同号退避 + reasoning 纳入伪完成判据
+
+生产取证（2026-09-02，0.1.29 部署后 21:26-21:30，stream_id 2331-2350）确认用户真实失败链 = **插件自身缺陷**而非账号需重导（用户明确「不是号有问题, 就是我们的插件有问题」）：死账号反复 `open error status=401`（async 路径不核算不驱逐绑定 → session 亲和每请求重绑死号）→ 拖累健康号被窗口性节流判伪 → 无同号退避重试 → `pool exhausted`。stream 2351 决定性反证：同一健康账号 30s 前被判伪，同号 30s 后恢复 18696 tokens 完整长推理。
+
+修复（`traework/stream.go` + `traework/executor.go`）：
+
+1. **FIX-B · async 401 核算 + 驱逐绑定**：`runTraeAsyncStream` 的 `open error` 账号级 4xx 分支补 `reconcileAfterExecutorError` + `evictSessionBindingsForAuth`（原来只 publishUsage，死号永不进冷却/异常 → 每请求被 host session 亲和重复选中）。同步路径既有核算，异步路径补平。
+2. **FIX-A · 伪完成同号退避重试**：sync/async 协调器收敛一致——伪完成先核算失败 + 驱逐绑定，`PickNextAuth` **仅当池中已无其它候选**（单号池或他号全冷却）时对当前账号同号退避重试一次（`pseudoRetryBudget=1`，不消耗跨账号 Budget；生产实证 2351：同号窗口性节流约 30s 自愈，直接 pool exhausted 让单号池请求必败）。有其它候选仍 A→B 切换，既有契约不回归。
+3. **FIX-C · reasoning 纳入伪完成判据**：`isPseudoCompletion` 从只数 content 改为 content+reasoning 双计健康度——任一达 600 字符即健康（思考型模型长 reasoning + 短正文不再误判）；content 0 + reasoning>0（reasoning-only 纯思考流）永不判伪；双零/双短且长输入才判伪。
+
+验证：新增 `test/traework/executor_same_auth_retry_test.go` 两用例（async+sync 单号池伪完成→同号退避→成功，成功后 `resetAccountFailover` 清零断言）；负向哨兵 + 定向 `t.Fatal` 探针双重证明新测试真实编译执行；既有 5 个伪完成回归（A→B 切换 / 池耗尽显式失败 / 同请求不重复选号 / reasoning-only 豁免）全绿。cgo-shim build/vet/test 全绿，gofmt 干净，UTF-8 通过。生产行为验收由发布后真实流量承接。
+
+## 0.1.29
+
+### Fix — 异步流式宿主流桥读取挂起：read 超时保护 + 降级插件直连，覆盖打开阶段未覆盖的卡死窗口
+
+0.1.28 修复了宿主流桥**打开阶段**的永久阻塞，但生产直连复现 `qwen3.8-max` 长推理仍失败：`stream_id=1945` scheduled 后 2 分钟无任何 open/pump/伪完成/耗尽日志，客户端 `499`。根因：`hostHTTPStream.Read()` 里的 `hostCall(MethodHostHTTPStreamRead)` 同样是**同步 cgo 调用（无超时）**，阻塞在宿主侧无缓冲 chunk 通道上等上游数据；长推理期间宿主侧上游数据迟迟不到，read 永久悬挂——0.1.28 只保护了 open，read 阶段仍是裸奔。
+
+修复（`traework/host_bridge.go` + `traework/main.go`）：
+
+1. **宿主流桥读取超时保护**：新增 `hostBridgeReadTimeout = 90s`，把 `MethodHostHTTPStreamRead` RPC 放进独立 goroutine 并用 `select` 竞争超时；超时返回 `errHostBridgeReadTimeout`，不再永久阻塞。90s 宽于健康流正常 chunk 间隔，同时兜住卡死窗口。
+2. **read 超时降级插件直连**：`hostHTTPStream` 打开时保存原始请求 `req`/`bodyBytes`；bridged read 超时后在同一 attempt 内重开上游为**直接实时流**（live 模式），后续 Read 全部从直连体读取，请求完成而不是悬挂。
+3. **流式直连客户端无整体超时**：新增 `streamHTTPClient`（无 `Timeout`，仅 dial/TLS/响应头超时）替代 120s 的 `sharedHTTPClient`——否则 read 超时降级直连后，长推理在第 120s 被整体超时掐断，等于从「挂起」变「截断」。
+4. **可测化**：抽出 `hostStreamReadFn` / `hostStreamDirectFn` 注入点，`hostBridgeReadTimeout` 改为 var 便于测试缩小驱动降级路径。
+
+验证：cgo shim build、vet、test 全绿；新增 `traework/host_bridge_read_timeout_test.go` 三个用例——「桥 read 挂起→超时降级直连读完整 SSE」「桥 read 正常→透传不降级」「缺 req→超时返回明确错误不 panic」；唯一失败哨兵先使 cgo-shim FAIL、删除后全绿；UTF-8、gofmt、`git diff --check` PASS。生产流式长推理验收由发布后直连承接。
+
+## 0.1.28
+
+### Fix — 异步流式宿主流桥打开挂起：超时保护 + 降级插件直连，修复长推理卡死/499
+
+0.1.27 发布部署后，生产直连复现 `qwen3.8-max` 长推理「一直失败」：非流式请求一次成功（13.3s 返回完整正文，走聚合路径），但**带 `StreamID` 的异步流式请求 240s 无任何字节后超时**。生产日志仅一条 `exec stream async scheduled: ... stream_id=1664`，之后无 open/pump/伪完成/耗尽日志、无失败核算；宿主在 4m0s 返回 `499`。根因：异步协调器第一次 `deps.Open` 调 `callLLMStream → hostHTTPDoStream → hostCall(MethodHostHTTPDoStream)`，`hostCall` 是**同步 cgo 调用（`C.wb_call_host`，无超时）**，宿主流桥在长推理场景打开上游后不返回，协调器 goroutine 永久悬挂，客户端收不到任何内容，feed 记「失败（HTTP 200）0/12 tokens」。
+
+修复（`traework/host_bridge.go`）：
+
+1. **宿主流桥打开超时保护**：新增 `hostBridgeOpenTimeout = 30s`，把 `MethodHostHTTPDoStream` RPC 放进独立 goroutine 并用 `select` 竞争超时；超时返回 `errHostBridgeOpenTimeout`，不再永久阻塞。
+2. **降级插件直连**：`hostHTTPDoStream` 超时或桥调用失败时回退 `hostHTTPDoStreamDirect`——用插件自有 `http.Client`（120s Timeout）直接请求上游，并把响应体升级为**实时流（live 模式）**边读边发，而非旧版一次性缓冲完整 body；长推理仍能流式输出，只是首包经插件直连而非宿主桥。
+3. **可测化**：抽出 `hostBridgeAvailableFn` 与 `hostStreamOpenFn` 注入点，便于单测模拟桥挂起。
+4. 超时后迟到的宿主侧流会被丢弃（宿主侧遗留一个未消费流，优于客户端 4 分钟卡死）。
+
+验证：cgo shim build、vet、test 全绿；新增 `test/traework/host_stream_timeout_test.go` 覆盖「桥打开超时→降级直连读完整 SSE」与「直连流边读边发、首包不等待完整 body」；唯一失败哨兵先使 cgo-shim FAIL、删除后全绿；UTF-8、gofmt、`git diff --check` PASS。生产流式长推理验收由发布后直连承接。
+
+## 0.1.27
+
+### Fix — 伪完成同请求换号恢复：A 短答零泄漏丢弃，原 StreamID 内切换健康账号 B 继续生成
+
+0.1.26 能在服务端识别伪完成，但检测发生在正文、`stop` 与 `close` 已下发之后，客户端仍会看到短输出并以成功收尾；账号失败与会话驱逐只影响**下一请求**。生产现象证明需要把恢复提前到**首次 emit 之前**，并在同一逻辑请求内完成。
+
+修复（`traework/stream.go` + `traework/executor.go`）：
+
+1. **单次上游尝试解析器（`pumpTraeStreamAttempt`）**：长输入（输入字符 ≥ 200）在前 600 字节正文健康门槛前全量缓冲 content + reasoning 标准 chunk，不 emit、不 finish、不 close；达到 600 字节立即按序释放并实时透传；门槛前收到显式 `done` 且正文 1..599 字节 → 判定伪完成，丢弃该 attempt 全部 pending，返回结构化结果且**零 finish/close**。
+2. **同步路径同请求换号**：`handleExecStream` 同步分支在既有账号重试循环内复用 `pickNextAuth`，A 伪完成 → forced failure 记账 + 驱逐会话绑定 + 更新 `curSA/curAuthID/authUID` 继续尝试 B；池耗尽返回 `upstream account pool exhausted after N attempt(s)`。
+3. **异步协调器（`runTraeAsyncStream`）**：保持客户端固定 `StreamID` 与 OpenAI request ID，复用原 `HostCallbackID`；每次上游 attempt 独立 open → pump → 立即 close；伪完成时只关闭 A 上游句柄，保持宿主流打开并在同一逻辑请求内选 B；只有最终健康账号能发送正文、唯一 `stop` + 一次下游 `close`。`triedAuthIDs` 阻止 A→B→A 回跳。
+4. **失败边界**：所有账号伪完成 → 显式失败且不补成功终止；output EOF 唯一 `length` 收尾并记失败；读取/发送错误与客户端取消不当作伪完成重试，立即关闭当前上游并结束。
+
+验证：cgo shim build、vet、test 全绿（最新 1.433s）；新增三份根镜像回归（`test/traework/stream_pseudo_test.go`、`executor_pseudo_retry_test.go`、`async_stream_failover_test.go`）覆盖 599/600 字节边界、同步 A→B 与池耗尽、异步同 StreamID 零泄漏恢复；两轮唯一失败哨兵先使同一 cgo-shim 入口失败、删除后全绿，证明测试真实进入编译；`git diff --check`、UTF-8、gofmt、污染门禁 PASS；6-review `STYLE: PASS`。生产 `/v1/responses` 验收由部署后真实验证承接。
+
+## 0.1.26
+
+### Fix — 伪完成检测升级「输出字符 + 输入长度」双重判据，修复 120-token 伪完成漏检
+
+生产 0.1.25 部署后用户反馈 qwen3.8-max 长推理仍被提前结束。全量 feed + 容器日志定位到用户 01:49（UTC 17:49:43）在健康账号 `2257747741770235` 上拿到 **120 tokens / 5.9s** 的伪完成，而同账号前后请求均为 10803~11390 tokens 长输出——账号本身健康，是上游**瞬时限流**返回「HTTP 200 + done + 极少正文」。
+
+根因：0.1.25 的 `isPseudoCompletion` 用**裸字符阈值 120**（注释本意是覆盖 4~129 token，但实现成了字符），120 token 中文输出 ≈ 480 字符远超阈值 → 漏检 → 伪完成被 `resetAccountFailover` 当成功清零 → 账号永不换号 → 同会话继续粘在被瞬时限流的账号上。
+
+修复（`stream.go` + `executor.go`）：
+
+1. **双重判据**：输出字符 < 600（等价 150 token 估算）**且** 输入字符 ≥ 200（长任务）才判伪完成。覆盖当时已知的 15/120 token 检测样本，同时通过输入长度保护正常短答（「你好」≈5 token）不被误判；后续生产反证表明，该版本的检测发生在正文与终止已下发之后，不代表当前请求已经恢复。
+2. **输入长度穿入**：`handleExecStream` 用新增 `estimateInputChars` 从归一化消息统计输入字符数，同步 collect 路径直接传入；异步 pump 路径经 `traeStreamPumpContext.InputChars` 传入 `isPseudoCompletion`。
+3. 用字符数而非估算 token，避免短输出 `chars/4` 取整归零导致漏判。
+
+验证：cgo shim build、vet、test 全绿；`TestIsPseudoCompletion` 扩充覆盖（59 字符伪完成 / 479 字符 120-token 伪完成 / 短输入短答不误判 / 860 字符健康长输出不误判），新增 `TestEstimateInputChars`（单/多段文本统计）；行为哨兵（临时把 `isPseudoCompletion` 改恒 false）FAIL 证明测试真实执行；`git diff --check` PASS；6-review `STYLE: PASS`。
+
+## 0.1.25
+
+### Fix — 伪完成检测换号 + 会话分配优先面板选中账号，修复 qwen3.8-max「短输出伪完成」不换号
+
+生产 0.1.23 实测（正式路径发真实请求 + 全量 feed 分析）确认两件事：
+
+1. **伪完成是账号级问题且绕过 failover**：账号 `2033439621254311` 的 `qwen3.8-max` 全历史几乎都是「HTTP 200 + done + 极少输出」（1~129 token，平均 77），而被静默限流/标记；健康账号 `2257747741770235` 曾有 215 token / 7.9 分钟真实长输出。伪完成在协议层是合法成功（`termination=done`），`resetAccountFailover` 将其清零，账号永不进入 cooldown/anomaly → **永不换号**。
+2. **切换机制对 session 模式形同虚设**：host 把传入插件的候选账号按 auth ID 字典序排序（`traework-203343... < traework-225774...`），而插件 `pickSessionAuth` 新会话无绑定时取 `usable[0]` 且完全不看面板选中账号（active_id）——所以即使把 active_id 切到 225774，新会话仍恒定选 203343。
+
+修复（两处叠加，补齐检测与下一请求换号）：
+
+1. **伪完成检测（方向 2）**：`stream.go` 新增 `isPseudoCompletion`——`done` 收尾但正文（不含 reasoning）字符 < 120（≈30 token）判伪完成；异步 `pumpTraeStream` 与同步 `executor.go` collect 路径命中后**不计成功清零**，改走 `noteForcedAccountFailure`（新增强制记账，跳过 `isAccountFailure` 判定，因为伪完成 status=200 无任何失败标记）计账号失败 + `evictSessionBindingsForAuth` 驱逐会话绑定，让下一次请求切到健康账号。已生成的少量内容仍正常下发给客户端，不打断用户。
+2. **会话分配优先面板选中账号（方向 1）**：`session_auth.go` 的 `pickSessionAuth` 新分配分支优先选中 `getActiveAuthID()`（面板 active_id），再退化为「无绑定优先 → round-robin」。面板切号从此真正生效，运营可手动把流量切到健康账号。
+
+验证：cgo shim build、vet、test 全绿；新增 `TestPickSessionAuth_FreshAssignmentPrefersActiveID`（active_id 被优先选中）与 `TestIsPseudoCompletion`（短正文判真、长正文判假、纯 reasoning 不误判），行为哨兵（临时移除优先分支/阈值分支）FAIL 证明测试真实执行；`git diff --check` PASS；6-review `STYLE: PASS`。后续反证：伪完成少量内容仍会先下发，账号失败与会话驱逐只能影响下一请求；同请求零泄漏恢复由后续版本承接。
+
+## 0.1.24
+
+### Fix — 流式请求补默认 max_tokens=20000，solo 长任务不再"刚开口就 done"
+
+生产 0.1.23 日志证明 traework 收流链路健康（termination=done、22 chunks、宿主 200、feed failed:false），但账号 `qwen3.8-max` 全历史请求平均仅 77 tokens、最大 273 tokens，全部正常 done —— 上游 Trae 对**无 `max_tokens`** 的 solo 请求给极小默认上限，长任务（如分析项目、应持续数分钟的推理）刚输出一小段就自行结束。用户确认 Trae 原生客户端用同账号跑 `qwen3.8-max` 长输出正常、额度充足，根因锁定在插件链路缺 `max_tokens` 缺省。
+
+1. `traework/upstream.go` 新增常量 `streamDefaultMaxTokens = 20000`（与 config models 样例一致）。
+2. `buildTraePayload` 流式路径（`stream == true`）在客户端未传 `max_tokens`（`maxTokens <= 0`）时补默认值 20000；显式传入时保留原值；**非流式路径保持原样**（不补默认）。
+
+验证：cgo shim build、vet、test 全绿；新增 `TestBuildTraePayloadStreamDefaultMaxTokens` 覆盖三种形态（流式缺省补 20000 / 流式显式保留 / 非流式不补），行为哨兵（临时移除补默认分支）FAIL `stream max_tokens = <nil>, want 20000` 证明测试真实执行且精确覆盖行为；`git diff --check` PASS；6-review `STYLE: PASS`。
+
+## 0.1.23
+
+### Added — 流式响应三出口补现场日志插桩，便于定位生产「生成中途停止」形态
+
+0.1.21/0.1.22 反复修复"生成中途停止、无下文"，但流路径零日志，生产无法确认一次中断到底是上游未发 `done`（上游断流）、收到 `done` 后丢失（宿主掐流）、还是空响应。本轮为三条流出口补可检索日志，供生产 `docker logs` 按 `request_id` / `stream_id` 拉全链路判断流形态。
+
+1. `traework/stream.go` 新增 `terminationLabel`，把终结类别映射为稳定短标签 `done` / `output_eof` / `invalid`。
+2. `collectTraeStream`（同步收集）在 error / invalid / done 出口各落一条 `[traework] stream collect ...` 日志，含 `request_id` / `model` / `status` / `termination` / `chunks` / `finish` / `elapsed_ms`。
+3. `aggregateTraeCompletion`（非流式聚合）同理，含 `chars` 统计。
+4. `pumpTraeStream`（异步泵）在 error / finish emit error / truncated（output_eof）/ done 出口各落一条 `[traework] stream pump ...` 日志，含 `stream_id` 关联宿主流。
+5. `traework/executor.go` 的 `handleExecStream` 在同步收集成功、上游错误、账号池耗尽、异步泵启动与启动失败各补账号维度日志。
+
+全部为只读插桩，不改变业务分支、终止判定、账号核算或 usage 发布行为。
+
+验证：cgo shim build、vet、test 全绿；临时必失败哨兵测试 FAIL 证明新增代码真实进编译后删除重跑全绿；`git diff --check` 退出码 0。真实日志形态待发布后由用户触发一次中断会话，从生产 `docker logs cli-proxy-api` 抓取核对。
+
+## 0.1.22
+
+### Fix — 上游长回答中途断流兜底收尾，不再中断报错
+
+0.1.21 收紧流协议后，上游 Trae 长回答在生成中途 EOF（有部分 `output` 但未收到 `done`）时会被当作 `truncated SSE response` 致命错误处理，插件中断流并向 IDE 下发 error，用户表现为"生成中途停止、无下文"。
+
+本次修复区分三种终结类别：业务完整（有 `done`）、上游中途断流（有部分 `output` 但 EOF 无 `done`）、空响应（无 `output` 无 `done`）：
+
+1. `traework/stream.go` 将 `validate` 改为 `classify`，返回 `traeStreamTermination` 终结类别；仅空响应才报 `invalid SSE response`（保留 0.1.20 防空成功回归），部分 `output` 后 EOF 归为可兜底的中途断流。
+2. 三条响应路径（同步非流式聚合、同步流式、异步流式）对中途断流统一补 `finish_reason="length"` 正常收尾，保留已生成内容，不再中断或报错。
+3. `pumpTraeStream` 断流收尾时不清零账号故障、不记成功用量，以"不完整"标记落一条用量记录供面板识别；上游显式 `event:error`、下发失败或空响应仍走原失败出口。
+4. **补齐读错误型断流兜底**：上一步的三态兜底只在 `scanSSE` 返回 `nil` 时生效，而 `scanSSE` 仅对干净 `io.EOF` 返回 `nil`；真实上游断流多表现为读错误（对端 RST / unexpected EOF / 宿主流桥 `Error` 非空），此时 `scanSSE` 原样返回 err，`pumpTraeStream` 判为致命失败并向 IDE 下发 error，0.1.22 前三步对该形态无效。`traework/upstream.go` 的 `scanSSE` 新增 `hasPayload` 判定参数：读错误时只要已累积可交付业务内容就按截断正常收尾（交由 `classify` 补 `length`、保留已生成内容），零内容才让读错误致命；`stream.go` 的 `traeSSETerminal` 新增 `hasPayload()`，三条响应路径接入该判定。
+
+验证：cgo shim build、vet、test 全绿；新增 `collectTraeStream` 断流补 length、空响应仍报错、`pumpTraeStream` 断流不清零账号故障等回归用例；本次另增 `collectTraeStream` 读错误后补 length、零内容读错误仍致命、`aggregateTraeCompletion` 读错误补 length 并保留正文三个用例（含真实进编译哨兵验证）。
+
+## 0.1.21
+
+### Fix — 异步流改走宿主流桥实时读取，业务成功严格依赖 done 终止
+
+修复 Trae 异步流式请求把完整上游响应体全量缓冲后才下发，长回答期间客户端长时间收不到分片；并收紧流协议判定，部分 `output` 后未收到 `done` 即结束的不完整响应不再被补成正常 stop。
+
+1. `traework/upstream.go` 新增 `callLLMStream`，异步聊天改走宿主流桥实时读取，并透传 CPA 异步执行的 `host_callback_id`，客户端取消可传递到上游流。
+2. `traework/host_bridge.go` 的 `rpcHostHTTPRequestWire` 新增外层 `host_callback_id` 字段，异步请求保留长生命周期 callback context；`hostHTTPDoStream` 增加 `hostCallbackID` 参数。
+3. `traework/stream.go` 收紧 `validate`：业务成功必须收到明确 `done`；部分 `output` 后 EOF 返回 `truncated SSE response`，不再补成空 stop 伪成功；最终 stop 下发失败时走失败核算，不再复位账号或记成功用量。
+4. `traework/stream.go` 的 `scanSSE` 在 EOF 前补齐无换行尾帧，避免最后一个 `done` 或 `output` 因缺少换行被丢弃；孤立 `event` 残片不伪造业务事件。
+5. `traework/executor.go` 异步路径统一关闭上游流句柄，非预期 panic 转成可见失败，避免穿透插件运行时。
+
+验证：cgo shim build、vet、test 全绿；新增 `host_callback_id` 透传、SSE 跨分片重组、无换行尾帧解析等回归用例通过。真实 Trae/Qwen 上游请求尚未在本地自动化环境发起。
+
+## 0.1.20
+
+### Fix — 拒绝 HTTP 200 异常响应形成空成功
+
+修复 Trae 上游在 HTTP 200 下返回普通 JSON、HTML、未知 SSE 事件、无换行尾帧或空 `output` 时，插件可能将无有效业务事件的响应收束为空 completion 或空 stop 分片的问题。
+
+1. `traework/stream.go` 新增 `traeSSETerminal`，仅在出现可转换的 output 或明确 done 时允许成功结束。
+2. 同步非流式和同步流式在无有效终止时返回 `invalid SSE response`，不再生成空成功响应。
+3. 异步流式改走失败出口，不再成功复位账号状态或写入成功用量。
+4. 保持既有 `event:error` 解析、账号失败分类及异步流不跨账号重放策略不变。
+
+验证：cgo shim build、vet、test 全绿；代码格式、差异检查与生产代码测试污染扫描通过。真实 Trae/Qwen 上游请求尚未在本地自动化环境发起。
+
+## 0.1.19
+
+### Fix — 异步流式请求补齐 Token 用量统计
+
+修复 Trae 异步流式请求虽然能够正常返回响应，但请求结束后没有写入共享 usage feed，导致 `workbuddy-token-usage` 无法在 Token 用量统计面板展示记录的问题。
+
+1. `handleExecStream` 向后台 `pumpTraeStream` 传递完整用量上下文，包括客户端模型别名、Trae 上游模型、账号 UID、HTTP 状态和请求开始时间。
+2. `pumpTraeStream` 累计已经发送的标准流式分片，在异步流成功结束时统一发布一次用量。
+3. SSE 扫描失败或分片转换失败时，统一发布一次失败用量；保留原有错误通知、账号故障恢复、`streamClose` 和 stop chunk 行为。
+4. 继续使用 `estimateUsageFromChunks` 估算输出与总 Token，并保留 `alias=qwen-max-latest`、`model=qwen3.8-max` 的统计维度。
+
+验证：cgo-shim build、vet、test 全绿；异步流回归测试确认成功请求只写入一条 `traework-provider` usage feed 记录。
+
+## 0.1.18
+
+### Feat — 面板删除账号 + 修复 trae 账户模型请求异常（SSE 业务错误换号）
+
+用户实测：走 trae 插件账户的 doubao / deepseek 模型明显出问题，而 workbuddy 插件正常。
+根因：Trae 上游 `llm_utils_chat` 把业务失败（4011 限流 / 14018 额度用尽）藏在 **HTTP 200 + SSE `event:error`** 里返回，而 traework 的换号重试只看 HTTP 状态码层——SSE 层账号级错误不触发换号，坏账号被反复命中；workbuddy 上游失败在 HTTP 层且流式路径有换号循环，所以不受影响。
+
+1. **【P0】SSE 业务错误纳入账号换号**（`traework/executor.go` / `stream.go`）：
+   - 非流式：`aggregateTraeCompletion` 的 SSE 错误若判定为账号级（`isAccountFailure`，覆盖 4011 / 14018 等）→ 同请求 `pickNextAuth` 换号重试。
+   - 流式同步收集：重构为与 workbuddy 同款换号循环（HTTP 4xx 与 SSE 业务错误均换号）。
+   - 流式异步 pump：`pumpTraeStream` 增加 authID 参数，SSE 错误计入 failover 冷却（原缺口：pump 内 SSE 错误不记冷却，坏账号不会被隔离）。已 emit 的部分 chunk 无法换号，靠冷却保证下一次请求绕开。
+   - 业务码分类（`accountFailover_test.go` 新增 5 用例）：4011 / 14018（含 json 形态）→ 账号级；4001 / 4023 → 保守不换号（参数/模型名问题换号无益）。
+
+2. **【Feat】面板删除账号**（对齐 workbuddy 0.14.7）：
+   - 后端 `POST /delete`（`traework/management.go` `handleDeleteAuth`）：严格校验链（auth_index 非空 → host 列表存在 → `isTraeworkAuthFileName` 归属 → `hostAuthGetBundle` → 物理索引一致 → `isSafeAuthPath` → `deleteAuthFileInDir` 物理删除 → `clearDeletedAccountState` 清理 6 类内存态）。
+   - 前端（`traework/panel.html`）：账号卡右上角 `×` + 二次确认模态框（取消 / 遮罩 / Escape 均不发请求），确认后 `POST /delete` 并刷新列表。
+   - 新增 `isTraeworkAuthFileName`（`authfile.go`）+ `clearDeletedAccountState` / `clearFailoverStateForAuth` + `auth_delete_test.go` 4 用例。
+
+3. **验证**：cgo-shim build + vet + test 全绿；panel.html 占位符替换后两个 script 块 `node --check` 全 PASS。
+
+## 0.1.17
+
+### Fix — 全部签到后积分被本次奖励覆盖 + 面板"系统状态"标题错位
+
+两个 bug 都源于 0.1.16 版本对齐五件套面板时遗漏的回归，合并发布即可覆盖生产解决。
+
+1. **【P0】全部签到后积分变 200 而非账户总积分**（`traework/checkin.go` `runFleetCheckin`）：
+   - 现象：面板点"全部签到"后，每个账号卡片上的"积分"显示为本次签到奖励值（恰好是 200），而不是账户的真实剩余积分。
+   - 根因：成功签到后写缓存时把 `res.Points`（**本次签到的奖励积分**）当成了 `TotalRemain`（**账户总剩余积分**）写入 `cacheCredits`，覆盖了真实 remain。
+   - 修复：改为成功签到后调用 `accountPoints` 真实查询积分并写入缓存（与单账号 `handleManualCheckin` 分支保持一致），不再使用 `res.Points`。
+   - 影响：刷新触发"全部签到"路径，缓存被该 bug 污染为奖励值后只能等待生命周期自动刷新或手动点"刷新"才能恢复；面板一直显示错误。
+
+2. **面板"系统状态"标题错位**（`traework/panel.html`）：
+   - 现象：汇总卡顶部标题是"系统状态"，但汇总项（保号池 watchdog / keepalive / lifecycle / 异常池）实际上分别是各账号层用量与子系统开关的汇总，应叫"用量汇总 · 全部账号"。
+   - 修复：标题文案改为"用量汇总 · 全部账号"（行为不变）。
+
+## 0.1.16
+
+### Feature — 对齐 workbuddy 五件套 + 完整面板（保号 / 异常 / 失败计数 / 会话粘性 / 生命周期）
+
+traework 此前仅有 failover 阶梯冷却 + anomaly 冻结 + CPAMP 用量上报，面板为旧版表格。本次按 workbuddy 架构全量对齐，补齐五件套后端能力并重写面板，使 traework 与 workbuddy / qoderwork 功能面一致。
+
+1. **失败计数持久化（`counter.go`）**：`publishUsage` 埋 `recordOutcome` 累计成功/失败，随 watchdog tick 折叠为顶层 `success_count` / `failed_count` 落盘（经 `persistAuthDirect` 直写，宿主不认识的字段不丢失）。
+2. **会话级粘性路由（`session_auth.go`）**：`scheduler_mode=session` 时同一会话钉同一账号 1 小时，账号失效（冷却/异常/保号/耗尽）自动驱逐会话绑定换号。
+3. **保号池 + 看护循环（`preserve.go` + `watchdog.go`）**：积分低于 `preserve_threshold`（默认 50）的账号进入保号池，路由时优先排除、仅在无其它可用账号时兜底；watchdog 每 10 分钟刷新积分快照并更新保号池归属（防全保号锁死：全保号时保留全列表回退）。
+4. **节流刷新（`refresh_runner.go`）**：异步刷新队列，1 账号/秒节流，面板进页自动刷新 + 每 10 分钟定时刷新。
+5. **生命周期自动停用（`lifecycle.go`）**：`lifecycle_auto` 开启时账号积分耗尽（remain<=0）自动禁用（不自动复活，需面板手动启用或重新导入），禁用时驱逐会话绑定。
+6. **每日 token 保号（`keepalive.go`）**：本地时间 22:00 通过 Trae ExchangeToken 端点自动续期 access token（写顶层 token/refreshToken/expiredAt）；刷新令牌失效的账号自动标记禁用待重新导入；`parseTraeAuth` 改为顶层 runtime 字段优先于 credential blob，避免刷新结果被静态凭据覆盖。
+7. **直写通道（`authfile.go` `writeAuthFileDirect`）**：temp+rename 原子直写，供 preserve / counter / lifecycle / keepalive 共用（`host.auth.save` 会丢弃宿主不认识的顶层字段）。
+8. **完整面板（`panel.html` + `panel.go` go:embed）**：卡片网格 + 筛选 chips（全部/可用/保号/异常/耗尽/失败/停用）+ 系统状态汇总（watchdog 阈值/间隔/开关/池大小、keepalive 开关/上次运行、lifecycle 开关、异常池大小）+ 账号卡（昵称/UID/积分/成功/失败/连败/冷却/保号/异常/禁用/活跃徽标 + 签到/设为活跃/启停/解冻/刷新）+ 异步刷新（2s 轮询三态）+ keepalive 手动保号 + storage.json 导入。
+9. **dashboard 聚合（`management.go` / `active_auth.go`）**：`/accounts` 单次拉取返回 preserve / lifecycle / keepalive 子系统状态 + `checkin_auto` / `server_time`；新增 `/refresh`、`/refresh/status`、`/keepalive`、`/keepalive/status`、`/lifecycle` 路由。
+10. **配置项**：`scheduler_mode` 支持 `session`；新增 `token_keepalive` / `lifecycle_auto` / `preserve_threshold` / `preserve_watchdog_interval` / `preserve_watchdog_enabled`。
+
+- 测试：`counter_test.go` / `session_auth_test.go` / `watchdog_test.go` / `keepalive_test.go` 新增，移植 workbuddy 用例并适配 traework。
+- 验证：cgo-shim build+vet+test 全绿；panel.html 两 script 块 node --check 通过。
+- 未涉及：workbuddy-provider；qoderwork-provider 本版不改动。
+
+## 0.1.15
+
+### Feature — 共享 usage feed 写入（适配 token-usage-tracker）
+
+traework 的 token 用量此前只走 CPAMP HTTP 上报，不写共享 NDJSON feed，导致独立的 `token-usage-tracker` 插件完全收不到 traework 数据（宿主 UsagePlugin 广播对插件 executor 恒为空，tracker 的 `handleUsage` 也收不到）。本次按 workbuddy 的 `usage_feed.go` 模式补齐，使三插件（workbuddy / qoderwork / traework）用量均可被 tracker 可视化。
+
+1. **新增 `usage_feed.go`**：解析 `usage_feed_enabled` / `usage_feed_path`（默认 `<CLIProxyAPI 根目录>/data/token-usage-feed.ndjson`，与 workbuddy / tracker 默认一致）；`recordUsageFeed` 写行与 workbuddy feed 同构（`provider=traework-provider` / `executor_type=traework` / `auth_type=oauth` / `source=authUID`；`session_key` / `reasoning_effort` / `ttft_ns` 写零值保持 schema 自描述）；O_APPEND 逐行追加 + 128MB 轮转。
+2. **`publishUsage` 接入**：goroutine 中 `recordUsageFeed(...)` 与 `forwardUsageToCPAMP(...)` 并列（feed 独立于 CPAMP 配置，未配 CPAMP 也能统计）。
+3. **`handleUsage` 不写 feed**（与 workbuddy 一致）：避免与 tracker 自身 UsagePlugin 广播重复计数。
+4. **配置接线**：`config.go` `configure()` 在 `cfgMu.Lock()` 之外调 `configureUsageFeed`（自带 `usageFeedMu`，防锁序死锁）；`main.go` ConfigFields 注册 `usage_feed_enabled` / `usage_feed_path`。
+5. **tracker 侧文档**：`token-usage-tracker/README.md` 数据链路更新为 workbuddy + traework 双写入方。
+
+- 测试：`usage_feed_test.go` 新增（配置解析 / NDJSON 追加与字段断言 / 128MB 轮转）。
+- 验证：cgo-shim build+vet+test 全绿；tracker `decodeFeedLine` 字段逐一核对匹配，无 provider 硬编码。
+- 未涉及：workbuddy-provider；qoderwork-provider 本版不改动。
