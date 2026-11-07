@@ -38,8 +38,8 @@
   - **共修复 4 个缺陷**（全部已发布 + 生产 hot reload 验收）：
     1. **请求体 role 非法打穿整池**（0.5.16 / 0.13.9）——按上游报错正文匹配的方案（0.5.15/0.13.8）经生产复验**无效**（上游措辞不固定、qoderwork 只回无信息量的 provider_error），改为**发请求前**按 `validOpenAIRoles` 校验，非法 role 直接 400 不发上游。
     2. **traework `max_completion_tokens` 别名被静默丢弃**——新客户端只发别名时值被 json.Unmarshal 丢弃，实测请求 12 token 实际产出 1119 tokens。
-    3. **`max_tokens` 畸形值打穿整池**（0.5.17 / 0.13.10）——见第五轮。
-    4. **`stream`/`temperature`/`top_p` 畸形值打穿整池**（0.5.18 / 0.13.11）——见第六轮。
+    3. **`max_tokens` 畸形值打穿整池**（0.5.17 / 0.13.10）：客户端发 `{"max_tokens":"abc"}` 时 int 强类型让整包 `json.Unmarshal` 失败，宿主当成「账号不行」遍历整池每号失败一次后合成 503。修复：`flexNumber` 容错（数字/数字字符串取整，其余降级 0=未声明）。实测 deepseek-flash 500→**200**（扇出 14→1）、dfmodel 500→**200**（扇出 5→1）。发现路径是分析**真实 feed**：按分钟聚合见 `16:07:50` 同一秒 15 条 `status=0/latency=0`。
+    4. **`stream`/`temperature`/`top_p` 畸形值打穿整池**（0.5.18 / 0.13.11）：把第 3 条抽象成模式后系统审计其余强类型标量，实测确认另有 3 个入口——`"stream":"yes"` 扇出 6 号（日志 18 条 `stream of type bool`）、`"temperature":"abc"` 扇出 9 号（14 条）、`"top_p":"abc"` 扇出 2 号（1 条）。修复：`flexBool`（认 true/false/"true"/"false"/"1"/"0"/1/0）与 `flexFloat`（数字与数字字符串取值，自带 `set` 标记区分「显式 0」与「未声明」）。至此该家族 4 个入口全覆盖，其余字段（messages/tools/tool_choice/reasoning_effort）实测扇出 0~1 次无风险。
   - **压测覆盖**：参数矩阵、并发、工具多轮闭环、多轮对话、长上下文、错误路径、reasoning_effort 六档、断连恢复、超长输入 10k-500k、多模态、20 连稳定性、非流式全矩阵、参数边界——修复后**未再发现插件缺陷**。
   - **宿主侧待决（插件外）**：`retry.request-retry=30` 把插件返回的任何 400 当「换账号」，遍历全池后自合成 503；修法在宿主 `config.yaml` 的 `request-scoped-errors` + `action:"stop"`，**未擅自改动**。
   - **workbuddy 侧核实**：子代理报告的 low-credit 拉锯（re-enabled 20 点 203 次→23 点 1 次，拐点对应 20:33 的 0.21.13）、探活回放不可信模型名（6h 命中 0）、11128 扇出全池——均由其他会话修复；workbuddy-ai 的 403/11140 是账号封禁非代码缺陷。
