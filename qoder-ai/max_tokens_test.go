@@ -22,25 +22,32 @@ func TestBuildQoderBody_MaxTokens(t *testing.T) {
 	const templateMaxTokens int64 = 32768
 
 	cases := []struct {
-		name   string
-		maxTok int64
-		effort string
-		want   int64
+		name    string
+		maxTok  int64
+		maxComp int64
+		effort  string
+		want    int64
 	}{
 		{name: "显式 8192 原样透传（推理模式）", maxTok: 8192, effort: "high", want: 8192},
 		{name: "生产事故回归：显式 2000 原样保留", maxTok: 2000, effort: "high", want: 2000},
-		{name: "显式 200000 不再按统一上限截断", maxTok: 200000, effort: "", want: 200000},
 		{name: "显式 100 不再套 32768 地板", maxTok: 100, effort: "", want: 100},
+		// 2026-11-07 生产实测补充：新客户端只发别名，缺识别会导致上限被丢弃
+		{name: "别名 max_completion_tokens 生效", maxComp: 300, effort: "high", want: 300},
+		{name: "两者并存时显式 max_tokens 优先", maxTok: 500, maxComp: 300, effort: "", want: 500},
+		{name: "别名为 0 视为未传", maxComp: 0, effort: "", want: templateMaxTokens},
+		// 上游对超大值直接 provider_error（131072 通过 / 200000 报错），收敛属必要防御
+		{name: "超大值收敛到上游可接受上限", maxTok: 200000, effort: "", want: qoderMaxTokensCeiling},
 		{name: "未传不覆盖，保留官方模板值", maxTok: 0, effort: "high", want: templateMaxTokens},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := &openAIRequest{
-				Model:           "kmodel",
-				Messages:        []openAIMessage{{Role: "user", Content: "hi"}},
-				MaxTokens:       tc.maxTok,
-				ReasoningEffort: tc.effort,
+				Model:               "kmodel",
+				Messages:            []openAIMessage{{Role: "user", Content: "hi"}},
+				MaxTokens:           tc.maxTok,
+				MaxCompletionTokens: tc.maxComp,
+				ReasoningEffort:     tc.effort,
 			}
 			raw, err := buildQoderBody(req, "kmodel", "")
 			if err != nil {

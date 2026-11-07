@@ -1,5 +1,16 @@
 # Qoder AI Plugin Changelog
 
+## 0.1.38
+
+### Fix - 补 max_completion_tokens 别名识别 + 超大值收敛（生产压测发现）
+
+- 背景: 2026-11-07 生产高强度压测发现两个真实缺陷。
+- 缺陷一（别名被丢弃）: `openAIRequest` 只有 `max_tokens` 字段，新客户端（DSH / Codex 系）只发 `max_completion_tokens` 时该值被直接丢弃，上游回落默认上限。实测 `max_completion_tokens=300` 实际生成 **8009 tokens**（正文 7954 字符）。
+- 缺陷二（超大值打穿）: 删除「按统一上限截断」后，客户端算出的大值被原样透传。实测 `max_tokens=200000` 触发上游 `provider_error: Error in upstream response`；`131072` 可正常通过。
+- 修复: 新增 `effectiveMaxTokens` —— 显式 `max_tokens` > 别名 `max_completion_tokens` > 0（未传），非正值视为未传；超过 `qoderMaxTokensCeiling=131072` 时收敛。
+- 边界说明: 该收敛**不是输出上限控制**，只拦会让上游直接报错的畸形大值；131072 以内客户端传什么就发什么。
+- 验证: `cgo-shim-build.py` build/vet/test 全绿；`max_tokens_test.go` 新增别名生效、别名优先级、别名为 0、超大值收敛四个用例。
+
 ## 0.1.37
 
 ### Fix - 删除自研 max_tokens 控制，改为「显式值零干预」（对齐社区共识）

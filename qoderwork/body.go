@@ -237,11 +237,16 @@ func normalizeToolChoice(tc any) (choice string, suppress bool) {
 
 // openAIRequest is the CPA-facing chat completion request.
 type openAIRequest struct {
-	Model           string          `json:"model"`
-	Messages        []openAIMessage `json:"messages"`
-	Stream          bool            `json:"stream"`
-	MaxTokens       int64           `json:"max_tokens"`
-	ReasoningEffort string          `json:"reasoning_effort"`
+	Model  string          `json:"model"`
+	Messages []openAIMessage `json:"messages"`
+	Stream bool            `json:"stream"`
+	// MaxTokens 是 OpenAI 旧字段；MaxCompletionTokens 是新别名。
+	// 2026-11-07 实测：部分新客户端（DSH / Codex 系）只发别名，缺该字段会
+	// 导致上限被丢弃、上游回落默认值（实测 max_completion_tokens=300 时
+	// 实际生成 8009 tokens）。两者并存时显式 max_tokens 优先。
+	MaxTokens           int64  `json:"max_tokens"`
+	MaxCompletionTokens int64  `json:"max_completion_tokens"`
+	ReasoningEffort     string `json:"reasoning_effort"`
 	// Tools / ToolChoice 承载客户端的工具声明。模板 baseprompt.json 硬编码了
 	// Qoder CLI 的 14 个 agent 工具，必须按客户端真实声明对齐，否则普通问答
 	// 会被上游当作 agent 任务作答并以 finish_reason=tool_calls 提前结束。
@@ -263,6 +268,37 @@ func extractLatestUserPrompt(messages []openAIMessage) string {
 		}
 	}
 	return "continue"
+}
+
+// qoderMaxTokensCeiling 是 qoder 上游可接受的 max_tokens 上限。
+//
+// 2026-11-07 生产实测：131072 通过；200000 返回
+// "upstream 200: provider_error: Error in upstream response"。
+// 取已验证通过的 2^17 作为收敛值。注意这不是「输出上限控制」——
+// 它只拦上游会直接报错的畸形大值；合法区间内客户端传什么就发什么。
+const qoderMaxTokensCeiling int64 = 131072
+
+// effectiveMaxTokens 取客户端显式声明的输出上限。
+//
+// 优先级：显式 max_tokens > 别名 max_completion_tokens > 0（未传）。
+// 非正值视为未传；超过上游可接受上限时收敛到 qoderMaxTokensCeiling。
+// [参数] req：已解析的客户端请求（可为 nil）
+// [返回] 应发给上游的 max_tokens；0 表示不写该字段
+func effectiveMaxTokens(req *openAIRequest) int64 {
+	if req == nil {
+		return 0
+	}
+	v := req.MaxTokens
+	if v <= 0 {
+		v = req.MaxCompletionTokens
+	}
+	if v <= 0 {
+		return 0
+	}
+	if v > qoderMaxTokensCeiling {
+		return qoderMaxTokensCeiling
+	}
+	return v
 }
 
 // buildQoderBody renders the upstream agent_chat_generation body for one request.
@@ -295,12 +331,12 @@ func buildQoderBody(req *openAIRequest, modelKey, userType string) ([]byte, erro
 		mc["key"] = modelKey
 	}
 
-	// parameters: 客户端显式传入时原样透传输出上限；未传则不写该字段，
-	// 由上游用自己的默认值。2026-11-07 按社区共识改造：删除自适应放宽、
-	// 未传补足与按统一上限截断（详见 model_specs.go）。
+	// parameters: 客户端显式传入时透传输出上限；未传则不写该字段，
+	// 由上游用自己的默认值。2026-11-07 按社区共识改造：删除自适应放宽与
+	// 未传补足；仅保留两项必要处理——别名归一化与上游可接受上限收敛。
 	if params, ok := base["parameters"].(map[string]any); ok {
-		if req != nil && req.MaxTokens > 0 {
-			params["max_tokens"] = int64(req.MaxTokens)
+		if v := effectiveMaxTokens(req); v > 0 {
+			params["max_tokens"] = v
 		}
 	}
 
