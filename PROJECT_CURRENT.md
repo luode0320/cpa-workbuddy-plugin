@@ -33,6 +33,21 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-07 21:45-23:30）：**qoder/trae 生产高强度压测 —— 发现并修复「一次畸形请求打穿整池账号」**
+  - **诉求**：「生产的 qoder、trae 插件高强度测试 deepseek-flash，看有什么 bug 并及时修复；同时关注 workbuddy 的 deepseek-v4.1-flash」。
+  - **压测矩阵**：参数（不传 / max_tokens 16·50·100·200·2000·200000 / max_completion_tokens 300）× 流式与非流式 × 并发 6 × 工具调用 × 多轮 5 轮 × 长上下文 50k 字符 × 错误路径 9 组。**工具调用、并发、多轮、长上下文全部正常**；问题集中在错误路径。
+  - **缺陷 A（最高危）：一次畸形请求打穿整池账号**。`role=wizard` 这类客户端请求体错误被当成账号级失败记账 → 逐个写盘禁用 → 换号撞到下一个同样的错误 → 循环。实测 qoderwork **8/8 号全禁**、traework **9/9 号全禁**，随后正常请求全部 503 `auth_unavailable`。同样可触发的还有 `max_tokens:"abc"` / `max_tokens:-5` / `content:123`。
+  - **两轮方案迭代（重要教训）**：
+    - 第一版（0.5.15 / 0.13.8）按**上游报错正文**匹配请求形状错误 → 生产复验**完全无效**。根因：traework 上游对同一非法 role 有两种措辞（`is not one of [...]` / `are not valid`），qoderwork 上游只回无信息量的 `provider_error`，正文匹配从原理上就不可能穷尽。
+    - 第二版（0.5.16 / 0.13.9）改为**发请求前按 `validOpenAIRoles` 校验消息 role**，非法请求直接 400 且不发上游。生产复验：畸形请求 0.01~0.04s 返回 `invalid request: messages[0].role "wizard" is not a valid role`，**账号池 disabled=0、零禁用日志**，与畸形测试间隔数分钟后只发正常请求 **dfmodel 5/5、deepseek-flash 5/5 全部 200**。
+  - **缺陷 B：traework `max_completion_tokens` 别名被静默丢弃**。新客户端（DSH / Codex 系）只发别名时该值被 `json.Unmarshal` 丢弃，等价于没设上限：实测请求 12 token 实际产出 **1091 字符 / 1119 tokens**。修复后 `mt=12` 与 `mct=12` 均精确产出 12 token / `finish=length`。
+  - **已界定的宿主侧放大（插件无法消除）**：宿主 `retry.request-retry=30` + `max-retry-credentials=0` 把插件返回的 400 当成「换账号」，遍历全池后自己合成 503。判据：宿主日志同一 requestId 对全池每号各记一条 `duration=0~1ms` 的同错。修法在宿主 `config.yaml` 用 `request-scoped-errors` + `action: "stop"`（**本轮未擅自改动生产宿主配置**）。
+  - **发布**：`b1efe91`(0.5.15/0.13.8) → `e281cf1`(0.5.16/0.13.9 根因修复) → `2373f53`/`f1b283e`(registry) → `c9dd3f6`(复验结论)。CI 两个 release 各 5 artifacts（darwin/arm64 已知取消）。生产两次热重载均确认 `hot reloaded`，落盘 `.so` sha256 与本地 zip 逐字节一致（traework `708d9d2b…` / qoderwork `a06e4a95…`），两插件 `registered/effective_enabled` 全 true。
+  - **测试**：新增 `qoderwork/policy_test.go`（10 组正文 + 6 组 role 校验）、`traework/request_shape_test.go`（9 组正文 + 6 组 role 校验 + 分类层断言）。变异验证：停用判定后多个用例 KILLED。两插件 cgo-shim build/vet/test 全绿。**修复被既有 `TestClassifyUpstreamFailureMatchesLegacyCountGate`（14 状态 × 15 正文）拦下两次**，最终把豁免收窄到仅 HTTP 200 才通过 —— 该测试是防止悄悄放宽记账范围的有效门禁。
+  - **本轮测试自身造成并已修复的生产影响**：`traework-3841050312977305` 被误禁，已通过插件 `POST /enable`（auth_index `0e07cb85e5b67d41`）恢复，盘上 `disabled=false`、sidecar 条目清除。
+  - **附带发现（未修，非本轮范围）**：coze 插件每秒约 30 次重写 23 个 auth 文件，把 docker json.log 顶到 1.12GB，严重干扰日志检索。
+  - **workbuddy 侧（只读 sidecar 收集，另一会话在改）**：24h 内 workbuddy 上游失败 0 条（最近 2 小时）；20 个账号盘上 `failover_disable` 标记 16→0 已清净；已知遗留问题 = low-credit 禁用与探活「恢复」无限拉锯（`re-enabled` 累计 6000+ 次）、探活回放不可信模型名 `deepseek-v4.1-flash(备用)`、管理密钥与客户端 API key 同为 9 字符（安全问题）。
+
 - 会话（2026-11-07 21:05-22:25）：**workbuddy 首字延迟/超长长尾根因诊断 + P0/P1 修复（0.21.14）**：
   - 诉求：「检查 workbuddy-provider 使用 deepseek-v4.1-flash 有些请求出现首字延迟和生成时间非常非常长的问题，结合 github 其他的项目看看，是不是我们的插件有问题」。
   - **取证**：生产 usage feed 16,944 条样本 —— TTFT p50 **3,479ms** / p90 5,336 / p99 7,993 / **max 150,478ms**；总耗时 p50 5,533 / p99 36,906 / **max 694,166ms**。TTFT>15s 占 0.17%、生成>20s 占 1.78%、总耗时>60s 占 0.27%。**长尾请求 status_code 全为 0（传输级）**。
