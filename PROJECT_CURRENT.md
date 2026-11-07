@@ -46,12 +46,18 @@
   - **测试**：新增 `qoderwork/policy_test.go`（10 组正文 + 6 组 role 校验）、`traework/request_shape_test.go`（9 组正文 + 6 组 role 校验 + 分类层断言）。变异验证：停用判定后多个用例 KILLED。两插件 cgo-shim build/vet/test 全绿。**修复被既有 `TestClassifyUpstreamFailureMatchesLegacyCountGate`（14 状态 × 15 正文）拦下两次**，最终把豁免收窄到仅 HTTP 200 才通过 —— 该测试是防止悄悄放宽记账范围的有效门禁。
   - **本轮测试自身造成并已修复的生产影响**：`traework-3841050312977305` 被误禁，已通过插件 `POST /enable`（auth_index `0e07cb85e5b67d41`）恢复，盘上 `disabled=false`、sidecar 条目清除。
   - **附带发现（未修，非本轮范围）**：coze 插件每秒约 30 次重写 23 个 auth 文件，把 docker json.log 顶到 1.12GB，严重干扰日志检索。
-  - **第二轮补测（00:00-00:15，deepseek-flash）全部通过**：`reasoning_effort` 六档+不传均 200 且 reasoning 长度单调（none 46→medium 140 字符，**修正旧认知「traework 不支持该参数」**）；客户端断连后 0 影响；超长输入 10k/50k/200k/500k 全 200；并发 10→10/10；多模态 200；连续 20 次→20/20；`mt=0/1/-1/1e9` 原样透传、`mt="abc"` 本地拦截不打上游；会话粘连由宿主轮询分摊（非缺陷）。连环 14 个畸形请求会打到瞬时 503，但池 `disabled=0` 且约 1 分钟自愈（宿主 `request-retry:30` 耗尽，非插件缺陷）。
+  - **第二轮（deepseek-flash 专项，全部通过）**：`reasoning_effort` 六档+不传均 200 且 reasoning 长度单调（none 46→medium 140 字符，**修正旧认知「traework 不支持该参数」**）；断连后 0 影响；超长输入 10k-500k 全 200；并发 10→10/10；多模态 200；连续 20 次→20/20；`mt=0/1/-1/1e9` 原样透传、`mt="abc"` 本地拦截（见第五轮）；会话粘连由宿主轮询分摊（非缺陷）。连环畸形请求会打到瞬时 503，但池 `disabled=0` 且约 1 分钟自愈（宿主 `request-retry:30` 耗尽）。
 
-  - **第三轮补测（2026-11-08 00:15-00:35）：非流式路径 + 工具多轮闭环**（均正常，未发现插件缺陷）——
-    - 非流式：两插件均正确返回 `object=chat.completion`、`finish_reason`、`usage`；traework 响应体 `model` 为 `deepseek-v4.1-flash`、qoderwork 为 `auto`（后者是上游原样透传，非缺陷）。
-    - 工具多轮闭环：两插件第一轮均 `finish=tool_calls` 且 `tool_calls=1`；把 `role=tool` 结果回传后第二轮均 `finish=stop`，**tool result 被正确消费**（deepseek-flash 10 字符 / dfmodel 12 字符）。
-  - **第四轮（00:35-00:50）决定性实验：traework `kimi-k3` 完全忽略 `max_tokens`**：同 prompt 下 `mt=5`→8522字符/6023tok、`mt=20`→13017字符/8743tok、`mt=50`→11431字符/6791tok、`mt=5000`→1091字符/678tok，全 `finish=stop`。插件侧已用单测 `TestBuildTraePayload_KimiK3IncludesMaxTokens`（4 组）证明 payload 中该字段原样存在、`grep kimi|kmodel` 零命中 → **非漏传**。**推翻上轮「长列表任务弱化约束」假设**（`mt=5` 在短 prompt 长回答下同样失效，与 prompt 长度无关）；对照 deepseek-flash/qwen3.8-flash 正常受控（54/20 字符）→ 模型级差异。**处置**：上游行为，插件不做人为截断（破坏正文且无法区分「自停」与「被截断」）；需硬约束请换模型。
+  - **第三轮（非流式 + 工具闭环，均正常）**：两插件非流式均正确返回 `object=chat.completion`/`finish_reason`/`usage`（traework 响应体 model 为上游原名、qoderwork 为 `auto`，属透传非缺陷）；工具调用两轮闭环正常——首轮 `finish=tool_calls`，回传 `role=tool` 结果后次轮 `finish=stop`，tool result 被正确消费。
+  - **第四轮（00:35-00:50）定性：traework `kimi-k3` 完全忽略 `max_tokens`**（上游模型行为，非插件缺陷）：同 prompt 下 `mt=5`→8522字符/6023tok、`mt=20`→13017字符/8743tok、`mt=5000`→1091字符，全 `finish=stop`。插件侧用单测 `TestBuildTraePayload_KimiK3IncludesMaxTokens` 证明 payload 字段原样存在、`grep kimi|kmodel` 零命中 → 非漏传。推翻上轮「长列表任务弱化约束」假设；对照 deepseek-flash/qwen3.8-flash 正常受控 → 模型级差异。处置：插件不做人为截断。
+
+  - **第五轮（00:50-01:15）：从真实 feed 挖出第二个「整池扇出」缺陷并修复（0.5.17 / 0.13.10）**
+    - **发现路径**：分析部署后真实流量（非构造测试），按分钟聚合发现 `16:07:50` **同一秒 15 条 `status=0/latency=0`** 异常。
+    - **根因（插件缺陷）**：客户端发 `{"max_tokens":"abc"}` 时 `int`/`int64` 强类型让整个 `json.Unmarshal` 失败，插件返回 `payload parse: cannot unmarshal string ... max_tokens`；宿主当成「账号不行」**遍历整池每号失败一次**后合成 503。与 0.5.16 修的 `role` 非法是同类错误的第二种入口。
+    - **修复**：新增容错类型 `flexNumber`（两插件同源），数字/数字字符串取整，其余（`"abc"`/null/对象/布尔/负数/小数）降级为 **0（=未声明）**——可选参数非法值的安全语义就是未传，不应整单拒绝。
+    - **实测对比**：deepseek-flash 500→**200**（扇出 14→1）、dfmodel 500→**200**（扇出 5→1）；六种形态全部 200 且均 1 次。
+    - **测试**：各补 `TestOpenAIRequest_MalformedMaxTokensDoesNotFailParse`（11/10 组），断言整包 Unmarshal 不失败；**变异回强类型后 4 例 KILLED**。发布 `876756a`→`68a9fd4`，生产 `hot reloaded` 至 0.5.17 / 0.13.10。
+    - **顺带纠正**：feed 中我测试时段失败率 37.7% 是**我自己连环发畸形请求**所致；排除后其他会话 traework 7.6% / qoderwork 13.6%，多为 `status=0` 与上游 200 错误帧，无插件缺陷特征。
 
   - **workbuddy 侧（只读 sidecar 收集，另一会话在改）**：24h 内 workbuddy 上游失败 0 条（最近 2 小时）；20 个账号盘上 `failover_disable` 标记 16→0 已清净；已知遗留问题 = low-credit 禁用与探活「恢复」无限拉锯（`re-enabled` 累计 6000+ 次）、探活回放不可信模型名 `deepseek-v4.1-flash(备用)`、管理密钥与客户端 API key 同为 9 字符（安全问题）。
 
