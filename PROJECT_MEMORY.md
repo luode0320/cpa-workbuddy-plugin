@@ -21,6 +21,15 @@
 
 ### 插件架构事实
 
+- **账号「失败禁用」是三源状态，任何一侧变更都必须同步（2026-11-07 workbuddy 0.21.13 定稿）**：三源 = 宿主 `disabled`（路由真相源，经 `PATCH /v0/management/auth-files/status` 写） + 物理文档三键 `failover_disable` / `failover_disable_model` / `failover_disable_at`（探活候选枚举依据） + sidecar `data/<plugin>-failover.json`（跨重启与宿主回写的权威排除来源）。
+  - **铁律 1**：恢复走 API 成功后**也必须落盘清三键**，否则 `disabled:false + failover_disable:true` 的幽灵标记会让探活每轮把已启用的号重新「恢复」一次，`resetCooldownState` 顺带清零连续失败计数 → 真实失败永远攒不到门限（表现为「失败不再禁用」）。
+  - **铁律 2**：探活候选判据是「盘上 `disabled:true` 且带本机制标记」或「sidecar 记禁用」，**不能只看标记**；同一轮按 `auth_index` 去重。
+  - **铁律 3**：外部启用对账必须独立于探活周期（workbuddy 用 2 分钟 + 启动即跑），并同时清内存集合、sidecar、盘上标记；计数只对「确曾归属本机制」的号重置。
+  - **铁律 4**：`11128 + unapproved channel / Illegal API invocation` 是**渠道级**拒绝（`failure_class.go` 的 `isChannelBlockError` → `failureScopeUpstreamBusy`），不冷却、不禁用、不换号；普通 11128 才按账号×模型拦截处理。三处 11128 调用点统一走 `noteUpstreamBlockHit`。
+  - **铁律 5**：禁用前校验「禁用后池内可用账号是否为 0」，为 0 则拒绝（单账号池与宿主列表不可用时放行）。
+  - **铁律 6**：宿主已禁用但盘上无本机制标记 = 归属丢失，探活应清掉插件侧 sidecar，否则用户手动启用后账号仍被永久排除。
+  - 排查入口：`auths/*.json` 的 `disabled` × `failover_disable` 四象限、`failover_disable_at` 时间戳跨度、`failover probe ok/re-enabled` 频率、上游错误码分布（同一 trace 多个账号同一业务码 = 渠道级）。
+- **共享工作树提交 registry 前必须全量 `git diff registry.json`**（2026-11-07 事故）：`git commit -- registry.json` 会连同并行会话未提交的条目一起提交；本次把他人未完成的 qoderwork 0.13.6 / qoder-ai 0.1.38（`artifacts: []`）推上远端，已用复原提交修复。只核对自己那一段是不够的。
 - **workbuddy 与 qoderwork 并非完全同构**（2026-08-22 实测 HEAD 基线差异：stream.go 224 行 / main.go 420 行 / scheduler.go 123 行）
   - qoderwork 是旧版：publishUsage 8 参数（无 accountLabel/reasoningEffort）、无 preserve watchdog、无 session_auth（无会话粘性）、SSE 用嵌套解包（outer["body"]）、认证走 `applyCosyHeaders`（COSY 签名，endpointChat 常量）+ qoderEncode 编码体
   - workbuddy 是新版：publishUsage 带 reasoningEffort/accountLabel、有 preserve watchdog、session_auth、`backendHeaders`+`endpointChatFor(sa)`、stripDataPrefix SSE

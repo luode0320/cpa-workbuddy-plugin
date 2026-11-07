@@ -23,12 +23,23 @@
 - 状态：活跃维护中。11 大插件全景（10 Provider + 1 用量统计）。**2026-10-22 下线 doubao-provider 与 notion-provider**（用户裁定移除），叠加此前的 Gemini 插件，两者源码与生产残留均已清空。
 - **生产主机（2026-11-07 起）= 45.207.222.65（`cpa-server`，端口 18998），254（`cpa-server-new`）已弃用**：用户明示「254 已经放弃，改回 65 为主服务器」，全部域名已解析到 65，254 只剩 mysql+nginx（CPA 已停）。部署/验收一律打 65，管理密钥用插件配置 `cpa_management_key`，账号在 `auth-dir=/CLIProxyAPI/mysqlstore/mysqlstore/auths`（62 个）。
 - **2026-11-07 01:27 已在 65 完成全量对齐与启用**：11 个插件全部 `configured/registered/enabled=true` —— workbuddy 0.21.9（20 号）/ coze 0.7.4（23 号）/ qoderwork 0.12.6（2 号）/ workbuddy-ai 0.1.35（6 号）/ token-usage 0.2.8 / traework 0.5.7 / qoder-ai 0.1.35 / zcode 0.3.5 / copilot 0.1.12 / qwenwork 0.2.13 / cursor 0.1.7（首次安装）。install 前 5 个显示 `registered=false` 是「该版本 .so 从未加载」（config 里 enabled 本为 true），install 后日志为 `plugin loaded + plugin registered`，非 hot reload 形态。
-- **2026-11-07 19:40 当前生产版本（max_tokens 最小干预批次）**：workbuddy **0.21.12** / workbuddy-ai **0.1.37** / qoder-ai **0.1.37** / qoderwork **0.13.5** / traework **0.5.13** / zcode **0.3.7** / qwenwork **0.2.15** —— 七插件 `configured/registered/enabled/effective_enabled` 全 true，`.so` sha256 与 release zip 逐字节一致。**管理 API 端口是 8317（不是 18998，18998 是 sshd）**。
+- **2026-11-07 19:40 当前生产版本（max_tokens 最小干预批次）**：workbuddy-ai **0.1.37** / qoder-ai **0.1.37** / qoderwork **0.13.5** / traework **0.5.13** / zcode **0.3.7** / qwenwork **0.2.15** —— 上述插件 `configured/registered/enabled/effective_enabled` 全 true，`.so` sha256 与 release zip 逐字节一致。**管理 API 端口是 8317（不是 18998，18998 是 sshd）**。
+- **2026-11-07 20:33 workbuddy 已升级 0.21.12 → 0.21.13**（失败禁用与手动启用联动，`hot reloaded active_version=0.21.13 retired 0.21.12`，落盘 sha256 `574f6921…` 与本地 zip 一致）。
 - 2026-10-25 历史发布批（已过期，仅存档）：zcode 0.3.1 / qoderwork 0.12.1 / traework 0.5.1 / workbuddy 0.21.2 / cursor 0.1.6 / qoder-ai 0.1.31 / coze 0.6.2 / qwenwork 0.2.9 / copilot 0.1.11 / workbuddy-ai 0.1.30 / token-usage 0.2.8（细节见 git log 与 CHANGELOG）。
 - 活动工作区：F:\cpa-plugin
 - 当前时间：2026-11-07 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 会话（2026-11-07 19:59-20:40）：**workbuddy 0.21.13 —— 失败禁用与手动启用联动（生产整池被禁事故闭环）**：
+  - 诉求：「失败禁用和手动启动有冲突，无法配合联动；刚生产所有账号都被禁用，手动全部启用后失败也没有再次禁用」。
+  - **生产取证**：`auths/workbuddy-*.json` 20 个账号中 16 个是 `disabled:false` + `failover_disable:true`（标记 at 时间横跨 10-31 / 11-03 / 11-07 07:28 / 11:49），2 个 `disabled:true` 且无标记；sidecar 只记 2 条。日志 19:49:35-38 同一请求 `05234c3a` 逐个换号撞 19 次 `400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}`，账号被逐个写盘禁用 → 整池清零；此后每 10 分钟一轮「probe ok → re-enabled」把同一批 16 个号反复「恢复」。
+  - **四个根因**：①11128 被 `isModelBlockedError` 判成账号×模型拦截，`recordFailureScoped` 无条件写盘（无门限），渠道级拒绝被当作账号故障；②恢复走宿主 API 时**不写盘**，`failover_disable` 标记永久残留；③探活候选只要看到标记就认，已启用的号每轮被「恢复」一次，`resetCooldownState` 顺带清零连续失败计数 → 真实失败永远攒不到门限（这才是「失败不再禁用」的机制）；④对账只在 10 分钟探活 tick 里跑且只清内存/sidecar，不清盘上标记，手动启用最长 10 分钟不生效。
+  - **修复**：`isChannelBlockError`（11128 + unapproved channel / illegal api invocation）→ `failureScopeUpstreamBusy`（不冷却/不禁用/不换号），三处 11128 调用点统一走 `noteUpstreamBlockHit`；恢复路径无论 API 成败都落盘清三键；探活候选收紧为「盘上 disabled:true 且带标记」或「sidecar 禁用」并按 auth_index 去重；新增 2 分钟独立对账循环（启动即跑一轮）清盘上标记/本地集合/sidecar 并只对确曾归属本机制的号重置计数；新增全池保底（禁用会把可用账号降到 0 时拒绝）；宿主已禁用但无标记时清 sidecar（归属丢失自愈）。
+  - **验证与发布**：`cgo-shim-build.py workbuddy` build/vet/test 全绿；新增 `failover_sync_test.go` 9 组用例。`48f9a35` → CI `42372419618`（Test 12 全绿、Release success，darwin/arm64 cancelled 需 `allow_partial=true`）→ assets 5/5 sha OK → `f31bbad` registry 0.21.13 → 生产 `hot reloaded active_version=0.21.13 retired 0.21.12`，落盘 `.so` sha256 `574f6921…` 与本地 zip 逐字节一致。
+  - **发布期事故（已修复）**：`publish-assets.py` 之后 `git commit -- registry.json` 把并行会话**未完成**的 qoderwork 0.13.6 / qoder-ai 0.1.38 条目（artifacts 为空数组）一并提交（`f31bbad`），远程 registry 短暂出现两个 0-artifact 条目；已用 `b09f6e7` 复原为 0.13.5 / 0.1.37（各 5 artifacts），`validate-registry.py` OK、远端 raw 校验 ALL PASS。**教训：共享工作树里 `git commit -- registry.json` 会带上他人未提交的 registry 改动，提交前必须先 `git diff registry.json` 全量核对受影响插件。**
+  - **生产终态（20:34 实测）**：20 个 workbuddy 账号全部 `disabled=false`、`failover_disabled=None`，盘上 `failover_disable` 标记数 **16 → 0**，sidecar 清空；新版本加载后 12 分钟内 `[workbuddy] failover *` 事件 **0 条**（探活风暴停止）。真实入口 `POST /v1/chat/completions`（deepseek-v4.1-flash）200 / `finish=stop` / 17 tokens。
+  - **待观察**：失败禁用路径的生产实证需等自然失败（单测已覆盖门限与渠道级拦截）；探活/对账多实例（热重载遗留 goroutine）仍会各自跑一轮，属幂等冗余。
 
 - 会话（2026-11-07 19:00-19:35）：**traework 0.5.13 —— 模型目录双通道 + 签到 status/冷却 + 版本头对齐真机**：
   - 触发：用户比对 GitHub Trae 开源项目（`JsonLing/trae-cn-provider`、`crush1994/Trae-AutoCheckin`、`bluechonk/trae-credential-reverse-engineering`）后要求「都改」。
