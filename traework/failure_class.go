@@ -91,6 +91,14 @@ func (s failureScope) disablesAccount() bool {
 // [返回] 该失败应记入的冷却维度。
 // 最近修改时间：2026-10-18 23:40:00；改动原因：新增，按历史判据固化分类。
 func classifyUpstreamFailure(status int, body string) failureScope {
+	// 0. 渠道级拦截（11128 + unapproved channel）必须排在所有账号级判据之前：
+	//    它惩罚的是「这次调用来自未被认可的渠道」，同一进程内换任何账号都会用
+	//    完全相同的头部再被拒一次，与账号健康无关。放在后面会被 403 的账号级
+	//    分支吞掉（2026-11-07 workbuddy 生产实证：一次请求逐个换号撞出 19 次
+	//    该错误，插件把 19 个账号全部写盘禁用，整池清零）。
+	if isChannelBlockError(status, body) {
+		return failureScopeUpstreamBusy
+	}
 	// 1. 硬额度属账号级且优先级最高：账号确实没额度了，不能被正文里可能同时
 	//    出现的模型级文案覆盖掉。
 	if isHardCreditError(status, body) {
@@ -240,6 +248,33 @@ func isTransientUpstreamFailure(status int, body string) bool {
 		return false
 	}
 	return status == 0 || status >= 500 || isSoftRateLimit(status, body) || isEmptyStreamBody(body)
+}
+
+// isChannelBlockError 判定一次失败是否属于「渠道级拦截」。
+//
+// 与 isModelBlockedError 的区别是本判据只看**渠道**，不看账号：上游用它表达
+// 「这次调用的来源渠道不被认可」（11128 + Illegal API invocation from an
+// unapproved channel）。同一个进程换任何账号都会收到同样的拒绝，因此：
+//   - 不记任何账号的冷却（否则整池在数秒内被逐个摘光）；
+//   - 不写盘禁用（账号本身是健康的）；
+//   - 仍按原逻辑停止同请求换号（换号只是把同一个 400 重放 N 次）。
+//
+// 必须同时具备 11128 与渠道文案两个条件：单纯 "request illegal" 的 11128
+// 仍按旧的账号×模型拦截处理，避免把既有语义整体放宽。
+//
+// [参数] status：上游 HTTP 状态码；body：上游响应正文。
+// [返回] true 表示这是渠道级拦截，与账号无关。
+// 最近修改时间：2026-11-07；改动原因：新增，与 workbuddy 同步堵住整池清零。
+func isChannelBlockError(status int, body string) bool {
+	if status != http.StatusBadRequest && status != http.StatusForbidden {
+		return false
+	}
+	if !strings.Contains(body, "11128") {
+		return false
+	}
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "unapproved channel") ||
+		strings.Contains(lower, "illegal api invocation")
 }
 
 // isModelBlockedError 判定一次失败是否属于「上游拦截了这次请求」。

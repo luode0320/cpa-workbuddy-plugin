@@ -195,4 +195,7 @@ func init() {
 	go watchdogLoop()
 	// 禁用探活自带 10 分钟固定周期与不重叠保护，与 watchdog 的巡检节拍分开跑。
 	go failoverProbeLoop()
+	// 外部启用对账：每 2 分钟把「用户已手动启用」同步回插件侧（含盘上陈旧标记），
+	// 否则手动启用的号最长 10 分钟仍被排除。
+	go failoverReconcileLoop()
 }

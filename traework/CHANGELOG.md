@@ -1,5 +1,20 @@
 # TraeWork Plugin Changelog
 
+## 0.5.14
+
+### Fix - 失败禁用与手动启用联动（与 workbuddy 0.21.13 同批整改）
+
+- 背景: workbuddy 侧 2026-11-07 生产事故（一次渠道级 11128 把 19 个账号逐个写盘禁用；手动启用后失败不再禁用）在本插件存在同型缺陷，按同一口径整改。
+- 修复内容:
+  - 新增 `isChannelBlockError`（11128 + `unapproved channel` / `Illegal API invocation`）→ `failureScopeUpstreamBusy`：不记冷却、不写盘禁用、不换号；普通 11128 仍按账号×模型拦截处理。executor.go 六处 11128 分支统一改走 `noteUpstreamBlockHit`。
+  - 恢复路径无论宿主 API 成败都落盘清理 `failover_disable*` 三键；此前只在 API 失败时写盘，`disabled:false + 旧标记` 会让探活反复「恢复」并清零连续失败计数。
+  - 探活候选判据收紧为「盘上 `disabled:true` 且带本机制标记」或「sidecar 记禁用」，并按 `auth_index` 去重。
+  - 对账逻辑重写：按 `auth_index` 去重读盘、只认盘上确实 `disabled:false` 的号，清本地集合 + sidecar + 盘上陈旧标记，且只对确曾归属本机制的号重置连续失败计数；新增独立 2 分钟对账循环（启动即跑一轮）。
+  - 新增全池保底：禁用会把池内可用账号降到 0 时拒绝写盘（单账号池、宿主列表不可用时不阻断）。
+  - 宿主已禁用但盘上无本机制标记（归属丢失）时清掉插件侧 sidecar 与本地记录。
+- 验证: `python scripts/cgo-shim-build.py traework` build / vet / test 全绿；新增 `failover_sync_test.go` 12 组用例。
+- 涉及文件: `failure_class.go`、`model_circuit.go`、`executor.go`、`watchdog.go`、`failover_disable.go`、`failover_disable_test.go`、`failover_sync_test.go`、`test/traework/failover_marker_restore_test.go`。
+
 ## 0.5.13
 
 ### Feat - 模型目录双通道 + 目录过滤、签到 status 预查与 9074 冷却、版本头对齐真机

@@ -18,6 +18,7 @@
 package main
 
 import (
+	"log"
 	"strings"
 )
 
@@ -40,6 +41,26 @@ func noteModelBlockedHit(authID, model string) bool {
 		return false
 	}
 	return recordFailureScoped(authID, model, failureScopeAuthModel)
+}
+
+// noteUpstreamBlockHit 是 11128 的统一记账入口，按正文区分「渠道级」与
+// 「账号×模型级」。
+//
+// 为什么把区分放在这里而不是各调用点：main.go 与 stream.go 共有三处 11128
+// 分支，任何一处漏判都会重新打开「一次请求摘光全池」的口子。让调用点只传
+// 原始 status/body，判据集中在本函数，新增调用点无法绕过。
+//
+// [参数] authID：命中的账号标识；model：已归一化的上游模型名；
+// status：上游 HTTP 状态码；body：上游响应正文。
+// [返回] true 表示已按账号×模型记账；渠道级拦截返回 false 且不产生任何状态。
+// 最近修改时间：2026-11-07；改动原因：新增，渠道级拦截不再惩罚账号。
+func noteUpstreamBlockHit(authID, model string, status int, body string) bool {
+	if isChannelBlockError(status, body) {
+		log.Printf("[workbuddy-ai] channel-level block (11128 unapproved channel): auth=%s model=%s",
+			authID, strings.TrimSpace(model))
+		return false
+	}
+	return noteModelBlockedHit(authID, model)
 }
 
 // resetModelBlockedState 在一次成功请求后清理该模型的残留冷却。

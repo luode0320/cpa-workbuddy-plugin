@@ -151,4 +151,7 @@ func preserveWatchdogLoop() {
 // 最近修改时间：2026-10-22；改动原因：探活周期改为 10 分钟，注释同步。
 func startFailoverProbe() {
 	go failoverProbeLoop()
+	// 外部启用对账：每 2 分钟把「用户已手动启用」同步回插件侧（含盘上陈旧标记），
+	// 否则手动启用的号最长 10 分钟仍被排除。
+	go failoverReconcileLoop()
 }

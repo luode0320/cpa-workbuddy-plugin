@@ -1,5 +1,20 @@
 # WorkBuddy AI Plugin Changelog
 
+## 0.1.38
+
+### Fix - 失败禁用与手动启用联动（与 workbuddy 0.21.13 同批整改）
+
+- 背景: workbuddy 侧 2026-11-07 生产事故（一次渠道级 11128 把 19 个账号逐个写盘禁用；手动启用后失败不再禁用）在本插件存在同型缺陷，按同一口径整改。
+- 修复内容:
+  - 新增 `isChannelBlockError`（11128 + `unapproved channel` / `Illegal API invocation`）→ `failureScopeUpstreamBusy`：不记冷却、不写盘禁用、不换号；普通 11128 仍按账号×模型拦截处理。三处调用点（main.go / stream.go ×2）统一走 `noteUpstreamBlockHit`。
+  - 恢复路径无论宿主 API 成败都落盘清理 `failover_disable*` 三键：API 只改 `disabled`，不清理会让盘上长期留下 `disabled:false + 旧标记`，用户之后手动禁用会被探活误认成本机制的禁用而自动解禁。
+  - 探活候选按 `auth_index` 去重（宿主可能返回重复条目，一轮内对同一个号重复打上游）。
+  - 对账逻辑重写：按 `auth_index` 去重读盘、只认盘上确实 `disabled:false` 的号，清本地集合 + 盘上陈旧标记，且只对确曾归属本机制的号重置连续失败计数（健康号计数不受影响）；新增独立 2 分钟对账循环（启动即跑一轮），不再依赖 10 分钟探活 tick。
+  - 新增全池保底：禁用会把池内可用账号降到 0 时拒绝写盘（单账号池、宿主列表不可用时不阻断）。
+  - 宿主已禁用但盘上无本机制标记（归属丢失）时清掉本地排除记录。
+- 验证: `python scripts/cgo-shim-build.py workbuddy-ai` build / vet / test 全绿；新增 `failover_sync_test.go` 10 组用例。
+- 涉及文件: `failure_class.go`、`model_circuit.go`、`main.go`、`stream.go`、`failover_disable.go`、`failover_disable_test.go`、`failover_sync_test.go`。
+
 ## 0.1.37
 
 ### Fix - 删除自研 max_tokens 控制，改为「显式值零干预」（对齐社区共识）

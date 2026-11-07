@@ -341,6 +341,9 @@ func TestRunFailoverProbeTickReenablesOnlyOnPingSuccess(t *testing.T) {
 	h := newFailoverFakeHost(t)
 	h.addAccount("bad", "idx-bad", nil)
 	h.addAccount("good", "idx-good", nil)
+	// 第三个常驻可用号：写盘禁用有「全池保底」闸门（不准把最后一个可用号摘掉），
+	// 只放两个号时第二轮禁用会被拒，用例就测不到本意。
+	h.addAccount("spare", "idx-spare", nil)
 	disableAccountForFailover("bad", "keep-bad-model")
 	disableAccountForFailover("good", "claude-3-5-sonnet")
 	before := h.writeCount()

@@ -1,5 +1,19 @@
 # QoderWork Plugin Changelog
 
+## 0.13.7
+
+### Fix - 失败禁用与手动启用联动（与 workbuddy 0.21.13 同批整改）
+
+- 背景: workbuddy 侧 2026-11-07 生产事故（恢复不清盘上标记 → 已启用账号被反复探活并清零失败计数）在本插件存在同型缺陷；Qoder 的探活与真实推理共享日配额，白烧额度代价更高。
+- 修复内容:
+  - 恢复路径无论宿主 API 成败都落盘清理 `failover_disable*` 三键。此前只在 API 失败时写盘，盘上长期留着 `disabled:false + 旧标记`，「兼容旧数据」那一路会把已启用的号当禁用号反复探活。
+  - 对账判据从「宿主列表报 enabled」收紧为「盘上确实 `disabled:false`」：本插件的写盘可能尚未被宿主吸收，只看宿主会把刚摘掉的坏号放回路由。
+  - 对账按 `auth_index` 去重读盘；清本地集合 + sidecar + 盘上陈旧标记；只对确曾归属本机制的号重置连续失败计数与当日探活配额（健康号不受影响）。
+  - 新增独立 2 分钟对账循环（启动即跑一轮），不再依赖 10 分钟探活 tick，手动启用后最长 2 分钟生效。
+- 保留: 既有池级熔断（`failoverDisableBudgetExceeded` + 本轮回滚）不变，它已覆盖「一次全局失败摘光全池」。
+- 验证: `python scripts/cgo-shim-build.py qoderwork` build / vet / test 全绿；新增 `failover_sync_test.go` 5 组用例。
+- 涉及文件: `failover_disable.go`、`watchdog.go`、`failover_sync_test.go`。
+
 ## 0.13.6
 
 ### Fix - 补 max_completion_tokens 别名识别 + 超大值收敛（生产压测发现）

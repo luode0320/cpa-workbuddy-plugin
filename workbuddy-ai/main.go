@@ -111,6 +111,9 @@ func init() {
 	// 禁用探活：每 10 分钟串行遍历被本机制禁用的账号，回放失败模型，成功即解除禁用。
 	// 冷却本身不再探测（cooldown_probe.go 已移除），见 failover_disable.go。
 	go failoverProbeLoop()
+	// 外部启用对账：每 2 分钟把「用户已手动启用」同步回插件侧（含盘上陈旧标记），
+	// 否则手动启用的号最长 10 分钟仍被排除。
+	go failoverReconcileLoop()
 	go func() {
 		ticker := time.NewTicker(loginStatesPruneInterval)
 		defer ticker.Stop()
@@ -298,7 +301,7 @@ type registrationCapability struct {
 	UsagePlugin           bool                         `json:"usage_plugin"`
 }
 
-var version = "0.1.37"
+var version = "0.1.38"
 
 func wbRegistration() registration {
 	return registration{
@@ -687,7 +690,8 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			if currentID == "" {
 				currentID = strings.TrimSpace(curSA.Account.UID)
 			}
-			noteModelBlockedHit(currentID, upstreamModel)
+			// 渠道级拦截（unapproved channel）不罚号，由 noteUpstreamBlockHit 分流。
+			noteUpstreamBlockHit(currentID, upstreamModel, statusCode, completionErr.Error())
 			break
 		}
 		if !shouldRotateOnUpstreamErr(statusCode, completionErr.Error()) || attempt >= budget || curSA == nil {

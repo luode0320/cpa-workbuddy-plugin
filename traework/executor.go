@@ -238,7 +238,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			// 11128（含 200 承载的 event:error 帧）：双写记账（模型冷却 + 账号禁用
 			// 写盘）后直接返回，恢复由 10 分钟禁用探活裁决，不再把剩余账号逐个赔进往返。
 			if isModelBlockedError(resp.StatusCode, aggErr.Error()) {
-				noteModelBlockedHit(usedAuthID, circuitKeyModel)
+				noteUpstreamBlockHit(usedAuthID, circuitKeyModel, resp.StatusCode, aggErr.Error())
 				reconcileAfterExecutorErrorForModel(usedAuthID, circuitKeyModel, resp.StatusCode, aggErr.Error())
 				publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, resp.StatusCode, aggErr.Error(), "", 0, authUID, sessionKey)
 				return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, truncateRedacted(aggErr.Error(), 200))
@@ -261,7 +261,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		statusCode := parseUpstreamStatusFromErr(callErr)
 		// 11128：双写记账（模型冷却 + 账号禁用写盘）后直接返回，恢复由禁用探活裁决。
 		if isModelBlockedError(statusCode, callErr.Error()) {
-			noteModelBlockedHit(usedAuthID, circuitKeyModel)
+			noteUpstreamBlockHit(usedAuthID, circuitKeyModel, statusCode, callErr.Error())
 			reconcileAfterExecutorErrorForModel(usedAuthID, circuitKeyModel, statusCode, callErr.Error())
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, callErr.Error(), "", 0, authUID, sessionKey)
 			return nil, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(callErr.Error(), 200))
@@ -442,7 +442,7 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, statusCode, openErr.Error(), "", 0, curAuthUID, ctx.SessionKey)
 			// 11128：双写记账后停止换号，恢复由 10 分钟禁用探活裁决。
 			if isModelBlockedError(statusCode, openErr.Error()) {
-				noteModelBlockedHit(curAuthID, circuitKeyModel)
+				noteUpstreamBlockHit(curAuthID, circuitKeyModel, statusCode, openErr.Error())
 				emitTraeAsyncError(ctx.StreamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(openErr.Error(), 200)), deps)
 				return
 			}
@@ -542,7 +542,7 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 			// 11128（含 200 承载的 event:error 帧）：双写记账后返回，
 			// 恢复由 10 分钟禁用探活裁决。
 			if isModelBlockedError(statusCode, result.Err.Error()) {
-				noteModelBlockedHit(curAuthID, circuitKeyModel)
+				noteUpstreamBlockHit(curAuthID, circuitKeyModel, statusCode, result.Err.Error())
 				emitTraeAsyncError(ctx.StreamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(result.Err.Error(), 200)), deps)
 				return
 			}
@@ -679,7 +679,7 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 			log.Printf("[traework] exec stream upstream error: model=%s auth_hash=%s status=%d err=%s", ctx.Model, authLogHash(curAuthID), statusCode, truncateRedacted(callErr.Error(), 200))
 			// 11128：双写记账（模型冷却 + 账号禁用写盘）后直接返回，恢复由禁用探活裁决。
 			if isModelBlockedError(statusCode, callErr.Error()) {
-				noteModelBlockedHit(curAuthID, circuitKeyModel)
+				noteUpstreamBlockHit(curAuthID, circuitKeyModel, statusCode, callErr.Error())
 				publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, statusCode, callErr.Error(), "", 0, curAuthUID, ctx.SessionKey)
 				return nil, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(callErr.Error(), 200))
 			}
@@ -765,7 +765,7 @@ func runTraeSyncStream(initialAuth *traeAuth, payload map[string]any, ctx traeSy
 		// 11128（含 200 承载的 event:error 帧）：双写记账后返回，
 		// 恢复由 10 分钟禁用探活裁决。
 		if isModelBlockedError(resp.StatusCode, collectErr.Error()) {
-			noteModelBlockedHit(curAuthID, circuitKeyModel)
+			noteUpstreamBlockHit(curAuthID, circuitKeyModel, resp.StatusCode, collectErr.Error())
 			reconcileAfterExecutorErrorForModel(curAuthID, circuitKeyModel, resp.StatusCode, collectErr.Error())
 			publishUsage(ctx.Model, ctx.UpstreamModel, curAuthUID, ctx.Started, usage.Detail{}, true, resp.StatusCode, collectErr.Error(), "", ttftNSBetween(attemptStarted, firstOutputAt), curAuthUID, ctx.SessionKey)
 			return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, truncateRedacted(collectErr.Error(), 200))

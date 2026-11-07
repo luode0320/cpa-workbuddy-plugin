@@ -169,7 +169,8 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			// 400），因此这里只需负责记账——恢复由 10 分钟禁用探活裁决，
 			// 路由层则通过 isAuthModelCoolingDown 跳过该组合。
 			if isModelBlockedError(statusCode, errPayload) {
-				noteModelBlockedHit(curAuthID, upstreamModel)
+				// 渠道级拦截（unapproved channel）不罚号，由 noteUpstreamBlockHit 分流。
+				noteUpstreamBlockHit(curAuthID, upstreamModel, statusCode, errPayload)
 				streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(errPayload, 200)))
 				return
 			}
@@ -426,7 +427,7 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 				if currentID == "" {
 					currentID = strings.TrimSpace(curSA.Account.UID)
 				}
-				noteModelBlockedHit(currentID, model)
+				noteUpstreamBlockHit(currentID, model, statusCode, errOnce.Error())
 			}
 			return chunks, statusCode, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(errOnce.Error(), 200))
 		}

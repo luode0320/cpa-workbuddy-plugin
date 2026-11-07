@@ -166,6 +166,21 @@ func TestReconcileDropsSidecarWhenExternallyEnabled(t *testing.T) {
 	}
 	t.Cleanup(func() { failoverListFn = oldList })
 
+	// 盘上同样 enabled：2026-11-07 起对账判据是「盘上确实已启用」，只看宿主列表
+	// 会把「写盘尚未被宿主吸收」的坏号误判成用户启用。
+	oldPhys := failoverGetPhysicalFn
+	failoverGetPhysicalFn = func(string) (*hostAuthPhysical, error) {
+		return &hostAuthPhysical{
+			Name: "traework-" + authID + ".json",
+			Path: "/tmp/traework-" + authID + ".json",
+			JSON: []byte(`{"disabled":false}`),
+		}, nil
+	}
+	t.Cleanup(func() { failoverGetPhysicalFn = oldPhys })
+	oldPersist := failoverPersistFn
+	failoverPersistFn = func(string, string, string, []byte) error { return nil }
+	t.Cleanup(func() { failoverPersistFn = oldPersist })
+
 	if cleared := reconcileFailoverLocalSet(); cleared == 0 {
 		t.Fatalf("外部启用后对账必须至少清掉 1 个条目")
 	}

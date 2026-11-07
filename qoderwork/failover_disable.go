@@ -47,6 +47,14 @@ const (
 	// 200 个量级，60 秒扫一轮会让上游每分钟承受一整轮 ping，且单轮串行本就跑不完。
 	failoverProbeInterval = 10 * time.Minute
 
+	// failoverReconcileInterval 是「外部启用对账」的独立周期。
+	//
+	// 为什么与探活解耦：探活要打上游（Qoder 的探活与真实推理共享日配额），只能
+	// 10 分钟一轮；对账只读宿主 auth 列表与物理文档，代价低得多。手动启用后若等
+	// 10 分钟才生效，用户看到的就是「启用了但插件还在排除它」——2026-11-07
+	// workbuddy 生产复现同类问题，本插件同步整改。
+	failoverReconcileInterval = 2 * time.Minute
+
 	// failoverConfirmTimeout 是写盘后等待宿主吸收该状态的时限。watcher 无去抖，
 	// 正常毫秒级完成；超时说明宿主侧没读到这个状态（路径异常、文件不在监听目录、
 	// 或该记录根本没有物理文件），必须告警——否则「写了就算禁了」会把失效隐藏起来。
@@ -505,6 +513,63 @@ func putFailoverMarkersIntoExtra(extra map[string]any, raw []byte) map[string]an
 	return extra
 }
 
+// clearFailoverMarkersInDoc 从顶层键映射里删掉本机制的三个键。
+//
+// 只删自己的键，disabled 与其它顶层键一律不动：调用方要么已经通过宿主 API 改过
+// disabled（本函数只补标记清理），要么明确只想清归属。
+//
+// [参数] doc：盘上 JSON 解析结果（原地修改）。
+// [返回] true 表示确实删掉了至少一个键。
+// 最近修改时间：2026-11-07；改动原因：新增，修复标记永不清除导致的归属误判。
+func clearFailoverMarkersInDoc(doc map[string]any) bool {
+	if doc == nil {
+		return false
+	}
+	changed := false
+	for _, k := range []string{failoverDisableKey, failoverDisableModelKey, failoverDisableAtKey} {
+		if _, ok := doc[k]; ok {
+			delete(doc, k)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// persistFailoverMarkersCleared 尽力把「本机制标记已解除」写回物理文档。
+//
+// 为什么必须在 API 成功路径也写：`PATCH /auth-files/status` 只改 disabled 与宿主
+// 真相源，它不认识本机制的三键；不落盘清理，盘上就会长期留着
+// `disabled:false + failover_disable:true`。虽然本插件的探活候选以 sidecar 为主，
+// 陈旧标记仍会让「兼容旧数据」那一路把已启用的号当禁用号反复探活（Qoder 的探活
+// 与真实推理共享日配额，白白消耗额度），并让归属判断失真。
+//
+// 写失败只记日志：标记清理是收敛性动作，失败最多让下一轮再清一次。
+//
+// [参数] phys：宿主交来的物理文档快照；nil 或不可解析时直接返回 false。
+// [返回] true 表示盘上标记已清除。
+// 最近修改时间：2026-11-07；改动原因：新增。
+func persistFailoverMarkersCleared(phys *hostAuthPhysical) bool {
+	if phys == nil || len(phys.JSON) == 0 {
+		return false
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(phys.JSON, &doc); err != nil || doc == nil {
+		return false
+	}
+	if !clearFailoverMarkersInDoc(doc) {
+		return true
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return false
+	}
+	if err := failoverPersistFn(phys.Name, phys.Path, "", raw); err != nil {
+		log.Printf("[qoderwork] failover marker cleanup write failed: auth=%s err=%v", phys.Name, err)
+		return false
+	}
+	return true
+}
+
 // confirmFailoverHostState 轮询宿主内存状态，确认这次写盘真的被吸收。
 //
 // 必须由调用方异步发起：宿主 watcher 正常是毫秒级，但 `host.auth.list` 一次 RPC
@@ -841,12 +906,18 @@ func reenableAccountForFailover(authIndex, authID string) bool {
 	// 恢复同样优先走宿主管理 API：宿主真相源里的 disabled 不置回 false，
 	// 宿主会继续把这个号挡在路由外，插件侧解除就成了空转。
 	apiErr := setHostAuthDisabled(phys.Name, authIndex, false)
-	if apiErr != nil {
-		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
-			log.Printf("[qoderwork] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
-		}
-		if err := failoverPersistFn(phys.Name, phys.Path, "", raw); err != nil {
-			log.Printf("[qoderwork] failover re-enable host write failed, clearing sidecar only: auth=%s err=%v", authID, err)
+	if apiErr != nil && !errors.Is(apiErr, errCPAManagementNotConfigured) {
+		log.Printf("[qoderwork] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+	}
+	// 无论 API 成败都必须落盘清理：API 只改 disabled，不认识本机制三键。只在
+	// API 失败时才写盘，会让盘上长期留着 `disabled:false + failover_disable:true`，
+	// 「兼容旧数据」那一路会把已启用的号当禁用号反复探活（消耗共享日配额）。
+	if err := failoverPersistFn(phys.Name, phys.Path, "", raw); err != nil {
+		log.Printf("[qoderwork] failover re-enable host write failed, clearing sidecar only: auth=%s err=%v", authID, err)
+		// API 已成功时宿主侧状态是对的，落盘失败只影响标记清理，不能因此
+		// 谎报恢复失败。
+		if apiErr != nil {
+			return false
 		}
 	}
 	// 解除禁用必须同时清掉内存冷却：双写下两侧是同一个故障的两份记录，只解一边
@@ -1111,10 +1182,18 @@ func reconcileFailoverLocalSet() int {
 		// 列表不可用时什么都不清：此时「查不到」不代表「已恢复」。
 		return 0
 	}
-	enabled := make(map[string]struct{})
+	hostEnabled := make(map[string]string)
+	// idByIndex 保留宿主口径的账号 ID，供清计数器使用（键形态可能被归一化）。
+	idByIndex := make(map[string]string)
 	for _, f := range files {
 		if f.Disabled {
 			continue
+		}
+		authIndex := strings.TrimSpace(f.AuthIndex)
+		if authIndex != "" && strings.TrimSpace(f.ID) != "" {
+			if _, ok := idByIndex[authIndex]; !ok {
+				idByIndex[authIndex] = strings.TrimSpace(f.ID)
+			}
 		}
 		for _, raw := range []string{f.ID, f.Name, f.AuthIndex} {
 			key := strings.ToLower(strings.TrimSpace(raw))
@@ -1123,17 +1202,66 @@ func reconcileFailoverLocalSet() int {
 			}
 			// auth_index 保持原样即可命中；文件名/ID 还要再过一次归一化，
 			// 才能对上 markFailoverDisabledLocal 写入的裸 UID 形态。
-			enabled[key] = struct{}{}
+			hostEnabled[key] = authIndex
 			if norm := normalizeFailoverKey(raw); norm != "" {
-				enabled[norm] = struct{}{}
+				hostEnabled[norm] = authIndex
 			}
 		}
 	}
+	if len(hostEnabled) == 0 {
+		return 0
+	}
+
+	// 按 auth_index 去重读盘：同一账号在列表里可能有 ID / 文件名 / auth_index
+	// 三个键，逐键读盘会把 RPC 放大三倍。
+	//
+	// 判据从「宿主报 enabled」收紧为「盘上确实 disabled:false」：本插件的写盘
+	// 可能尚未被宿主吸收，此时 clearance 会把刚摘掉的坏号放回路由（2026-10-27
+	// workbuddy 同型修正）。
+	physByIndex := make(map[string]*hostAuthPhysical, len(idByIndex))
+	trulyEnabled := make(map[string]struct{}, len(idByIndex))
+	// wasOurs 只对「本轮之前仍被本机制认领」的号清失败计数与探活配额：无差别清
+	// 所有启用账号等于把计数变成 2 分钟一次的定期归零，那正是「失败不再禁用」
+	// 的另一种成因。
+	wasOurs := make(map[string]bool, len(idByIndex))
+	for _, authIndex := range hostEnabled {
+		if authIndex == "" {
+			continue
+		}
+		phys, seen := physByIndex[authIndex]
+		if !seen {
+			got, errGet := failoverGetPhysicalFn(authIndex)
+			if errGet != nil || got == nil || len(got.JSON) == 0 {
+				// 盘读不到无法判定，保持排除（漏杀可自愈，错杀会让号永久挡在路由外）。
+				physByIndex[authIndex] = nil
+				continue
+			}
+			phys = got
+			physByIndex[authIndex] = got
+			id := idByIndex[authIndex]
+			if parseFailoverAuthDoc(phys.JSON).failoverDisable ||
+				isFailoverDisabledLocal(id) ||
+				failoverStateIsDisabled(id) {
+				wasOurs[authIndex] = true
+			}
+		}
+		if phys == nil || parseFailoverAuthDoc(phys.JSON).disabled {
+			continue
+		}
+		trulyEnabled[authIndex] = struct{}{}
+	}
+	if len(trulyEnabled) == 0 {
+		return 0
+	}
+
 	failoverProbeModelMu.Lock()
-	defer failoverProbeModelMu.Unlock()
 	cleared := 0
 	for key := range failoverDisabledLocal {
-		if _, ok := enabled[key]; !ok {
+		authIndex, ok := hostEnabled[key]
+		if !ok {
+			continue
+		}
+		if _, ok := trulyEnabled[authIndex]; !ok {
 			continue
 		}
 		delete(failoverDisabledLocal, key)
@@ -1141,15 +1269,61 @@ func reconcileFailoverLocalSet() int {
 		delete(failoverProbeQuota, key)
 		cleared++
 	}
-	// sidecar 必须同步对账：否则用户在宿主面板把号启用后，插件仍按 sidecar
-	// 判据一直跳过它，形成「宿主说可用、插件说禁用」的死角。
+	failoverProbeModelMu.Unlock()
+
+	// sidecar 同步对账：它是路由判据的权威来源，比本地集合更持久。外部启用后
+	// 若不一起清，账号会在 scheduler.pick 里被永久排除，而盘上与宿主都已可用。
+	// 必须在 failoverProbeModelMu 释放后再调：failoverStateClearDisabled 自己取
+	// failoverStateMu 并写盘，持锁调用会与其它 sidecar 写入形成锁序风险。
 	for _, key := range failoverStateDisabledIDs() {
-		if _, ok := enabled[key]; ok {
-			failoverStateClearDisabled(key)
-			cleared++
+		authIndex, ok := hostEnabled[key]
+		if !ok {
+			continue
+		}
+		if _, ok := trulyEnabled[authIndex]; !ok {
+			continue
+		}
+		failoverStateClearDisabled(key)
+		cleared++
+	}
+
+	// 清盘上陈旧标记与失败计数/探活配额：手动启用后真正联动的关键一步。
+	for authIndex := range trulyEnabled {
+		phys := physByIndex[authIndex]
+		if phys == nil {
+			continue
+		}
+		persistFailoverMarkersCleared(phys)
+		if !wasOurs[authIndex] {
+			continue
+		}
+		if id := idByIndex[authIndex]; id != "" {
+			resetCooldownState(id)
+			resetFailoverProbeQuota(id)
 		}
 	}
 	return cleared
+}
+
+// failoverReconcileLoop 外部启用对账的常驻循环。
+//
+// 与 failoverProbeLoop 分开：对账只读宿主列表与物理文档，2 分钟一轮代价可忽略；
+// 探活要打上游（Qoder 探活与真实推理共享日配额），必须保持 10 分钟。合并成一个
+// 10 分钟循环会让「手动启用」最长 10 分钟不生效。
+//
+// 最近修改时间：2026-11-07；改动原因：新增，手动启用与失败禁用必须能联动。
+func failoverReconcileLoop() {
+	// init() 早于宿主装配，立即读列表会静默失败，与探活/watchdog 一致先等宿主就绪。
+	waitHostReadyForWatchdog(watchdogStartupWait, hostReadyForWatchdog)
+	// 先立即对账一轮再进 ticker：插件热重载后用户往往刚在面板启用过账号。
+	reconcileFailoverLocalSet()
+	ticker := time.NewTicker(failoverReconcileInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		// 对账是幂等读改写，不加 TryLock：上一轮再慢也只是多读一次，
+		// 丢轮次反而会延长「手动启用未生效」的窗口。
+		reconcileFailoverLocalSet()
+	}
 }
 
 // failoverProbeLoop 禁用账号探活的常驻循环。
