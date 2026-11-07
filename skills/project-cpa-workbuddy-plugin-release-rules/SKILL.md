@@ -101,6 +101,12 @@ git push origin main
 
 ### Step 8 · dispatch CI + 轮询
 
+> **必带 `allow_partial: "true"`（2026-11-07 实测，七插件批次）**：`darwin/arm64` 在 GitHub 队列内几乎必被 cancelled（3 秒内结束），导致 `build-cross != success` → `Release` job 被 skip，整批发布等于没发。首轮 7 个并行 dispatch 全部 `cancelled` 就是这个原因，与并发无关（单发同样复现）。
+>
+> **判据只看 Release job 与 release 实体，不看 run conclusion**：带 `allow_partial` 后 run 仍显示 `cancelled`（存在 cancelled job），但 `Release` job 为 `success`、release 实体已创建、6 个 assets 齐全。验证方式：`GET /releases/tags/<plugin>-v<version>`；**用 run conclusion 判成败会误判为失败并重复发布**。
+>
+> **并行 dispatch 可行**：带 `allow_partial` 后 7 个并行均能成功。但 `display_title` 都是 `Build`，必须查 run 的 jobs 名（含插件 id）来建立 run ↔ 插件对应关系，不能靠创建时间猜。
+
 ```python
 import json, time, urllib.request, urllib.error, pathlib
 TOKEN = pathlib.Path('C:/Users/luode/.github/token').read_text().strip()
@@ -201,6 +207,10 @@ print('FINAL:', 'ALL PASS' if ok else 'FAIL')
 > **授权说明（2026-08-31）**：生产部署是完整发布链路的固有收尾步骤，默认已获授权，agent 不得以"需要额外授权"为由跳过。只要用户在本轮显式提出"发布 / 部署 / 上生产 / 更新生产"等发布意图，或用户此前已明确"不需要授权，默认都是授权的"，Step 13 就应直接执行并验证到位，直到生产插件版本与 registry 对齐（`active_version` = 目标版本、账号/面板接口 200），无需再单独询问。跳过生产部署导致"仓库最新但生产仍旧版"属发布未完成。
 
 > **生产主机固定为 `cpa-server` = 45.207.222.65:18998（2026-11-07 用户裁定：254 已放弃，65 改回主服务器）**。Step 13 的全部 install / 验收命令都在该机执行；`MANAGEMENT_KEY` 取该机 config 插件段的 `cpa_management_key`（65 的 `management.secret-key` 是 bcrypt 哈希、无明文）。账号规模看 `auth-dir=/CLIProxyAPI/mysqlstore/mysqlstore/auths`，不要数宿主机 `auths/`。
+>
+> **端口分工（2026-11-07 实测，易踩）**：`18998` 是 **sshd** 端口，CPA 管理 API 在 **8317**。对 18998 调 `/v0/management/*` 只会得到 `code=000`（连接被 sshd 关闭），误判为"管理 API 挂了"。
+>
+> **install 后不要立刻查状态**：返回 200 只代表文件已落盘，加载是异步的。实测 `zcode`/`qoder-ai`/`qwenwork` 在 19:32:5x 查询仍为 `registered=false`，19:33:46 才出现 `plugin loaded + plugin registered`。**等 40~60 秒再查**，过早查询会误判成加载失败。
 
 ```bash
 # 服务器本机（docker host 网络，端口 8317）；MANAGEMENT_KEY 取 65 插件配置的 cpa_management_key

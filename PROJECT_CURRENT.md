@@ -23,6 +23,7 @@
 - 状态：活跃维护中。11 大插件全景（10 Provider + 1 用量统计）。**2026-10-22 下线 doubao-provider 与 notion-provider**（用户裁定移除），叠加此前的 Gemini 插件，两者源码与生产残留均已清空。
 - **生产主机（2026-11-07 起）= 45.207.222.65（`cpa-server`，端口 18998），254（`cpa-server-new`）已弃用**：用户明示「254 已经放弃，改回 65 为主服务器」，全部域名已解析到 65，254 只剩 mysql+nginx（CPA 已停）。部署/验收一律打 65，管理密钥用插件配置 `cpa_management_key`，账号在 `auth-dir=/CLIProxyAPI/mysqlstore/mysqlstore/auths`（62 个）。
 - **2026-11-07 01:27 已在 65 完成全量对齐与启用**：11 个插件全部 `configured/registered/enabled=true` —— workbuddy 0.21.9（20 号）/ coze 0.7.4（23 号）/ qoderwork 0.12.6（2 号）/ workbuddy-ai 0.1.35（6 号）/ token-usage 0.2.8 / traework 0.5.7 / qoder-ai 0.1.35 / zcode 0.3.5 / copilot 0.1.12 / qwenwork 0.2.13 / cursor 0.1.7（首次安装）。install 前 5 个显示 `registered=false` 是「该版本 .so 从未加载」（config 里 enabled 本为 true），install 后日志为 `plugin loaded + plugin registered`，非 hot reload 形态。
+- **2026-11-07 19:40 当前生产版本（max_tokens 最小干预批次）**：workbuddy **0.21.12** / workbuddy-ai **0.1.37** / qoder-ai **0.1.37** / qoderwork **0.13.5** / traework **0.5.13** / zcode **0.3.7** / qwenwork **0.2.15** —— 七插件 `configured/registered/enabled/effective_enabled` 全 true，`.so` sha256 与 release zip 逐字节一致。**管理 API 端口是 8317（不是 18998，18998 是 sshd）**。
 - 2026-10-25 历史发布批（已过期，仅存档）：zcode 0.3.1 / qoderwork 0.12.1 / traework 0.5.1 / workbuddy 0.21.2 / cursor 0.1.6 / qoder-ai 0.1.31 / coze 0.6.2 / qwenwork 0.2.9 / copilot 0.1.11 / workbuddy-ai 0.1.30 / token-usage 0.2.8（细节见 git log 与 CHANGELOG）。
 - 活动工作区：F:\cpa-plugin
 - 当前时间：2026-11-07 (GMT+8)
@@ -44,7 +45,9 @@
   - **改动**：删除四类自研控制 —— `minMaxTokensFloor=32768`、`defaultMaxOutputTokens/defaultReasoningMaxTokens=128000`、推理模式放宽 `<=8192`、广播层无条件抬至 128000。**共 7 个插件**（workbuddy / workbuddy-ai / qoder-ai / qoderwork / traework / zcode / qwenwork）的 `model_specs.go` **逐字节同源**（md5 一致），只保留 `normalizeMaxTokensInPlace`（别名翻译 + GPT<16→16）。请求侧：workbuddy/workbuddy-ai/zcode/qwenwork 走该函数；qoder-ai/qoderwork 显式才写、未传保留 `baseprompt.json` 官方模板的 32768；traework 显式透传、流式未传补 `streamDefaultMaxTokens`。元数据层 `maxOutputTokens()` 改为原样透传，上游不给则留 0（不虚报）。qwenwork/copilot/cursor 中仅 qwenwork 有同类控制，已一并改造；copilot/cursor 本无此机制。
   - **验证**：七插件 `python scripts/cgo-shim-build.py <plugin>` 全绿（build/vet/test），`model_specs.go` md5 唯一；`max_tokens_test.go` 全部重写，覆盖生产事故回归（显式 2000 → 2000）、不放宽（8192 → 8192）、不套地板（100 → 100）、不预截断（200000 → 200000）、别名翻译、畸形值不洗白、GPT 下限。
   - **规则同步**：`skills/project-cpa-workbuddy-plugin-model-specs-and-max-tokens-rules/SKILL.md` 全文重写为「最小干预」，原「反模式三=不干涉」「§3.2 放宽」「§3.3 统一地板」「§5 验收第 1 条」全部推翻。
-  - **待办**：①对外广播输出上限仍是上游声称值（多数被钳到 32K），可选引入探测脚本只标注不覆盖；②发布链路（13 步）本轮尚未执行。
+  - **发布与生产验收（已完成）**：CI 首轮 7 个并行全部 `cancelled`，根因是 `darwin/arm64` 在队列内被取消致 `build-cross != success` → Release 被 skip；**必须带 `allow_partial=true` 才能发布**（run 结论仍显示 cancelled，但 Release job 为 success，判据应看 Release job 与 release 实体，不能看 run conclusion）。带该参数后 7 个插件 Release 全 success。registry 因并行会话提交被覆盖回旧值，已用 `publish-assets.py <plugin> <version> --allow-missing` 重同步（缺 `darwin_arm64` 需显式传参）。生产 `plugin-store install` 全部 200，七插件 `reg=true / eff=true`，落盘 `.so` sha256 与 release zip 逐字节一致。**行为证据**：改造后真实请求 `input=342297`、`reasoning_effort=max`，`output_tokens` 仅 **258**、`reasoning_tokens` 54、耗时 **4.7s**（改造前同场景 12000~22000 tokens / 81~145s）。
+  - **并行会话协调**：`traework` 的 0.5.12 被并行会话的 0.5.13 覆盖（其 `53fbd7d` 基于本轮的 `aee52c0`，已含全部 max_tokens 改造），最终 traework 以 0.5.13 上线，无需重发。
+  - **待办**：对外广播输出上限仍是上游声称值（多数被钳到 32K），可选引入探测脚本只标注不覆盖。
 
 - 会话（2026-11-07 18:05-18:40）：**traework 0.5.11 —— 0.5.10 未真正生效 + 上游 reasoning 不受控的定性**：
   - 诉求：「先修复 trae 的问题」。
