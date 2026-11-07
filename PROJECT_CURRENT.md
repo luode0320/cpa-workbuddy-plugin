@@ -31,6 +31,16 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-07 19:56-20:50）：**qoder / trae 生产高强度压测 —— 发现并修复 2 个真实缺陷**：
+  - **矩阵**：qoderwork(`dfmodel`) / traework(`qwen3.8-max`) × {显式 2000、显式 100、别名 300、不传、显式 200000} + 并发（3 / 6）。
+  - **缺陷一（qoder 别名被丢弃）**：`openAIRequest` 只有 `max_tokens`，新客户端只发 `max_completion_tokens` 时该值被直接丢弃。实测 `max_completion_tokens=300` → 实际生成 **8009 tokens / 7954 字符**；修复后 `comp=334 / chars=299 / finish=length`。
+  - **缺陷二（qoder 超大值打穿）**：`max_tokens=200000` 触发上游 `provider_error`；二分确认 `131072` 通过、`200000` 报错 → 新增 `qoderMaxTokensCeiling=131072` 收敛（只拦会报错的畸形大值，131072 内原样透传）。修复后 200000 正常返回。
+  - **发现三（traework 模型级，非插件缺陷）**：`qwen3.8-max` **完全忽略 max_tokens** —— `max_tokens=10` 输出完整 100 行（291 字符 / `finish=stop`）；`2000` 与 `100` 输出几乎相同（16983 / 17098 tokens）。插件侧 `buildTraePayload` 单测证明字段正确透传。**此前记忆「trae 上游 max_tokens 只约束正文」基于 `deepseek-v4.1-flash`，不适用于 `qwen3.8-max`。**
+  - **上游语义差异（同批实测）**：qoderwork 的 reasoning 计入 max_tokens（`mt=10` → comp=36、正文 9 字符）；traework `qwen3.8-max` 完全不约束；workbuddy 严格按总预算（`mt=100` → out=100 / `finish=length`）。
+  - **并发**：qoderwork 3/3 成功（wall 2.4s，comp 47/57/59）；traework 6/6 成功（wall 6.7s，out 56~78）。
+  - **发布**：qoder-ai **0.1.38** / qoderwork **0.13.6**，CI 带 `allow_partial` 通过，registry 5 artifacts，生产 `reg=true/eff=true`。
+  - **两个副产物坑**：①assets 下载触发 `403 rate limit exceeded`（core 限额充足，403 来自资产通道），改用 `releases/download/<tag>/<asset>` 直链绕过；②下载失败时 `publish-assets.py` 会把插件写成 **0 artifacts**，必须重下后重跑。
+
 - 会话（2026-11-07 19:59-20:40）：**workbuddy 0.21.13 —— 失败禁用与手动启用联动（生产整池被禁事故闭环）**：
   - 诉求：「失败禁用和手动启动有冲突，无法配合联动；刚生产所有账号都被禁用，手动全部启用后失败也没有再次禁用」。
   - **生产取证**：`auths/workbuddy-*.json` 20 个账号中 16 个是 `disabled:false` + `failover_disable:true`（标记 at 时间横跨 10-31 / 11-03 / 11-07 07:28 / 11:49），2 个 `disabled:true` 且无标记；sidecar 只记 2 条。日志 19:49:35-38 同一请求 `05234c3a` 逐个换号撞 19 次 `400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}`，账号被逐个写盘禁用 → 整池清零；此后每 10 分钟一轮「probe ok → re-enabled」把同一批 16 个号反复「恢复」。

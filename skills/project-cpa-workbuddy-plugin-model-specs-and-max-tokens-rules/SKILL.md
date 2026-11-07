@@ -76,15 +76,23 @@ description: 当开发、接入新 AI 服务商插件（如 workbuddy、workbudd
 | traework（流式） | 补 `streamDefaultMaxTokens` | trae 上游对未传会给极小上限，长任务刚开口就 done（独立实测） |
 | traework（非流式） | 不写该字段 | 沿用既有语义 |
 
-### 2.3 原则三：只保留两条有硬证据的归一化
+### 2.3 原则三：只保留三条有硬证据的归一化
 
 1. **别名翻译**：`max_completion_tokens` → `max_tokens`。
    - 上游只认 `max_tokens`，别名透传会被忽略后回落上游默认（实测 32000）；
    - 显式 `max_tokens` 优先，别名无论是否翻译一律删除；
    - 非正整数（0 / null / 负数 / 字符串 / 小数）不翻译，不把畸形值洗成合法值。
+   - **实现陷阱（2026-11-07 实测）**：走 map 的插件用 `normalizeMaxTokensInPlace` 天然覆盖；
+     走结构体的 qoder 系必须**在 `openAIRequest` 上同时声明两个字段**，否则别名被
+     `json.Unmarshal` 静默丢弃（实测 `max_completion_tokens=300` → 实际生成 8009 tokens）。
 2. **GPT 系下限**：`gpt-` 前缀模型且 `< 16` 时抬至 16。
    - 两家独立实测：15 拒、16 过，`code=11133 model_param_invalid`；
    - 非 GPT 模型无此限制，不得套用。
+3. **上游可接受上限收敛（仅 qoder 系）**：`qoder-ai` / `qoderwork` 超过 `131072` 时收敛到 131072。
+   - 2026-11-07 二分实测：`131072` 通过、`200000` 返回
+     `upstream 200: provider_error: Error in upstream response`；
+   - 这**不是输出上限控制**，只拦会让上游直接报错的畸形大值；131072 以内原样透传；
+   - workbuddy / traework 不要照抄本项（各自上游行为不同）。
 
 ## 3. 插件实施规范
 
@@ -148,6 +156,9 @@ func normalizeMaxTokensInPlace(obj map[string]any) bool {
 6. **别名翻译**：仅传别名 → 译为 `max_tokens`；两者都有 → 显式优先、别名删除；
 7. **畸形值不洗白**：别名为 0 / 负数 / 字符串 / 小数 → 不写 `max_tokens`；
 8. **GPT 下限**：`gpt-` 模型传 5 → 16；非 GPT 模型传 5 → 5。
+9. **别名识别（结构体插件）**：只发 `max_completion_tokens` 时必须生效——qoder 系
+   需断言 `effectiveMaxTokens` 返回该值，防止别名被 `json.Unmarshal` 静默丢弃；
+10. **上游可接受上限收敛**：qoder 系 `200000` → `131072`；`131072` 及以下原样保留。
 
 另需保证：
 
@@ -157,9 +168,13 @@ func normalizeMaxTokensInPlace(obj map[string]any) bool {
   `computeAdaptiveMaxTokens` / `lookupOfficialModelSpec` 的**代码引用**
   （注释中说明历史可以保留）。
 
-## 5. 已知遗留（不阻塞，待决策）
+## 5. 已知遗留与模型级差异（不阻塞，待决策）
 
-对外广播的输出上限仍是上游声称值，而社区实测多数模型被静默钳制在 32K。
+**模型级差异（2026-11-07 实测，重要）**：同一上游内不同模型对 `max_tokens` 的遵守程度不同——
+`traework` 的 `qwen3.8-max` **完全忽略**该字段（`max_tokens=10` 仍输出完整 100 行 / 291 字符、`finish=stop`），
+而 `deepseek-v4.1-flash` 遵守。因此「某家上游遵守 / 不遵守 max_tokens」的结论**不能跨模型套用**，
+排查时必须先确认具体模型，再判断是插件缺陷还是模型行为。
+
+**输出上限广播**：对外广播的仍是上游声称值，而社区实测多数模型被静默钳制在 32K。
 可选做法：照 linguo2625469 引入探测脚本，测出真实钳制值后**只标注不覆盖**
-（`output_clamp` / `max_output_tokens_clamped`）。当前按「不虚报也不额外猜」
-处理，即原样透传上游值。
+（`output_clamp` / `max_output_tokens_clamped`）。当前按「不虚报也不额外猜」处理，原样透传上游值。
