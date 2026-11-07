@@ -154,6 +154,53 @@ var modelLevelResourceMarkers = []string{
 	"overloaded",
 }
 
+// requestShapeFailureMarkers 是「上游明确指认请求体形状错误」的固定文案。
+//
+// 这类失败的成因在客户端发来的请求本身（非法 role、非法参数类型、字段越界），
+// 与账号健康度完全无关：换任何账号、任何模型，同一个请求体都会被同样拒绝。
+//
+// 2026-11-07 生产实测（本插件 0.13.7）：发一次 role=wizard 的请求，上游返回
+// HTTP 200 + provider_error，插件按账号级失败记账并把该号写盘禁用；同一个
+// 请求连续撞完池内 8 个账号后整池被禁，后续所有正常请求一律 503
+// auth_unavailable。实测修复前 1 次畸形请求 → 5/5 次正常请求失败。
+//
+// 刻意不含通用 transport / 限流文案：那些与请求形状无关，仍须记在账号头上。
+var requestShapeFailureMarkers = []string{
+	"is not one of",
+	"invalid_parameter",
+	"invalid parameter",
+	"invalid request",
+	"cannot unmarshal",
+	"unmarshal",
+	"missing required",
+	"required field",
+	"field validation",
+	"bad request",
+	"tool call failed",
+}
+
+// isRequestShapeFailure 判定失败是否由客户端请求体形状引起。
+//
+// 与 isModelLevelFailure 的分工：模型级故障是「模型后端不可用」，请求形状错误是
+// 「这个请求本身不合法」。两者的共同点是都不该记在账号头上，差别是前者换模型
+// 也无用、后者改请求才有用；对记账而言结论一致——不冷却、不禁用、不换号。
+//
+// [参数] body：上游响应正文或错误帧文本。
+// [返回] true 表示该失败由请求本身引起，与账号无关。
+// 最近修改时间：2026-11-07 22:30:00；改动原因：新增，堵住畸形请求逐个禁用整池账号。
+func isRequestShapeFailure(body string) bool {
+	if strings.TrimSpace(body) == "" {
+		return false
+	}
+	lower := strings.ToLower(body)
+	for _, m := range requestShapeFailureMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // isModelLevelFailure 判定一次上游失败是否属于「模型/后端池级故障」，
 // 即换账号也无法改变结果的失败。
 //

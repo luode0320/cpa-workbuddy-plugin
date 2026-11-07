@@ -76,6 +76,29 @@ func normalizeMaxTokensInPlace(obj map[string]any) bool {
 	return changed
 }
 
+// effectiveMaxTokens 取客户端显式声明的输出上限。
+//
+// 优先级：显式 max_tokens > 别名 max_completion_tokens > 0（未传）。非正值一律
+// 视为未传。这里刻意**不做**任何上限截断：trae 上游对越界值静默钳制而非报错，
+// 预截断只会掩盖上游真实规格（见本文件顶部的社区共识说明）。
+// 2026-11-07 新增此函数的原因：请求体此前只解析 max_tokens，新客户端只发
+// max_completion_tokens 时该值被静默丢弃，等价于没设上限。
+// [参数] req：已解析的客户端请求（可为 nil）
+// [返回] 应发给上游的 max_tokens；0 表示客户端未声明
+// 最近修改时间：2026-11-07 22:10:00；改动原因：补 max_completion_tokens 别名识别。
+func effectiveMaxTokens(req *openAIRequest) int {
+	if req == nil {
+		return 0
+	}
+	if req.MaxTokens > 0 {
+		return req.MaxTokens
+	}
+	if req.MaxCompletionTokens > 0 {
+		return req.MaxCompletionTokens
+	}
+	return 0
+}
+
 // positiveIntValue 把 JSON 解出的数值严格转为正整数。
 // 只接受整数语义的数值：float64 必须是整数值，int / int64 必须为正。
 // 字符串、bool、nil、小数、非正数一律返回 ok=false —— 不做隐式解析，

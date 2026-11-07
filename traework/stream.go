@@ -987,16 +987,22 @@ func stripProviderPrefix(model string) string {
 // openAIRequest mirrors the chat-completions request body the host forwards.
 // Tools/ToolChoice 保持原始 any 形态接收（object/string 都来自客户端 SDK），
 // 上行前经 traeToolsFromOpenAI / normalizeTraeToolChoice 规整。
-// 最近修改时间：2026-09-03；改动原因：P0-①——工具调用上行入口字段。
+// 最近修改时间：2026-11-07 22:10:00；改动原因：补 max_completion_tokens 别名。
 type openAIRequest struct {
-	Model       string           `json:"model"`
-	Messages    []map[string]any `json:"messages"`
-	Stream      bool             `json:"stream"`
-	MaxTokens   int              `json:"max_tokens"`
-	Temperature *float64         `json:"temperature"`
-	TopP        *float64         `json:"top_p"`
-	Tools       []map[string]any `json:"tools"`
-	ToolChoice  any              `json:"tool_choice"`
+	Model    string           `json:"model"`
+	Messages []map[string]any `json:"messages"`
+	Stream   bool             `json:"stream"`
+	// MaxTokens 是 OpenAI 旧字段；MaxCompletionTokens 是新别名。
+	// 2026-11-07 生产实测：DSH / Codex 系新客户端只发 max_completion_tokens，
+	// 结构体缺该字段时该值被 json.Unmarshal 直接丢弃，等价于客户端从未声明上限，
+	// 上游按自己默认上限生成（实测请求 12 token 实际产出 1091 字符 / 1119 tokens）。
+	// 两者并存时显式 max_tokens 优先，语义与 qoderwork / workbuddy 一致。
+	MaxTokens           int      `json:"max_tokens"`
+	MaxCompletionTokens int      `json:"max_completion_tokens"`
+	Temperature         *float64 `json:"temperature"`
+	TopP                *float64 `json:"top_p"`
+	Tools               []map[string]any `json:"tools"`
+	ToolChoice          any      `json:"tool_choice"`
 }
 
 // toTraeMessages normalizes OpenAI messages into the Trae messages shape.

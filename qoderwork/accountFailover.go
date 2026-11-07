@@ -276,6 +276,18 @@ func recordAccountFailure(authID string, status int, body string) bool {
 	if isModelLevelFailure(body) {
 		return false
 	}
+	// 请求形状错误同理与账号无关：上游明确指认请求体不合法（非法 role、参数类型
+	// 错误等），换任何账号都会被同样拒绝。若在此记账，一次畸形请求就会把池内
+	// 每个账号逐个写盘禁用（2026-11-07 生产实测：role=wizard 一个请求打穿 8 个号，
+	// 之后 5/5 次正常请求全部 503 auth_unavailable）。
+	//
+	// 豁免范围严格限定在 HTTP 200：QoderWork 把客户端请求体不合法包在 200 的
+	// 业务错误帧里，这才是生产实测的形态。其余状态码一律不改语义：status==0 是
+	// 传输层失败（body 是插件本地错误文本），5xx 是上游服务端故障，401/403/404/405
+	// 是确定性凭据问题，402 是额度耗尽 —— 它们都必须照旧记账。
+	if status == http.StatusOK && isRequestShapeFailure(body) {
+		return false
+	}
 	if !isAccountFailure(status, body) && !isTransientThrottle(status, body) {
 		return false
 	}

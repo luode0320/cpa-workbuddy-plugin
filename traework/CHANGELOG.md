@@ -1,5 +1,34 @@
 # TraeWork Plugin Changelog
 
+## 0.5.15
+
+### Fix - 畸形请求不再逐个禁用整池账号 + max_completion_tokens 别名识别
+
+- 背景（2026-11-07 生产高强度压测实测）: 发一次 `role=wizard` 的请求，上游返回 HTTP 200 +
+  `tool call failed: invalid_parameter_error:wizard is not one of [...]`。旧逻辑把它按账号级
+  失败记账并逐个写盘禁用，撞到第 9 个账号才因换号预算耗尽停下，随后**正常请求全部返回 503
+  auth_unavailable**。kimi-k3 与 DeepSeek-V4-Pro-Official 各自被打穿一遍；qoderwork 侧同型
+  （一次畸形请求打穿 8 个号，基线恢复后 5/5 次正常请求仍失败）。
+- 根因: 失败分类只按 HTTP 状态码判账号级（400/422 才认作请求形状问题），而 Trae 把客户端
+  请求体错误包在 **HTTP 200 的 `event:error` 帧**里，状态码判据完全命中不到。
+- 修复内容:
+  - 新增 `requestShapeFailureMarkers` 与 `isRequestShapeErrorBody(body)`：按正文识别
+    `is not one of` / `invalid_parameter` / `invalid request` / `cannot unmarshal` /
+    `missing required` / `tool call failed` 等客户端请求体形状错误。
+  - `classifyUpstreamFailure` 在模型级故障判定之后、所有账号级判据之前新增豁免分支，
+    **严格限定 HTTP 200**：status==0（传输层失败，body 是插件本地错误文本）、5xx、401/403/
+    404/405、402 一律照旧记账 —— 既有 `TestClassifyUpstreamFailureMatchesLegacyCountGate`
+    逐状态锁定了该等价性，放宽会漏掉真正的坏账号。
+  - `openAIRequest` 补 `max_completion_tokens` 字段，新增 `effectiveMaxTokens` 统一取值
+    （显式 max_tokens 优先，其次别名，非正值视为未传），流式与非流式两处 `buildTraePayload`
+    调用统一改走它。此前只解析 `max_tokens`，DSH / Codex 系新客户端只发别名时该值被
+    `json.Unmarshal` 静默丢弃，等价于客户端从未声明上限（实测请求 12 token 实际产出
+    1091 字符 / 1119 tokens）。
+- 测试: 新增 `request_shape_test.go`（10 组正文形态 + 分类层接线断言 + 401 反证）与
+  `max_tokens_test.go` 的两组别名用例（取值优先级 + 真实 JSON 反序列化路径）。
+  变异验证：停用 `isRequestShapeErrorBody` 判定后 3 个用例 KILLED；删除别名分支后
+  3 个用例 KILLED。`cgo-shim-build.py traework` build/vet/test 全绿。
+
 ## 0.5.14
 
 ### Fix - 失败禁用与手动启用联动（与 workbuddy 0.21.13 同批整改）

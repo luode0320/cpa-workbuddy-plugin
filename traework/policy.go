@@ -212,6 +212,57 @@ var modelLevelFailureMarkers = []string{
 	"model unavailable",
 }
 
+// requestShapeFailureMarkers 是「上游明确指认请求体形状错误」的固定文案。
+//
+// 这类失败成因在客户端发来的请求本身（非法 role、非法参数类型、字段越界），
+// 与账号健康度完全无关：换任何账号、任何模型都会被同样拒绝。
+//
+// 2026-11-07 生产实测（本插件 0.5.14）：发一次 role=wizard 的请求，上游返回
+// HTTP 200 + "invalid_parameter_error: wizard is not one of [...]"；插件按账号级
+// 失败记账并逐个写盘禁用，撞到第 9 个账号才因预算耗尽停下，随后正常请求全部
+// 503 auth_unavailable。同一批测试里 kimi-k3 与 DeepSeek-V4-Pro-Official 各自被
+// 打穿一遍。
+//
+// 刻意不含通用 transport / 限流 / 5xx 文案：那些与请求形状无关，仍须记账。
+var requestShapeFailureMarkers = []string{
+	"is not one of",
+	"invalid_parameter",
+	"invalid parameter",
+	"invalid request",
+	"cannot unmarshal",
+	"unmarshal",
+	"missing required",
+	"required field",
+	"field validation",
+	"bad request",
+	"tool call failed",
+}
+
+// isRequestShapeErrorBody 判定失败正文是否表明「客户端请求体形状不合法」。
+//
+// 与既有 isRequestShapeFailure(status int) 分工：那个只看 HTTP 状态码（400/422），
+// 而 Trae 上游把非法 role 之类的问题包在 HTTP 200 的业务错误帧里，状态码判据
+// 完全命中不到，所以必须再有一条看正文的判据。
+//
+// 与 isModelLevelFailure 的分工：模型级故障是「模型后端不可用」，请求形状错误是
+// 「这个请求本身不合法」；对记账而言结论一致——不冷却、不禁用、不换号。
+//
+// [参数] body：上游响应正文或错误帧文本。
+// [返回] true 表示该失败由请求本身引起，与账号无关。
+// 最近修改时间：2026-11-07 22:30:00；改动原因：新增，堵住畸形请求逐个禁用整池账号。
+func isRequestShapeErrorBody(body string) bool {
+	if strings.TrimSpace(body) == "" {
+		return false
+	}
+	lower := strings.ToLower(body)
+	for _, m := range requestShapeFailureMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // isModelLevelFailure 判定失败是否属于模型级/后端池级故障。
 //
 // 调用方必须把它放在账号级判据之前：硬额度（402 / 额度标记）与凭据类 4xx

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // TestBuildTraePayload_MaxTokens 验证 trae 请求体的输出上限处理。
 //
@@ -52,3 +55,74 @@ func TestBuildTraePayload_MaxTokens(t *testing.T) {
 		})
 	}
 }
+
+// TestEffectiveMaxTokens 验证客户端输出上限的取值优先级。
+//
+// 生产缺陷回归（2026-11-07）：请求结构体曾只解析 max_tokens，DSH / Codex 系
+// 新客户端只发 max_completion_tokens，该值被 json.Unmarshal 静默丢弃，等价于
+// 客户端从未声明上限——实测请求 12 token 仍产出 1091 字符 / 1119 tokens。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-07 22:10:00；改动原因：补别名识别后的取值契约。
+func TestEffectiveMaxTokens(t *testing.T) {
+	cases := []struct {
+		name    string
+		maxTok  int
+		maxComp int
+		want    int
+	}{
+		{name: "仅显式 max_tokens", maxTok: 2000, want: 2000},
+		{name: "仅别名 max_completion_tokens", maxComp: 12, want: 12},
+		{name: "两者并存时显式优先", maxTok: 500, maxComp: 300, want: 500},
+		{name: "两者都未传", want: 0},
+		{name: "别名为 0 视为未传", maxComp: 0, want: 0},
+		{name: "显式 0 且别名有效时取别名", maxTok: 0, maxComp: 64, want: 64},
+		{name: "别名为负数视为未传", maxComp: -1, want: 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &openAIRequest{Model: "test-model", MaxTokens: tc.maxTok, MaxCompletionTokens: tc.maxComp}
+			if got := effectiveMaxTokens(req); got != tc.want {
+				t.Fatalf("effectiveMaxTokens() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+
+	if got := effectiveMaxTokens(nil); got != 0 {
+		t.Fatalf("effectiveMaxTokens(nil) = %d, want 0", got)
+	}
+}
+
+// TestOpenAIRequest_AliasUnmarshal 验证别名真实从 JSON 进入结构体。
+//
+// 只测 effectiveMaxTokens 无法覆盖「结构体缺 json tag」这一根因，必须走一遍
+// json.Unmarshal —— 该路径才是生产上真正丢弃字段的地方。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-07 22:10:00；改动原因：覆盖别名落库路径。
+func TestOpenAIRequest_AliasUnmarshal(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{name: "只发别名", raw: `{"model":"m","max_completion_tokens":300}`, want: 300},
+		{name: "只发旧字段", raw: `{"model":"m","max_tokens":2000}`, want: 2000},
+		{name: "两者并存显式优先", raw: `{"model":"m","max_tokens":500,"max_completion_tokens":300}`, want: 500},
+		{name: "都不发", raw: `{"model":"m"}`, want: 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var req openAIRequest
+			if err := json.Unmarshal([]byte(tc.raw), &req); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := effectiveMaxTokens(&req); got != tc.want {
+				t.Fatalf("effectiveMaxTokens() = %d, want %d (raw=%s)", got, tc.want, tc.raw)
+			}
+		})
+	}
+}
+

@@ -111,6 +111,20 @@ func classifyUpstreamFailure(status int, body string) failureScope {
 	if isModelLevelFailure(body) {
 		return failureScopeNone
 	}
+	// 2.5 请求形状错误（非法 role / 参数类型错误等）同样与账号无关：上游明确指认
+	//     是这次请求体不合法，换任何账号都会被同样拒绝。2026-11-07 生产实测：
+	//     role=wizard 一次请求逐个禁用 9 个账号并让整池不可用。
+	//
+	//     豁免范围严格限定在 HTTP 200：Trae 把「非法 role / 非法参数」这类客户端
+	//     错误包在 200 的 event:error 帧里，状态码判据（isRequestShapeFailure 只看
+	//     400/422）完全命中不到，这才是生产实测的形态。其余状态码一律不改语义：
+	//     status==0 是传输层失败（body 是插件本地错误文本），5xx 表示上游服务端
+	//     故障，401/403/404/405 是确定性凭据问题，402 是额度耗尽 —— 它们都必须
+	//     照旧记账，否则真正的坏账号会被漏掉。既有测试
+	//     TestClassifyUpstreamFailureMatchesLegacyCountGate 逐状态锁定了该等价性。
+	if status == http.StatusOK && isRequestShapeErrorBody(body) {
+		return failureScopeNone
+	}
 	// 3. 渠道级容量满载必须在通用限流兜底之前判定：它是比「限流」更具体的
 	//    信号。落进限流分支会按账号逐个冷却，高峰期可在数秒内把整池健康号摘光。
 	if isQueueFullBody(body) {

@@ -1,5 +1,25 @@
 # QoderWork Plugin Changelog
 
+## 0.13.8
+
+### Fix - 畸形请求不再逐个禁用整池账号
+
+- 背景（2026-11-07 生产高强度压测实测）: 发一次 `role=wizard` 的请求，上游返回 HTTP 200 +
+  `provider_error: Error in upstream response`。旧逻辑按账号级失败记账并把该号写盘禁用；
+  同一个请求连续撞完池内全部 8 个账号后整池被禁，**随后 5/5 次正常请求一律 503
+  auth_unavailable**。此前的一次压测里 `max_tokens:"abc"` / `max_tokens:-5` 也能触发同样效果。
+- 根因: `isModelLevelFailure` 只认「后端池不可用」类文案，客户端请求体不合法既不属于
+  模型级故障、也不该记在账号头上，于是落进通用账号级分支。
+- 修复内容:
+  - 新增 `requestShapeFailureMarkers` 与 `isRequestShapeFailure(body)`：按正文识别
+    `is not one of` / `invalid_parameter` / `invalid request` / `cannot unmarshal` /
+    `missing required` / `tool call failed` 等客户端请求体形状错误。
+  - `recordAccountFailure` 在模型级判定之后新增豁免分支，**严格限定 HTTP 200**：
+    status==0（传输层失败，body 是插件本地错误文本）、5xx、401/403/404/405、402 一律
+    照旧记账，避免把真正的坏账号漏掉。
+- 测试: 新增 `policy_test.go`（10 组正文形态，含空正文/模型级/限流/额度三类反例）。
+  变异验证：停用判定后 4 个用例 KILLED。`cgo-shim-build.py qoderwork` build/vet/test 全绿。
+
 ## 0.13.7
 
 ### Fix - 失败禁用与手动启用联动（与 workbuddy 0.21.13 同批整改）
