@@ -29,6 +29,16 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-07 17:25）：**长推理 80~145 秒卡死根因修复（workbuddy 0.21.11 / qoderwork 0.13.4 / traework 0.5.10）**：
+  - 诉求：高强度测试 qoderwork / traework 的 `deepseek-v4.1-flash` 推理请求，要求不测到 workbuddy；随后明确判定标准「首字延迟和生成时间过长的都是 bug」。
+  - **压测基线（修复前）**：同 prompt、`max_tokens=2000`、`reasoning_effort=max` 下，traework 生成 9908 tokens / 72s、qoderwork 7029 tokens / 94s。**对照实验推翻了「只有这两个插件慢」的前提**：直连 workbuddy 同名模型生成 12030~21943 tokens / 81~145s，比另两个更慢。
+  - **根因**：三插件 `model_specs.go` 的 `computeAdaptiveMaxTokens` 在思考模式下把客户端 `<=8192` 的 `max_tokens` 一律放宽到 `defaultReasoningMaxTokens`（128000），2000 被放大 64 倍，模型因此可无限推理。`applyMaxTokensFloor` 还会把非推理档的显式小值抬到 32768。
+  - **修复**：显式传入 `max_tokens` 时原样尊重、仅做上限截断；只有未传（`<=0`）才补足统一上限。三插件同源同步修改，测试断言同步（推理档 8192/2000 保留、非推理档 8192 保留、`relaxMaxTokensInPlace` 对显式值不再改写 payload）。
+  - **发布**：`5c1f4c6`（代码）→ CI `42358546508`/`42358554570`/`42358566325`（三条 run 均 `cancelled` 但 Release `success`，仅缺 `darwin/arm64`）→ `41d680f`（registry）。生产热重载三插件到 `active_version` 0.21.11 / 0.13.4 / 0.5.10。
+  - **修复效果（workbuddy 实测）**：`out=2000` 精确卡上限（修复前 12030~21943），单请求耗时 **13.8~15.2s**（修复前 81~145s），token 降 90%、耗时降 89%。
+  - **遗留（需用户决策）**：`oauth-model-alias` 里 `deepseek-flash` 只是把名字改写成 `deepseek-v4.1-flash`，随后仍按模型名匹配**所有**提供方，workbuddy 优先级更高会把流量抢走（实测响应体 `"model":"deepseek-v4.1-flash"`、feed `provider=workbuddy-provider`）。因此 qoderwork/traework 拿不到独立样本，**隔离未成立**。要真正定向测试，需把 workbuddy 的该模型从路由池摘除，或使用 provider 专属模型名。
+  - **附带的第二处差异**：`traework/usage_feed.go:159` 明确记录 Trae 上游不支持 `reasoning_effort`，该参数从不透传；`max_tokens` 是其唯一推理深度收口，被放大后等于完全失控。
+
 - 会话（2026-11-07 16:00）：**慢速冷却池准入闸门 20→10 发布（qoderwork 0.13.3 / traework 0.5.9）**：
   - 诉求：「qoder 和 trae 的插件，慢速冷却的『池大于 20』阈值改成 10」。
   - 改动 4 处：两插件 `slow_account.go` 的 `defaultSlowMinPoolSize 20 → 10`（注释补改动原因）、`main.go` 的 ConfigField 描述「默认 20」→「默认 10」；另同步 `slow_account_test.go` 里 `TestSlowAccount_PoolSizeGateBlocksJudgement` 的硬编码 20/21（此断言漏在第一轮 grep 之外，靠 cgo-shim 失败才暴露，改为 10/11）。
