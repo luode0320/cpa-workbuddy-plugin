@@ -64,7 +64,7 @@
       "name": "QoderWork Provider",
       "description": "QoderWork CN (qoder.com.cn) provider for CLIProxyAPI: dual login (OAuth device authorization with auto pro-pack claim + PAT import), COSY-signed chat executor, dynamic model list, daily check-in with credit snapshot, token keepalive (deviceToken/jobToken prefix-routed, PAT fallback), accounts panel.",
       "author": "Sliverkiss",
-      "version": "0.13.2",
+      "version": "0.13.3",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
       "logo": "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/QoderWork.png",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/qoderwork",
@@ -82,37 +82,37 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.2/qoderwork-provider_0.13.2_darwin_amd64.zip",
-            "sha256": "401902fb94848bdf12ad54ba70fc1191d00bcfca6c7d6c37b2065ab5fb7b3e51",
-            "size": 3191518
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.3/qoderwork-provider_0.13.3_darwin_amd64.zip",
+            "sha256": "a4ea3c43d216af731bd8bd9f2ef534b390269c978e2e1b98bda2604f5d1262ab",
+            "size": 3191504
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.2/qoderwork-provider_0.13.2_linux_amd64.zip",
-            "sha256": "fb2f352e5776b74cfe052965d7312b0148b3226354bcee3558448bc39bb9434c",
-            "size": 3348422
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.3/qoderwork-provider_0.13.3_linux_amd64.zip",
+            "sha256": "c653be31d1de57b49f48175d9a69a2b1b565878c80c7c11da1619747f480f06f",
+            "size": 3348411
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.2/qoderwork-provider_0.13.2_linux_arm64.zip",
-            "sha256": "73103a8f0bc82d7b1f4072598da5756243ee2e089ff9710da2d73a99f00d6631",
-            "size": 3046824
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.3/qoderwork-provider_0.13.3_linux_arm64.zip",
+            "sha256": "2ef605a568ba0a7dfe94f910ebdcb7139dd6434f006281a2a71562301205b0cd",
+            "size": 3046799
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.2/qoderwork-provider_0.13.2_windows_amd64.zip",
-            "sha256": "59111061b0cfa65b0c7adfea933f38dafa4cdcaaf0257a9ec14334eb54f9fc0f",
-            "size": 3274520
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.3/qoderwork-provider_0.13.3_windows_amd64.zip",
+            "sha256": "2c196ad729c6d77efa7f8b4c5754b2127ad2012def1f671de564bd24dc020a18",
+            "size": 3274505
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.2/qoderwork-provider_0.13.2_windows_arm64.zip",
-            "sha256": "0a6ef7d74fef7e1ab928eef330e6452ccf72563ecc2f9e4d6dedb03d94b88bf9",
-            "size": 3032626
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.3/qoderwork-provider_0.13.3_windows_arm64.zip",
+            "sha256": "87fb43a31de867372846f275f211e528aab1659a1ae828128f10fb9109cb10b2",
+            "size": 3032619
           }
         ]
       }
@@ -179,7 +179,7 @@
       "name": "TraeWork Provider",
       "description": "Trae Work SOLO provider for CLIProxyAPI: multi-account pool from local SOLO credentials (tc-header decryption), OpenAI/Anthropic-compatible reverse proxy to llm_utils_chat, account-level failover (401/403/404/405/429 retry budget + 1/3/10min cooldown + anomaly quarantine), daily/manual check-in with credits query, account enable/disable, credits panel with failover status.",
       "author": "Sliverkiss",
-      "version": "0.5.8",
+      "version": "0.5.9",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
       "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/TraeWork.png",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/traework",
@@ -198,37 +198,37 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.8/traework-provider_0.5.8_darwin_amd64.zip",
-            "sha256": "1b9dc9437d30e358cd880026bea77c83e96b572a5c50148f730e6a228b81e1eb",
-            "size": 3209977
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.9/traework-provider_0.5.9_darwin_amd64.zip",
+            "sha256": "ec76bf14eca8838e1b70962fa0140345be7c04d2845bac08fc4ff411355a367c",
+            "size": 3209967
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.8/traework-provider_0.5.8_linux_amd64.zip",
-            "sha256": "d46aa22ed7436dfc1a25ebddaa6f8b8d5a7ca3cecf6e864dc302ad57b3ead115",
-            "size": 3375411
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.9/traework-provider_0.5.9_linux_amd64.zip",
+            "sha256": "fe02007c32322004fa4f87c46d6208d601c31d95b1ee7ce2ac4e1fd1253aed38",
+            "size": 3375420
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.8/traework-provider_0.5.8_linux_arm64.zip",
-            "sha256": "c84ae380ef9028935fc17d1db9d49c481d88e90cd3116092ed19fbd847d8bdc2",
-            "size": 3066454
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.9/traework-provider_0.5.9_linux_arm64.zip",
+            "sha256": "89113f23b53e45d1993773acc1191e5091211bb547fc93a51200fc018da37ad4",
+            "size": 3066443
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.8/traework-provider_0.5.8_windows_amd64.zip",
-            "sha256": "2087c43ac4a878278a8ec4a321c470d3e0e455968eb50f1800bc89e4de994e4c",
-            "size": 3293075
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.9/traework-provider_0.5.9_windows_amd64.zip",
+            "sha256": "5c66d612098b9ba92c6d6ac3f2c7fad3c7f62b430549a56113aa461d55479450",
+            "size": 3293094
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.8/traework-provider_0.5.8_windows_arm64.zip",
-            "sha256": "1970fc20c40360bd9498a0f859380f8db91dfa05999a7c54deda98784e3c80ac",
-            "size": 3043294
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.9/traework-provider_0.5.9_windows_arm64.zip",
+            "sha256": "29cb983f0c2bbd85ea4a48ff5cfc84606c2fd635c27d88bf8ba4e444cee05670",
+            "size": 3043285
           }
         ]
       }
