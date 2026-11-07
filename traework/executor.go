@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -187,6 +188,13 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error(), "", 0, authUID, sessionKey)
 		return nil, fmt.Errorf("payload parse: %w", err)
 	}
+	// 请求体合法性前置校验：非法 role 这类客户端错误必须在本地拦掉。
+	// 不拦的后果是上游逐个账号返回同样的错误、插件把每个账号都记成故障并写盘禁用，
+	// 一次畸形请求就能打穿整池（2026-11-07 生产实测：9 个号全禁，随后正常请求 503）。
+	if verr := validateOpenAIMessageRoles(oa.Messages); verr != nil {
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, http.StatusBadRequest, verr.Error(), "", 0, authUID, sessionKey)
+		return nil, fmt.Errorf("invalid request: %w", verr)
+	}
 	messages := toTraeMessages(oa.Messages)
 	if len(messages) == 0 {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "empty messages", "", 0, authUID, sessionKey)
@@ -320,6 +328,11 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(bodyRaw, oa); err != nil && len(bodyRaw) > 0 {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error(), "", 0, authUID, sessionKey)
 		return nil, fmt.Errorf("payload parse: %w", err)
+	}
+	// 请求体合法性前置校验（同非流式路径）：非法 role 本地拦掉，不打上游、不记账号。
+	if verr := validateOpenAIMessageRoles(oa.Messages); verr != nil {
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, http.StatusBadRequest, verr.Error(), "", 0, authUID, sessionKey)
+		return nil, fmt.Errorf("invalid request: %w", verr)
 	}
 	messages := toTraeMessages(oa.Messages)
 	if len(messages) == 0 {

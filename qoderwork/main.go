@@ -348,7 +348,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.13.8"
+var version = "0.13.9"
 
 func wbRegistration() registration {
 	return registration{
@@ -763,6 +763,13 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error(), "", 0, accountLabel, sessionKey)
 		return nil, fmt.Errorf("payload parse: %w", err)
 	}
+	// 请求体合法性前置校验：非法 role 这类客户端错误必须在本地拦掉。
+	// 不拦的后果是上游逐个账号返回同样的错误、插件把每个账号都记成故障并写盘禁用，
+	// 一次畸形请求就能打穿整池（2026-11-07 生产实测：8 个号全禁，随后正常请求 503）。
+	if verr := validateOpenAIMessages(qwReq.Messages); verr != nil {
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, http.StatusBadRequest, verr.Error(), "", 0, accountLabel, sessionKey)
+		return nil, fmt.Errorf("invalid request: %w", verr)
+	}
 	// 客户端请求的推理强度：写入 usage feed 供 dashboard 展示。该值不进上游
 	// body（Qoder 模板无此字段位点），仅用于对齐 workbuddy 的用量维度。
 	reasoningEffort := strings.TrimSpace(qwReq.ReasoningEffort)
@@ -985,6 +992,11 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(bodyRaw, qwReq); err != nil && len(bodyRaw) > 0 {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error(), "", 0, accountLabel, sessionKey)
 		return nil, fmt.Errorf("payload parse: %w", err)
+	}
+	// 请求体合法性前置校验（同非流式路径）：非法 role 本地拦掉，不打上游、不记账号。
+	if verr := validateOpenAIMessages(qwReq.Messages); verr != nil {
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, http.StatusBadRequest, verr.Error(), "", 0, accountLabel, sessionKey)
+		return nil, fmt.Errorf("invalid request: %w", verr)
 	}
 	// 客户端请求的推理强度：写入 usage feed 供 dashboard 展示（同非流式路径）。
 	reasoningEffort := strings.TrimSpace(qwReq.ReasoningEffort)

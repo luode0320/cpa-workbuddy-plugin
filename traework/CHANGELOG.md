@@ -1,5 +1,25 @@
 # TraeWork Plugin Changelog
 
+## 0.5.16
+
+### Fix - 请求体 role 前置校验（畸形请求打穿整池的根因修复）
+
+- 背景: 0.5.15 采用「按上游报错正文匹配请求形状错误」的方案上线后，生产复验**未通过** —— 一次
+  `role=wizard` 请求仍然逐个禁用 9 个账号，随后 5/5 次正常请求全部 503 auth_unavailable。
+- 根因（0.5.15 方案为何无效）: 上游对同一个非法 role 存在**至少两种报错文案**：
+  - `tool call failed: invalid_parameter_error:wizard is not one of ['system', ...]`（早期实测）
+  - `tool call failed: The parameter \`messages.role\` specified in the request are not valid:
+    invalid value: \`wizard\`, supported values are: \`system\`, ...`（本次复验实测）
+
+  正文匹配只能覆盖已知文案，属于追着上游措辞打补丁，永远穷不尽。
+- 修复: 改为**在发请求之前**按 `validOpenAIRoles` 校验消息 role，非法请求直接以
+  `invalid request: messages[N].role "X" is not a valid role` 返回 400，根本不发往上游。
+  合法角色表: `system` / `user` / `assistant` / `tool` / `developer` / `function`。
+  校验点覆盖流式与非流式两个入口（`handleExecExecute` / `handleExecStream`）。
+- 保留 0.5.15 的正文判据作为第二道防线（覆盖 role 之外的请求形状错误），但它不再是主防线。
+- 测试: 新增 `TestValidateOpenAIMessageRoles`（6 组：正常/工具/非法 role/空 role/role 非字符串/空列表）。
+  `cgo-shim-build.py traework` build/vet/test 全绿。
+
 ## 0.5.15
 
 ### Fix - 畸形请求不再逐个禁用整池账号 + max_completion_tokens 别名识别

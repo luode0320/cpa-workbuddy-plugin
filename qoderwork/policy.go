@@ -154,6 +154,47 @@ var modelLevelResourceMarkers = []string{
 	"overloaded",
 }
 
+// validOpenAIRoles 是 OpenAI chat-completions 允许的消息角色。
+//
+// 上游对非法 role 一律拒绝，且**报错文案不固定**：qoderwork 上游只回无信息量的
+// "provider_error: Error in upstream response"，Trae 系则回
+// "The parameter `messages.role` ... are not valid"，与更早的
+// "wizard is not one of [...]" 又是另一种写法。靠匹配报错正文永远穷不尽。
+// 因此本项目在**发请求之前**就按本表校验，非法请求直接以 400 拒绝，
+// 根本不发往上游——既不会误伤账号，也不会把一次请求放大成 N 次换号。
+//
+// 2026-11-07 生产实测：一次 role=wizard 请求在修复前逐个禁用 qoderwork 8 个号、
+// traework 9 个号，之后正常请求全部 503 auth_unavailable。
+var validOpenAIRoles = map[string]bool{
+	"system":    true,
+	"user":      true,
+	"assistant": true,
+	"tool":      true,
+	"developer": true,
+	"function":  true,
+}
+
+// validateOpenAIMessages 校验客户端消息列表的 role 是否合法。
+//
+// 放在请求入口而非失败记账侧：记账侧的正文匹配只能覆盖已知文案，
+// 而请求体是否合法是可以在本地确定的事实。
+//
+// [参数] messages：客户端消息列表。
+// [返回] 首个非法 role 的错误描述；全部合法时返回 nil。
+// 最近修改时间：2026-11-07 23:10:00；改动原因：新增，从源头拦掉会打穿整池的畸形请求。
+func validateOpenAIMessages(messages []openAIMessage) error {
+	for i, m := range messages {
+		role := strings.TrimSpace(m.Role)
+		if role == "" {
+			return fmt.Errorf("messages[%d].role is required", i)
+		}
+		if !validOpenAIRoles[role] {
+			return fmt.Errorf("messages[%d].role %q is not a valid role", i, role)
+		}
+	}
+	return nil
+}
+
 // requestShapeFailureMarkers 是「上游明确指认请求体形状错误」的固定文案。
 //
 // 这类失败的成因在客户端发来的请求本身（非法 role、非法参数类型、字段越界），

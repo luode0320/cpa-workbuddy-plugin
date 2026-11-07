@@ -1,5 +1,20 @@
 # QoderWork Plugin Changelog
 
+## 0.13.9
+
+### Fix - 请求体 role 前置校验（畸形请求打穿整池的根因修复）
+
+- 背景: 0.13.8 采用「按上游报错正文匹配请求形状错误」的方案上线后，生产复验**未通过** —— 一次
+  `role=wizard` 请求仍然打穿 qoderwork 全部 8 个账号，随后 5/5 次正常请求全部 503 auth_unavailable。
+- 根因（0.13.8 方案为何无效）: qoderwork 上游对非法 role 只回**无信息量**的
+  `provider_error: Error in upstream response`，正文里没有任何可用于识别的形状文案。
+  依赖正文匹配在该上游上从原理上就不可能生效。
+- 修复: 改为**在发请求之前**按 `validOpenAIRoles` 校验消息 role，非法请求直接返回 400，
+  根本不发往上游。合法角色表: `system` / `user` / `assistant` / `tool` / `developer` / `function`。
+  校验点覆盖流式与非流式两个入口（`handleExecExecute` / `handleExecStream`）。
+- 保留 0.13.8 的正文判据作为第二道防线（覆盖 role 之外的请求形状错误），但它不再是主防线。
+- 测试: 新增 `TestValidateOpenAIMessages`（6 组）。`cgo-shim-build.py qoderwork` build/vet/test 全绿。
+
 ## 0.13.8
 
 ### Fix - 畸形请求不再逐个禁用整池账号
