@@ -26,11 +26,27 @@
 - **2026-11-07 19:40 当前生产版本（max_tokens 最小干预批次）**：workbuddy-ai **0.1.37** / qoder-ai **0.1.37** / qoderwork **0.13.5** / traework **0.5.13** / zcode **0.3.7** / qwenwork **0.2.15** —— 上述插件 `configured/registered/enabled/effective_enabled` 全 true，`.so` sha256 与 release zip 逐字节一致。**管理 API 端口是 8317（不是 18998，18998 是 sshd）**。
 - **2026-11-07 20:33 workbuddy 已升级 0.21.12 → 0.21.13**（失败禁用与手动启用联动，`hot reloaded active_version=0.21.13 retired 0.21.12`，落盘 sha256 `574f6921…` 与本地 zip 一致）。
 - **2026-11-07 21:25 三插件同步升级**：workbuddy-ai **0.1.38** / traework **0.5.14** / qoderwork **0.13.7**（同型缺陷整改），三者 `hot reloaded` 且 `.so` sha256 与 release zip 一致。
+- **2026-11-07 22:17 workbuddy 升级 0.21.13 → 0.21.14**（P0 分阶段超时 + P1 HostCallbackID 透传，见下条会话摘要）：`hot reloaded active_version=0.21.14 retired_version=0.21.13`，落盘 sha256 `8433a54c…` 与 release zip 逐字节一致；只有 5 平台资产（缺 `darwin_arm64`）。
 - 2026-10-25 历史发布批（已过期，仅存档）：zcode 0.3.1 / qoderwork 0.12.1 / traework 0.5.1 / workbuddy 0.21.2 / cursor 0.1.6 / qoder-ai 0.1.31 / coze 0.6.2 / qwenwork 0.2.9 / copilot 0.1.11 / workbuddy-ai 0.1.30 / token-usage 0.2.8（细节见 git log 与 CHANGELOG）。
 - 活动工作区：F:\cpa-plugin
 - 当前时间：2026-11-07 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 会话（2026-11-07 21:05-22:25）：**workbuddy 首字延迟/超长长尾根因诊断 + P0/P1 修复（0.21.14）**：
+  - 诉求：「检查 workbuddy-provider 使用 deepseek-v4.1-flash 有些请求出现首字延迟和生成时间非常非常长的问题，结合 github 其他的项目看看，是不是我们的插件有问题」。
+  - **取证**：生产 usage feed 16,944 条样本 —— TTFT p50 **3,479ms** / p90 5,336 / p99 7,993 / **max 150,478ms**；总耗时 p50 5,533 / p99 36,906 / **max 694,166ms**。TTFT>15s 占 0.17%、生成>20s 占 1.78%、总耗时>60s 占 0.27%。**长尾请求 status_code 全为 0（传输级）**。
+  - **对照实验（决定性）**：同 prompt 同时段，直连 `copilot.tencent.com` vs 经插件 `127.0.0.1:8317` —— 长输出 267 tok/s vs 162~228 tok/s；大 input（67,637 tokens）2.75~3.79s vs 2.64~3.08s。**同量级，转发链路未引入可观延迟 —— 插件不是常态延迟的原因**。
+  - **真因（非插件缺陷）**：生产 95.7% 请求带 `reasoning_effort=max`；长尾记录 `out=17,750~21,943 / reas=14,140~18,227` 而 `in` 仅 70，耗时完全由 reasoning 驱动。对照 `effort=none` 的 lat p50 快 **2.7 倍**。**插件层无法消除（上游无独立思考上限）**。
+  - **GitHub 9 家调研**（子代理，实拉源码）：SSE 全部逐行直转（无一聚合）、无一家为拿 usage 等到 `[DONE]` —— 我们这两点与社区一致。**但多家显式设 `ResponseHeaderTimeout=60s` + 禁 h2**（`linguo2625469` 实录「半开 TCP 单次 TTFB 卡 936s」）。
+  - **关键反直觉事实**（`dingminhua/dsh-connect-workbuddy` 实测 + 本方同账号复现）：`deepseek-v4.1-flash` **拒绝 `reasoning_effort:off`**（400/11133）；「不发该字段」= 完全不思考，发任何档位 = 思考。**降延迟唯一安全路径是完全不发 `reasoning_effort`，绝不能发 off**。
+  - **P0（分阶段超时）**：`sharedHTTPClient` 原只有 `Timeout: 120s`，无 `DialContext`/`TLSHandshakeTimeout`/`ResponseHeaderTimeout`。补 10s / 10s / **60s**，并置空 `TLSNextProto` 真正禁 h2（`ForceAttemptHTTP2=false` 不够）。
+  - **P1（HostCallbackID 透传）**：`executorStreamRequest.HostCallbackID` 原有定义**从未使用**；宿主 `rpc_client_stream.go:17-23` 确实下发。沿 `pumpUpstreamStream`/`collectUpstreamStream`/`doExecuteOnce` 三条路径透传；`handleExecExecute` 改用 `executorStreamRequest` 解析（裸 `pluginapi.ExecutorRequest` 无该字段，宿主对 execute 同样下发）。
+  - **验证**：cgo-shim build/vet/test 全绿；**变异三轮全部 KILLED**——变异 2 首轮与变异 3 首轮都**未被捕获**，暴露「只测结构体测不到调用点」「纯函数测不到入口接线」两个真实缺口，分别以抽出 `buildHostHTTPStreamWire` + 新增源码级接线断言收口；哨兵法确认新测试真实进编译。
+  - **发布**：`8208d85`（代码）→ CI `42380096523`（12 Test 全 success，`darwin/arm64` cancelled；run conclusion=cancelled 但 **Release job=success**）→ `8c3ac5c`（registry 0.21.14，5 artifacts）→ 生产 `plugin-store/.../install` 返回 `restart_required:false` + `hot reloaded`，**未重启容器**。
+  - **上线后（28 条）**：TTFT p50 3,413ms / **max 10,601ms**（基线 150,478ms）；lat p50 6,181ms / **max 52,784ms**（基线 694,166ms）。**样本量小、观察窗 20 分钟，属趋势性证据**。
+  - **踩坑（新）**：①插件安装路由是 `POST /v0/management/plugin-store/:id/install`，**不是** `/v0/management/plugins/:id/install`（后者 404）；`GET /v0/management/plugins/:id` 同样 404，只有列表 `/plugins` 与 `/plugin-store` 可用。②`download-release-assets.py` 参数顺序是 `<version> [plugin]`，传反会 404。③`git-askpass.sh` 已不存在，改用 SSH 推送（`git@github.com:...`）。
+  - **边界（重要）**：`ResponseHeaderTimeout=60s` 在这 28 条样本中**尚未被实际触发**（最长 10.6s），「闸门开启后正确失败并换号」只有单测覆盖、**无生产实证**。生产实际走宿主 `host.http.do_stream`，其 `NewProxyAwareHTTPClient(...,0)` **仍无分阶段超时**，宿主层缺陷未修复（跨项目红线内）。
 
 - 会话（2026-11-07 20:45-21:35）：**三插件同步整改「失败禁用 ↔ 手动启用」同型缺陷（workbuddy-ai 0.1.38 / traework 0.5.14 / qoderwork 0.13.7）**：
   - 诉求：workbuddy 0.21.13 修复后，其余三个插件的 `failover_disable.go` 存在同型缺陷（恢复走 API 不清盘上标记、对账不独立/不清标记），要求一并修。
