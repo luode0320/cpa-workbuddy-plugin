@@ -214,6 +214,36 @@ curl -s -X PUT -H "Authorization: Bearer $KEY" -H "Content-Type: application/jso
 
 只有 24 小时。误删发生在 3 天前仍能恢复，是因为 binlog 文件恰未轮转；这是运气，不是必然。**发现误删立即备份 binlog 本体。**
 
+### 坑 6：binlog 超窗 ≠ 不可恢复——第二顺位是历史全表 dump
+
+24 小时窗口一过，binlog 通道即死（2026-11-07 实证：qoderwork 16 个账号删除早于 11-06 23:21，254 仅剩 11-06 03:43 起的 26 个 binlog，全部 0 命中）。**但「全表 dump」是跨 provider 的兜底源**：为恢复某个 provider 误删而建的 `auth_store` 全表还原点，会顺带保存当时**所有** provider 的完整行。
+
+本次 qoderwork 16 个账号的全部凭据，就来自 13 天前为 traework 建的那份 `PRE_RESTORE_auth_store_20261025_134113.sql`。
+
+**检索顺序固定为**：① 当前 `auth_store` → ② spool 目录 → ③ binlog（窗口内）→ ④ **历次 `PRE_RESTORE_*` / 迁移 / 归档的 `auth_store` 全表 dump** → ⑤ `auth-backup-*` 目录。
+
+判据只需一条命令：`zcat <dump.gz> | grep -c '<prefix>-'`。两份全库备份都为 0 时，不要急着下「已彻底删除」的结论——**先回头找 `PRE_RESTORE_*` 这类一次性还原点**，它们不在任何定时备份策略里。
+
+### 坑 7：凭据家族决定可恢复窗口，先判前缀再谈「能不能救」
+
+同一插件可能并存两族凭据，**有效期差两个数量级**，恢复前必须先判族（只看前缀，不输出值）：
+
+| 家族 | accessToken | refreshToken | 有效期 | 删除后能否恢复 |
+|---|---|---|---|---|
+| OAuth device（qoderwork） | `dt-` | `drt-` | at ~30d / rt **~1y（rotating）** | **可**，一年内都能刷活 |
+| PAT（qoderwork 旧） | `jt-` | `jrt-` | at 24h / rt **48h** | **不可**，超 48h 全死 |
+| traework | `token` | `refreshToken` | 按上游，需实测 | 以实测为准 |
+
+qoderwork 2026-11-07 实证：18 个账号全为 `dt-/drt-`，删除 13 天后 `dt-` 仍在有效期（到 11-23），上游 `GET /sash/api/v1/me/campaigns` **18/18 返回 200 且 `uid` 与文件名逐一匹配**。
+
+**只读探活优先于刷新**：`dt-` 未过期时直接打只读端点即可判定存活，**不要先调 `deviceToken/refresh`**——`drt-` 是 rotating，刷新一次就消费掉旧值；一旦刷新结果没落盘，等于把可恢复凭据换成了一次性垃圾。
+
+### 坑 8：插件直写物理文件的 provider，`auth_store` 与 spool 会不一致
+
+`qoderwork` 走插件直写 spool（`writeAuthFileDirect`），不经宿主 `auth.save`。实证：恢复前 `auth_store` 中 qoderwork = **0**，而 spool 有 **2** 个在役账号——**这 2 个从未进过 MySQL**。
+
+后果：若宿主从 `auth_store` 重建 spool（重启/迁移），这 2 个账号会消失。**恢复时必须补写**，且要用**当前 spool 的最新内容**，绝不能用 dump 里的旧 token（那会把已轮换的凭据回滚到 13 天前）。判定命令：`auth_store` 条数 vs `ls spool | grep -c '<prefix>'`，不等即需 backfill。
+
 ## 相关 skill 与文档
 
 - binlog 二进制解析的通用细节（含可复用的 Python 解析要点）：知识库《MySQL-binlog恢复被误删行数据-二进制JSON与偏移基准》

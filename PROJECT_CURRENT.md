@@ -29,6 +29,16 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-07 14:15）：**qoderwork 16 个被删账号全量找回（账号数据恢复，未改代码）**：
+  - 诉求：「qoder 之前有很多账号，后来被删了，254、65 都有删除，可以找回吗」。
+  - **结论：16 个账号完整找回，上游 18/18 存活**。恢复后 qoderwork 池 2 → 18，全部 `active / disabled=false / exhausted=false`。
+  - **唯一恢复源**：`/root/traework-recovery/PRE_RESTORE_auth_store_20261025_134113.sql`（md5 `b0320129…`，10-25 为恢复 traework 误删而建的全表 dump）——它是全表备份，顺带保住了另外 5 个 provider 的历史账号。
+  - **已排除的源**：11-06 23:21 迁移备份与 11-07 01:30 的 254 最终归档均 qoderwork=0（证明删除早于 11-06 23:21）；254 binlog 仅存 000036~000061（最早 11-06 03:43，24h 窗口）检索不到 qoderwork；`auth-backup-20260908` 只有 4 traework + 1 workbuddy。
+  - **决定性判据（新增事实）**：能否救回取决于**凭据家族**——`dt-/drt-`（OAuth device，drt- ~1 年、rotating）可恢复；`jt-/jrt-`（PAT，jrt- 仅 48h）超 48 小时即不可救。本次 18 个全为 `dt-/drt-`，`accessToken` 有效期到 2026-11-23，故 13 天后仍 18/18 上游 200 且返回 uid 与本地逐一匹配。
+  - **写回与验收**：先建三层还原点（`PRE_RESTORE_auth_store_20261107_141226.sql` 206KB / spool tar 56KB / 基线 `0`）；写 auth_store 16 行（`CAST(X'…' AS JSON)`）+ 原子写 spool 16 个 → 宿主 14:12:48 自动加载；**发现并修掉存储层不一致**：在役 2 个账号原本只存在于 spool、不在 auth_store（qoderwork 由插件直写物理文件），已用**当前 spool 最新内容**（非 dump 旧 token）补写，避免重启回滚旧凭据。最终三方对齐 `auth_store=18 / spool=18 / /accounts=18`。
+  - **行为验收**：抽样 3 个新恢复账号 `/test-active` 全 `ok=true`；真实入口 `POST /v1/chat/completions`（model `QoDuck`）`finish_reason=stop`、正文「正常」、credits 0.36 正常结算。
+  - 产物：`/root/qoderwork-recovery/`（`restored/` 16 个凭据文件 600、`manifest.json`、还原点、`backfill_2.sql`）。知识库：本次「凭据家族决定可恢复窗口」「全表 dump 是跨 provider 兜底源」两条已补进项目 skill。
+
 - 会话（2026-11-07 13:40）：**qoderwork 0.13.2 签到核验 + 修 3 缺陷**（已发布）：
   - 核验：**链路正常**。上游探测：`01a1595b` 有 `CLAIM_BENEFIT+CREDITS 100`、窗口 11-07 10:00→11-08 09:59、`CLAIMED`（12:03 已领）；`01a15e9a` 只有 `VIEW_DETAILS`、无签到活动（上游按账号下发）。
   - 缺陷：`StreakDays` 硬编码 1（编造「连续 1 天」）、success 分支不返回该字段（toast「连续 ? 天」）、签到零日志。
