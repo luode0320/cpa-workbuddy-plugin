@@ -59,14 +59,16 @@ import (
 )
 
 // version 由 CI 在链接期用 -ldflags -X main.version 注入；本地构建回退到下面的默认值。
-var version = "0.1.0"
+var version = "0.1.1"
 
 // pluginVersion 在包初始化阶段继承 version，保证 -X 注入值对注册元数据生效。
 var pluginVersion = version
 
 const (
-	abiVersion    uint32 = 1
-	schemaVersion uint32 = 9
+	abiVersion uint32 = 1
+	// schemaVersion 是插件声明的宿主契约版本，必须 <= 宿主 sdk/pluginabi.SchemaVersion（生产宿主为 6）。
+	// 宿主在 registerRPCPlugin 中对更高版本直接拒绝注册，写超版本会让插件整体不可用。
+	schemaVersion uint32 = 6
 
 	pluginName   = "Safeguard Killer"
 	pluginAuthor = "luode0320"

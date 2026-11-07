@@ -2,6 +2,17 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.1
+
+### Fix - 把插件声明的 schema 版本从 9 降到宿主实际支持的 6，修复生产注册失败
+
+- 背景: 0.1.0 vendor 进来的 `schemaVersion` 沿用了上游的 9（上游对着 latest 主线开发）。生产宿主 `cli-proxy-api` 的 commit 是 `7417cfb1bbfb794417764f8cd974a637a0779ddd`，其 `sdk/pluginabi.SchemaVersion = 6`，`internal/pluginhost/rpc_client.go:56-68` 的 `registerRPCPlugin` 在拿到注册包后执行 `if resp.SchemaVersion > pluginabi.SchemaVersion { return ... fmt.Errorf("plugin schema version %d is not supported", resp.SchemaVersion) }` —— 声明 9 会被直接拒绝，插件整体注册不上。
+- 改动: `safeguard-killer/main.go` 的 `schemaVersion` 常量由 `9` 改为 `6`，并在常量上方补注释说明「必须 <= 宿主 sdk/pluginabi.SchemaVersion」的原因，避免后续再被上游版本号带偏。
+- 相容性取证: 全仓库 grep `Registrations` / `omit_body` / `patch_body` / `body_patcher` / `request_body` / `HistoryChunks` 命中数均为 0 —— 插件没有用到 v7（拦截器省略 body）、v8（原始 body + 字节区间 patch）、v9（ModelRegistrar 多 provider Registrations）、v10（多 OAuth 标识）任何新特性。注册包只用 `Metadata` + `Capabilities`，拦截器只用 `Headers` / `Body` / `ClearHeaders` / `Terminate` / `StatusCode` / `ResponseHeaders` / `ResponseBody`，流式拦截只用 `Body` / `DropChunk`，模型注册只产出单 provider `ModelRegistrationResponse{Provider, Models}` —— 全部落在 v6 契约内。且 `configurePlugin` 不按 `schema_version` 分支，宿主传 6 或 9 行为完全一致，降版不改变任何业务逻辑。
+- 附带收益: v6 起宿主对 management 响应不再做 HTML 实体转义（`ManagementResponse` 的注释明确 `On schema_version >= 6, JSON bodies are returned without HTML entity escaping`），面板与 `/v0/management/plugins/safeguard-killer/*` 的 URL 类字段可以直接使用，无需前端反转义。
+- 验证: 新增 `safeguard-killer/config_test.go` 的 `TestPluginRegistrationSchemaVersionWithinHostContract` —— 断言注册包 schema 与常量一致且不超过宿主上限 6；用临时哨兵 Test 确认该文件真实进入编译链路（shim 输出 FAIL）后删除哨兵。`python scripts/cgo-shim-build.py safeguard-killer` 的 build / vet / test 全绿（`ok github.com/luode0320/cpa-workbuddy-plugin/safeguard-killer`）。
+- 涉及文件: `safeguard-killer/main.go`、`safeguard-killer/config_test.go`、`safeguard-killer/VERSION`、`safeguard-killer/CHANGELOG.md`。
+
 ## 0.1.0
 
 ### Feat - 首次从上游 vendor 并纳入本仓库发布链路
