@@ -1204,6 +1204,38 @@ function zhMgmtError(text) {
   return text;
 }
 
+const STATUS_TEXT = {
+  active: '正常',
+  ready: '就绪',
+  disabled: '已禁用',
+  unavailable: '不可用',
+  expired: '已过期',
+  invalid: '无效',
+  error: '异常',
+  pending: '待验证',
+  refreshing: '刷新中',
+  cooling: '冷却中',
+};
+
+// 宿主返回的凭据状态值是英文技术标识，展示层统一翻译成中文。
+function zhStatus(text) {
+  if (!text) return '正常';
+  const key = String(text).toLowerCase();
+  return Object.prototype.hasOwnProperty.call(STATUS_TEXT, key) ? STATUS_TEXT[key] : text;
+}
+
+// 宿主回调失败返回的原文是英文技术串，展示层给出中文说明并保留原文便于排查。
+function zhHostError(text) {
+  if (!text) return '';
+  if (text.indexOf('host.auth.models') >= 0 && text.toLowerCase().indexOf('unsupported') >= 0) {
+    return '宿主未实现 host.auth.models 回调，插件无法读取凭据下的模型列表；按模型维度的分组路由会全部跳过，请升级宿主或改用支持该回调的版本。原文：' + text;
+  }
+  if (text.indexOf('host.auth.list') >= 0 && text.toLowerCase().indexOf('unsupported') >= 0) {
+    return '宿主未实现 host.auth.list 回调，插件无法读取凭据列表。原文：' + text;
+  }
+  return text;
+}
+
 function renderWindow(w) {
   const r = Math.max(0, Math.min(1, w.remaining));
   const periodH = w.period / 3.6e12;
@@ -1214,7 +1246,7 @@ function renderWindow(w) {
       (periodH > 0 ? ' <span class="subtle">(' + esc(periodH >= 24 ? (periodH / 24).toFixed(periodH % 24 ? 1 : 0) + '天' : periodH.toFixed(periodH % 1 ? 1 : 0) + '小时') + ')</span>' : '') +
     '</span><span class="mono">' + esc(pct(w.remaining)) + '</span></div>' +
     '<div class="quota-bar"><div class="quota-fill ' + tierOf(r) + '" style="width:' + (r * 100).toFixed(1) + '%"></div></div>' +
-    '<div class="win-meta">resets ' + (isZero(w.reset_at) ? '未知' : rel(w.reset_at) + ' · ' + esc(absText(w.reset_at))) + '</div>' +
+    '<div class="win-meta">重置 ' + (isZero(w.reset_at) ? '未知' : rel(w.reset_at) + ' · ' + esc(absText(w.reset_at))) + '</div>' +
     '<div class="win-meta">' + esc(models) + '</div>' +
   '</div>';
 }
@@ -1235,8 +1267,8 @@ function renderCredentials() {
     const status = [];
     if (a.disabled) status.push('<span class="badge bad">已禁用</span>');
     if (a.unavailable) status.push('<span class="badge bad">不可用</span>');
-    if (!a.disabled && !a.unavailable) status.push('<span class="badge ok">' + esc(a.status === '' ? '正常' : a.status) + '</span>');
-    else if (a.status !== '') status.push('<span class="badge">' + esc(a.status) + '</span>');
+    if (!a.disabled && !a.unavailable) status.push('<span class="badge ok">' + esc(a.status === '' ? '正常' : zhStatus(a.status)) + '</span>');
+    else if (a.status !== '') status.push('<span class="badge">' + esc(zhStatus(a.status)) + '</span>');
     if (!isZero(a.next_retry_after)) status.push('<div class="win-meta">重试 ' + rel(a.next_retry_after) + '</div>');
 
     let windows;
@@ -1345,7 +1377,7 @@ function renderDecisions() {
 function render() {
   const hostBanner = document.getElementById('hostErrorBanner');
   if (state.error) {
-    hostBanner.innerHTML = '<strong>路由组件读取宿主凭据列表失败</strong>' + esc(state.error);
+    hostBanner.innerHTML = '<strong>路由组件读取宿主凭据列表失败</strong>' + esc(zhHostError(state.error));
     hostBanner.style.display = 'block';
   } else {
     hostBanner.style.display = 'none';

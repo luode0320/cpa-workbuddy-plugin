@@ -2,6 +2,16 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.3
+
+### Fix - 补齐 0.1.2 遗漏的三处英文残留（凭据状态、宿主回调错误、配额窗口重置前缀）
+
+- 背景: 0.1.2 已把面板主体汉化，但用真实 DTO 形态驱动渲染函数做残留扫描时仍发现三处英文：配额窗口行的 `resets` 前缀、凭据状态徽标直接输出宿主返回的英文 status（`unavailable` 等）、宿主回调错误横幅直接输出 `host callback host.auth.models: unsupported ...` 原文。
+- 改动: `safeguard-killer/ui.go` 的 `renderWindow` 把 `resets ` 前缀改为 `重置 `；新增 `STATUS_TEXT` 映射表与 `zhStatus(text)`，把宿主凭据状态值（active/ready/disabled/unavailable/expired/invalid/error/pending/refreshing/cooling）翻成中文，未命中的状态原样透出以便排查；新增 `zhHostError(text)`，对 `host.auth.models` / `host.auth.list` 未实现的回调错误给出中文成因说明并附原文，其余错误原样透出。
+- 不动的部分: 后端 `hostState` / `buildUIState` 的取值与判据、宿主原始错误串、`ui_test.go` 断言依赖的 `Menu`、路由路径与两个接口常量；`resets` 只在展示层替换，不涉及任何后端字段名。
+- 验证: `python scripts/cgo-shim-build.py safeguard-killer` 的 build / vet / test 全绿；重新提取 `uiHTML` 内嵌 `<script>`（36905 字节）跑 `node --check` 退出码 0；用 vm + DOM stub 以真实 `uiState` DTO 形态（`credentials[].auth` / `has_quota` / `quota.windows[].remaining`、`decisions[].ranking` / `attempts`）驱动 `render` / `renderGroups` / `renderCredentials` / `renderSessions` / `renderDecisions`，输出的 7614 字节 HTML 中纯英文文本节点仅剩 15 项，全部是凭据名、供应商名、模型 ID、配额来源标识与 `uarr`/`darr`/`times` 三个 HTML 实体符号，无遗漏的可译文案。
+- 涉及文件: `safeguard-killer/ui.go`、`safeguard-killer/VERSION`、`safeguard-killer/main.go`、`safeguard-killer/CHANGELOG.md`。
+
 ## 0.1.2
 
 ### Feat - 管理面板全量汉化（简体中文）
