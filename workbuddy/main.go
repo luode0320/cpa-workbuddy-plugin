@@ -138,6 +138,9 @@ func init() {
 	// 禁用探活：每 10 分钟串行遍历被本机制禁用的账号，回放失败模型，成功即解除禁用。
 	// 冷却本身不再探测（cooldown_probe.go 已移除），见 failover_disable.go。
 	go failoverProbeLoop()
+	// 外部启用对账：每 2 分钟把「用户已手动启用」同步回插件侧（含盘上陈旧标记），
+	// 否则手动启用的号最长 10 分钟仍被排除，且探活会反复清零失败计数。
+	go failoverReconcileLoop()
 	// 账号池规模刷新：慢速冷却的准入闸门需要「启用 + 停用」的账号总数，
 	// 而账号枚举是宿主 RPC（跨进程）。放到独立循环里周期探测，判定入口
 	// 只读内存缓存，避免每次成功请求都付一次 RPC 往返。
@@ -349,7 +352,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.21.12"
+var version = "0.21.13"
 
 func wbRegistration() registration {
 	return registration{
@@ -845,15 +848,17 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		// 渠道满载（6021 / queue.full）由 shouldRotateOnUpstreamErr 显式排除。
 		statusCode := parseUpstreamStatusFromErr(completionErr)
 		// 11128：双写记账（模型冷却 + 账号禁用写盘），并立即停止本轮换号。
-		// 上游拦截的是这个组合，其余账号大概率同样命中；恢复统一由 60 秒
+		// 上游拦截的是这个组合，其余账号大概率同样命中；恢复统一由 10 分钟
 		// 禁用探活裁决，它会把这个模型排在回放序列最前。
+		// 渠道级拦截（11128 + unapproved channel）由 noteUpstreamBlockHit 识别后
+		// 不再罚号：同一进程换号必然重演，禁用只会把健康号逐个摘光。
 		if isModelBlockedError(statusCode, completionErr.Error()) {
 			if curSA != nil {
 				currentID := strings.TrimSpace(curSA.Auth.AccessToken)
 				if currentID == "" {
 					currentID = strings.TrimSpace(curSA.Account.UID)
 				}
-				noteModelBlockedHit(currentID, upstreamModel)
+				noteUpstreamBlockHit(currentID, upstreamModel, statusCode, completionErr.Error())
 			}
 			break
 		}

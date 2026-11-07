@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.21.13
+
+### Fix - 失败禁用与手动启用联动（生产整池被禁用的根因）
+
+- 背景: 2026-11-07 19:49 生产全池 19 个 workbuddy 账号在 3 秒内被逐个写盘禁用；手动全部启用后，后续失败不再触发禁用，两侧状态无法配合。
+- 根因一（整池清零）: 上游 `400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}` 被 `isModelBlockedError` 判为「账号×模型拦截」，走 `recordFailureScoped` 无条件写盘禁用。该错误惩罚的是**调用渠道**，同进程换任何账号都会重演，一次请求逐号换号就把池摘光。
+- 根因二（失败不再禁用）: 走宿主管理 API 恢复成功后不写盘，`failover_disable` 标记永久残留在物理文档；探活候选按标记枚举，已启用的号每 10 分钟被重新「恢复」一次，`resetCooldownState` 顺带把连续失败计数清零，真实失败永远攒不到写盘门限（生产 16 个号带着 10-31 / 11-03 / 11-07 的陈旧标记反复被探活）。
+- 根因三（手动启用不联动）: 对账只在 10 分钟探活 tick 里跑，且只清内存与 sidecar、不清盘上标记，手动启用后最长 10 分钟仍被插件排除。
+- 修复:
+  - 新增 `isChannelBlockError`（11128 + `unapproved channel` / `Illegal API invocation`）→ 归入 `failureScopeUpstreamBusy`：不记冷却、不禁用、不换号；普通 11128 仍按账号×模型拦截处理。三处调用点统一走 `noteUpstreamBlockHit`，新增调用点无法绕过判据。
+  - 恢复路径无论 API 成败都落盘清理三个标记键；新增 `persistFailoverMarkersCleared` / `clearFailoverMarkersInDoc`。
+  - 探活候选判据收紧为「盘上 `disabled:true` 且带本机制标记」或「sidecar 记禁用」，`disabled:false` + 残留标记一律视为陈旧标记；候选按 `auth_index` 去重（生产日志里同号一轮被探两次）。
+  - 新增独立对账循环（2 分钟）与启动即对账：外部启用后清内存 / sidecar / 盘上标记，并对确曾归属本机制的号重置连续失败计数；健康号的计数不受影响。
+  - 新增全池保底：禁用会把池内可用账号降到 0 时拒绝写盘（单账号部署与列表不可用时不阻断）。
+  - 宿主已禁用但盘上无本机制标记（归属已丢失）时，探活清理插件侧 sidecar，避免账号在手动启用后仍被永久排除。
+- 验证: `python scripts/cgo-shim-build.py workbuddy` build / vet / test 全绿；新增 `failover_sync_test.go` 9 组用例覆盖渠道级拦截不罚号、陈旧标记不进候选、候选去重、API 恢复清盘上标记、对账清标记与计数、健康号计数保留、全池保底、单账号放行、归属丢失自愈。
+- 涉及文件: `failure_class.go`、`model_circuit.go`、`main.go`、`stream.go`、`failover_disable.go`、`failover_disable_test.go`、`failover_sync_test.go`。
+
 ## 0.21.12
 
 ### Fix - 删除自研 max_tokens 控制，改为「显式值零干预」（对齐社区共识）

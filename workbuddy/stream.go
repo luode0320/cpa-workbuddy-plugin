@@ -179,11 +179,11 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			//
 			// 11128「请求被拦截」：双写记账后直接返回。
 			// 该状态码是 400，本就不会进入换号分支（isAccountLevel4xx 不含
-			// 400），因此这里只需负责记账——noteModelBlockedHit 会同时写入
-			// 该模型的冷却（覆盖写盘生效前的窗口）并禁用该账号，路由层用
-			// isAccountCoolingDown 跳过它，恢复则由 10 分钟禁用探活裁决。
+			// 400），因此这里只需负责记账——noteUpstreamBlockHit 会按正文区分：
+			// 账号×模型拦截写入该模型的冷却并禁用该账号；渠道级拦截
+			// （unapproved channel）不罚任何账号。
 			if isModelBlockedError(statusCode, errPayload) {
-				noteModelBlockedHit(curAuthID, upstreamModel)
+				noteUpstreamBlockHit(curAuthID, upstreamModel, statusCode, errPayload)
 				streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(errPayload, 200)))
 				return
 			}
@@ -444,13 +444,14 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 
 		// 11128：双写记账（模型冷却 + 账号禁用写盘）后直接返回。
 		// 禁用探活会把这个模型排在回放序列最前，探通才解除禁用。
+		// 渠道级拦截（unapproved channel）不罚号，由 noteUpstreamBlockHit 分流。
 		if isModelBlockedError(statusCode, errOnce.Error()) {
 			if curSA != nil {
 				currentID := strings.TrimSpace(curSA.Auth.AccessToken)
 				if currentID == "" {
 					currentID = strings.TrimSpace(curSA.Account.UID)
 				}
-				noteModelBlockedHit(currentID, model)
+				noteUpstreamBlockHit(currentID, model, statusCode, errOnce.Error())
 			}
 			return chunks, statusCode, usedID, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(errOnce.Error(), 200))
 		}
