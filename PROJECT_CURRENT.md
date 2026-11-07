@@ -61,7 +61,12 @@
   - **第三轮补测（2026-11-08 00:15-00:35）：非流式路径 + 工具多轮闭环**（均正常，未发现插件缺陷）——
     - 非流式：两插件均正确返回 `object=chat.completion`、`finish_reason`、`usage`；traework 响应体 `model` 为 `deepseek-v4.1-flash`、qoderwork 为 `auto`（后者是上游原样透传，非缺陷）。
     - 工具多轮闭环：两插件第一轮均 `finish=tool_calls` 且 `tool_calls=1`；把 `role=tool` 结果回传后第二轮均 `finish=stop`，**tool result 被正确消费**（deepseek-flash 10 字符 / dfmodel 12 字符）。
-  - **traework `max_tokens` 在长输出任务上不生效（定性为上游模型行为，非插件缺陷）**：同 prompt「列出 1 到 300」+ `mt=50` 时 qwen3.8-flash / step-5-preview / mimo-v2.6-flash / kimi-k3 均返回 1091 字符（feed_out 1204/787/1115/713）；但**同批模型换短 prompt 后正常受控**（kimi-k3：说hi→21、解释HTTP→58、列3种颜色→51 字符）。排除插件侧：`grep kimi|kmodel traework/*.go` 零命中、`buildTraePayload` 对所有模型同一路径、deepseek-flash 短任务 `chars=54` 正常。结论：上游「长列表任务弱化 max_tokens」的模型级语义，插件层不应强行截断。
+  - **第四轮（2026-11-08 00:35-00:50）：决定性实验推翻上一轮「长列表任务弱化 max_tokens」的假设**
+    - **真实结论：traework 的 `kimi-k3` 完全忽略 `max_tokens`**。同 prompt「请详细介绍一下人工智能的发展历史」下：`mt=5` → **8522 字符 / 6023 tokens**、`mt=20` → **13017 字符 / 8743 tokens**、`mt=50` → 11431 字符 / 6791 tokens，全部 `finish=stop`（非 length），参数毫无约束力。
+    - **插件侧已排除**：新增单测 `TestBuildTraePayload_KimiK3IncludesMaxTokens`（mt=5/20/50/5000 四组），断言 `buildTraePayload` 产出的 payload 中 `max_tokens` **原样存在且未被改写**、`config_name` 同时在位，cgo-shim 全绿。`grep kimi|kmodel traework/*.go` 零命中（无模型级特判）→ **不是插件漏传**。
+    - **上一轮假设被推翻**：上一轮观察到「短 prompt 生效/长 prompt 不生效」并据此归因为「上游对长列表任务弱化约束」。本轮 `mt=5` 在**短 prompt 的长回答任务**下同样失效（8522 字符），证明与 prompt 长度无关，**是该模型对 max_tokens 完全无约束**。
+    - 对照：同批 `deepseek-flash` / `qwen3.8-flash` 在短任务下正常受控（54/20 字符），说明不是整个 traework 上游都忽略，而是**模型级差异**。
+    - **处置**：属上游模型行为，插件层不做人为截断（会破坏正文完整性、且无法区分「模型自己停」与「被截断」）。已在 CHANGELOG 与本文档留痕，客户端若需硬约束请改用遵守 max_tokens 的模型（如 `deepseek-flash`）。
 
   - **workbuddy 侧（只读 sidecar 收集，另一会话在改）**：24h 内 workbuddy 上游失败 0 条（最近 2 小时）；20 个账号盘上 `failover_disable` 标记 16→0 已清净；已知遗留问题 = low-credit 禁用与探活「恢复」无限拉锯（`re-enabled` 累计 6000+ 次）、探活回放不可信模型名 `deepseek-v4.1-flash(备用)`、管理密钥与客户端 API key 同为 9 字符（安全问题）。
 
@@ -193,7 +198,3 @@
 - 会话（2026-11-07 02:00）：**qoderwork 0.13.1 修复「推理各种失败、断开」**——根因是 `recordAccountFailure` 无条件写盘禁用 + 三处把 HTTP 200 错误帧 remap 成 403（软限流被当凭据故障、首败即禁）。新增 `failover_disable_min_count`（默认 3）。`af216de`→`020313e`→`6c7d253`。
 - 当前会话（2026-11-07 01:50）：**非推理输出上限 64k → 128k（7 插件）**——`defaultMaxOutputTokens` 64000→128000；新增 CI `allow_partial` 输入（macOS runner 长期排不到机器，`darwin/arm64` 常常 cancelled，带该参数才能发布，判据看 Release job 而非 run conclusion）。`59a8fee`+`0d83256`+`cf54224`。
 - 会话（2026-11-07 01:10）：**qoderwork 0.13.0 面板批量导入**——多文件多选 + 统一识别（PAT/凭据/数组/accounts[]/JSONL/混排），判定先凭据后 PAT。`dfaecb6`→`8c41737`。
-- 会话（2026-10-31 下午）：**宿主 management.html 自动升级导致 10 插件面板集体 401**——根因：宿主把 key 混淆从 `enc::v1::`（XOR key 含 userAgent）换成 `enc::v2::`（去掉 UA），插件 `deobfuscate()` 只认 v1；放大因素是旧版曾把未解密密文写进 sessionStorage 且 `getKey()` 优先读它 → 永远 401 不自愈。修复：双前缀分支 + `readSessionKey()` 丢弃 `enc::` 遗留密文，覆盖 10 个 panel。`79b581e`+`368b4f3`。排查入口：`docker cp` 出生产 `management.html` 比对其 `enc::v` 前缀与 `yl()` 派生函数。
-- 会话（2026-10-31 凌晨）：**workbuddy 高峰期拥堵识别与失败分类修正（0.21.8）**——结论：不是「看不到状态」，而是拥堵被系统性误判成账号故障形成雪崩。新增 `failureScopeUpstreamBusy`（6021/queue.full）与 `failureScopeModelRateLimit`（6004）。六项变异全 KILLED。
-- 会话（2026-10-29 深夜）：**deepseek-v4.1-flash 16 点后变慢根因（只读）**——双因叠加：主力快号 `1d7eca06` 一条 429 后触发禁用且探活因无 failed_model 标记永久跳过；16:42 一次空操作配置保存触发全量 client reload 清空 session-affinity（17-20 点亲和命中率 0%，TTFB +23%）。两个待修缺陷记在 `doc/4-bugs/2026-10-29_160000_*.md`。
-- 会话（2026-10-26 晚）：**traework 0.5.3 面板改纯读积分快照**——删除前端 10 分钟定时器与连带死代码；新鲜度由后端 `watchdogIntervalDefault` 保证。

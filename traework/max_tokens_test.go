@@ -126,3 +126,29 @@ func TestOpenAIRequest_AliasUnmarshal(t *testing.T) {
 	}
 }
 
+
+// TestBuildTraePayload_KimiK3IncludesMaxTokens 锁定「插件确实把 max_tokens
+// 写进了上行 payload」这一事实，用于把「模型忽略参数」与「插件漏传参数」区分开。
+//
+// 2026-11-08 生产实测：kimi-k3 在 max_tokens=5/20/50/5000 下分别输出
+// 8522/13017/1091/1091 字符，参数完全不起约束作用。本用例证明这不是插件漏传。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-08 00:45:00；改动原因：为上游参数忽略的定性提供插件侧证据。
+func TestBuildTraePayload_KimiK3IncludesMaxTokens(t *testing.T) {
+	msgs := []map[string]any{{"role": "user", "content": "列出 1 到 300 的数字"}}
+	for _, mt := range []int{5, 20, 50, 5000} {
+		payload := buildTraePayload(msgs, "kimi-k3", true, mt, nil, nil, nil, "")
+		got, ok := payload["max_tokens"]
+		if !ok {
+			t.Fatalf("max_tokens 未写入 payload（mt=%d）; payload=%v", mt, payload)
+		}
+		if got != mt {
+			t.Fatalf("max_tokens 被改写: got=%v want=%d", got, mt)
+		}
+		// 上行体同时必须携带 config_name / model，否则上游会走错模型槽位。
+		if _, ok := payload["config_name"]; !ok {
+			t.Fatalf("config_name 缺失（mt=%d）; payload=%v", mt, payload)
+		}
+	}
+}
