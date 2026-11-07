@@ -29,6 +29,15 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-07 19:00-19:35）：**traework 0.5.13 —— 模型目录双通道 + 签到 status/冷却 + 版本头对齐真机**：
+  - 触发：用户比对 GitHub Trae 开源项目（`JsonLing/trae-cn-provider`、`crush1994/Trae-AutoCheckin`、`bluechonk/trae-credential-reverse-engineering`）后要求「都改」。
+  - **模型目录**：`get_detail_param` 由单通道 `solo_work_lite` 改为 `chat_v3` + `solo_agent` 并发拉取，并按固定顺序确定性合并（`chat_v3` 优先；初版按 goroutine 完成顺序合并会让展示名/通道归属随机漂移）。补齐此前完全缺失的过滤：`is_invisible_to_user`、`config_switch=false`、`display_config.is_custom_model`、8 类内部 usage、6 类内部前缀、`-auto` 后缀。合并时记录 `config_name -> 通道`（`traeModelFunctions`），`resolveModelOptions` 聊天选同一通道（错通道上游回 4001），无记录回退 `solo_work_lite`。
+  - **签到**：新增 `checkin_credits/status` 预查（`checked_in` → Already、`enable=false` → 未开放），不再对已签账号发无效 claim；新增账号级 9074 冷却（本地 00:00-00:10 早窗 12 分钟、平时 55 分钟，key 优先 uid，账号间不连坐）；`checkinAuthHeaders` 补 `x-app-version-code` / `x-ide-version-code` / `X-User-Region: CN` / `x-device-cpu`。
+  - **版本头**：`x-app-version` 默认 `0.1.58 → 1.107.1`；`x-app-version-code` 由「当天日期」改为固定 `20260901`（上游按该数值灰度，实测 20260401 只回 42 条目录、≥20260901 才完整，且必须纯整数）。
+  - **发布**：`53fbd7d` → CI `42367639905` Release success（5 平台，darwin/arm64 cancelled）→ `19dd23d`（registry 0.5.13，5 artifacts）→ 生产 `hot reloaded active 0.5.13 / retired 0.5.11`。本版基于并行会话 `aee52c0`（七插件 max_tokens 零干预），CHANGELOG 已注明包含 0.5.12 改造。
+  - **生产验证**：模型表 21 → 23；traework `1 → 3`（`deepseek-flash` alias、`Doubao-Seed-Code`、`qwen3.8-flash`）。临时清空 traework 排除项（备份 `/root/cpa-cfg-backup-excl-20261107_192556/excluded.json`）后仍只有 3 个 → **账号级可选集本就 3 个**，原 53 条排除是单通道时代产物，已保留清空。三模型聊天全部 200 且 feed 归因 `provider=traework-provider`，**无 4001**。签到全量 10 账号 **2 秒全部 `already=true`**（仅 status 请求、零 claim）。
+  - **风险**：并行会话若再发布 0.5.12，registry 会被回退覆盖；0.5.13 为包含全部改动的最新版本。
+
 - 会话（2026-11-07 18:06-19:10）：**七插件 max_tokens 改为社区共识（减法改造）**：
   - **触发**：用户明示「按 GitHub 众多开源反代项目的方案改造，不要做自己想出来的控制」。实拉 7 家源码取证：tonny0812/workbuddy2api、lovingfish/workbuddy-cliproxy、sixzjd/dsh-workbuddy-connect、dingminhua/dsh-connect-workbuddy、linguo2625469/workbuddy2api-panel、ardeyouxipianyi/workbuddy2api-hub、ithtelab/workbuddy-manager。
   - **社区事实**：①上游对越界 max_tokens 是**静默钳制不报 400**（linguo2625469 实测 16 个 CN 模型 8 个被钳，最狠声称 1M 实际 32K）；②思考与最终回答**共享** output 预算，上游无独立思考上限字段（linguo2625469 `client.go:1283` 独立确认）；③max_tokens **不计入**上下文窗口（sixzjd 实测 70000+64000 通过 100000 窗口）；④GPT 系 <16 报 `code=11133`（两家独立实测 15 拒 16 过）；⑤**七家无一做「抬升显式小值」或「统一地板」**。
