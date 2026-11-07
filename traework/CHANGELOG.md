@@ -20,6 +20,26 @@
 - 测试: 新增 `TestValidateOpenAIMessageRoles`（6 组：正常/工具/非法 role/空 role/role 非字符串/空列表）。
   `cgo-shim-build.py traework` build/vet/test 全绿。
 
+### Docs - 附：kimi-k3 对 max_tokens 无反应的定性（无代码改动）
+
+- 背景：2026-11-08 生产压测发现 traework 的 `kimi-k3` 对 `max_tokens` 完全无反应。
+- 实测（同一 prompt「请详细介绍一下人工智能的发展历史」）：
+
+  | max_tokens | 正文 | output_tokens | finish_reason |
+  |---|---|---|---|
+  | 5 | 8522 字符 | 6023 | stop |
+  | 20 | 13017 字符 | 8743 | stop |
+  | 50 | 11431 字符 | 6791 | stop |
+  | 5000 | 1091 字符 | 678 | stop |
+
+- 插件侧已排除：新增 `TestBuildTraePayload_KimiK3IncludesMaxTokens`（mt=5/20/50/5000 四组），
+  断言 `buildTraePayload` 产出的 `max_tokens` 原样存在且未被改写、`config_name` 同时在位；
+  `grep kimi|kmodel traework/*.go` 零命中，无模型级特判。
+- 对照：同批 `deepseek-flash` / `qwen3.8-flash` 在短任务下正常受控（54 / 20 字符），
+  说明是**模型级差异**而非整个上游忽略。
+- 处置：属上游模型行为，插件层**不做人为截断**（会破坏正文完整性，且无法区分
+  「模型自己停」与「被截断」）。客户端若需硬约束请改用遵守 max_tokens 的模型。
+
 ## 0.5.15
 
 ### Fix - 畸形请求不再逐个禁用整池账号 + max_completion_tokens 别名识别
