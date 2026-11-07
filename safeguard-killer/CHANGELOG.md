@@ -2,6 +2,18 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.2
+
+### Feat - 管理面板全量汉化（简体中文）
+
+- 背景: 生产面板 `https://cpa.luode.vip/management.html#/plugin-pages/safeguard-killer/0` 全英文，用户反馈「英文的看不懂」，需要简体中文界面。
+- 改动: `safeguard-killer/ui.go` 的 `uiHTML` 常量内所有面向用户的可见文案改为简体中文——页面标题与描述、状态胶囊（版本/凭据/分组/会话/最近更新）、工具栏（刷新/放弃/保存/未保存改动）、5 个标签页、两张设置卡片（Router & Quota Settings 4 个字段的标签与说明、Safeguards & Client Adaptations 8 个开关标题与说明、客户端提示前缀）、智能分组编辑器（代号/可见名/路由策略/上移下移移除/添加模型/删除分组/三条策略提示）、校验错误、保存横幅、相对时间与倒计时、配额窗口、凭据表、会话表、决策表与排序表表头、错误横幅、页面异常提示。
+- 新增展示层翻译函数（只翻译渲染，不改后端取值与判断）: `REASON_TEXT` 映射表 + `zhReason` / `zhAttempt` / `zhExcluded` / `zhKind` / `zhMgmtError`，把后端返回的英文 reason、attempt result、排除原因、决策类型、配额采集错误在渲染时翻成中文。
+- 不动的部分（刻意保留原样）: 后端日志与判据字段（`served` / `skipped: ` / `failed: ` / "%s has %.0f%% left"）以及测试断言依赖的字符串；注册菜单名 `Menu: "Safeguard Killer"` 与路由路径；`STATE_API_URL` / `CONFIG_API_URL` 两个接口常量；技术标识与技术名词（Claude Code / OpenAI/Codex / Gemini / Fable/Mythos / x-cc-* 头名 / safeguards / not_flagged 等）；默认提示前缀 `⚡ [Safeguard Killer] `；`managementRegistrationPayload` 的 Route/Resource Description 一并改为中文说明，但 `Menu` 保持英文（`ui_test.go:15` 断言）。
+- 顺带修复: 汉化过程中 `showError('网络错误，请求 ' + STATE_API_URL + ' 失败', String(err))` 曾漏掉一个闭合引号导致内嵌 JS 语法错误，已在 `ui.go` 修正。
+- 验证: 提取 `uiHTML` 内嵌 `<script>`（35923 字节）跑 `node --check` 退出码 0；确认 `uiHTML` 内反引号仅首尾各 1 个，Go raw string 未被破坏；`python scripts/cgo-shim-build.py safeguard-killer` 的 build / vet / test 全绿（`ok github.com/luode0320/cpa-workbuddy-plugin/safeguard-killer`）；HTML 段残留英文仅技术名词。
+- 涉及文件: `safeguard-killer/ui.go`、`safeguard-killer/VERSION`、`safeguard-killer/main.go`、`safeguard-killer/CHANGELOG.md`。
+
 ## 0.1.1
 
 ### Fix - 把插件声明的 schema 版本从 9 降到宿主实际支持的 6，修复生产注册失败

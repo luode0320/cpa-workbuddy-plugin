@@ -51,14 +51,14 @@ func managementRegistrationPayload() managementRegistration {
 			{
 				Method:      http.MethodGet,
 				Path:        mgmtStateRoutePath,
-				Description: "Returns config, safeguard adaptation toggles, smart groups, quota windows, session bindings, and recent routing decisions of Safeguard Killer.",
+				Description: "返回 Safeguard Killer 的配置、护栏适配开关、智能分组、配额窗口、会话绑定以及近期路由决策。",
 			},
 		},
 		Resources: []managementResource{
 			{
 				Path:        uiResourcePath,
 				Menu:        "Safeguard Killer",
-				Description: "Neutralize model safeguards and auto-mode classifiers across Claude Code, Claude, OpenAI/Codex, and Gemini models, and route refusal-evasion Smart Groups with 5m cache stickiness. Set management_key in the plugin config. Made to work alongside Reorder/Rename Models (https://github.com/esauvisky/CLIProxyAPI-Model-List-Tweaker-Plugin).",
+				Description: "在 Claude Code、Claude、OpenAI/Codex 与 Gemini 模型上清除模型侧安全护栏与 auto-mode 分类器，用智能分组（5 分钟缓存粘性的故障转移链）绕开拒答。需在插件配置里设置 management_key。可与模型改名/重排插件 CLIProxyAPI-Model-List-Tweaker-Plugin 配合使用。",
 			},
 		},
 	}
@@ -102,11 +102,11 @@ func handleManagement(request []byte) ([]byte, error) {
 }
 
 const uiHTML = `<!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Safeguard Killer</title>
+<title>Safeguard Killer 管理面板</title>
 <style>
   :root, [data-theme='dark'] {
     --bg-secondary: #151412;
@@ -446,23 +446,23 @@ const uiHTML = `<!doctype html>
 <main class="main-content">
   <header class="page-header">
     <h1 class="page-title">Safeguard Killer</h1>
-    <p class="page-desc">Neutralize model safeguards and auto-mode classifiers across Claude Code, Claude, OpenAI/Codex, and Gemini models, route around refusals with Smart Groups (5m cache-sticky failover chains), and balance provider quota. Requires <span class="mono">management_key</span> in the plugin config. Made to work alongside <a href="https://github.com/esauvisky/CLIProxyAPI-Model-List-Tweaker-Plugin" target="_blank" rel="noopener" style="color:var(--text-primary);">Reorder/Rename Models</a>.</p>
+    <p class="page-desc">在 Claude Code、Claude、OpenAI/Codex 与 Gemini 模型上清除模型侧安全护栏与 auto-mode 分类器，用智能分组（5 分钟缓存粘性的故障转移链）绕开拒答，并在多个供应商之间平衡配额。需在插件配置里设置 <span class="mono">management_key</span>。可与 <a href="https://github.com/esauvisky/CLIProxyAPI-Model-List-Tweaker-Plugin" target="_blank" rel="noopener" style="color:var(--text-primary);">模型重排/重命名</a> 配合使用。</p>
   </header>
 
   <div class="status-bar">
     <div class="status-pills">
-      <span class="status-pill"><span class="status-dot" id="statusDot"></span><span class="status-label">Version</span><span class="status-value mono" id="versionVal">-</span></span>
-      <span class="status-pill"><span class="status-label">Credentials</span><span class="status-value" id="credCount">0</span></span>
-      <span class="status-pill"><span class="status-label">Groups</span><span class="status-value" id="groupCount">0</span></span>
-      <span class="status-pill"><span class="status-label">Sessions</span><span class="status-value" id="sessCount">0</span></span>
-      <span class="status-pill"><span class="status-label">Last updated</span><span class="status-value" id="lastUpdated">never</span></span>
+      <span class="status-pill"><span class="status-dot" id="statusDot"></span><span class="status-label">版本</span><span class="status-value mono" id="versionVal">-</span></span>
+      <span class="status-pill"><span class="status-label">凭据</span><span class="status-value" id="credCount">0</span></span>
+      <span class="status-pill"><span class="status-label">分组</span><span class="status-value" id="groupCount">0</span></span>
+      <span class="status-pill"><span class="status-label">会话</span><span class="status-value" id="sessCount">0</span></span>
+      <span class="status-pill"><span class="status-label">最后更新</span><span class="status-value" id="lastUpdated">从未</span></span>
     </div>
     <div class="toolbar">
-      <input type="password" id="mgmtKey" class="input" placeholder="Management Key" style="display:none;" onkeydown="if (event.key === 'Enter') refresh()">
-      <button class="btn" id="refreshBtn" onclick="refresh()">Refresh</button>
-      <span class="badge warn" id="dirtyBadge" style="display:none;">unsaved changes</span>
-      <button class="btn" id="discardBtn" onclick="discardDraft()" disabled>Discard</button>
-      <button class="btn primary" id="saveBtn" onclick="save()" disabled>Save</button>
+      <input type="password" id="mgmtKey" class="input" placeholder="管理密钥" style="display:none;" onkeydown="if (event.key === 'Enter') refresh()">
+      <button class="btn" id="refreshBtn" onclick="refresh()">刷新</button>
+      <span class="badge warn" id="dirtyBadge" style="display:none;">有未保存的修改</span>
+      <button class="btn" id="discardBtn" onclick="discardDraft()" disabled>放弃修改</button>
+      <button class="btn primary" id="saveBtn" onclick="save()" disabled>保存</button>
     </div>
   </div>
 
@@ -472,97 +472,97 @@ const uiHTML = `<!doctype html>
   <div id="mgmtErrorBanner" class="banner" style="display:none;"></div>
 
   <nav class="tabs" id="tabBar">
-    <button class="tab-btn active" data-tab="settings">General Settings</button>
-    <button class="tab-btn" data-tab="groups">Smart Groups <span class="badge" id="tabGroupCount">0</span></button>
-    <button class="tab-btn" data-tab="sessions">Sessions <span class="badge" id="tabSessCount">0</span></button>
-    <button class="tab-btn" data-tab="decisions">Recent Decisions <span class="badge" id="tabDecCount">0</span></button>
-    <button class="tab-btn" data-tab="credentials">Credentials <span class="badge" id="tabCredCount">0</span></button>
+    <button class="tab-btn active" data-tab="settings">通用设置</button>
+    <button class="tab-btn" data-tab="groups">智能分组 <span class="badge" id="tabGroupCount">0</span></button>
+    <button class="tab-btn" data-tab="sessions">会话 <span class="badge" id="tabSessCount">0</span></button>
+    <button class="tab-btn" data-tab="decisions">最近决策 <span class="badge" id="tabDecCount">0</span></button>
+    <button class="tab-btn" data-tab="credentials">凭据 <span class="badge" id="tabCredCount">0</span></button>
   </nav>
 
   <div class="tab-pane active" id="pane-settings">
     <section class="card">
-      <div class="card-header"><h2 class="card-title">Router &amp; Quota Settings</h2></div>
+      <div class="card-header"><h2 class="card-title">路由与配额设置</h2></div>
       <div class="form-grid" id="settingsForm">
-        <label class="field"><span class="cfg-key">Management key</span>
-          <input class="input" type="password" autocomplete="new-password" placeholder="unchanged" data-field="management_key" data-setting="key">
-          <span class="hint">Required for quota collection and balancing. Write-only: leave empty to keep the stored key.</span></label>
-        <label class="field"><span class="cfg-key">Min remaining (%)</span>
+        <label class="field"><span class="cfg-key">管理密钥</span>
+          <input class="input" type="password" autocomplete="new-password" placeholder="保持不变" data-field="management_key" data-setting="key">
+          <span class="hint">配额采集与配额平衡必须使用。只写字段：留空表示沿用已保存的密钥。</span></label>
+        <label class="field"><span class="cfg-key">最低剩余比例（%）</span>
           <input class="input" type="number" step="any" min="0" max="99.999" data-field="min_remaining" data-setting="min_remaining_pct">
-          <span class="hint">Every applicable quota window must keep at least this much for a credential to be used.</span></label>
-        <label class="field"><span class="cfg-key">Idle minutes</span>
+          <span class="hint">凭据要被使用，其每个适用配额窗口都必须保留至少这么多余量。</span></label>
+        <label class="field"><span class="cfg-key">空闲分钟数</span>
           <input class="input" type="number" step="1" min="0" data-field="idle_minutes" data-setting="idle_minutes">
-          <span class="hint">A session without prompts for this long may move to another credential or group model (0 disables stickiness).</span></label>
-        <label class="field"><span class="cfg-key">Stream prefetch bytes</span>
+          <span class="hint">会话超过该时长没有新提示后，可换到其它凭据或分组模型（填 0 表示关闭粘性）。</span></label>
+        <label class="field"><span class="cfg-key">流预取字节数</span>
           <input class="input" type="number" step="1" min="1" data-field="stream_prefetch_bytes" data-setting="stream_prefetch_bytes">
-          <span class="hint">Bytes of visible text a group stream holds back and checks for refusals before forwarding to the client.</span></label>
+          <span class="hint">分组流在转发给客户端之前先缓冲并检查拒答的可见文本字节数。</span></label>
       </div>
     </section>
 
     <section class="card">
-      <div class="card-header"><h2 class="card-title">Safeguards &amp; Client Adaptations</h2></div>
-      <p class="card-desc">Control how Safeguard Killer strips hidden safety prompts, taint headers, and tool classifiers, and how it intercepts model refusals before they reach the client.</p>
+      <div class="card-header"><h2 class="card-title">安全护栏与客户端适配</h2></div>
+      <p class="card-desc">控制 Safeguard Killer 如何剥离隐藏的安全提示、拒答污染头与工具分类器，以及如何在模型拒答到达客户端之前拦截它。</p>
       <div class="feature-grid" id="featuresForm">
         <label class="feature-item">
           <input type="checkbox" data-feature="fallback_on_refusal">
           <span>
-            <span class="feature-title">Fallback on refusal</span>
-            <span class="feature-desc">Detect safeguard stops, content filters, empty responses, and plain-text or scope-gate refusals during stream prefetch and automatically switch to the next model in the group.</span>
+            <span class="feature-title">遇拒答自动切换</span>
+            <span class="feature-desc">在流预取阶段识别安全护栏中止、内容过滤、空响应、纯文本拒答与授权范围推诿，并自动切换到分组里的下一个模型。</span>
           </span>
         </label>
         <label class="feature-item">
           <input type="checkbox" data-feature="client_fallback_notices">
           <span>
-            <span class="feature-title">Client fallback &amp; model-switch notices</span>
-            <span class="feature-desc">Emit a visible notice in the client when a model in a group refuses/fails or when the active model changes, and strip it from conversation history on later turns so models never see it.</span>
+            <span class="feature-title">客户端回退与换模型提示</span>
+            <span class="feature-desc">分组内模型拒答/失败或当前模型发生变化时，向客户端输出一条可见提示，并在后续轮次把它从会话历史中剥离，避免模型看到。</span>
           </span>
         </label>
         <label class="feature-item">
           <input type="checkbox" data-feature="rewrite_cyber_system_prompt">
           <span>
-            <span class="feature-title">Rewrite cyber &amp; dual-use system prompt gate</span>
-            <span class="feature-desc">Replace Claude Code's built-in "require clear authorization context" and Fable/Mythos dual-use restriction blurbs in the system prompt so models answer directly without interrogating for scope.</span>
+            <span class="feature-title">改写网络安全/两用能力系统提示门禁</span>
+            <span class="feature-desc">替换 Claude Code 系统提示里内置的“要求明确的授权背景”与 Fable/Mythos 两用限制段落，让模型直接作答而不再追问使用范围。</span>
           </span>
         </label>
         <label class="feature-item">
           <input type="checkbox" data-feature="strip_refusal_taint_headers">
           <span>
-            <span class="feature-title">Strip refusal-taint headers</span>
-            <span class="feature-desc">Remove x-is-refusal-fallback, x-cc-fallback-*, x-cc-original-request-id, and x-cc-atis headers that Claude Code attaches to every request after a turn is flagged.</span>
+            <span class="feature-title">剥离拒答污染头</span>
+            <span class="feature-desc">移除 Claude Code 在一轮被标记之后附加到每个请求上的 x-is-refusal-fallback、x-cc-fallback-*、x-cc-original-request-id 与 x-cc-atis 请求头。</span>
           </span>
         </label>
         <label class="feature-item">
           <input type="checkbox" data-feature="disable_upstream_server_fallback">
           <span>
-            <span class="feature-title">Disable upstream server-side model swap</span>
-            <span class="feature-desc">Remove the fallbacks body field and server-side-fallback / fallback-credit beta headers so Anthropic's servers do not silently swap your model mid-stream.</span>
+            <span class="feature-title">禁用上游服务端换模型</span>
+            <span class="feature-desc">移除请求体里的 fallbacks 字段与 server-side-fallback / fallback-credit beta 头，避免 Anthropic 服务端在流式输出中途悄悄换掉你的模型。</span>
           </span>
         </label>
         <label class="feature-item">
           <input type="checkbox" data-feature="bypass_auto_mode_classifier">
           <span>
-            <span class="feature-title">Bypass auto-mode tool classifier</span>
-            <span class="feature-desc">Strip safeguards and dangerous-tool-use betas from requests, stamp not_flagged safeguard_results on group tool calls, and auto-approve local auto-mode classifier checks in 0ms.</span>
+            <span class="feature-title">绕过 auto-mode 工具分类器</span>
+            <span class="feature-desc">从请求中剥离 safeguards 与 dangerous-tool-use beta，给分组工具调用打上 not_flagged 的 safeguard_results，并让本地 auto-mode 分类器检查在 0 毫秒内直接放行。</span>
           </span>
         </label>
         <label class="feature-item">
           <input type="checkbox" data-feature="neutralize_classifier_stop_nudges">
           <span>
-            <span class="feature-title">Neutralize classifier-stop companion nudges</span>
-            <span class="feature-desc">Rewrite Claude Code's injected "stopped by a safety classifier — Do not produce that content again" messages and tool-result tombstones into neutral continuation prompts.</span>
+            <span class="feature-title">中和分类器中止附带的催促语</span>
+            <span class="feature-desc">把 Claude Code 注入的“已被安全分类器中止——不要再生成该内容”类提示与工具结果墓碑，改写为中性的续写提示。</span>
           </span>
         </label>
         <label class="feature-item">
           <input type="checkbox" data-feature="strip_restrictive_system_reminders">
           <span>
-            <span class="feature-title">Strip restrictive &lt;system-reminder&gt; blocks</span>
-            <span class="feature-desc">Remove mid-conversation &lt;system-reminder&gt; or role=system refusal and dual-use warning injections from messages while preserving normal harness reminders.</span>
+            <span class="feature-title">剥离限制性 &lt;system-reminder&gt; 块</span>
+            <span class="feature-desc">从消息中移除对话中途注入的 &lt;system-reminder&gt; 或 role=system 拒答与两用警告，同时保留宿主正常的提醒。</span>
           </span>
         </label>
       </div>
       <div class="form-grid" style="margin-top: 14px;" id="noticePrefixForm">
-        <label class="field"><span class="cfg-key">Client notice prefix</span>
+        <label class="field"><span class="cfg-key">客户端提示前缀</span>
           <input class="input mono" type="text" placeholder="⚡ [Safeguard Killer] " data-field="features.notice_prefix" data-feature-text="notice_prefix">
-          <span class="hint">Prefix prepended to client fallback/switch notices (stripped from model context on subsequent turns).</span></label>
+          <span class="hint">加在客户端回退/换模型提示前面的前缀（后续轮次会从模型上下文里剥离）。</span></label>
       </div>
     </section>
   </div>
@@ -570,10 +570,10 @@ const uiHTML = `<!doctype html>
   <div class="tab-pane" id="pane-groups">
     <section class="card">
       <div class="card-header">
-        <h2 class="card-title">Smart Groups</h2>
-        <button class="btn sm" data-action="add-group" id="addGroupBtn">Add group</button>
+        <h2 class="card-title">智能分组</h2>
+        <button class="btn sm" data-action="add-group" id="addGroupBtn">新增分组</button>
       </div>
-      <p class="card-desc">A Smart Group exposes a single virtual model ID that automatically routes around safeguard refusals, content filters, scope-gate lectures, and quota exhaustion across multiple models. Once a model answers without refusing, the session stays pinned to it for 5 minutes while the server prompt cache is warm, then resets to try the group from the start once 5 minutes pass (can also be used purely for multi-provider convenience or quota spreading).</p>
+      <p class="card-desc">智能分组对外暴露一个虚拟模型 ID，在多个模型之间自动绕开安全护栏拒答、内容过滤、授权范围说教与配额耗尽。某个模型不拒答之后，会话会在服务端 prompt 缓存仍热的 5 分钟内固定使用它；超过 5 分钟后重置，重新从分组头部开始尝试（也可以纯粹用于多供应商便利或配额分摊）。</p>
       <div class="groups" id="groupsEditor"></div>
       <datalist id="modelList"></datalist>
     </section>
@@ -581,10 +581,10 @@ const uiHTML = `<!doctype html>
 
   <div class="tab-pane" id="pane-sessions">
     <section class="card">
-      <div class="card-header"><h2 class="card-title">Sessions</h2></div>
+      <div class="card-header"><h2 class="card-title">会话</h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Session</th><th>Credential / Target</th><th>Provider</th><th>Model / Group</th><th>Bound</th><th>Last seen</th><th>Idle / Cache expires</th></tr></thead>
+          <thead><tr><th>会话</th><th>凭据 / 目标</th><th>供应商</th><th>模型 / 分组</th><th>绑定时间</th><th>最后访问</th><th>空闲 / 缓存到期</th></tr></thead>
           <tbody id="sessBody"></tbody>
         </table>
       </div>
@@ -593,10 +593,10 @@ const uiHTML = `<!doctype html>
 
   <div class="tab-pane" id="pane-decisions">
     <section class="card">
-      <div class="card-header"><h2 class="card-title">Recent Decisions</h2></div>
+      <div class="card-header"><h2 class="card-title">最近决策</h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Time</th><th>Kind</th><th>Model</th><th>Session</th><th>Chosen</th><th>Reason</th></tr></thead>
+          <thead><tr><th>时间</th><th>类型</th><th>模型</th><th>会话</th><th>选中</th><th>原因</th></tr></thead>
           <tbody id="decBody"></tbody>
         </table>
       </div>
@@ -605,10 +605,10 @@ const uiHTML = `<!doctype html>
 
   <div class="tab-pane" id="pane-credentials">
     <section class="card">
-      <div class="card-header"><h2 class="card-title">Credentials</h2></div>
+      <div class="card-header"><h2 class="card-title">凭据</h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Credential</th><th>Status</th><th>Quota windows</th><th>Source</th></tr></thead>
+          <thead><tr><th>凭据</th><th>状态</th><th>配额窗口</th><th>数据来源</th></tr></thead>
           <tbody id="credBody"></tbody>
         </table>
       </div>
@@ -669,7 +669,7 @@ function syncThemeWithCPA() {
 function deobfuscateCPAStore(payload) {
   const prefix = 'enc::v2::';
   if (!payload.startsWith(prefix)) {
-    throw new Error('cli-proxy-auth is not in the enc::v2:: format this page understands');
+    throw new Error('cli-proxy-auth 不是本页面能识别的 enc::v2:: 格式');
   }
   const bin = atob(payload.slice(prefix.length));
   const keyBytes = new TextEncoder().encode('cli-proxy-api-webui::secure-storage|' + window.location.host);
@@ -716,21 +716,21 @@ function fmtDuration(ms) {
   const h = Math.floor(s / 3600); s -= h * 3600;
   const m = Math.floor(s / 60); s -= m * 60;
   let out;
-  if (d > 0) out = d + 'd ' + h + 'h';
-  else if (h > 0) out = h + 'h ' + m + 'm';
-  else if (m > 0) out = m + 'm ' + s + 's';
-  else out = s + 's';
+  if (d > 0) out = d + '天 ' + h + '小时';
+  else if (h > 0) out = h + '小时 ' + m + '分';
+  else if (m > 0) out = m + '分 ' + s + '秒';
+  else out = s + '秒';
   return neg ? '-' + out : out;
 }
 
 function relText(t) {
   const diff = new Date(t).getTime() - serverNow();
-  if (Math.abs(diff) < 1000) return 'now';
-  return diff > 0 ? 'in ' + fmtDuration(diff) : fmtDuration(-diff) + ' ago';
+  if (Math.abs(diff) < 1000) return '刚刚';
+  return diff > 0 ? fmtDuration(diff) + '后' : fmtDuration(-diff) + '前';
 }
 
 function absText(t) {
-  return new Date(t).toLocaleString();
+  return new Date(t).toLocaleString('zh-CN', { hour12: false });
 }
 
 // Live-updating relative time; refreshed every second by tick().
@@ -746,7 +746,7 @@ function countdown(t) {
 
 function countdownText(t) {
   const diff = new Date(t).getTime() - serverNow();
-  if (diff <= 0) return '<span class="badge warn">idle, re-picks on next prompt</span>';
+  if (diff <= 0) return '<span class="badge warn">空闲中，下次提示时重新选择</span>';
   return esc(fmtDuration(diff));
 }
 
@@ -754,7 +754,7 @@ function tick() {
   for (const el of document.querySelectorAll('.live-rel')) el.textContent = relText(el.dataset.t);
   for (const el of document.querySelectorAll('.live-cd')) el.innerHTML = countdownText(el.dataset.t);
   if (lastOkAt !== null) {
-    document.getElementById('lastUpdated').textContent = fmtDuration(Date.now() - lastOkAt) + ' ago';
+    document.getElementById('lastUpdated').textContent = fmtDuration(Date.now() - lastOkAt) + '前';
   }
 }
 
@@ -878,28 +878,28 @@ function validateDraft() {
   const s = draft.settings;
   const minPct = parseNum(s.min_remaining_pct);
   const minFrac = Number((minPct / 100).toPrecision(12));
-  if (!Number.isFinite(minPct) || minFrac < 0 || minFrac >= 1) errors.push(['min_remaining', 'Min remaining must be a percentage in [0, 100), got "' + s.min_remaining_pct + '"']);
+  if (!Number.isFinite(minPct) || minFrac < 0 || minFrac >= 1) errors.push(['min_remaining', '最低剩余比例必须落在 [0, 100) 区间内，当前为 "' + s.min_remaining_pct + '"']);
   const idle = parseNum(s.idle_minutes);
-  if (!Number.isInteger(idle) || idle < 0) errors.push(['idle_minutes', 'Idle minutes must be a non-negative whole number, got "' + s.idle_minutes + '"']);
+  if (!Number.isInteger(idle) || idle < 0) errors.push(['idle_minutes', '空闲分钟数必须是非负整数，当前为 "' + s.idle_minutes + '"']);
   const prefetch = parseNum(s.stream_prefetch_bytes);
-  if (!Number.isInteger(prefetch) || prefetch < 1) errors.push(['stream_prefetch_bytes', 'Stream prefetch bytes must be a whole number of at least 1, got "' + s.stream_prefetch_bytes + '"']);
+  if (!Number.isInteger(prefetch) || prefetch < 1) errors.push(['stream_prefetch_bytes', '流预取字节数必须是不小于 1 的整数，当前为 "' + s.stream_prefetch_bytes + '"']);
 
   const groups = draft.groups.map(g => ({ id: g.id.trim(), name: g.name.trim(), strategy: normStrategy(g.strategy), models: g.models.map(m => m.trim()) }));
   const ids = new Set();
   groups.forEach((g, i) => {
-    const label = 'Group #' + (i + 1) + (g.id ? ' (' + g.id + ')' : '');
-    if (g.id === '') errors.push(['groups.' + i + '.id', label + ' needs a codename']);
-    else if (ids.has(g.id)) errors.push(['groups.' + i + '.id', label + ': codename ' + g.id + ' is used twice']);
+    const label = '分组 #' + (i + 1) + (g.id ? ' (' + g.id + ')' : '');
+    if (g.id === '') errors.push(['groups.' + i + '.id', label + ' 需要填写分组代号']);
+    else if (ids.has(g.id)) errors.push(['groups.' + i + '.id', label + '：分组代号 ' + g.id + ' 被重复使用']);
     ids.add(g.id);
-    if (g.name === '') errors.push(['groups.' + i + '.name', label + ' needs a name']);
-    if (g.models.length === 0) errors.push(['groups.' + i + '.add', label + ' needs at least one model']);
+    if (g.name === '') errors.push(['groups.' + i + '.name', label + ' 需要填写显示名称']);
+    if (g.models.length === 0) errors.push(['groups.' + i + '.add', label + ' 至少需要一个模型']);
     g.models.forEach((m, j) => {
-      if (m === '') errors.push(['groups.' + i + '.models.' + j, label + ': model #' + (j + 1) + ' is empty']);
+      if (m === '') errors.push(['groups.' + i + '.models.' + j, label + '：第 ' + (j + 1) + ' 个模型为空']);
     });
   });
   groups.forEach((g, i) => {
     g.models.forEach((m, j) => {
-      if (ids.has(m)) errors.push(['groups.' + i + '.models.' + j, 'Group ' + g.id + ' lists group ' + m + ' as a target; groups cannot nest']);
+      if (ids.has(m)) errors.push(['groups.' + i + '.models.' + j, '分组 ' + g.id + ' 把分组 ' + m + ' 当作目标模型；分组不能嵌套']);
     });
   });
 
@@ -949,7 +949,7 @@ async function save() {
   const v = validateDraft();
   markInvalid(new Set(v.errors.map(e => e[0])));
   if (v.errors.length > 0) {
-    showSaveBanner('error', 'Not saved: fix ' + v.errors.length + ' invalid field' + (v.errors.length > 1 ? 's' : ''), v.errors.map(e => '- ' + e[1]).join('\n'));
+    showSaveBanner('error', '未保存：请先修正 ' + v.errors.length + ' 个不合法字段' , v.errors.map(e => '- ' + e[1]).join('\n'));
     return;
   }
   saving = true;
@@ -974,11 +974,11 @@ async function saveValidated(cfg) {
     if (parentResp.ok) etag = parentResp.headers.get('ETag');
   } else if (!getResp.ok) {
     if (getResp.status === 401 || getResp.status === 403) document.getElementById('mgmtKey').style.display = 'inline-block';
-    showSaveBanner('error', 'Not saved: HTTP ' + getResp.status + ' reading ' + CONFIG_API_URL, getText);
+    showSaveBanner('error', '未保存：读取 ' + CONFIG_API_URL + ' 返回 HTTP ' + getResp.status, getText);
     return;
   } else {
     node = JSON.parse(getText);
-    if (!isPlainObject(node)) throw new Error('config node at ' + CONFIG_API_URL + ' is not an object: ' + truncate(getText, 500));
+    if (!isPlainObject(node)) throw new Error(CONFIG_API_URL + ' 上的配置节点不是 JSON 对象：' + truncate(getText, 500));
     etag = getResp.headers.get('ETag');
   }
   if (etag !== null) etag = etag.replace(/^W\//, '');
@@ -1003,13 +1003,13 @@ async function saveValidated(cfg) {
   const putResp = await fetch(CONFIG_API_URL, { method: 'PUT', headers: headers, body: JSON.stringify(merged), cache: 'no-store' });
   const putText = await putResp.text();
   if (putResp.status === 412) {
-    showSaveBanner('error', 'Not saved: config changed elsewhere, reloaded', putText);
+    showSaveBanner('error', '未保存：配置已在别处变更，已重新载入', putText);
     if (await refresh()) loadDraft(state.config);
     return;
   }
   if (!putResp.ok) {
     if (putResp.status === 401 || putResp.status === 403) document.getElementById('mgmtKey').style.display = 'inline-block';
-    showSaveBanner('error', 'Not saved: HTTP ' + putResp.status + ' writing ' + CONFIG_API_URL, putText);
+    showSaveBanner('error', '未保存：写入 ' + CONFIG_API_URL + ' 返回 HTTP ' + putResp.status, putText);
     return;
   }
 
@@ -1017,19 +1017,19 @@ async function saveValidated(cfg) {
   draft.settings.key = '';
   document.querySelector('[data-setting="key"]').value = '';
   setDirty(false);
-  showSaveBanner('ok', 'Saved', 'Waiting for the plugin to apply the new config...');
+  showSaveBanner('ok', '已保存', '正在等待插件应用新配置…');
   await sleep(APPLY_WAIT_MS);
   if (!(await refresh())) {
-    showSaveBanner('warn', 'Saved, but the state reload failed', 'See the error above; the plugin may or may not have applied the config.');
+    showSaveBanner('warn', '已保存，但状态刷新失败', '请查看上方错误；插件可能已应用该配置，也可能没有。');
     return;
   }
   if (canonConfig(state.config) === canonConfig(cfg)) {
-    showSaveBanner('ok', 'Saved and applied', '');
+    showSaveBanner('ok', '已保存并生效', '');
     loadDraft(state.config);
     return;
   }
   // The plugin rejected the config (validateConfig failed) and kept the old one; keep the draft as saved.
-  showSaveBanner('warn', 'Saved but the plugin did not apply it; check CPA logs', 'The config node was written, but the running plugin still reports the previous config.');
+  showSaveBanner('warn', '已写入但插件未应用，请查看 CPA 日志', '配置节点已写入，但运行中的插件仍然报告旧配置。');
 }
 
 // ---- groups editor ----
@@ -1039,9 +1039,9 @@ function groupFieldAttr(i, rest) {
 }
 
 const STRATEGY_HINTS = {
-  order: 'In order: tries models top to bottom and only advances when a model refuses, errors, or runs out of quota. Pins to the first model that answers for 5m (warm cache), then retries from #1 after 5m.',
-  quota: 'Quota spread: picks a starting model weighted-randomly by each provider\'s available quota rate (remaining / hours to reset) to spread token spend efficiently, falls through on refusal, and pins to the answering model for 5m.',
-  random: 'Random: picks a starting model uniformly at random for new or cache-expired (5m+) sessions, falls through on refusal, and pins to the answering model for 5m.',
+  order: '按顺序：自上而下依次尝试模型，只有当前模型拒答、报错或配额耗尽时才前进。命中第一个正常作答的模型后固定 5 分钟（缓存保持温热），5 分钟后重新从第 1 个开始。',
+  quota: '配额分摊：按各供应商的可用配额速率（剩余量 / 距重置小时数）加权随机挑选起始模型，以便更高效地分摊 token 消耗；遇拒答继续回退，命中后固定 5 分钟。',
+  random: '随机：新会话或缓存已过期（5 分钟以上）的会话在分组内均匀随机挑选起始模型；遇拒答继续回退，命中后固定 5 分钟。',
 };
 
 function renderGroups() {
@@ -1049,7 +1049,7 @@ function renderGroups() {
   document.getElementById('groupCount').textContent = String(draft.groups.length);
   document.getElementById('tabGroupCount').textContent = String(draft.groups.length);
   if (draft.groups.length === 0) {
-    root.innerHTML = '<div class="empty">No smart groups configured. Add one to expose a virtual model that automatically routes around safeguard refusals across models.</div>';
+    root.innerHTML = '<div class="empty">还没有配置智能分组。新增一个即可对外暴露一个虚拟模型，在多个模型之间自动绕开安全护栏拒答。</div>';
     return;
   }
   root.innerHTML = draft.groups.map((g, i) => {
@@ -1058,30 +1058,30 @@ function renderGroups() {
       '<li class="model-row">' +
         '<span class="model-idx mono">' + (j + 1) + '.</span>' +
         '<input class="input grow mono" list="modelList" value="' + esc(m) + '" data-group="' + i + '" data-model="' + j + '"' + groupFieldAttr(i, 'models.' + j) + '>' +
-        '<button class="btn sm" data-action="model-up" data-group="' + i + '" data-model="' + j + '"' + (j === 0 ? ' disabled' : '') + ' title="Move up">&uarr;</button>' +
-        '<button class="btn sm" data-action="model-down" data-group="' + i + '" data-model="' + j + '"' + (j === g.models.length - 1 ? ' disabled' : '') + ' title="Move down">&darr;</button>' +
-        '<button class="btn sm danger" data-action="model-remove" data-group="' + i + '" data-model="' + j + '" title="Remove">&times;</button>' +
+        '<button class="btn sm" data-action="model-up" data-group="' + i + '" data-model="' + j + '"' + (j === 0 ? ' disabled' : '') + ' title="上移">&uarr;</button>' +
+        '<button class="btn sm" data-action="model-down" data-group="' + i + '" data-model="' + j + '"' + (j === g.models.length - 1 ? ' disabled' : '') + ' title="下移">&darr;</button>' +
+        '<button class="btn sm danger" data-action="model-remove" data-group="' + i + '" data-model="' + j + '" title="移除">&times;</button>' +
       '</li>'
     ).join('');
     return '<div class="group-card">' +
       '<div class="group-head">' +
-        '<label class="field"><span class="cfg-key">Codename (what clients request)</span>' +
+        '<label class="field"><span class="cfg-key">分组代号（客户端请求用）</span>' +
           '<input class="input mono" value="' + esc(g.id) + '" data-group="' + i + '" data-gfield="id"' + groupFieldAttr(i, 'id') + '></label>' +
-        '<label class="field"><span class="cfg-key">Visible name</span>' +
+        '<label class="field"><span class="cfg-key">显示名称</span>' +
           '<input class="input" value="' + esc(g.name) + '" data-group="' + i + '" data-gfield="name"' + groupFieldAttr(i, 'name') + '></label>' +
-        '<label class="field"><span class="cfg-key">Routing strategy</span>' +
+        '<label class="field"><span class="cfg-key">路由策略</span>' +
           '<select class="input" data-group="' + i + '" data-gfield="strategy"' + groupFieldAttr(i, 'strategy') + '>' +
-            '<option value="order"' + (strat === 'order' ? ' selected' : '') + '>In Order (Fallback Only, 5m Sticky)</option>' +
-            '<option value="quota"' + (strat === 'quota' ? ' selected' : '') + '>Quota Spread (Weighted Random, 5m Sticky)</option>' +
-            '<option value="random"' + (strat === 'random' ? ' selected' : '') + '>Random (Uniform Random, 5m Sticky)</option>' +
+            '<option value="order"' + (strat === 'order' ? ' selected' : '') + '>按顺序（仅作回退，粘性 5 分钟）</option>' +
+            '<option value="quota"' + (strat === 'quota' ? ' selected' : '') + '>配额分摊（加权随机，粘性 5 分钟）</option>' +
+            '<option value="random"' + (strat === 'random' ? ' selected' : '') + '>随机（均匀随机，粘性 5 分钟）</option>' +
           '</select></label>' +
-        '<button class="btn sm danger" data-action="group-remove" data-group="' + i + '">Delete group</button>' +
+        '<button class="btn sm danger" data-action="group-remove" data-group="' + i + '">删除分组</button>' +
       '</div>' +
       '<div class="hint" style="margin-top:6px" data-group-hint="' + i + '">' + esc(STRATEGY_HINTS[strat]) + '</div>' +
       '<ol class="model-list">' + models + '</ol>' +
       '<div class="add-row">' +
-        '<input class="input grow mono" list="modelList" placeholder="Add model (pick or type)" value="' + esc(g.pending) + '" data-group="' + i + '" data-gfield="pending"' + groupFieldAttr(i, 'add') + '>' +
-        '<button class="btn sm" data-action="model-add" data-group="' + i + '">Add model</button>' +
+        '<input class="input grow mono" list="modelList" placeholder="添加模型（可选择或直接输入）" value="' + esc(g.pending) + '" data-group="' + i + '" data-gfield="pending"' + groupFieldAttr(i, 'add') + '>' +
+        '<button class="btn sm" data-action="model-add" data-group="' + i + '">添加模型</button>' +
       '</div>' +
     '</div>';
   }).join('');
@@ -1117,7 +1117,7 @@ function onEditorClick(ev) {
     else if (action === 'model-up') swap(g.models, mi, mi - 1);
     else if (action === 'model-down') swap(g.models, mi, mi + 1);
     else if (action === 'model-remove') g.models.splice(mi, 1);
-    else throw new Error('unknown editor action ' + action);
+    else throw new Error('未知编辑器操作 ' + action);
   }
   setDirty(true);
   renderGroups();
@@ -1145,17 +1145,76 @@ function onEditorInput(ev) {
 
 // ---- live state ----
 
+// 后端的 reason、attempt 结果与排除原因目前是英文常量，这里只在展示层翻译，
+// 不改动后端逻辑与既有断言（skipReason 依赖排除原因里的 % left 标记）。
+const REASON_TEXT = {
+  'served': '已应答',
+  'every model failed': '所有模型都失败',
+  'session active, kept credential': '会话仍活跃，沿用原凭据',
+  'no candidate with usable quota data, host selector decides': '没有可用配额数据的候选，交由宿主选择器决定',
+  'highest rate (no session identity)': '速率最高（无会话标识）',
+  'new or idle session bound to highest rate': '新会话或空闲会话已绑定速率最高的凭据',
+};
+
+function zhReason(text) {
+  if (!text) return '';
+  const mapped = REASON_TEXT[text];
+  if (mapped !== undefined) return mapped;
+  const served = 'served by ';
+  if (text.startsWith(served)) return '由 ' + text.slice(served.length) + ' 应答';
+  const lowQuota = 'all credentials low on quota: ';
+  if (text.startsWith(lowQuota)) return '所有凭据配额不足：' + text.slice(lowQuota.length);
+  // 跳过原因常常直接复用排序里的排除原因，交给 zhExcluded 再翻一层。
+  return zhExcluded(text);
+}
+
+function zhAttempt(result) {
+  if (result === 'served') return '已应答';
+  const skipped = 'skipped: ';
+  if (result.startsWith(skipped)) return '已跳过：' + zhReason(result.slice(skipped.length));
+  const failed = 'failed: ';
+  if (result.startsWith(failed)) return '失败：' + result.slice(failed.length);
+  return result;
+}
+
+function zhExcluded(text) {
+  if (!text) return '';
+  const left = /^(.+) has (.+)% left$/.exec(text);
+  if (left !== null) return left[1] + ' 仅剩 ' + left[2] + '%';
+  const noWindow = /^no quota window applies to (.+)$/.exec(text);
+  if (noWindow !== null) return '没有适用于 ' + noWindow[1] + ' 的配额窗口';
+  const noReset = /^(.+) has no reset time$/.exec(text);
+  if (noReset !== null) return noReset[1] + ' 没有重置时间';
+  return text;
+}
+
+function zhKind(kind) {
+  if (kind === 'balance') return '配额平衡';
+  if (kind === 'group') return '分组路由';
+  return kind;
+}
+
+function zhMgmtError(text) {
+  if (!text) return '';
+  if (text === 'management_key is not set; quota collection is off') return '未设置 management_key，配额采集已关闭';
+  const rejected = 'management key rejected, set a new management_key: ';
+  if (text.startsWith(rejected)) return '管理密钥被拒绝，请重新设置 management_key：' + text.slice(rejected.length);
+  const banned = 'management API banned this IP until ';
+  if (text.startsWith(banned)) return '管理 API 已封禁本机 IP，解封时间 ' + text.slice(banned.length);
+  return text;
+}
+
 function renderWindow(w) {
   const r = Math.max(0, Math.min(1, w.remaining));
   const periodH = w.period / 3.6e12;
   // models is omitempty: absent means the window covers every model of the credential.
-  const models = w.models && w.models.length > 0 ? w.models.join(', ') : 'all models';
+  const models = w.models && w.models.length > 0 ? w.models.join(', ') : '全部模型';
   return '<div>' +
     '<div class="win-head"><span class="win-name">' + esc(w.name) +
-      (periodH > 0 ? ' <span class="subtle">(' + esc(periodH >= 24 ? (periodH / 24).toFixed(periodH % 24 ? 1 : 0) + 'd' : periodH.toFixed(periodH % 1 ? 1 : 0) + 'h') + ')</span>' : '') +
+      (periodH > 0 ? ' <span class="subtle">(' + esc(periodH >= 24 ? (periodH / 24).toFixed(periodH % 24 ? 1 : 0) + '天' : periodH.toFixed(periodH % 1 ? 1 : 0) + '小时') + ')</span>' : '') +
     '</span><span class="mono">' + esc(pct(w.remaining)) + '</span></div>' +
     '<div class="quota-bar"><div class="quota-fill ' + tierOf(r) + '" style="width:' + (r * 100).toFixed(1) + '%"></div></div>' +
-    '<div class="win-meta">resets ' + (isZero(w.reset_at) ? 'unknown' : rel(w.reset_at) + ' · ' + esc(absText(w.reset_at))) + '</div>' +
+    '<div class="win-meta">resets ' + (isZero(w.reset_at) ? '未知' : rel(w.reset_at) + ' · ' + esc(absText(w.reset_at))) + '</div>' +
     '<div class="win-meta">' + esc(models) + '</div>' +
   '</div>';
 }
@@ -1163,7 +1222,7 @@ function renderWindow(w) {
 function renderCredentials() {
   const body = document.getElementById('credBody');
   if (state.credentials.length === 0) {
-    body.innerHTML = '<tr><td colspan="4" class="empty">No credentials reported by the host.</td></tr>';
+    body.innerHTML = '<tr><td colspan="4" class="empty">宿主未上报任何凭据。</td></tr>';
     return;
   }
   body.innerHTML = state.credentials.map(c => {
@@ -1174,29 +1233,29 @@ function renderCredentials() {
     const models = c.models === null ? [] : c.models;
 
     const status = [];
-    if (a.disabled) status.push('<span class="badge bad">disabled</span>');
-    if (a.unavailable) status.push('<span class="badge bad">unavailable</span>');
-    if (!a.disabled && !a.unavailable) status.push('<span class="badge ok">' + esc(a.status === '' ? 'active' : a.status) + '</span>');
+    if (a.disabled) status.push('<span class="badge bad">已禁用</span>');
+    if (a.unavailable) status.push('<span class="badge bad">不可用</span>');
+    if (!a.disabled && !a.unavailable) status.push('<span class="badge ok">' + esc(a.status === '' ? '正常' : a.status) + '</span>');
     else if (a.status !== '') status.push('<span class="badge">' + esc(a.status) + '</span>');
-    if (!isZero(a.next_retry_after)) status.push('<div class="win-meta">retry ' + rel(a.next_retry_after) + '</div>');
+    if (!isZero(a.next_retry_after)) status.push('<div class="win-meta">重试 ' + rel(a.next_retry_after) + '</div>');
 
     let windows;
-    if (!c.has_quota) windows = '<span class="subtle">no snapshot yet</span>';
-    else if (q.windows === null || q.windows.length === 0) windows = '<span class="subtle">no windows reported</span>';
+    if (!c.has_quota) windows = '<span class="subtle">尚无配额快照</span>';
+    else if (q.windows === null || q.windows.length === 0) windows = '<span class="subtle">未上报配额窗口</span>';
     else windows = '<div class="windows">' + q.windows.map(renderWindow).join('') + '</div>';
 
     let source = '<span class="subtle">-</span>';
     if (c.has_quota) {
       source = '<span class="badge">' + esc(q.source) + '</span>' +
         (q.plan ? ' <span class="badge">' + esc(q.plan) + '</span>' : '') +
-        '<div class="win-meta">fetched ' + rel(q.fetched_at) + '</div>';
+        '<div class="win-meta">抓取于 ' + rel(q.fetched_at) + '</div>';
     }
 
     return '<tr>' +
       '<td><div class="cred-name">' + esc(name) + '</div>' +
         '<div class="win-meta"><span class="badge">' + esc(a.provider) + '</span> ' + secondary.map(esc).join(' · ') + '</div>' +
-        (q.error ? '<div class="err-box">Quota error: ' + esc(q.error) + '</div>' : '') +
-        (models.length > 0 ? '<div style="margin-top:6px">' + details('models:' + a.id, 'Models (' + models.length + ')', '<div class="small mono">' + models.map(esc).join('<br>') + '</div>') + '</div>' : '') +
+        (q.error ? '<div class="err-box">配额错误：' + esc(q.error) + '</div>' : '') +
+        (models.length > 0 ? '<div style="margin-top:6px">' + details('models:' + a.id, '模型（' + models.length + '）', '<div class="small mono">' + models.map(esc).join('<br>') + '</div>') + '</div>' : '') +
       '</td>' +
       '<td class="nowrap">' + status.join(' ') + '</td>' +
       '<td>' + windows + '</td>' +
@@ -1208,7 +1267,7 @@ function renderCredentials() {
 function renderSessions() {
   const body = document.getElementById('sessBody');
   if (state.sessions.length === 0) {
-    body.innerHTML = '<tr><td colspan="7" class="empty">No bound sessions.</td></tr>';
+    body.innerHTML = '<tr><td colspan="7" class="empty">暂无绑定的会话。</td></tr>';
     return;
   }
   body.innerHTML = state.sessions.map(s =>
@@ -1237,16 +1296,16 @@ function renderRanking(d) {
       '<td class="mono">' + esc(pct(r.remaining)) + '</td>' +
       '<td class="mono">' + esc(num(r.hours_to_reset, 2)) + '</td>' +
       '<td class="mono">' + esc(num(r.rate, 4)) + '</td>' +
-      '<td>' + (r.excluded ? '<span class="badge bad">' + esc(r.excluded) + '</span>' : '') + '</td>' +
+      '<td>' + (r.excluded ? '<span class="badge bad">' + esc(zhExcluded(r.excluded)) + '</span>' : '') + '</td>' +
     '</tr>'
   ).join('');
-  return '<table class="rank"><thead><tr><th>Auth</th><th>Provider</th><th>Window</th><th>Remaining</th><th>Hours to reset</th><th>Rate</th><th>Excluded</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  return '<table class="rank"><thead><tr><th>凭据</th><th>供应商</th><th>窗口</th><th>剩余</th><th>距重置小时</th><th>速率</th><th>排除原因</th></tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
 function renderAttempts(d) {
   return '<ol class="attempts">' + d.attempts.map(at =>
     '<li class="' + (at.result === 'served' && at.model === d.auth_id ? 'served' : '') + '">' +
-      '<span class="mono">' + esc(at.model) + '</span> &rarr; ' + esc(at.result) +
+      '<span class="mono">' + esc(at.model) + '</span> &rarr; ' + esc(zhAttempt(at.result)) +
     '</li>'
   ).join('') + '</ol>';
 }
@@ -1254,7 +1313,7 @@ function renderAttempts(d) {
 function renderDecisions() {
   const body = document.getElementById('decBody');
   if (state.decisions.length === 0) {
-    body.innerHTML = '<tr><td colspan="6" class="empty">No decisions recorded yet.</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="empty">暂无决策记录。</td></tr>';
     return;
   }
   const sorted = state.decisions.slice().sort((a, b) => new Date(b.time) - new Date(a.time));
@@ -1264,21 +1323,21 @@ function renderDecisions() {
     let chosen;
     // ranking and attempts are omitempty.
     if (d.kind === 'balance') {
-      if (d.ranking && d.ranking.length > 0) extra = details(key, 'Ranking (' + d.ranking.length + ')', renderRanking(d));
-      chosen = d.auth_id ? esc(credNameByID(d.auth_id)) : '<span class="badge bad">none</span>';
+      if (d.ranking && d.ranking.length > 0) extra = details(key, '排序（' + d.ranking.length + '）', renderRanking(d));
+      chosen = d.auth_id ? esc(credNameByID(d.auth_id)) : '<span class="badge bad">无</span>';
     } else if (d.kind === 'group') {
       if (d.attempts && d.attempts.length > 0) extra = renderAttempts(d);
-      chosen = d.auth_id ? '<span class="mono">' + esc(d.auth_id) + '</span>' : '<span class="badge bad">none</span>';
+      chosen = d.auth_id ? '<span class="mono">' + esc(d.auth_id) + '</span>' : '<span class="badge bad">无</span>';
     } else {
-      throw new Error('unknown decision kind ' + d.kind);
+      throw new Error('未知决策类型 ' + d.kind);
     }
     return '<tr>' +
       '<td class="nowrap">' + rel(d.time) + '<div class="win-meta">' + esc(absText(d.time)) + '</div></td>' +
-      '<td><span class="badge">' + esc(d.kind) + '</span></td>' +
+      '<td><span class="badge">' + esc(zhKind(d.kind)) + '</span></td>' +
       '<td class="mono">' + esc(d.model) + '</td>' +
       '<td class="mono nowrap" title="' + esc(d.session ? d.session : '') + '">' + (d.session ? esc(truncate(d.session, 16)) : '<span class="subtle">-</span>') + '</td>' +
       '<td>' + chosen + '</td>' +
-      '<td>' + esc(d.reason) + extra + '</td>' +
+      '<td>' + esc(zhReason(d.reason)) + extra + '</td>' +
     '</tr>';
   }).join('');
 }
@@ -1286,14 +1345,14 @@ function renderDecisions() {
 function render() {
   const hostBanner = document.getElementById('hostErrorBanner');
   if (state.error) {
-    hostBanner.innerHTML = '<strong>Router could not read the host credential list</strong>' + esc(state.error);
+    hostBanner.innerHTML = '<strong>路由组件读取宿主凭据列表失败</strong>' + esc(state.error);
     hostBanner.style.display = 'block';
   } else {
     hostBanner.style.display = 'none';
   }
   const mgmtBanner = document.getElementById('mgmtErrorBanner');
   if (state.management_error) {
-    mgmtBanner.innerHTML = '<strong>Quota collection is not running: ' + esc(state.management_error) + '</strong>';
+    mgmtBanner.innerHTML = '<strong>配额采集未运行：' + esc(zhMgmtError(state.management_error)) + '</strong>';
     mgmtBanner.style.display = 'block';
   } else {
     mgmtBanner.style.display = 'none';
@@ -1315,8 +1374,8 @@ function render() {
 function showError(title, detail) {
   const banner = document.getElementById('errorBanner');
   const stale = lastOkAt === null
-    ? 'No data loaded yet.'
-    : 'Showing STALE data from ' + new Date(lastOkAt).toLocaleTimeString() + '.';
+    ? '尚未成功加载过数据。'
+    : '当前显示的是 ' + new Date(lastOkAt).toLocaleTimeString('zh-CN', { hour12: false }) + ' 的旧数据。';
   banner.innerHTML = '<strong>' + esc(title) + '</strong>' + esc(detail) + '\n' + esc(stale);
   banner.style.display = 'block';
   document.getElementById('statusDot').classList.add('err');
@@ -1345,24 +1404,24 @@ async function doRefresh() {
     try {
       resp = await fetch(STATE_API_URL, { method: 'GET', headers: authHeaders(), cache: 'no-store' });
     } catch (err) {
-      showError('Network error fetching ' + STATE_API_URL, String(err));
+      showError('网络错误，请求 ' + STATE_API_URL + ' 失败', String(err));
       return false;
     }
     const text = await resp.text();
     if (resp.status === 401 || resp.status === 403) {
       document.getElementById('mgmtKey').style.display = 'inline-block';
-      showError('HTTP ' + resp.status + ': management key required or rejected. Enter it above and press Refresh.', text);
+      showError('HTTP ' + resp.status + ': 管理密钥缺失或被拒绝。请在上方输入密钥后点刷新。', text);
       return false;
     }
     if (!resp.ok) {
-      showError('HTTP ' + resp.status + ' ' + resp.statusText + ' from ' + STATE_API_URL, text);
+      showError('HTTP ' + resp.status + ' ' + resp.statusText + '，来自 ' + STATE_API_URL, text);
       return false;
     }
     let next;
     try {
       next = JSON.parse(text);
     } catch (err) {
-      showError('Invalid JSON from ' + STATE_API_URL + ': ' + err.message, truncate(text, 2000));
+      showError('来自 ' + STATE_API_URL + ' 的响应不是合法 JSON：' + err.message, truncate(text, 2000));
       return false;
     }
     // Go encodes empty slices as null; normalize so renderers can rely on arrays.
@@ -1434,8 +1493,8 @@ document.addEventListener('toggle', (ev) => {
   else openDetails.delete(el.dataset.key);
 }, true);
 
-window.addEventListener('error', (ev) => showError('Page script error', String(ev.message)));
-window.addEventListener('unhandledrejection', (ev) => showError('Page script error', String(ev.reason)));
+window.addEventListener('error', (ev) => showError('页面脚本异常', String(ev.message)));
+window.addEventListener('unhandledrejection', (ev) => showError('页面脚本异常（未处理的 Promise 拒绝）', String(ev.reason)));
 window.addEventListener('beforeunload', (ev) => { if (dirty) ev.preventDefault(); });
 
 syncThemeWithCPA();
