@@ -244,8 +244,11 @@ type openAIRequest struct {
 	// 2026-11-07 实测：部分新客户端（DSH / Codex 系）只发别名，缺该字段会
 	// 导致上限被丢弃、上游回落默认值（实测 max_completion_tokens=300 时
 	// 实际生成 8009 tokens）。两者并存时显式 max_tokens 优先。
-	MaxTokens           int64  `json:"max_tokens"`
-	MaxCompletionTokens int64  `json:"max_completion_tokens"`
+	// 用 flexNumber 而非 int64：客户端发 `"max_tokens":"abc"` 这类字符串时，
+	// int64 会让整个 json.Unmarshal 失败，宿主据此遍历整池账号（2026-11-08 实证）。
+	// flexNumber 对数字 / 数字字符串取整，其余降级为 0（=未声明），见 model_specs.go。
+	MaxTokens           flexNumber `json:"max_tokens"`
+	MaxCompletionTokens flexNumber `json:"max_completion_tokens"`
 	ReasoningEffort     string `json:"reasoning_effort"`
 	// Tools / ToolChoice 承载客户端的工具声明。模板 baseprompt.json 硬编码了
 	// Qoder CLI 的 14 个 agent 工具，必须按客户端真实声明对齐，否则普通问答
@@ -288,9 +291,9 @@ func effectiveMaxTokens(req *openAIRequest) int64 {
 	if req == nil {
 		return 0
 	}
-	v := req.MaxTokens
+	v := req.MaxTokens.Int()
 	if v <= 0 {
-		v = req.MaxCompletionTokens
+		v = req.MaxCompletionTokens.Int()
 	}
 	if v <= 0 {
 		return 0

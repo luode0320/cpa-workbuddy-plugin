@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // TestIsRequestShapeFailure 验证「客户端请求形状错误」不被当成账号故障。
 //
@@ -62,6 +65,45 @@ func TestValidateOpenAIMessages(t *testing.T) {
 			err := validateOpenAIMessages(tc.messages)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("validateOpenAIMessages() err = %v, wantErr = %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestOpenAIRequest_MalformedMaxTokensDoesNotFailParse 锁定「畸形数值不让整包解析失败」。
+//
+// 生产缺陷回归（2026-11-08）：客户端发 `{"max_tokens":"abc"}` 时，int64 强类型让
+// `json.Unmarshal` 整体失败，宿主把插件返回的解析错误当成账号故障并遍历整池，
+// 最后合成 503。修复后此类畸形值降级为 0（=未声明），请求照常处理。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-08 01:00:00；改动原因：新增，堵住畸形数值打穿整池的回归。
+func TestOpenAIRequest_MalformedMaxTokensDoesNotFailParse(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want int64
+	}{
+		{name: "正常数字", raw: `{"max_tokens":2000}`, want: 2000},
+		{name: "数字字符串", raw: `{"max_tokens":"2000"}`, want: 2000},
+		{name: "非数字字符串（生产实测）", raw: `{"max_tokens":"abc"}`, want: 0},
+		{name: "null", raw: `{"max_tokens":null}`, want: 0},
+		{name: "对象", raw: `{"max_tokens":{"a":1}}`, want: 0},
+		{name: "布尔", raw: `{"max_tokens":true}`, want: 0},
+		{name: "负数", raw: `{"max_tokens":-5}`, want: 0},
+		{name: "小数", raw: `{"max_tokens":10.5}`, want: 0},
+		{name: "缺省", raw: `{}`, want: 0},
+		{name: "别名同样容错", raw: `{"max_completion_tokens":"xyz"}`, want: 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var req openAIRequest
+			if err := json.Unmarshal([]byte(tc.raw), &req); err != nil {
+				t.Fatalf("json.Unmarshal 不应因 max_tokens 畸形而失败: %v (raw=%s)", err, tc.raw)
+			}
+			if got := effectiveMaxTokens(&req); got != tc.want {
+				t.Fatalf("effectiveMaxTokens() = %d, want %d (raw=%s)", got, tc.want, tc.raw)
 			}
 		})
 	}

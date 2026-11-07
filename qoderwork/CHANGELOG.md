@@ -1,5 +1,19 @@
 # QoderWork Plugin Changelog
 
+## 0.13.10
+
+### Fix - max_tokens 畸形数值不再让整包解析失败（生产整池被扇出的第二个来源）
+
+- 背景（2026-11-08 生产实证）: 客户端发 `{"max_tokens":"abc"}` 时，`openAIRequest.MaxTokens`
+  的 `int64` 强类型让整个 `json.Unmarshal` 失败，插件返回
+  `payload parse: json: cannot unmarshal string into Go struct field openAIRequest.max_tokens of type int64`；
+  宿主把该错误当成账号故障并遍历整池，最后合成 503。
+- 修复: 与 traework 0.5.17 同源——新增容错类型 `flexNumber`（`model_specs.go`），
+  `MaxTokens` / `MaxCompletionTokens` 改用它：数字与数字字符串取整，其余形态降级为 0（=未声明）。
+- 测试: 新增 `TestOpenAIRequest_MalformedMaxTokensDoesNotFailParse`（10 组），
+  核心断言是「整包 Unmarshal 不得因 max_tokens 畸形而失败」。
+  `cgo-shim-build.py qoderwork` build/vet/test 全绿。
+
 ## 0.13.9
 
 ### Fix - 请求体 role 前置校验（畸形请求打穿整池的根因修复）

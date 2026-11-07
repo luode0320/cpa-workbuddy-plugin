@@ -45,8 +45,8 @@ func TestBuildQoderBody_MaxTokens(t *testing.T) {
 			req := &openAIRequest{
 				Model:               "kmodel",
 				Messages:            []openAIMessage{{Role: "user", Content: "hi"}},
-				MaxTokens:           tc.maxTok,
-				MaxCompletionTokens: tc.maxComp,
+				MaxTokens:           flexNumber(tc.maxTok),
+				MaxCompletionTokens: flexNumber(tc.maxComp),
 				ReasoningEffort:     tc.effort,
 			}
 			raw, err := buildQoderBody(req, "kmodel", "")

@@ -24,7 +24,11 @@
 // 社区实测 prompt 70000 + max_tokens 64000 可通过 100000 窗口。
 package main
 
-import "strings"
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+)
 
 // defaultContextWindow 是模型元信息里 ContextLength 的兜底值。
 // 上游未提供 contextLength 时使用；高估比低估安全（低估会让客户端误以为
@@ -97,3 +101,62 @@ func positiveIntValue(v any) (int64, bool) {
 		return 0, false
 	}
 }
+
+// flexNumber 是一个容错的整数字段类型。
+//
+// 背景（2026-11-08 生产实证）：`openAIRequest.MaxTokens` 用 int64 强类型时，
+// 客户端只要发 `{"max_tokens":"abc"}` 这类字符串，整个 `json.Unmarshal` 就会失败，
+// 请求在解析阶段就被拒；而宿主会把插件返回的错误当成「这个账号不行」，
+// 遍历整池每个账号各失败一次（实测同一 requestId 在 1 秒内对多个账号各记一条
+// `payload parse: json: cannot unmarshal string into Go struct field ... of type int64`），
+// 最后合成 503。参数畸形属于**客户端问题**，必须在本地干净地降级，
+// 绝不能让它演变成账号级故障。
+//
+// 接受三种形态：
+//   - 数字 `2000` → 2000
+//   - 数字字符串 `"2000"` → 2000（不少 SDK / 配置模板会把数值写成字符串）
+//   - 其余（`"abc"` / null / 对象 / 布尔 / 负数）→ 0，即「未声明」
+//
+// 为什么是 0 而不是报错：max_tokens 是可选参数，非法值的安全语义就是「按未传处理」，
+// 由上游用自己的默认值；请求的其余部分仍然合法，不应整单拒绝。
+// [参数] 无（由 json.Unmarshal 调用 UnmarshalJSON）
+// [返回] 无
+// 最近修改时间：2026-11-08 01:00:00；改动原因：新增，堵住畸形数值把整池账号打穿。
+type flexNumber int64
+
+// UnmarshalJSON 实现宽容解析：数字、数字字符串取整，其余一律降级为 0。
+// [参数] raw：JSON 原始字节
+// [返回] 恒为 nil（不因业务数值畸形而让整包解析失败）
+func (n *flexNumber) UnmarshalJSON(raw []byte) error {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		*n = 0
+		return nil
+	}
+	// 1. 数字字面量：直接转整数，非整数 / 越界一律 0
+	if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if v > 0 {
+			*n = flexNumber(v)
+		} else {
+			*n = 0
+		}
+		return nil
+	}
+	// 2. 数字字符串："2000"
+	if strings.HasPrefix(s, "\"") {
+		var inner string
+		if err := json.Unmarshal(raw, &inner); err == nil {
+			inner = strings.TrimSpace(inner)
+			if v, err2 := strconv.ParseInt(inner, 10, 64); err2 == nil && v > 0 {
+				*n = flexNumber(v)
+				return nil
+			}
+		}
+	}
+	// 3. 其余形态：按未声明处理
+	*n = 0
+	return nil
+}
+
+// Int 返回解析后的整数值（0 表示未声明或非法）。
+func (n flexNumber) Int() int64 { return int64(n) }

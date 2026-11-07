@@ -1,5 +1,27 @@
 # TraeWork Plugin Changelog
 
+## 0.5.17
+
+### Fix - max_tokens 畸形数值不再让整包解析失败（生产整池被扇出的第二个来源）
+
+- 背景（2026-11-08 生产实证）: 客户端发 `{"max_tokens":"abc"}` 时，`openAIRequest.MaxTokens`
+  的 `int` 强类型让整个 `json.Unmarshal` 失败，插件在建请求体阶段就返回
+  `payload parse: json: cannot unmarshal string into Go struct field openAIRequest.max_tokens of type int`。
+  宿主把该错误当成「这个账号不行」，**1 秒内对 15 个账号各记一条同样的失败**，最后合成 503。
+  feed 中表现为同一秒 15 条 `status_code=0 / latency=0` 的失败记录。
+- 根因: 参数畸形是**客户端问题**，但被强类型解析放大成账号级故障——与 0.5.16 修的
+  `role` 非法是同一类错误的第二种入口。
+- 修复: 新增容错类型 `flexNumber`（`model_specs.go`），`MaxTokens` / `MaxCompletionTokens`
+  改用它。接受三种形态：数字 `2000` → 2000；数字字符串 `"2000"` → 2000（不少 SDK /
+  配置模板会把数值写成字符串）；其余（`"abc"` / null / 对象 / 布尔 / 负数 / 小数）
+  → **0，即按未声明处理**。
+  为什么取 0 而不是报错：`max_tokens` 是可选参数，非法值的安全语义就是「未传」，
+  由上游用自己的默认值；请求其余部分仍然合法，不应整单拒绝。
+- 测试: 新增 `TestOpenAIRequest_MalformedMaxTokensDoesNotFailParse`（11 组），
+  核心断言是「整包 Unmarshal 不得因 max_tokens 畸形而失败」。
+  变异验证：把 `flexNumber` 改回强类型后 4 个用例 KILLED。
+  `cgo-shim-build.py traework` build/vet/test 全绿。
+
 ## 0.5.16
 
 ### Fix - 请求体 role 前置校验（畸形请求打穿整池的根因修复）

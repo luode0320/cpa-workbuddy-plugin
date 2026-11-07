@@ -997,8 +997,11 @@ type openAIRequest struct {
 	// 结构体缺该字段时该值被 json.Unmarshal 直接丢弃，等价于客户端从未声明上限，
 	// 上游按自己默认上限生成（实测请求 12 token 实际产出 1091 字符 / 1119 tokens）。
 	// 两者并存时显式 max_tokens 优先，语义与 qoderwork / workbuddy 一致。
-	MaxTokens           int      `json:"max_tokens"`
-	MaxCompletionTokens int      `json:"max_completion_tokens"`
+	// 用 flexNumber 而非 int：客户端发 `"max_tokens":"abc"` 这类字符串时，
+	// int 会让整个 json.Unmarshal 失败，宿主据此遍历整池账号（2026-11-08 实证）。
+	// flexNumber 对数字 / 数字字符串取整，其余降级为 0（=未声明），见 model_specs.go。
+	MaxTokens           flexNumber `json:"max_tokens"`
+	MaxCompletionTokens flexNumber `json:"max_completion_tokens"`
 	Temperature         *float64 `json:"temperature"`
 	TopP                *float64 `json:"top_p"`
 	Tools               []map[string]any `json:"tools"`
