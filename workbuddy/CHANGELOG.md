@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.21.11
+
+### Fix - 客户端显式 max_tokens 不再被放大到 128k（长推理卡死的根因）
+
+- 背景: 2026-11-07 生产压测（`deepseek-v4.1-flash`，同一 prompt、`max_tokens=2000`、`reasoning_effort=max`）实测单请求生成 **12030~21943 tokens**、耗时 **81~145 秒**，调用方判为超时/卡死。
+- 根因: `computeAdaptiveMaxTokens` 第 2 步「思考模式下客户端传保守小值（<=8192）一律放宽至 `defaultReasoningMaxTokens`」把 2000 放大 64 倍到 128000，模型因此可以无限推理；输出上限本属调用方显式契约，插件不应单方面扩大。
+- 修复: 客户端显式传入 `max_tokens` 时原样尊重，仅做上限截断；只有未传（<=0）时才补足为该模式统一上限。`applyMaxTokensFloor` 不再作用于显式值（非推理档传 8192 也从「抬到 32768」改为「保留 8192」）。
+- 影响面: 显式传 `max_tokens` 的全部请求；未传时行为不变（仍补足 128000）。
+- 验证: `max_tokens_test.go` 断言同步（推理档 8192 保留、2000 保留、非推理档 8192 保留、`relaxMaxTokensInPlace` 对显式值不再改写 payload）；`cgo-shim-build.py workbuddy` build/vet/test 全绿。
+
 ## 0.21.10
 
 ### Feat - 非推理输出上限由 64000 抬升至 128000

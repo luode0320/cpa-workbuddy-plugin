@@ -85,16 +85,13 @@ func computeAdaptiveMaxTokens(model string, requested int64, isReasoning bool) i
 		return applyMaxTokensFloor(targetMax)
 	}
 
-	// 2. 思考模式下，若客户端传入保守过小值（<=8192），自动放宽破除死锁
-	if isReasoning && requested <= 8192 && targetMax > 8192 {
-		return applyMaxTokensFloor(targetMax)
-	}
-
-	// 3. 客户端显式传入值超过了统一上限，截断避免被上游网关报 400
+	// 2. 客户端显式传入：尊重其意图，只做上限截断，不再抬升至统一底线。
+	// 2026-11-07 生产实证：旧逻辑在思考模式下把 requested<=8192 一律放宽到
+	// defaultReasoningMaxTokens（128000），使 max_tokens=2000 的请求实际生成
+	// 12000~22000 tokens、耗时 80~145 秒，被调用方判为超时/卡死。输出上限是
+	// 调用方的显式契约，插件不应单方面放大 64 倍。
 	if requested > targetMax {
-		return applyMaxTokensFloor(targetMax)
+		return targetMax
 	}
-
-	// 4. 处于合理区间内，原样保留客户端传入值（最终不低于统一输出底线）
-	return applyMaxTokensFloor(requested)
+	return requested
 }

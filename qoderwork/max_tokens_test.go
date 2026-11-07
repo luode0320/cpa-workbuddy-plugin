@@ -28,11 +28,18 @@ func TestAdaptiveMaxTokens(t *testing.T) {
 			wantTokens:  128000,
 		},
 		{
-			name:        "推理模式 + 传 8192 -> 放宽至 128000",
+			name:        "推理模式 + 传 8192 -> 尊重客户端值 8192",
 			model:       "Qwen3.8-Flash",
 			requested:   8192,
 			isReasoning: true,
-			wantTokens:  128000,
+			wantTokens:  8192,
+		},
+		{
+			name:        "推理模式 + 传 2000（生产事故值）-> 原样保留 2000",
+			model:       "Qwen3.8-Flash",
+			requested:   2000,
+			isReasoning: true,
+			wantTokens:  2000,
 		},
 		{
 			name:        "推理模式 + 未传 -> 补足为 128000",
@@ -110,7 +117,7 @@ func TestBuildQoderBody_AdaptiveMaxTokens(t *testing.T) {
 		t.Fatalf("parameters.max_tokens = %d, want 128000", mt)
 	}
 
-	// 2. 思考模式下传入保守小值 8192 -> 放宽至 128000
+	// 2. 思考模式下传入 8192 -> 尊重客户端值，不再放大
 	req2 := &openAIRequest{
 		Model:           "Qwen3.8-Flash",
 		Messages:        []openAIMessage{{Role: "user", Content: "hi"}},
@@ -125,7 +132,7 @@ func TestBuildQoderBody_AdaptiveMaxTokens(t *testing.T) {
 	if err := json.Unmarshal(body2, &parsed2); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if mt := jsonI64(parsed2["parameters"].(map[string]any), "max_tokens"); mt != 128000 {
-		t.Fatalf("parameters.max_tokens = %d, want 128000", mt)
+	if mt := jsonI64(parsed2["parameters"].(map[string]any), "max_tokens"); mt != 8192 {
+		t.Fatalf("parameters.max_tokens = %d, want 8192（客户端显式值必须原样保留）", mt)
 	}
 }

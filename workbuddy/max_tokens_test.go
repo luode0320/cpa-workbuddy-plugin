@@ -21,11 +21,18 @@ func TestAdaptiveMaxTokens(t *testing.T) {
 		wantTokens  int64
 	}{
 		{
-			name:        "推理模式 + 保守 8192 -> 放宽至 128000",
+			name:        "推理模式 + 保守 8192 -> 尊重客户端值 8192",
 			model:       "deepseek-v4.1-flash",
 			requested:   8192,
 			isReasoning: true,
-			wantTokens:  128000,
+			wantTokens:  8192,
+		},
+		{
+			name:        "推理模式 + 传 2000（生产事故值）-> 原样保留 2000",
+			model:       "deepseek-v4.1-flash",
+			requested:   2000,
+			isReasoning: true,
+			wantTokens:  2000,
 		},
 		{
 			name:        "非推理模式 + 未传 -> 补足为 128000",
@@ -42,11 +49,11 @@ func TestAdaptiveMaxTokens(t *testing.T) {
 			wantTokens:  128000,
 		},
 		{
-			name:        "非推理模式 + 传 8192 -> 抬升至 32768 底线",
+			name:        "非推理模式 + 传 8192 -> 尊重客户端值 8192",
 			model:       "claude-3-5-sonnet",
 			requested:   8192,
 			isReasoning: false,
-			wantTokens:  32768,
+			wantTokens:  8192,
 		},
 		{
 			name:        "推理模式 + 超限 200000 -> 截断至 128000",
@@ -108,29 +115,29 @@ func TestAdaptiveMaxTokens(t *testing.T) {
 // [返回] 无
 // 最近修改时间：2026-11-04；改动原因：非推理上限由 64000 抬升至 128000（2026-10-30 全局统一上限的延续）。
 func TestRelaxMaxTokensInPlace_Adaptive(t *testing.T) {
-	// 场景 1：推理模式 + max_tokens: 8192 -> 放宽至 128000
+	// 场景 1：推理模式 + max_tokens: 8192 -> 尊重客户端值 8192
 	body := map[string]any{
 		"model":            "deepseek-v4.1-flash",
 		"reasoning_effort": "high",
 		"max_tokens":       float64(8192),
 	}
 	changed := relaxMaxTokensInPlace(body)
-	if !changed {
-		t.Fatal("expected changed = true")
+	if changed {
+		t.Fatal("显式 max_tokens 不应被改写，changed 必须为 false")
 	}
-	if got := jsonI64(body, "max_tokens"); got != 128000 {
-		t.Fatalf("max_tokens = %d, want 128000", got)
+	if got := jsonI64(body, "max_tokens"); got != 8192 {
+		t.Fatalf("max_tokens = %d, want 8192（客户端显式值必须原样保留）", got)
 	}
 
-	// 场景 2：带 max_completion_tokens 8192 -> 提升为 128000 且移除旧字段
+	// 场景 2：带 max_completion_tokens 8192 -> 保留 8192 且统一为 max_tokens 字段
 	body2 := map[string]any{
 		"model":                 "deepseek-v4.1-flash",
 		"reasoning_effort":      "high",
 		"max_completion_tokens": float64(8192),
 	}
 	relaxMaxTokensInPlace(body2)
-	if got := jsonI64(body2, "max_tokens"); got != 128000 {
-		t.Fatalf("max_tokens = %d, want 128000", got)
+	if got := jsonI64(body2, "max_tokens"); got != 8192 {
+		t.Fatalf("max_tokens = %d, want 8192", got)
 	}
 	if _, exists := body2["max_completion_tokens"]; exists {
 		t.Fatal("expected max_completion_tokens to be removed")
@@ -156,7 +163,7 @@ func TestPrepareUpstreamBody_AdaptiveMaxTokens(t *testing.T) {
 	if err := json.Unmarshal(out, &obj); err != nil {
 		t.Fatalf("unmarshal output: %v", err)
 	}
-	if got := jsonI64(obj, "max_tokens"); got != 128000 {
-		t.Fatalf("max_tokens = %d, want 128000; raw: %s", got, string(out))
+	if got := jsonI64(obj, "max_tokens"); got != 8192 {
+		t.Fatalf("max_tokens = %d, want 8192（客户端显式值必须原样保留）; raw: %s", got, string(out))
 	}
 }

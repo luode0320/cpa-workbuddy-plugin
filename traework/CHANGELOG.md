@@ -1,5 +1,15 @@
 # TraeWork Plugin Changelog
 
+## 0.5.10
+
+### Fix - 客户端显式 max_tokens 不再被放大到 128k（本插件唯一可用的推理深度收口）
+
+- 背景: 2026-11-07 生产压测（`deepseek-flash` 别名即本插件 `deepseek-v4.1-flash`，同一 prompt、`max_tokens=2000`、`reasoning_effort=max`）实测单请求生成 9908 tokens、耗时 72 秒，调用方判为超时。
+- 根因: `computeAdaptiveMaxTokens` 在思考模式下把客户端传入的 <=8192 一律放宽至 `defaultReasoningMaxTokens`（128000），2000 被放大 64 倍。本插件情况更严重——Trae 上游不支持 `reasoning_effort`（见 `usage_feed.go` 注释），该参数从不透传，`max_tokens` 是唯一能约束推理深度的字段，被放大后等于完全失控。
+- 修复: 客户端显式传入 `max_tokens` 时原样尊重，仅做上限截断；只有未传（<=0）时才补足为该模式统一上限。
+- 影响面: 显式传 `max_tokens` 的请求；未传时行为不变（仍补足 128000）。
+- 验证: `cgo-shim-build.py traework` build/vet/test 全绿（本插件测试无放宽断言，行为变更由共享用例覆盖）。
+
 ## 0.5.9
 
 ### Chore - 慢速冷却账号池准入闸门由 20 下调至 10

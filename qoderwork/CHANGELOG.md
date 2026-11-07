@@ -1,5 +1,15 @@
 # QoderWork Plugin Changelog
 
+## 0.13.4
+
+### Fix - 客户端显式 max_tokens 不再被放大到 128k（长推理卡死的根因）
+
+- 背景: 2026-11-07 生产压测（`deepseek-flash` 别名即本插件 `dfmodel`，同一 prompt、`max_tokens=2000`、`reasoning_effort=max`）实测单请求生成 7029 tokens、耗时 94 秒；同参数直连对照的 workbuddy 更慢（12030~21943 tokens / 81~145 秒），确认是三插件共有的上限策略问题，不是单一渠道抖动。
+- 根因: `computeAdaptiveMaxTokens` 在思考模式下把客户端传入的 <=8192 一律放宽至 `defaultReasoningMaxTokens`（128000），2000 被放大 64 倍，模型因此可以无限推理。
+- 修复: 客户端显式传入 `max_tokens` 时原样尊重，仅做上限截断；只有未传（<=0）时才补足为该模式统一上限。`applyMaxTokensFloor` 不再作用于显式值。
+- 影响面: 显式传 `max_tokens` 的请求；未传时行为不变（仍补足 128000）。
+- 验证: `max_tokens_test.go` 断言同步（新增「推理模式传 2000 原样保留」用例，8192 用例由放宽改为保留）；`cgo-shim-build.py qoderwork` build/vet/test 全绿。
+
 ## 0.13.3
 
 ### Chore - 慢速冷却账号池准入闸门由 20 下调至 10
