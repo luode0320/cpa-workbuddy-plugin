@@ -1,5 +1,15 @@
 # TraeWork Plugin Changelog
 
+## 0.5.9
+
+### Chore - 慢速冷却账号池准入闸门由 20 下调至 10
+
+- 变更: `defaultSlowMinPoolSize` 由 20 下调至 10；配置字段 `slow_min_pool_size` 的面板描述同步改为「默认 10」。
+- 动机: 账号池恢复后实际规模为 12 个（2026-11-07 已从 1 个恢复至 13 个、加载 12 个），20 的闸门使慢速冷却在生产上从未触发。
+- 影响: 账号总数（启用 + 停用）严格大于 10 即开始判定；≤10 的池子仍被闸门挡住——小池下四分位基线会退化成「取较小值」，两号互相顶替。
+- 配置兼容: 生产 `config.yaml` 未显式配置该键，插件重新加载后直接采用新默认值；显式写了 `slow_min_pool_size` 的部署不受影响。
+- 验证: `python scripts/cgo-shim-build.py traework` 的 build/vet/test 全绿；`slow_account_test.go` 全部引用 `defaultSlowMinPoolSize`，无硬编码 20 的断言。
+
 ## 0.5.8
 
 ### Feat - 非推理输出上限由 64000 抬升至 128000

@@ -497,18 +497,18 @@ func TestSlowAccount_PoolSizeGateBlocksJudgement(t *testing.T) {
 	withSlowConfig(t, true, 25, 2, 500, 60*time.Minute, 10*time.Minute)
 	base := time.Now()
 
-	// 池子只有 20 个账号：闸门要求严格大于 20，此时必须完全不判。
-	withSlowPoolSize(t, 20)
+	// 池子只有 10 个账号：闸门要求严格大于 10，此时必须完全不判。
+	withSlowPoolSize(t, 10)
 	feedSlowSamples("slow-a", "m", 20000, 5, base)
 	feedSlowSamples("fast-a", "m", 2000, 5, base)
 	if evaluateSlowAccount("slow-a", "m", base.Add(time.Minute)) {
-		t.Fatal("账号数 = 20 时不应判定：闸门要求严格大于 20")
+		t.Fatal("账号数 = 10 时不应判定：闸门要求严格大于 10")
 	}
 
-	// 涨到 21 个账号：闸门放行，同一个慢号必须被判出来。
-	withSlowPoolSize(t, 21)
+	// 涨到 11 个账号：闸门放行，同一个慢号必须被判出来。
+	withSlowPoolSize(t, 11)
 	if !evaluateSlowAccount("slow-a", "m", base.Add(2*time.Minute)) {
-		t.Fatal("账号数 = 21 时应放行判定，慢号必须被判慢")
+		t.Fatal("账号数 = 11 时应放行判定，慢号必须被判慢")
 	}
 }
 
@@ -556,7 +556,7 @@ func TestSlowAccount_PoolSizeUnknownStaysClosed(t *testing.T) {
 
 // TestSlowAccount_PoolSizeGateConfigurable 锁定闸门阈值可配置。
 //
-// 用户明确要求默认 20，同时保留配置覆盖能力（测试用小值便于验证边界）。
+// 用户要求默认 10（2026-11-07 由 20 下调），同时保留配置覆盖能力（测试用小值便于验证边界）。
 // [参数] t：测试上下文。
 // 最近修改时间：2026-10-25；改动原因：新增，验证配置项而非硬编码。
 func TestSlowAccount_PoolSizeGateConfigurable(t *testing.T) {
