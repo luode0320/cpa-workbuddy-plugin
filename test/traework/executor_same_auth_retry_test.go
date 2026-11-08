@@ -48,7 +48,7 @@ func TestRunTraeAsyncStreamSameAuthRetryWhenNoCandidateThenSucceeds(t *testing.T
 	}
 	runTraeAsyncStream(authA, "auth-a", traeAsyncStreamContext{
 		StreamID: "client-stream-same-auth", Model: "qwen-max-latest", UpstreamModel: "qwen3.8-max",
-		Started: time.Now(), InputChars:     30000, Budget: 1,
+		Started: time.Now(), InputChars: 30000, Budget: 1,
 	}, deps)
 
 	if len(opened) != 2 || opened[0] != "auth-a" || opened[1] != "auth-a" {
@@ -99,7 +99,7 @@ func TestRunTraeSyncStreamSameAuthRetryWhenNoCandidateThenSucceeds(t *testing.T)
 	}
 	chunks, err := runTraeSyncStream(authA, map[string]any{"stream": true}, traeSyncStreamContext{
 		Model: "qwen-max-latest", UpstreamModel: "qwen3.8-max", AuthID: "auth-a", AuthUID: authA.UserID,
-		Started: time.Now(), InputChars:     30000, Budget: 1,
+		Started: time.Now(), InputChars: 30000, Budget: 1,
 	}, deps)
 	if err != nil {
 		t.Fatalf("runTraeSyncStream: %v", err)

@@ -128,7 +128,7 @@ func TestRunTraeAsyncStreamPseudoPoolExhaustionClosesWithError(t *testing.T) {
 	}
 	runTraeAsyncStream(authA, "auth-a", traeAsyncStreamContext{
 		StreamID: "client-stream-pool", Model: "qwen-max-latest", UpstreamModel: "qwen3.8-max",
-		Started: time.Now(), InputChars:     30000, Budget: 1,
+		Started: time.Now(), InputChars: 30000, Budget: 1,
 	}, deps)
 
 	if upstreamCloses != 2 || clientCloses != 1 {
@@ -168,7 +168,7 @@ func TestRunTraeAsyncStreamDoesNotRetryAfterEmitFailure(t *testing.T) {
 	}
 	runTraeAsyncStream(authA, "auth-a", traeAsyncStreamContext{
 		StreamID: "client-stream-cancel", Model: "qwen-max-latest", UpstreamModel: "qwen3.8-max",
-		Started: time.Now(), InputChars:     30000, Budget: 1,
+		Started: time.Now(), InputChars: 30000, Budget: 1,
 	}, deps)
 	if openCount != 1 || clientCloses != 1 {
 		t.Fatalf("open/close = %d/%d, want 1/1", openCount, clientCloses)
@@ -212,7 +212,7 @@ func TestRunTraeAsyncStreamDoesNotRetryAnAccountTwice(t *testing.T) {
 	}
 	runTraeAsyncStream(authA, "auth-a", traeAsyncStreamContext{
 		StreamID: "client-stream-cycle", Model: "qwen-max-latest", UpstreamModel: "qwen3.8-max",
-		Started: time.Now(), InputChars:     30000, Budget: 3,
+		Started: time.Now(), InputChars: 30000, Budget: 3,
 	}, deps)
 	if len(opened) != 2 || opened[0] != "auth-a" || opened[1] != "auth-b" {
 		t.Fatalf("opened = %v, want [auth-a auth-b]", opened)
@@ -258,7 +258,7 @@ func TestRunTraeAsyncStreamClosesUpstreamOnPanic(t *testing.T) {
 	}
 	runTraeAsyncStream(authA, "auth-a", traeAsyncStreamContext{
 		StreamID: "client-stream-panic", Model: "qwen-max-latest", UpstreamModel: "qwen3.8-max",
-		Started: time.Now(), InputChars:     30000,
+		Started: time.Now(), InputChars: 30000,
 	}, deps)
 	if upstreamCloses != 1 || clientCloses != 1 {
 		t.Fatalf("closes = upstream:%d client:%d, want 1/1", upstreamCloses, clientCloses)
@@ -298,7 +298,7 @@ func TestRunTraeAsyncStream_SkipsCoolingInitialAuth(t *testing.T) {
 			}
 			return "auth-b", authB, true
 		},
-		Emit: func(string, []byte) error { return nil },
+		Emit:  func(string, []byte) error { return nil },
 		Close: func(string) {},
 	}
 
@@ -387,7 +387,7 @@ func TestRunTraeAsyncStreamRetriesSSEQuotaErrorOnSameRequest(t *testing.T) {
 	runTraeAsyncStream(authA, "auth-a", traeAsyncStreamContext{
 		StreamID: "client-stream-sse-quota", Model: "qwen-max-latest", UpstreamModel: "qwen3.8-max",
 		Payload: map[string]any{"stream": true},
-		Started: time.Now(), InputChars:     30000, Budget: 1,
+		Started: time.Now(), InputChars: 30000, Budget: 1,
 	}, deps)
 
 	if len(opened) != 2 || opened[0] != "auth-a" || opened[1] != "auth-b" {
