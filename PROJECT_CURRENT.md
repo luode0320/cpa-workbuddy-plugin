@@ -34,6 +34,14 @@
 
 ## 活动会话进展摘要
 
+
+- 会话（2026-11-08 19:58-20:35，接续上条）：**继续观测 → 探活放大与 HTTP 超时缺口（traework 0.5.22 / qoderwork 0.13.15）**：
+  - **观测**：45 分钟窗口 11128 宿主扇出 34 条**全部在 19:43 部署前**（部署后 0）；112 与 param invalid 均为 0。feed 部署后仅 traework 107 行（失败 3 条，status=0、latency 61~73s）。
+  - **缺陷四（qoderwork 缺分阶段超时）**：`sharedHTTPClient` 只有 `Timeout: 120s`，缺拨号/TLS 握手/响应头三道前置闸门；workbuddy 0.21.14 已按同口径补齐。修复后 Transport 补 10s/10s/60s 并置空 `TLSNextProto` 真正禁 h2。
+  - **缺陷五（traework 探活被放大 10 倍）**：探活周期 10 分钟，但单账号 90 分钟被探活 **96 次**（11 账号共 806 次失败）。根因是宿主热重载只把旧 `.so` 记入 retired、**不调 `plugin_shutdown`**，`for range ticker.C` 无退出条件，实例随热重载累积。修复：新增 `instance_guard.go`（`$TMPDIR` 所有权标记 + 每轮 tick 自检）。
+  - **验证**：两插件 cgo-shim 全绿；变异验证 3 轮全部 KILLED（其中一轮因日志淹没 FAIL 行误判，改用定向 `go test -run` 复核）。生产 20:17 热重载两插件，sha256 与 release zip 逐字节一致。
+  - **效果**：部署后 12 分钟探活失败 **11 次/分钟 → 0**（禁用账号的陈旧 `failover_disable` 标记已被对账清空，探活目标归零）。
+  - **遗留**：① 实例守卫只对本版本之后的热重载生效（旧版本无自检代码），彻底清理需容器重启（红线，待用户确认）；② workbuddy 11128 与 traework 实例守卫的 `superseded` 日志均缺生产实证。
 - 会话（2026-11-08 13:32-20:00）：**生产流量持续观测 + 三个跨凭据扇出缺陷（workbuddy 0.21.15→0.21.18 / qoderwork 0.13.12-0.13.14 / traework 0.5.20）**：
   - **观测**：24h feed 8433 行，qoderwork 失败率 **47.26%**（354/749，其中 294 条 HTTP 200 零 token）、workbuddy 2.90%、traework 6.53%。
   - **缺陷一（qoderwork 112 无权益）**：上游 upstream 200: 112: {"pricingUrl":...} 全无判据，宿主逐个换凭据。修复：isEntitlementRequiredFailure + 归入 isModelLevelFailure + 换号短路 + 信封 400。生产 112 已归零。
@@ -159,33 +167,3 @@
   - **路由真相再更正（重要）**：同名模型不是固定落 workbuddy，宿主按周期在同名 provider 间轮换——同一 key 连续 10 次短请求分布 traework 6 / qoderwork 4 / workbuddy 3；另一窗口 6 次全 qoder、随后 5 次全 traework+workbuddy。**此前所有基于 1~2 次采样的「永远被 workbuddy 抢走」结论均作废**，定向验证必须多次采样。
   - **接口事实**：`/v0/management/plugins/traework-provider/models` 需 `auth_index` 但返回 `{"models":null}`（缓存空）；traework 10 个账号全部 active，非账号故障。
 
-- 会话（2026-11-07 17:42-17:50）：**方案 1 定向隔离引发生产 400，已完整回滚 + 零改动定向验证成功**：
-  - 故障：为隔离 qoder/trae，把 `deepseek-v4.1-flash` 加入 `oauth-excluded-models` 的 `workbuddy-provider` + `workbuddy-ai-provider`（`PUT /v8/management/config/oauth/excluded-models`，整表覆盖）。17:42~17:48 期间 `deepseek-flash` 与 `deepseek-v4.1-flash` 全部返回 `400 unknown provider for model deepseek-v4.1-flash`，用户报「现在无法使用了」。
-  - **根因**：`/v1/models` 的 `owned_by` 显示该模型 ID **只有 `workbuddy-provider` 注册**（workbuddy 11 个 / workbuddy-ai 3 个 / qoderwork 仅 `dfmodel` / traework 仅 `deepseek-flash` / coze 5 个）。别名把 `deepseek-flash` 改写为 `deepseek-v4.1-flash` 后，路由键就是这个 ID；摘除 workbuddy 系后**没有任何 provider 认领** → 400。方案 1 的前提「摘除后 qoder/trae 能接住」从一开始就不成立。
-  - **回滚**：备份目录 `/root/cpa-cfg-backup-20261107_174231`（`config.yaml` + `oauth_excluded_models.json`）；用备份 JSON 原样 PUT 回写，17:47:56 日志确认 `workbuddy-ai-provider 28->27`、`workbuddy-provider 15->14`。验证：GET 与备份**逐字一致**（`config-version:8`）、`config.yaml` 1328 行且非空行多重集零差异（仅行序/空白重排，语义等价）、两个模型真实请求均 `200`、模型表 21 个、三插件版本 0.21.11 / 0.13.4 / 0.5.10 不变。临时脚本 `/root/iso.py` 已删除，备份目录保留。
-  - **铁律（新增）**：动 `excluded-models` 前必须先用 `/v1/models` 的 `owned_by` 确认**目标模型 ID 至少还有另一家 provider 能提供**；路由键是 **alias 改写后的名字**，不是插件注册名。仅凭「feed 里见过该 provider + 该模型」不足以推断可承接。
-  - **零改动定向验证（qoderwork 成功）**：直接用其专属模型 `dfmodel` 发同 prompt + `max_tokens=2000` + `reasoning_effort=max` → feed `provider=qoderwork-provider`、`model=dfmodel`（未被别名劫持）、`out=1311`（≤2000，放大已消除）、`finish=stop`、耗时 **12.2s**（修复前 7029 tokens / 94s）。证明 0.13.4 的修复在 qoderwork 上真实生效。
-  - **traework 与 workbuddy 原生 ID 硬冲突，配置层无解（17:54-17:58 两次实测）**：alias 结构为 `{alias, fork, name}`，是 **`alias → name` 改写**，`name` 必须是插件原生 ID。实测映射：qoderwork `deepseek-flash → DeepSeek-Flash`、traework `deepseek-flash → deepseek-v4.1-flash`、workbuddy `gpt-5.6-luna → deepseek-v4.1-flash`。**traework 的对外名被改写成 workbuddy 的原生 ID，流量必落 workbuddy**；`/v1/models` 的 `owned_by` 展示的是 alias 归属而非原生注册 ID，不能据此判断承接方。两次安全尝试均 `400 unknown provider` 且已自动恢复：①临时解禁 traework 排除项 `deepseek-v4-pro-official`（排除名≠已注册原生 ID，被排除模型根本不注册）；②在 traework 分组新增探测别名 `trae-ds-flash-probe → deepseek-flash`（alias 不能创造原生注册，`deepseek-flash` 本身不是原生 ID）。**结论：定向 traework 只有两条路——摘除 workbuddy（已实测 400，禁止）或改插件代码暴露专属模型 ID（需发版）**。收口：4 模型全 200、模型表 21、探测别名零残留、alias GET 与备份完全一致、config.yaml 仅 alias 字段顺序互换（语义等价）。
-
-- 会话（2026-11-07 17:25）：**长推理 80~145 秒卡死根因修复（workbuddy 0.21.11 / qoderwork 0.13.4 / traework 0.5.10）**：
-  - 诉求：高强度测试 qoderwork / traework 的 `deepseek-v4.1-flash` 推理请求，要求不测到 workbuddy；随后明确判定标准「首字延迟和生成时间过长的都是 bug」。
-  - **压测基线（修复前）**：同 prompt、`max_tokens=2000`、`reasoning_effort=max` 下，traework 生成 9908 tokens / 72s、qoderwork 7029 tokens / 94s。**对照实验推翻了「只有这两个插件慢」的前提**：直连 workbuddy 同名模型生成 12030~21943 tokens / 81~145s，比另两个更慢。
-  - **根因**：三插件 `model_specs.go` 的 `computeAdaptiveMaxTokens` 在思考模式下把客户端 `<=8192` 的 `max_tokens` 一律放宽到 `defaultReasoningMaxTokens`（128000），2000 被放大 64 倍，模型因此可无限推理。`applyMaxTokensFloor` 还会把非推理档的显式小值抬到 32768。
-  - **修复**：显式传入 `max_tokens` 时原样尊重、仅做上限截断；只有未传（`<=0`）才补足统一上限。三插件同源同步修改，测试断言同步（推理档 8192/2000 保留、非推理档 8192 保留、`relaxMaxTokensInPlace` 对显式值不再改写 payload）。
-  - **发布**：`5c1f4c6`（代码）→ CI `42358546508`/`42358554570`/`42358566325`（三条 run 均 `cancelled` 但 Release `success`，仅缺 `darwin/arm64`）→ `41d680f`（registry）。生产热重载三插件到 `active_version` 0.21.11 / 0.13.4 / 0.5.10。
-  - **修复效果（workbuddy 实测）**：`out=2000` 精确卡上限（修复前 12030~21943），单请求耗时 **13.8~15.2s**（修复前 81~145s），token 降 90%、耗时降 89%。
-  - **隔离结论（17:47 修正，原「摘除 workbuddy 该模型」建议已作废）**：`oauth-model-alias` 把 `deepseek-flash` 改写成 `deepseek-v4.1-flash` 后仍按模型名匹配所有提供方，workbuddy 优先级更高会抢走流量（响应体 `"model":"deepseek-v4.1-flash"`、feed `provider=workbuddy-provider`）。`/v1/models` 的 `owned_by` 实测证明 **`deepseek-v4.1-flash` 只有 `workbuddy-provider` 提供**，qoderwork 仅注册 `dfmodel`、traework 仅注册 `deepseek-flash`，二者都不含该 ID —— 摘除 workbuddy 系必然 `unknown provider`，**方案 1 不可行且已造成 5 分钟生产 400**（详见下条会话）。正确做法：直接用 provider 专属模型名（`dfmodel` 可零改动定向测 qoderwork）；traework 需先处理 alias 劫持。
-  - **附带的第二处差异**：`traework/usage_feed.go:159` 明确记录 Trae 上游不支持 `reasoning_effort`，该参数从不透传；`max_tokens` 是其唯一推理深度收口，被放大后等于完全失控。
-
-- 会话（2026-11-07 16:00）：**慢速冷却池准入闸门 20→10 发布（qoderwork 0.13.3 / traework 0.5.9）**：
-  - 诉求：「qoder 和 trae 的插件，慢速冷却的『池大于 20』阈值改成 10」。
-  - 改动 4 处：两插件 `slow_account.go` 的 `defaultSlowMinPoolSize 20 → 10`（注释补改动原因）、`main.go` 的 ConfigField 描述「默认 20」→「默认 10」；另同步 `slow_account_test.go` 里 `TestSlowAccount_PoolSizeGateBlocksJudgement` 的硬编码 20/21（此断言漏在第一轮 grep 之外，靠 cgo-shim 失败才暴露，改为 10/11）。
-  - 依据：生产 `config.yaml` **未显式配置** `slow_min_pool_size`，故改默认值即生效；当前池规模 qoderwork 18 / traework 12，均大于 10。
-  - 发布：`6992ba2`（代码）→ CI `42349569872` / `42349577549` → `f29ac91`（registry）。**首轮 CI 两条 run 均 `cancelled`**：`darwin/arm64` 在 macOS runner 池排队超时被系统取消（`runner=` 为空），导致 Release `skipped`；带 `allow_partial=true` 重新 dispatch 后 Release `success`，产物 5 平台（缺 darwin/arm64），`publish-assets.py --allow-missing` 正常发布。
-  - 生产：热重载 `active_version=0.13.3`（retired 0.13.2）/ `0.5.9`（retired 0.5.8）；落盘 `.so` sha256 `451a3bf6…` / `1c998739…` 与本地 release zip 内二进制逐一相同；`config_fields` 元数据两者均显示「默认 10」。
-  - **重要澄清（本次踩坑）**：热重载后 `/v1/models` 从 25 降到 19、qoderwork 全部对外模型（`QoDuck`/`lmodel`/`jmodel`/`mmodel`/`kmodel_latest`/`Kimi-K3.1-Pro`）消失，一度误判为「宿主热重载跳过 `callRegister`」，为此重启了容器（15:42，已获用户当轮授权）。**重启未恢复，真相是配置**——管理 API 审计日志显示 `14:53:32 oauth-excluded-models[qoderwork-provider]: updated (13 -> 20 entries)`（同批 `traework-provider: 52 -> 54`），即**并行会话在 14:53 通过 `PUT /v8/management/config/oauth/excluded-models` 主动收紧了模型暴露**。排除清单现有 19 条，含 qoduck/lmodel/mmodel/jmodel/kmodel_latest/kimi-k3.1-pro 等。**结论：账号恢复与本次发布均无问题（探活 `ok=True`），qoderwork 当前对外无可用模型是配置策略所致，是否解除排除待用户决定。**
-  - 生产现状：6 插件 enabled+registered（coze 0.7.4 / qoderwork 0.13.3 / traework 0.5.9 / workbuddy-ai 0.1.36 / workbuddy 0.21.10 / token-usage 0.2.8），账号 qoderwork 18 / traework 12 / workbuddy 21 / coze 23，模型 19 个；真实入口 `glm-5.3`、`kimi-k3.1-pro` 均 `finish_reason=stop`。
-  - **可迁移教训**：模型从 `/v1/models` 消失时，**先查 `excluded-models` 与管理 API 审计日志（`config_reload.go` 的 `updated (A -> B entries)` 行）**，再怀疑热重载/注册链路。本次为错误假设复了一次容器重启，成本不必要。
-
-- 会话（2026-11-07 14:15 及更早，已沉淀归档）：**qoderwork 16 个 / traework 12 个被删账号全量找回**——恢复源为 `/root/traework-recovery/PRE_RESTORE_auth_store_20261025_134113.sql`（全表 dump，跨 provider 兜底）；决定性判据是**凭据家族**：`dt-/drt-`（OAuth device，drt- 约 1 年）可恢复，`jt-/jrt-`（PAT，jrt- 仅 48h）超期即不可救。写回顺序 auth_store → spool 并做三方数量对齐，还原点三层（表 dump + spool 快照 + 数量基线）。详见项目 skill `project-cpa-workbuddy-plugin-account-data-recovery-rules`。
-- 会话（2026-11-07 13:40 及更早）：qoderwork 0.13.2 签到核验 + 修 3 缺陷（`b43d089`→`32df5df`）；0.13.1 修「推理各种失败、断开」（`af216de`→`020313e`→`6c7d253`）；0.13.0 面板批量导入（`dfaecb6`→`8c41737`）；2026-10-31 宿主 management.html 自动升级致 10 插件面板集体 401（`79b581e`+`368b4f3`，根因是 key 混淆从 `enc::v1::` 换成 `enc::v2::`）；2026-10-31 workbuddy 0.21.8 高峰期拥堵识别（`failureScopeUpstreamBusy` / `failureScopeModelRateLimit`）；2026-10-29 deepseek-v4.1-flash 16 点后变慢根因（只读，双因：快号单次 429 后禁用 + 空操作配置保存清空 session-affinity）；2026-10-26 traework 0.5.3 面板改纯读积分快照。细节见 `PROJECT_HISTORY.md` 与 `doc/`。
