@@ -1,6 +1,40 @@
 # TraeWork Plugin Changelog
 
+## 0.5.22
+
+### Fix - 热重载后旧实例自行退出常驻循环（探活请求被放大 10 倍）
+
+- 背景: 2026-11-08 生产观测发现探活周期虽是 10 分钟，但单账号 90 分钟内被探活
+  **96 次**（11 个账号共 806 次 `failover probe failed`），约 10 个实例并行。
+  账号配额已耗尽时仍在持续打上游。
+- 根因: 宿主热重载只把旧 `.so` 记入 retired 列表，**不调用 `plugin_shutdown`**；
+  本插件所有常驻循环（`failoverProbeLoop` / `failoverReconcileLoop` /
+  `watchdogLoop`）都是 `for range ticker.C` 无退出条件，旧实例的 goroutine
+  随热重载次数累积。
+- 修复: 新增 `instance_guard.go` —— `init()` 抢占实例所有权（写
+  `$TMPDIR/cpa-traework-provider-instance`），探活与对账循环每轮先确认自己仍是
+  当前活跃实例，被更新实例覆盖即打日志退出。标记文件缺失时放行，不静默停摆。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增
+  `TestPluginInstanceSupersededDetectsNewOwner` 与
+  `TestPluginInstanceSupersededToleratesMissingMarker`；变异反转比较方向后
+  测试失败。
+- 涉及文件: `instance_guard.go`（新增）、`instance_guard_test.go`（新增）、
+  `watchdog.go`、`failover_disable.go`。
+
 ## 0.5.21
+
+### Feature - 浏览器登录桥接页新增「复制授权链接」
+
+- 背景（2026-11-08 用户截图）: 桥接页的授权链接只能点「打开 Trae 登录页面」在新窗口打开，
+  宿主弹窗被拦截或想在手机 / 另一台设备上完成登录时无法继续。
+- 修复: `browserLoginBridgePage` 的引导页在「打开 Trae 登录页面」右侧同行加「复制授权链接」按钮（白底蓝边次级样式），
+  并在其下方增加授权链接全文的只读框。复制逻辑优先 navigator.clipboard.writeText，
+  失败时回退 execCommand copy（非安全上下文），结果写到按钮旁的提示文字。
+  只读框是复制的唯一取值来源，页面里不另存第二份副本。
+- 验证: 新增 test/traework/bridge_copy_auth_url_test.go（锁定按钮、只读框、剪贴板主通道与兜底、无反引号）；
+  python scripts/cgo-shim-build.py traework build+vet+test 全绿（2026-11-08）；
+  真实浏览器（Chrome headless + CDP）验证点击后剪贴板写入完整授权链接（478 字符，与只读框一致）。
+- 影响范围: 仅 traework 插件的浏览器登录桥接页渲染，不影响授权会话、换取与入库流程。
 
 ### Fix - 第三方导出账号导入后落盘成 legacy 单文件，面板账号列表看不到
 

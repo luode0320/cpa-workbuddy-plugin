@@ -195,6 +195,8 @@ func watchdogLoop() {
 }
 
 func init() {
+	// 先抢占实例所有权：热重载后新实例立即生效，旧实例在下一轮 tick 自行退出。
+	claimPluginInstance()
 	go watchdogLoop()
 	// 禁用探活自带 10 分钟固定周期与不重叠保护，与 watchdog 的巡检节拍分开跑。
 	go failoverProbeLoop()

@@ -1,5 +1,23 @@
 # QoderWork Plugin Changelog
 
+## 0.13.15
+
+### Fix - 上游 HTTP 客户端补分阶段超时并禁用 h2
+
+- 背景: 本插件的 `sharedHTTPClient` 只有 `Timeout: 120s` 整体兜底，缺少拨号 /
+  TLS 握手 / 响应头三道前置闸门；兄弟插件 workbuddy 0.21.14 已按同一口径补齐
+  （当日生产实证 TTFT 最长 150.5s、单请求总耗时 694s，全部 status_code=0）。
+- 根因: 只设 `http.Client.Timeout` 时，首字节之前的静默期（半开 TCP、上游排队）
+  仍可在总超时内部无限挂起；而命中总超时会把已产出正文的合法长流一起掐断。
+- 修复: `sharedHTTPClient` 的 Transport 补 `DialContext(10s)` /
+  `TLSHandshakeTimeout(10s)` / `ResponseHeaderTimeout(60s)`，并置空
+  `TLSNextProto` 真正禁 h2（只设 `ForceAttemptHTTP2=false` 时 ALPN 仍会协商出
+  h2，半死流上表现为响应头等待超时）。
+- 验证: `cgo-shim-build.py qoderwork` build / vet / test 全绿；新增
+  `TestSharedHTTPClientStagedTimeouts` 锁定三项超时与 h2 禁用；变异移除
+  ResponseHeaderTimeout 后测试失败。
+- 涉及文件: `host_bridge.go`、`upstream_timeout_test.go`（新增）。
+
 ## 0.13.14
 
 ### Fix - cleanChunkJSON 整帧丢弃「空 delta + 顶层 usage」的终止计费帧，致下游 Tokens 记 "-" 零计费

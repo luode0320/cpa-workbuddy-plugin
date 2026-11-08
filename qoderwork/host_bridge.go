@@ -8,9 +8,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"runtime"
 	"time"
@@ -30,9 +32,22 @@ func sharedHTTPClient() *http.Client {
 		// jar would leak upstream set-cookie state across accounts (multi-account
 		// deployments could cross-contaminate sessions). Only the short-lived
 		// login clients get a jar.
+		// 分阶段超时：只设 Timeout 时，首字节之前的静默期（半开 TCP、上游排队）
+		// 仍可在总超时内部无限挂起，而命中总超时会把已产出正文的长流一起掐断。
 		sharedClient = &http.Client{
 			Timeout: 120 * time.Second,
 			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   upstreamDialTimeout,
+					KeepAlive: 15 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout: upstreamTLSHandshakeTimeout,
+				// 首字节（响应头）硬上限：静默期快速失败并交给换号。
+				ResponseHeaderTimeout: upstreamResponseHeaderTimeout,
+
+				// 置空 TLSNextProto 才能真正禁 h2；只设 ForceAttemptHTTP2=false 时
+				// ALPN 仍会协商出 h2，半死流上表现为响应头等待超时。
+				TLSNextProto:        map[string]func(string, *tls.Conn) http.RoundTripper{},
 				MaxIdleConns:        20,
 				IdleConnTimeout:     90 * time.Second,
 				MaxIdleConnsPerHost: 5,
@@ -41,6 +56,17 @@ func sharedHTTPClient() *http.Client {
 	})
 	return sharedClient
 }
+
+// 上游 HTTP 分阶段超时：拨号与 TLS 握手挡住「连不上」，ResponseHeaderTimeout
+// 挡住「连上了但首字节迟迟不来」，http.Client.Timeout 仍是整体兜底。
+const (
+	// upstreamDialTimeout 限制 TCP 建连耗时。
+	upstreamDialTimeout = 10 * time.Second
+	// upstreamTLSHandshakeTimeout 限制 TLS 握手耗时。
+	upstreamTLSHandshakeTimeout = 10 * time.Second
+	// upstreamResponseHeaderTimeout 限制「请求已发出 → 响应头到达」的耗时。
+	upstreamResponseHeaderTimeout = 60 * time.Second
+)
 
 // hostHTTPResponse is the plugin-side view of an HTTP response that came back
 // through the host bridge. Body is fully buffered (matches the historical

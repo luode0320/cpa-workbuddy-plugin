@@ -1071,6 +1071,10 @@ func failoverReconcileLoop() {
 	ticker := time.NewTicker(failoverReconcileInterval)
 	defer ticker.Stop()
 	for range ticker.C {
+		if pluginInstanceSuperseded() {
+			log.Printf("[traework] failover reconcile loop stopped: superseded by newer instance")
+			return
+		}
 		// 对账是幂等读改写，不加 TryLock：上一轮再慢也只是多读一次，
 		// 丢轮次反而会延长「手动启用未生效」的窗口。
 		reconcileFailoverLocalSet()
@@ -1093,6 +1097,12 @@ func failoverProbeLoop() {
 	ticker := time.NewTicker(failoverProbeInterval)
 	defer ticker.Stop()
 	for range ticker.C {
+		// 热重载后旧实例的 ticker 仍在跑：探测会随实例数线性放大，
+		// 必须在每轮前确认自己仍是当前活跃实例。
+		if pluginInstanceSuperseded() {
+			log.Printf("[traework] failover probe loop stopped: superseded by newer instance")
+			return
+		}
 		runFailoverTickNonOverlap(func() {
 			// 先对账本地集合：外部（面板 / 宿主 UI / management）已把号启用时，
 			// 必须让插件不再排除它，否则它会一直被跳过直到重启。
