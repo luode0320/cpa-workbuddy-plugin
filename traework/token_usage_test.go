@@ -97,9 +97,9 @@ func TestUsageDetailFromTraeMapOpenAICachedTokens(t *testing.T) {
 
 	// Anthropic 形态优先，不被子对象覆盖。
 	m2 := map[string]any{
-		"prompt_tokens":            int64(1000),
-		"cache_read_input_tokens":  int64(700),
-		"prompt_tokens_details":    map[string]any{"cached_tokens": int64(800)},
+		"prompt_tokens":           int64(1000),
+		"cache_read_input_tokens": int64(700),
+		"prompt_tokens_details":   map[string]any{"cached_tokens": int64(800)},
 	}
 	if d2 := usageDetailFromTraeMap(m2); d2.CacheReadTokens != 700 {
 		t.Fatalf("CacheReadTokens = %d; want 700 (顶层形态优先)", d2.CacheReadTokens)
