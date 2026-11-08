@@ -246,6 +246,9 @@ var requestShapeFailureMarkers = []string{
 	"field validation",
 	"bad request",
 	"tool call failed",
+	// 上游对模型名写法不匹配时回此文案（同 traework 生产实测）。
+	"param is invalid",
+	"the param is invalid",
 }
 
 // isRequestShapeFailure 判定失败是否由客户端请求体形状引起。

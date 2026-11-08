@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -91,5 +92,44 @@ func TestNormalizeTools_NoToolsPassThrough(t *testing.T) {
 	got := normalizeToolsForUpstream(in)
 	if string(got) != string(in) {
 		t.Fatalf("unexpected rewrite: %s", got)
+	}
+}
+
+// TestCleanChunkJSONKeepsUsageOnlyFrame 上游真实形态：choices[0].delta 为 {},
+// 无 finish_reason，usage 挂在顶层。必须原样保留整帧——旧逻辑把这类「全空
+// delta」整帧丢弃，下游（new-api）拿不到 token 数只能记 $0。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-11-08 19:20:00；改动原因：usage 终止帧被丢弃致下游零计费。
+func TestCleanChunkJSONKeepsUsageOnlyFrame(t *testing.T) {
+	raw := `{"choices":[{"delta":{},"index":0}],"created":1792316744,"id":"chatcmpl-x","model":"deepseek-v4.1-flash","object":"chat.completion.chunk","usage":{"completion_tokens":24,"completion_tokens_details":{"reasoning_tokens":20,"text_tokens":24},"prompt_tokens":63,"prompt_tokens_details":{"cached_tokens":0,"text_tokens":63},"total_tokens":87}}`
+	got := cleanChunkJSON(raw)
+	if got == "" {
+		t.Fatal("usage 终止计费帧被丢弃：下游将拿不到 token 数")
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(got), &obj); err != nil {
+		t.Fatalf("输出不是合法 JSON: %v (%s)", err, got)
+	}
+	usage, ok := obj["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("输出丢失 usage: %s", got)
+	}
+	if total, _ := usage["total_tokens"].(float64); total != 87 {
+		t.Fatalf("usage.total_tokens = %v, want 87", usage["total_tokens"])
+	}
+}
+
+// TestCleanChunkJSONDropsEmptyNoSignalFrameWithoutUsage 无 usage、无 finish_reason
+// 的纯空 delta 仍必须整帧丢弃，避免给客户端发无意义空帧。
+//
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-11-08 19:20:00；改动原因：同 TestCleanChunkJSONKeepsUsageOnlyFrame。
+func TestCleanChunkJSONDropsEmptyNoSignalFrameWithoutUsage(t *testing.T) {
+	raw := `{"choices":[{"delta":{"function_call":null},"index":0}],"id":"chatcmpl-y"}`
+	if got := cleanChunkJSON(raw); got != "" {
+		t.Fatalf("纯空 delta 帧应被丢弃，实际保留: %s", got)
 	}
 }

@@ -696,6 +696,12 @@ func cleanChunkJSON(s string) string {
 			// never reaches this branch (those fields are preserved above).
 			if len(delta) == 0 {
 				if fr, _ := choice["finish_reason"].(string); fr == "" {
+					// 顶层 usage 是终止计费帧的唯一载体：上游把它挂在
+					// delta 为空的 chunk 上（无 finish_reason）。整帧丢弃会让
+					// 下游（new-api 等）拿不到 token 数，全部记 $0。
+					if _, hasUsage := obj["usage"]; hasUsage {
+						continue
+					}
 					return ""
 				}
 			}

@@ -1,5 +1,19 @@
 # Qoder AI Plugin Changelog
 
+## 0.1.39
+
+### Fix - cleanChunkJSON 整帧丢弃「空 delta + 顶层 usage」的终止计费帧，致下游 Tokens 记 "-" 零计费
+
+- 背景（2026-11-08 生产实证）: 同源缺陷（qwenwork 0.2.8 已修，本插件副本仍是旧版）。
+  Qoder 上游把 usage 挂在 `delta:{}` 且无 `finish_reason` 的 chunk 上，旧逻辑整帧丢弃 →
+  宿主与 new-api 拿不到 token 数，Tokens 列显示 `-`、该段流量零计费。
+- 根因: `cleanChunkJSON` 在 `len(delta)==0` 且 `finish_reason` 为空时 `return ""`，
+  连带抹掉顶层 `usage`。
+- 修复: 该分支内先查 `obj["usage"]`，存在则 `continue` 保留整帧，否则维持原丢弃语义。
+- 测试: 新增 `cleanchunk_test.go`（4 个用例）；变异验证：删掉 `hasUsage` 分支后两条
+  精确 FAIL，还原后 `cgo-shim-build.py qoder-ai` 全绿。
+
+
 ## 0.1.38
 
 ### Fix - 补 max_completion_tokens 别名识别 + 超大值收敛（生产压测发现）

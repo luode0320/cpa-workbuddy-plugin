@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.21.17
+
+### Fix - cleanChunkJSON 整帧丢弃「空 delta + 顶层 usage」的终止计费帧，致下游 Tokens 记 "-" 零计费
+
+- 背景（2026-11-08 生产实证）: 同一份 `cleanChunkJSON` 在 qwenwork 已于 2026-10-18 修过
+  （0.2.8），但 workbuddy / workbuddy-ai / qoderwork / qoder-ai 四个插件的副本仍是修复前版本。
+  上游把 usage 挂在 `delta:{}` 且无 `finish_reason` 的 chunk 上，旧逻辑把这类「全空 delta」
+  一律当噪声整帧丢弃 → 宿主与 new-api 拿不到 token 数，使用日志 Tokens 列显示 `-`、
+  该段流量零计费。当日 feed 里 workbuddy 有 6 条「成功但零用量」记录（05:35–05:48Z，均为
+  `deepseek-v4.1-flash`），new-api 同时段出现「上游没有返回计费信息，无法扣费」。
+- 根因: [stream.go](file:///F:/cpa-plugin/workbuddy/stream.go) 的 `cleanChunkJSON` 在
+  `len(delta)==0` 且 `finish_reason` 为空时直接 `return ""`，而顶层 `usage` 是终止计费帧的
+  唯一载体，被连带抹掉。
+- 修复: 该分支内先查 `obj["usage"]`，存在则 `continue`（保留整帧、仍清空 `function_call` /
+  空 `tool_calls` 噪声），否则维持原丢弃语义。
+- 测试: `cleanchunk_test.go` 新增 `TestCleanChunkJSONKeepsUsageOnlyFrame` 与
+  `TestCleanChunkJSONDropsEmptyNoSignalFrameWithoutUsage`（既有 7 个用例全部保留）。
+  变异验证：把 `hasUsage` 分支删掉后两条 usage 用例**精确 FAIL**，还原后
+  `cgo-shim-build.py workbuddy` build/vet/test 全绿。
+
+
 ## 0.21.16
 
 ### Fix - 上游拦截（11128）在流式路径同样不再跨凭据扇出
