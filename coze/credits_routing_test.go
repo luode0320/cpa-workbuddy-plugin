@@ -19,8 +19,8 @@ import (
 // 因此低额账号只能由执行入口拦截：返回 403 让宿主按账号级故障换号，
 // 与上游 1000521「积分耗尽」走同一条已验证通道。
 //
-// 阈值 100 是扣子专用：单次对话消耗远高于兄弟插件的按次计费套餐，
-// 沿用 20 只够一两次请求，起不到缓冲作用。
+// 阈值 10 是扣子专用（2026-11-08 由 200 下调）：扣子每日签到只有 60 分，
+// 200 的红线会把刚领完签到的正常号整批误禁，10 只兜真正跑不动一次对话的残血号。
 
 // seedAccounts 在临时账号目录写入多个账号并返回落盘结果。
 //
@@ -66,31 +66,31 @@ func seedAccounts(t *testing.T, remaining ...int64) []*StoredAuth {
 	return out
 }
 
-// TestMinRoutableCreditsDefaultIs100 锁定扣子的红线默认值是 100。
+// TestMinRoutableCreditsDefaultIs10 锁定扣子的红线默认值是 10。
 //
 // 这个常量与兄弟插件的 20 不同，是产品判断而不是笔误，
 // 用例把它钉住以防后续有人「统一口径」时误改回去。
-// 2026-10-25 由 100 上调为 200（用户裁定）：每日签到固定发 1500 分，
-// 200 的分界能挡住残血号又不会误杀刚领到签到的号。
+// 2026-11-08 由 200 下调为 10（用户裁定）：扣子每日签到改为 60 分，
+// 200 的红线远高于单日额度，会把刚领完签到、正在消耗的号整批误禁。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-25；改动原因：红线默认值调整为 200。
-func TestMinRoutableCreditsDefaultIs200(t *testing.T) {
-	if defaultMinRoutableCredits != 200 {
-		t.Fatalf("扣子积分红线默认值应为 200，实际 %d", defaultMinRoutableCredits)
+// 最近修改时间：2026-11-08；改动原因：红线默认值随签到额度下调为 10。
+func TestMinRoutableCreditsDefaultIs10(t *testing.T) {
+	if defaultMinRoutableCredits != 10 {
+		t.Fatalf("扣子积分红线默认值应为 10，实际 %d", defaultMinRoutableCredits)
 	}
-	if got := defaultConfig().MinRoutableCredits; got == nil || *got != 200 {
-		t.Fatalf("默认配置的红线应为 200，实际 %v", got)
+	if got := defaultConfig().MinRoutableCredits; got == nil || *got != 10 {
+		t.Fatalf("默认配置的红线应为 10，实际 %v", got)
 	}
 }
 
 // TestIsCreditsBelowRedlineBoundary 验证红线边界的精确判据。
 //
 // 等于红线视为可用（`<` 而不是 `<=`）：红线是「低于此值不再放行」，
-// 恰好 200 分仍应承载请求。
+// 恰好 10 分仍应承载请求。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-25；改动原因：边界值随默认红线调整为 200。
+// 最近修改时间：2026-11-08；改动原因：边界值随默认红线调整为 10。
 func TestIsCreditsBelowRedlineBoundary(t *testing.T) {
 	dir := t.TempDir()
 	setAccountsDir(dir)
@@ -99,12 +99,12 @@ func TestIsCreditsBelowRedlineBoundary(t *testing.T) {
 	resetCreditCache()
 
 	sa := &StoredAuth{AuthID: "coze-boundary"}
-	storeCreditSummary(sa, &creditSummary{Remain: 200, Total: 1000})
+	storeCreditSummary(sa, &creditSummary{Remain: 10, Total: 1000})
 
 	if isCreditsBelowRedline(sa.AuthID) {
 		t.Fatal("恰好等于红线不应判定为低额")
 	}
-	storeCreditSummary(sa, &creditSummary{Remain: 199, Total: 1000})
+	storeCreditSummary(sa, &creditSummary{Remain: 9, Total: 1000})
 	if !isCreditsBelowRedline(sa.AuthID) {
 		t.Fatal("低于红线必须判定为低额")
 	}
@@ -147,7 +147,7 @@ func TestUnknownCreditsAreTreatedAsRoutable(t *testing.T) {
 // [参数] t: 测试上下文。
 // [返回] 无。
 func TestVerifyAccountCreditsSwitchesWhenPoolHasHealthy(t *testing.T) {
-	accounts := seedAccounts(t, 30, 5000)
+	accounts := seedAccounts(t, 5, 5000)
 	low := accounts[0]
 
 	errVerify := verifyAccountCredits(low)
@@ -170,7 +170,7 @@ func TestVerifyAccountCreditsSwitchesWhenPoolHasHealthy(t *testing.T) {
 // [参数] t: 测试上下文。
 // [返回] 无。
 func TestVerifyAccountCreditsAllowsWhenAllLow(t *testing.T) {
-	accounts := seedAccounts(t, 30, 50)
+	accounts := seedAccounts(t, 5, 8)
 	if errVerify := verifyAccountCredits(accounts[0]); errVerify != nil {
 		t.Fatalf("全池低额时必须放行，实际报错：%v", errVerify)
 	}
@@ -180,7 +180,7 @@ func TestVerifyAccountCreditsAllowsWhenAllLow(t *testing.T) {
 // [参数] t: 测试上下文。
 // [返回] 无。
 func TestVerifyAccountCreditsAllowsHealthyAccount(t *testing.T) {
-	accounts := seedAccounts(t, 5000, 30)
+	accounts := seedAccounts(t, 5000, 5)
 	if errVerify := verifyAccountCredits(accounts[0]); errVerify != nil {
 		t.Fatalf("达标账号不应被拦截：%v", errVerify)
 	}
@@ -193,7 +193,7 @@ func TestVerifyAccountCreditsAllowsHealthyAccount(t *testing.T) {
 // [参数] t: 测试上下文。
 // [返回] 无。
 func TestVerifyAccountCreditsIgnoresDisabledAndExpired(t *testing.T) {
-	accounts := seedAccounts(t, 30, 5000)
+	accounts := seedAccounts(t, 5, 5000)
 	// 把唯一的健康号改坏：禁用 + 会话失效。
 	dir := getAccountsDir()
 	healthy := accounts[1]
@@ -214,7 +214,7 @@ func TestVerifyAccountCreditsIgnoresDisabledAndExpired(t *testing.T) {
 // [参数] t: 测试上下文。
 // [返回] 无。
 func TestCreditsBelowRedlineErrorCarries403(t *testing.T) {
-	errCredits := &creditsBelowRedlineError{remain: 12, redline: 100}
+	errCredits := &creditsBelowRedlineError{remain: 3, redline: 10}
 	if errCredits.StatusCode() != http.StatusForbidden {
 		t.Fatalf("必须返回 403，实际 %d", errCredits.StatusCode())
 	}
@@ -225,7 +225,7 @@ func TestCreditsBelowRedlineErrorCarries403(t *testing.T) {
 
 // TestConfigurePluginParsesRoutableCredits 验证配置项解析与零值语义。
 //
-// 关键点：缺省键保持默认 100，显式 0 才是关闭闸门的 kill switch。
+// 关键点：缺省键保持默认 10，显式 0 才是关闭闸门的 kill switch。
 // 若用值类型，两种情况都会塌缩成 0，闸门会静默失效。
 // [参数] t: 测试上下文。
 // [返回] 无。
@@ -238,8 +238,8 @@ func TestConfigurePluginParsesRoutableCredits(t *testing.T) {
 	if errConfigure := configurePlugin(payload); errConfigure != nil {
 		t.Fatalf("配置解析失败：%v", errConfigure)
 	}
-	if got := loadedMinRoutableCredits(); got != 200 {
-		t.Fatalf("缺省键应保持默认 200，实际 %d", got)
+	if got := loadedMinRoutableCredits(); got != 10 {
+		t.Fatalf("缺省键应保持默认 10，实际 %d", got)
 	}
 
 	// 显式配置：覆盖默认值。
@@ -436,7 +436,7 @@ func TestRunCreditSweepPublishesPoolSnapshot(t *testing.T) {
 	// 第二轮：low 掉到红线以下，快照必须跟着更新。
 	deps.fetch = func(sa *StoredAuth) (*creditSummary, error) {
 		if sa.AuthID == low.AuthID {
-			return &creditSummary{Total: 10000, Remain: 10}, nil
+			return &creditSummary{Total: 10000, Remain: 5}, nil
 		}
 		return &creditSummary{Total: 10000, Remain: 9000}, nil
 	}
@@ -453,7 +453,7 @@ func TestRunCreditSweepPublishesPoolSnapshot(t *testing.T) {
 // [参数] t: 测试上下文。
 // [返回] 无。
 func TestHandleExecExecuteRejectsLowCreditBeforeUpstream(t *testing.T) {
-	accounts := seedAccounts(t, 30, 5000)
+	accounts := seedAccounts(t, 5, 5000)
 	low := accounts[0]
 
 	env := newExecutorTestEnv(t, func(conn *websocket.Conn) {})
@@ -498,7 +498,7 @@ func TestHandleExecExecuteRejectsLowCreditBeforeUpstream(t *testing.T) {
 // [参数] t: 测试上下文。
 // [返回] 无。
 func TestVerifyAccountCreditsUsesMemorySnapshotOnly(t *testing.T) {
-	accounts := seedAccounts(t, 30, 5000)
+	accounts := seedAccounts(t, 5, 5000)
 	low := accounts[0]
 
 	// 抹掉磁盘账号：宿主 RPC 与目录扫描都会失败或返回空。
@@ -639,7 +639,7 @@ func TestVerifyAccountCreditsAllowsWhenAnyAccountUnknown(t *testing.T) {
 // [参数] t: 测试上下文。
 // [返回] 无。
 func TestVerifyAccountCreditsAllowsResidualCredits(t *testing.T) {
-	accounts := seedAccounts(t, 30, 50)
+	accounts := seedAccounts(t, 5, 8)
 
 	if errVerify := verifyAccountCredits(accounts[0]); errVerify != nil {
 		t.Fatalf("全池残血但非零时必须放行，实际报错：%v", errVerify)

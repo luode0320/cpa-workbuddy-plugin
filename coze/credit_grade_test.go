@@ -12,7 +12,7 @@ import (
 //
 // 每条用例都对应一个会真实造成事故的路径：
 //   - 阈值边界错位会把健康号误禁；
-//   - 签到与查余额顺序颠倒会把刚领到 1500 分的号误禁一小时；
+//   - 签到与查余额顺序颠倒会把刚领到当日签到积分的号误禁一小时；
 //   - 未知积分当 0 会把整池写死；
 //   - 归属判定缺失会违背用户手动禁用的意图。
 //
@@ -65,25 +65,25 @@ func reloadAuth(t *testing.T, path string) *StoredAuth {
 	return &sa
 }
 
-// TestCreditTierForBoundary 锁定阈值边界：199 禁用、200 正常、201 正常。
+// TestCreditTierForBoundary 锁定阈值边界：9 禁用、10 正常、11 正常。
 //
 // 必须严格小于：等于红线仍应承载请求。把 `<` 写成 `<=` 会把
-// 恰好 200 分的号误禁，这类越界只能靠边界用例发现。
+// 恰好 10 分的号误禁，这类越界只能靠边界用例发现。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-25；改动原因：新增，阈值边界锚定。
+// 最近修改时间：2026-11-08；改动原因：边界值随默认红线下调为 10。
 func TestCreditTierForBoundary(t *testing.T) {
 	cases := []struct {
 		remain  int64
 		redline int64
 		want    creditTier
 	}{
-		{199, 200, creditTierDisabled},
-		{200, 200, creditTierNormal},
-		{201, 200, creditTierNormal},
-		{0, 200, creditTierDisabled},
+		{9, 10, creditTierDisabled},
+		{10, 10, creditTierNormal},
+		{11, 10, creditTierNormal},
+		{0, 10, creditTierDisabled},
 		// 未知积分不降级。
-		{creditUnknownRemain, 200, creditTierUnknown},
+		{creditUnknownRemain, 10, creditTierUnknown},
 		// kill switch：红线为 0 时任何余额都不禁用。
 		{0, 0, creditTierNormal},
 		{10, 0, creditTierNormal},
@@ -103,9 +103,9 @@ func TestGradeDisablesBelowRedline(t *testing.T) {
 	t.Cleanup(setMinRoutableCredits(defaultMinRoutableCredits))
 	sa := newGradeFixture(t, "coze-low")
 
-	tier := gradeCreditsForAccount(sa, &creditSummary{Remain: 199, Total: 1500})
+	tier := gradeCreditsForAccount(sa, &creditSummary{Remain: 9, Total: 60})
 	if tier != creditTierDisabled {
-		t.Fatalf("199 分应判 disabled，实际 %v", tier)
+		t.Fatalf("9 分应判 disabled，实际 %v", tier)
 	}
 	stored := reloadAuth(t, sa.PhysicalPath)
 	if !stored.Disabled {
@@ -125,16 +125,16 @@ func TestGradeDisablesBelowRedline(t *testing.T) {
 // TestGradeKeepsAccountAtRedline 验证恰好等于红线不禁用。
 //
 // 这是「< 而不是 <=」的落盘级验证：分级判定正确但写盘条件写错，
-// 同样会把 200 分的号禁掉。
+// 同样会把 10 分的号禁掉。
 // [参数] t: 测试上下文。
 // [返回] 无。
 // 最近修改时间：2026-10-25；改动原因：新增，边界防越界。
 func TestGradeKeepsAccountAtRedline(t *testing.T) {
-	sa := newGradeFixture(t, "coze-eq200")
+	sa := newGradeFixture(t, "coze-eq10")
 
-	tier := gradeCreditsForAccount(sa, &creditSummary{Remain: 200, Total: 1500})
+	tier := gradeCreditsForAccount(sa, &creditSummary{Remain: 10, Total: 60})
 	if tier != creditTierNormal {
-		t.Fatalf("恰好 200 分应判 normal，实际 %v", tier)
+		t.Fatalf("恰好 10 分应判 normal，实际 %v", tier)
 	}
 	if stored := reloadAuth(t, sa.PhysicalPath); stored.Disabled {
 		t.Fatal("恰好等于红线不得禁用")
@@ -186,17 +186,17 @@ func TestGradeKillSwitchDisablesNothing(t *testing.T) {
 // 最近修改时间：2026-10-25；改动原因：新增，自动解禁主路径。
 func TestGradeReenablesWhenCreditsRecover(t *testing.T) {
 	sa := newGradeFixture(t, "coze-recover")
-	gradeCreditsForAccount(sa, &creditSummary{Remain: 10, Total: 1500})
+	gradeCreditsForAccount(sa, &creditSummary{Remain: 5, Total: 60})
 	if stored := reloadAuth(t, sa.PhysicalPath); !stored.Disabled {
 		t.Fatal("前置条件失败：应先被禁用")
 	}
 
-	// 模拟次日签到到账 1500 分。
+	// 模拟次日签到到账 60 分。
 	reloaded := reloadAuth(t, sa.PhysicalPath)
 	reloaded.PhysicalPath = sa.PhysicalPath
-	tier := gradeCreditsForAccount(reloaded, &creditSummary{Remain: 1500, Total: 1500})
+	tier := gradeCreditsForAccount(reloaded, &creditSummary{Remain: 60, Total: 60})
 	if tier != creditTierNormal {
-		t.Fatalf("1500 分应判 normal，实际 %v", tier)
+		t.Fatalf("60 分应判 normal，实际 %v", tier)
 	}
 	stored := reloadAuth(t, sa.PhysicalPath)
 	if stored.Disabled {
@@ -241,7 +241,7 @@ func TestGradeNeverReenablesManualDisabled(t *testing.T) {
 // 最近修改时间：2026-10-25；改动原因：新增，防串权第二半。
 func TestManualDisableClearsLowCreditMarkers(t *testing.T) {
 	sa := newGradeFixture(t, "coze-takeover")
-	gradeCreditsForAccount(sa, &creditSummary{Remain: 10, Total: 1500})
+	gradeCreditsForAccount(sa, &creditSummary{Remain: 5, Total: 60})
 	if stored := reloadAuth(t, sa.PhysicalPath); !stored.LowCreditDisable {
 		t.Fatal("前置条件失败：应先被自动禁用")
 	}
@@ -272,7 +272,7 @@ func TestManualDisableClearsLowCreditMarkers(t *testing.T) {
 // 最近修改时间：2026-10-25；改动原因：新增，人工启用语义。
 func TestManualEnableClearsLowCreditMarkers(t *testing.T) {
 	sa := newGradeFixture(t, "coze-enable")
-	gradeCreditsForAccount(sa, &creditSummary{Remain: 10, Total: 1500})
+	gradeCreditsForAccount(sa, &creditSummary{Remain: 5, Total: 60})
 
 	if errMutate := setAccountDisabled(sa.AuthID, false); errMutate != nil {
 		t.Fatalf("手动启用失败：%v", errMutate)
@@ -306,7 +306,7 @@ func TestGradeRespectsConcurrentManualDisable(t *testing.T) {
 	}
 
 	// 巡检用旧视图分级：锁内重读后应看到「已禁用」，直接放弃写入。
-	gradeCreditsForAccount(&stale, &creditSummary{Remain: 10, Total: 1500})
+	gradeCreditsForAccount(&stale, &creditSummary{Remain: 5, Total: 60})
 
 	stored := reloadAuth(t, sa.PhysicalPath)
 	if !stored.Disabled {
@@ -403,7 +403,7 @@ func TestCreditSnapshotRecordPreservesDailyClaim(t *testing.T) {
 func TestBuildAccountSummaryMissingSnapshotIsUnknown(t *testing.T) {
 	acc := &StoredAuth{AuthID: "coze-nosnap", CookieHeader: "sessionid=x"}
 
-	got := buildAccountSummary(acc, map[string]creditSnapshotEntry{}, 200)
+	got := buildAccountSummary(acc, map[string]creditSnapshotEntry{}, 10)
 	if got.Credits != nil {
 		t.Fatalf("无快照时 Credits 必须为 nil，实际 %+v", got.Credits)
 	}
@@ -426,21 +426,21 @@ func TestBuildAccountSummaryUsesSnapshotAndRedline(t *testing.T) {
 	acc := &StoredAuth{AuthID: "coze-view", CookieHeader: "sessionid=x"}
 	snapshots := map[string]creditSnapshotEntry{
 		creditSnapshotKey(acc.AuthID): {
-			Remain:    150,
-			FetchedAt: "2026-10-25T00:00:00Z",
-			Credits:   &creditSummary{Total: 1500, Remain: 150},
+			Remain:    5,
+			FetchedAt: "2026-11-08T00:00:00Z",
+			Credits:   &creditSummary{Total: 60, Remain: 5},
 		},
 	}
 
-	got := buildAccountSummary(acc, snapshots, 200)
-	if got.Credits == nil || got.Credits.Remain != 150 {
+	got := buildAccountSummary(acc, snapshots, 10)
+	if got.Credits == nil || got.Credits.Remain != 5 {
 		t.Fatalf("视图应带上快照积分，实际 %+v", got.Credits)
 	}
 	if got.CreditTier != creditTierDisabled.String() {
-		t.Fatalf("150 分应判 disabled，实际 %q", got.CreditTier)
+		t.Fatalf("5 分应判 disabled，实际 %q", got.CreditTier)
 	}
 	if !got.LowCredits {
-		t.Fatal("150 分低于红线 200，必须标记低额")
+		t.Fatal("5 分低于红线 10，必须标记低额")
 	}
 	if got.SnapshotAt == "" {
 		t.Fatal("视图必须暴露快照时刻，供面板显示新鲜度")

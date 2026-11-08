@@ -523,17 +523,20 @@ function creditHTML(a){
     expLine+='<div class="credit-err">过期明细不可用：'+esc(c.detail_error)+'</div>';
   }
   const when=c.fetched_at?('快照 '+esc(fmtCST(c.fetched_at))):'';
-  // 每日登录积分是 1500/天且当天不领即归零，徽标必须与余额同区显示，
+  // 每日登录积分当天不领即归零，徽标必须与余额同区显示，
   // 否则用户只看到 0 分却不知道为什么，也不知道点哪里补。
+  // 额度以上游为准（曾为 1500，2026-11-08 起为 60），面板不写死数字，
+  // 只在服务端回报 amount 时展示，避免额度变动后文案与事实打架。
   const daily=a&&a.daily_credit;
   let dailyLine="";
   if(daily){
     if(daily.error){
       dailyLine='<div class="credit-meta" style="margin-top:6px;color:var(--warn)">今日登录积分领取失败：'+esc(daily.error)+'</div>';
     }else if(daily.claimed_today){
-      dailyLine='<div class="credit-meta" style="margin-top:6px;color:var(--ok)">今日登录积分已领 · '+esc(fmtCST(daily.claimed_at))+'</div>';
+      const amt=(typeof daily.amount==="number"&&daily.amount>0)?('（'+esc(daily.amount)+' 分）'):'';
+      dailyLine='<div class="credit-meta" style="margin-top:6px;color:var(--ok)">今日登录积分已领'+amt+' · '+esc(fmtCST(daily.claimed_at))+'</div>';
     }else{
-      dailyLine='<div class="credit-meta" style="margin-top:6px;color:var(--warn)">今日登录积分未领（1500 分 · 当天过期）</div>';
+      dailyLine='<div class="credit-meta" style="margin-top:6px;color:var(--warn)">今日登录积分未领（当天不领即过期）</div>';
     }
   }
   return '<div class="credit">'+
@@ -567,7 +570,7 @@ function card(a){
     rows.join("")+
     '<div class="actions">'+
     '<button data-act="test" data-id="'+id+'" title="校验登录态与模型可见性">测试</button>'+
-    '<button data-act="claimDaily" data-id="'+id+'" title="立即领取当日登录积分（1500 分，当天不领即过期）">领今日积分</button>'+
+    '<button data-act="claimDaily" data-id="'+id+'" title="立即领取当日登录积分（当天不领即过期）">领今日积分</button>'+
     '<button class="sec" data-act="credits" data-id="'+id+'" title="强制刷新积分并落盘（不等待下一轮巡检）">刷新积分</button>'+
     '<button class="sec" data-act="renew" data-id="'+id+'" title="立即刷新会话 Cookie">续期</button>'+
     '<button class="sec" data-act="'+toggleAct+'" data-id="'+id+'">'+toggleText+'</button>'+

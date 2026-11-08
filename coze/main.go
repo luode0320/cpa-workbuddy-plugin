@@ -65,7 +65,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.7.4"
+	version      = "0.7.5"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -287,7 +287,7 @@ func cozeRegistration() registration {
 				{Name: "timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "上游请求超时（秒）。"},
 				{Name: "renew_interval_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "会话续期巡检间隔（秒）。"},
 				{Name: "credit_refresh_interval_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "积分巡检间隔（秒），默认 3600。巡检同时完成当日签到领取、积分落盘与低额分级。"},
-				{Name: "min_routable_credits", Type: pluginapi.ConfigFieldTypeInteger, Description: "积分红线，默认 200 分：剩余积分低于该值的账号不承载新请求，并被自动写盘禁用；积分回到线上后自动解禁。填 0 关闭整个机制。"},
+				{Name: "min_routable_credits", Type: pluginapi.ConfigFieldTypeInteger, Description: "积分红线，默认 10 分：剩余积分低于该值的账号不承载新请求，并被自动写盘禁用；积分回到线上后自动解禁。填 0 关闭整个机制。"},
 				{Name: "cpa_management_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：CPA 宿主管理 API 地址，默认 http://127.0.0.1:8317。仅当宿主管理端口非默认时才需要填。"},
 				{Name: "cpa_management_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：CPA 宿主管理密钥。填写后，低额自动禁用/解禁会同时调用宿主 auth-files/status 接口写入路由真相源。留空则只做物理文件写盘（旧行为）。也可用环境变量 WB_CPA_MANAGEMENT_KEY。"},
 			},
