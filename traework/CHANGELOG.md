@@ -1,5 +1,22 @@
 # TraeWork Plugin Changelog
 
+## 0.5.27
+
+### Fix - 探活逐账号检查实例所有权，消除多实例并行探测
+
+- 背景: 2026-11-08 观测到 traework 探活周期虽为 10 分钟，但 45 分钟内 9 个账号
+  各被探活 **59 次**（约每分钟 13 次），远超周期；同期 workbuddy 的 11128 渠道
+  拦截日志 18 条也来自探活逐账号触发。
+- 根因: 0.5.22 的实例守卫只在 10 分钟 tick 边界检查一次。旧实例被取代后最长还要
+  再跑满一轮探测；而 `failoverTickMu` 是**进程内** mutex，旧实例与新实例各有
+  独立副本，TryLock 完全无法跨实例去重。多个热重载留下的实例因此长期并行探测。
+- 修复: `runFailoverProbeTick` 的逐账号循环内加实例所有权检查 —— 旧实例在探到
+  下一个账号前即退出，不再整轮打完。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增
+  `probe_guard_test.go` 两组用例（被取代实例零探测、活跃实例正常探测）；
+  变异移除守卫后测试失败（实际探测 2 个账号），恢复后通过。
+- 涉及文件: `failover_disable.go`、`instance_guard.go`、`probe_guard_test.go`（新增）。
+
 ## 0.5.26
 
 ### Fix - 面板发起的登录会话不携带授权链接，桥接页看不到复制入口

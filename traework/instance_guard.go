@@ -40,8 +40,13 @@ func claimPluginInstance() {
 }
 
 // pluginInstanceSuperseded 报告本实例是否已被更新实例取代。
+//
+// 跨实例去重的唯一手段：宿主热重载不调用 plugin_shutdown，旧实例的 goroutine
+// 不会自行结束；进程内 mutex 对旧实例无效（旧实例有自己的副本），因此必须
+// 借助进程外可见的标记文件。
 // [返回] true 表示应停止常驻循环。
 // 最近修改时间：2026-11-08 20:30:00；改动原因：新增。
+// 最近修改时间：2026-11-08 22:10:00；改动原因：补充跨实例语义说明。
 func pluginInstanceSuperseded() bool {
 	claimPluginInstance()
 	raw, err := os.ReadFile(pluginInstancePath())

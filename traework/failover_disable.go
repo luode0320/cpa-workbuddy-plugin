@@ -874,6 +874,14 @@ func runFailoverProbeTick(resolve func(string) *traeAuth) int {
 	targets := failoverProbeTargets()
 	probed := 0
 	for _, tc := range targets {
+		// 逐账号检查实例所有权：旧实例若只等到 10 分钟 tick 边界才自查，
+		// 这期间仍会整轮探测（生产实测 9 个实例并行、每账号每 10 分钟多探一轮）。
+		// 逐账号检查实例所有权：旧实例若只等到 10 分钟 tick 边界才自查，
+		// 这期间仍会整轮探测（生产实测 9 个实例并行、每账号每 10 分钟多探一轮）。
+		if pluginInstanceSuperseded() {
+			log.Printf("[traework] failover probe tick stopped: superseded by newer instance")
+			return probed
+		}
 		sa := resolve(tc.authIndex)
 		if sa == nil {
 			continue
