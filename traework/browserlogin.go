@@ -1041,9 +1041,20 @@ func handleBrowserLoginBridge(req pluginapi.ManagementRequest) pluginapi.Managem
 }
 
 // browserLoginBridgePage renders the bridge page HTML. session != nil →
-// guide mode (login link + paste form); outcome != nil → result mode.
+// guide mode (login link + copyable authorization link + paste form);
+// outcome != nil → result mode.
 // JS notes: no markdown backticks anywhere (they truncate Go raw strings);
 // the paste parser runs client-side so the page never needs POST.
+// [参数]
+//   - state: 授权会话标识。
+//   - session: 待完成的登录会话（为 nil 时走结果 / 错误分支）。
+//   - outcome: 登录结果快照（为 nil 时走引导页）。
+//   - detail: 不可继续登录的提示文案（非空时只渲染错误页）。
+//
+// [返回]
+//   - pluginapi.ManagementResponse: 渲染后的 HTML 页面（200）。
+//
+// 最近修改时间：2026-11-08 19:35:00；改动原因：新增授权链接复制按钮与只读链接框。
 func browserLoginBridgePage(state string, session *browserLoginSession, outcome *browserLoginOutcome, detail string) pluginapi.ManagementResponse {
 	var b strings.Builder
 	b.WriteString("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">")
@@ -1058,6 +1069,10 @@ func browserLoginBridgePage(state string, session *browserLoginSession, outcome 
 	b.WriteString("textarea{width:100%;box-sizing:border-box;min-height:96px;border:1px solid #d0d7de;border-radius:8px;padding:10px;font-size:13px;font-family:monospace;margin-top:8px}")
 	b.WriteString("button{margin-top:10px;background:#2563eb;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:14px;cursor:pointer}")
 	b.WriteString("button:hover{background:#1d4ed8}a{color:#2563eb}")
+	b.WriteString(".sec{background:#fff;color:#2563eb;border:1px solid #2563eb}")
+	b.WriteString(".sec:hover{background:#eff6ff}")
+	b.WriteString(".row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}")
+	b.WriteString(".row button{margin-top:0}")
 	b.WriteString(".ok{background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px 14px;margin-top:16px;font-size:14px;color:#166534}")
 	b.WriteString(".err{background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 14px;margin-top:16px;font-size:14px;color:#991b1b}")
 	b.WriteString(".note{background:#fff7e6;border:1px solid #ffd591;border-radius:8px;padding:10px 14px;margin-top:16px;font-size:13px;color:#874d00}")
@@ -1087,7 +1102,15 @@ func browserLoginBridgePage(state string, session *browserLoginSession, outcome 
 		b.WriteString("<li>复制浏览器<strong>地址栏的完整网址</strong>，粘贴到下面的输入框，点击「完成登录」</li>")
 		b.WriteString("</ol>")
 		if authURL != "" {
-			b.WriteString("<p><a href=\"" + htmlEscape(authURL) + "\" target=\"_blank\" rel=\"noopener noreferrer\"><button type=\"button\">打开 Trae 登录页面</button></a></p>")
+			// 打开与复制按钮同行，便于在其它窗口或设备上完成登录。
+			b.WriteString("<p class=\"row\">")
+			b.WriteString("<a href=\"" + htmlEscape(authURL) + "\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"display:inline-flex;align-items:center\"><button type=\"button\">打开 Trae 登录页面</button></a>")
+			b.WriteString("<button type=\"button\" id=\"copyAuthUrl\" class=\"sec\">复制授权链接</button>")
+			b.WriteString("<span id=\"copyAuthUrlHint\" style=\"font-size:13px;color:#57606a\"></span>")
+			b.WriteString("</p>")
+			// 授权链接只读展示，供自动复制失败时手动选中。
+			b.WriteString("<p style=\"margin-top:10px;font-size:13px;color:#57606a\">授权链接（换浏览器或换设备时手动复制）：</p>")
+			b.WriteString("<textarea id=\"authUrlBox\" readonly style=\"min-height:64px\">" + htmlEscape(authURL) + "</textarea>")
 		}
 		b.WriteString("<p><label for=\"cb\"><strong>粘贴回调地址</strong>（包含 authCodeInfo 或 code 参数的完整网址）：</label></p>")
 		b.WriteString("<textarea id=\"cb\" placeholder=\"http://127.0.0.1:8317/authorize?isRedirect=true&amp;scope=solo&amp;authCodeInfo=%7B...%7D...\"></textarea>")
@@ -1110,6 +1133,26 @@ func browserLoginBridgePage(state string, session *browserLoginSession, outcome 
 		b.WriteString(" u.search=u.search+'&url='+encodeURIComponent(v);")
 		b.WriteString(" location.href=u.href;")
 		b.WriteString("});")
+		// 授权链接复制：优先剪贴板 API，失败回退 execCommand。
+		b.WriteString("var cbtn=document.getElementById('copyAuthUrl'),chint=document.getElementById('copyAuthUrlHint');")
+		b.WriteString("if(cbtn){cbtn.addEventListener('click',function(){")
+		b.WriteString(" var box=document.getElementById('authUrlBox');")
+		b.WriteString(" var text=box?(box.value||''):'';")
+		b.WriteString(" if(!text){chint.textContent='暂无授权链接';return;}")
+		b.WriteString(" var ok=function(){chint.textContent='已复制，可粘贴到其它窗口或设备打开';};")
+		b.WriteString(" var fail=function(){chint.textContent='自动复制失败，请手动选中上方链接复制';};")
+		b.WriteString(" if(navigator.clipboard&&navigator.clipboard.writeText){")
+		b.WriteString("  navigator.clipboard.writeText(text).then(ok).catch(function(){fallbackCopy(text,ok,fail)});")
+		b.WriteString(" }else{fallbackCopy(text,ok,fail)}")
+		b.WriteString("});}")
+		b.WriteString("function fallbackCopy(text,ok,fail){")
+		b.WriteString(" var tmp=document.createElement('textarea');")
+		b.WriteString(" tmp.value=text;tmp.style.position='fixed';tmp.style.opacity='0';")
+		b.WriteString(" document.body.appendChild(tmp);tmp.select();")
+		b.WriteString(" var done=false;try{done=document.execCommand('copy')}catch(e){done=false}")
+		b.WriteString(" document.body.removeChild(tmp);")
+		b.WriteString(" if(done){ok()}else{fail()}")
+		b.WriteString("}")
 		b.WriteString("})();")
 		b.WriteString("</script>")
 	}
