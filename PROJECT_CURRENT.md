@@ -35,6 +35,15 @@
 ## 活动会话进展摘要
 
 
+- 会话（2026-11-08 20:35-21:10，接续上条）：**traework 首字延迟根因分析 + 两个超时缺口（qoderwork 0.13.15 已发布 / traework 超时随 0.5.23）**：
+  - **观测结论**：12h feed 中 traework `minimax-m3.1-flash` TTFT p50 5578ms / p90 26580ms / p99 55150ms，`Doubao-Seed-2.1-Pro` p50 6875ms / p90 30332ms；对照 workbuddy `deepseek-v4.1-flash` p50 2464ms / p90 3185ms。
+  - **归因（三项证据）**：① 大 input prefill 是主因（大 input 归一化 29.3 vs 22.4 ms/1k tokens，仅差 31%）；② 长尾异常（100k-200k 区间 p50 3433ms 但 p90 16349ms，workbuddy 同区间 p90 仅 3240ms）；③ 慢请求（TTFT>15s，占 14.6%）input 中位 36 万 tokens、集中在 17-19 点高峰、集中在随后因配额耗尽被禁用的账号。
+  - **判定：不是插件缺陷**。慢速账号机制以全池中位数为基准，全池同时变慢时基准同步抬高，未误判是正确行为。
+  - **参考开源实现**：`connectedgraph/trae2api-web`（Go，50 stars）用 `ResponseHeaderTimeout: 120s`，且流式客户端**不设** `http.Client.Timeout`（注释：否则超长 SSE 会被切断），其单测显式断言 `StreamHTTP.Timeout == 0`。
+  - **据此修复**：qoderwork `sharedHTTPClient` 补 10s/10s/60s + 禁 h2（0.13.15 已发布部署）；traework `sharedHTTPClient` 补 10s/10s/**120s** + 禁 h2，流式 `ResponseHeaderTimeout` 30s→**120s**（已提交 `4ec9805`，随并行会话的 0.5.23 发布）。
+  - **文档**：`doc/4-bugs/2026-11-08_210000_traework首字延迟与生成耗时偏高根因分析.md`。
+  - **并行会话协调**：traework 0.5.23 与 `browserlogin.go` 由并行会话推进，本轮只提交 `host_bridge.go` + `upstream_timeout_test.go`，未动 VERSION/CHANGELOG。
+
 - 会话（2026-11-08 19:58-20:35，接续上条）：**继续观测 → 探活放大与 HTTP 超时缺口（traework 0.5.22 / qoderwork 0.13.15）**：
   - **观测**：45 分钟窗口 11128 宿主扇出 34 条**全部在 19:43 部署前**（部署后 0）；112 与 param invalid 均为 0。feed 部署后仅 traework 107 行（失败 3 条，status=0、latency 61~73s）。
   - **缺陷四（qoderwork 缺分阶段超时）**：`sharedHTTPClient` 只有 `Timeout: 120s`，缺拨号/TLS 握手/响应头三道前置闸门；workbuddy 0.21.14 已按同口径补齐。修复后 Transport 补 10s/10s/60s 并置空 `TLSNextProto` 真正禁 h2。
