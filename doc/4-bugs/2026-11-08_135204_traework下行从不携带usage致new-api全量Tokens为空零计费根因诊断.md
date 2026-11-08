@@ -256,9 +256,65 @@ OpenAI 约定流式用量只出现在最后一帧，中间帧带 usage 会被客
 5. **变异反证要覆盖每一条路径。** 异步路径首轮 SURVIVED 证明：只测 collect 路径的
    变异体是无效证据。
 
-## 7. 未验证项
+## 7. 生产验收（0.5.19 热重载后）
 
-- new-api 侧对该 usage 帧的实际记账结果（发布热重载后需抓生产日志确认；
-  本机 new-api 无等价环境）。
+### 7.1 部署证据
+
+| 项 | 结果 |
+|---|---|
+| 发布 commit | `563d8bd`（代码）→ `d303204`（registry） |
+| CI run | `42453870678`，Release job success（`darwin/arm64` 的 macos-14 runner 连续三次被 GitHub 侧取消，与 0.5.18 同样只有 5 平台，属既有常态） |
+| Release | `traework-provider-v0.5.19`，6 assets（checksums + 5 平台 zip），`ALL CHECKSUMS OK` |
+| 产物内含新代码 | linux/amd64 `.so` 内可检出 `prompt_tokens_details` / `completion_tokens_details` / `cache_creation_tokens` / `total_tokens` / `reasoning_tokens` 五个字面量 |
+| 远端 registry | raw URL HTTP 200，`version=0.5.19`、5 artifacts、sha256/size 全对齐 |
+| 生产 install | `POST /v0/management/plugin-store/traework-provider/install?version=0.5.19&source=source-636fa01121af` → `status=installed, restart_required=false` |
+| 落盘哈希 | `/usr/local/src/cli-proxy-api/plugins/linux/amd64/traework-provider-v0.5.19.so` = `27d74d19…`，与本地 release zip 内 `.so` **逐字节一致** |
+| 热重载 | `14:51:20 plugin hot reloaded plugin_id=traework-provider active_version=0.5.19 retired_version=0.5.18` |
+| 容器 | `cli-proxy-api Up 23 hours` —— **未重启** |
+
+### 7.2 流式响应实测（直连 CPA）
+
+`POST http://127.0.0.1:8317/v1/chat/completions`，`model=doubao-seed-2.1-pro`、`stream=true`，
+380,644 字节响应，末尾三帧：
+
+```
+data: {... "delta":{"content":"。"} ...}
+data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],...,"usage":{"completion_tokens":1854,"completion_tokens_details":{"reasoning_tokens":1491},"prompt_tokens":53,"total_tokens":1907}}
+data: [DONE]
+```
+
+**usage 帧数 = 1，位置在终止帧**（中间正文帧零 usage，符合契约）。
+`completion_tokens_details.reasoning_tokens=1491` 证明 §4.2 的嵌套落位在真实上游数据上生效。
+
+### 7.3 new-api 记账实测
+
+经 new-api（`127.0.0.1:5566`，channel 4）同模型请求后，`oneapi.logs` 新记录：
+
+| id | 时间 | prompt_tokens | completion_tokens | quota | is_stream |
+|---|---|---|---|---|---|
+| 530506 | 15:26:46 | 53 | 843 | 87 | 1 |
+| 530519 | 15:28:12 | 55 | 560 | 59 | 0 |
+
+**两条均非零**（流式 + 非流式路径同时验证），quota 正常产生。
+对照 CPA 自家 feed 同刻记录：`in=53 out=843 reason=795 total=896` / `in=55 out=560 reason=525 total=615`
+—— 下行 usage 与 feed 用量数值同源。
+
+### 7.4 修复前后量化对比
+
+同一模型 `doubao-seed-2.1-pro`，以热重载时刻 `14:51:20` 为界：
+
+| 区间 | 记录数 | 零值记录 | 零值占比 |
+|---|---|---|---|
+| 修复前 13:00:00 – 14:51:20 | 57 | 40 | **70.2%** |
+| 修复后 14:51:20 起 | 2 | 0 | **0%** |
+
+用户截图的三条（13:21:36 / 13:22:23 / 13:23:08）正在「零值」集合内，与根因判断完全吻合。
+
+## 8. 未验证项
+
+- 修复前那 40 条零值记录无法回溯补记（当时插件未下发 usage，数据从未存在）。
+- `darwin_arm64` 平台产物缺失：GitHub macos-14 runner 连续被取消，与 0.5.18 同状态；
+  不影响生产（生产为 linux/amd64）。
+- 估算兜底路径（上游未发 `token_usage` 时）在生产未观测到触发，数值仍为近似值。
 - 上游 `token_usage` 是否覆盖所有 Trae 上游模型（仅对 `doubao-seed-2.1-pro` 与
-  `qwen3.8-max` 观察过）；未覆盖时走字符估算，数值是近似值而非真实计费依据。
+  `qwen3.8-max` 观察过）。
