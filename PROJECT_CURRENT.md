@@ -34,6 +34,14 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-08 13:32-20:00）：**生产流量持续观测 + 三个跨凭据扇出缺陷（workbuddy 0.21.15→0.21.18 / qoderwork 0.13.12-0.13.14 / traework 0.5.20）**：
+  - **观测**：24h feed 8433 行，qoderwork 失败率 **47.26%**（354/749，其中 294 条 HTTP 200 零 token）、workbuddy 2.90%、traework 6.53%。
+  - **缺陷一（qoderwork 112 无权益）**：上游 upstream 200: 112: {"pricingUrl":...} 全无判据，宿主逐个换凭据。修复：isEntitlementRequiredFailure + 归入 isModelLevelFailure + 换号短路 + 信封 400。生产 112 已归零。
+  - **缺陷二（workbuddy 11128 渠道拦截）**：单请求扇出 **17 个账号**、3h 内 62 请求 583 次失败。三轮定位后才触及根因：envelopeError 结构体**根本没有 http_status 字段**，0.21.15/0.21.16 加的状态码是死代码。0.21.18 补字段后生效。
+  - **缺陷三（traework 模型名大小写）**：官方展示名 MiniMax-M3.1-Flash → 上游 param is invalid → 整池轮询。修复：traeCanonicalModelNames 精确回填 + param is invalid 归入请求形状。修复后展示名与内部代号均返回 200。
+  - **方法论沉淀**：宿主流式 emit 通道（rpcStreamEmitRequest）**没有 http_status**，流式错误只能靠「错误文本本身是合法 JSON 且 error.code 命中 clienterror.requestFaultCodes」触发 IsRequestFault，据此新增 requestScopedErrorBody。
+  - **验证**：三插件 cgo-shim build/vet/test 全绿；变异验证 6 轮全部 KILLED（其中一轮暴露冗余分支，已补断言加固）。
+  - **生产终态**：workbuddy 0.21.18 / qoderwork 0.13.14 / traework 0.5.21 全部 installed+enabled+eff=true，sha256 与 release zip 逐字节一致，均走热重载未重启容器。
 - 会话（2026-11-08 19:00-19:20，接续上条）：**同族缺陷扩散修复（workbuddy 0.21.17 / workbuddy-ai 0.1.39 / qoderwork 0.13.14 / qoder-ai 0.1.39）**：
   - **触发**：traework 修复后长窗口复核（1468 条 / 1410 成功 / **0 条成功却零用量**）干净，但 new-api 仍有零星「上游没有返回计费信息」。归因发现**同一份 `cleanChunkJSON` 在四个兄弟插件里仍是修复前版本**（qwenwork 2026-10-18 已修，其余漏改），会把「空 delta + 顶层 usage」的终止计费帧整帧丢弃。当日 feed 佐证：workbuddy 有 6 条成功但零用量（05:35–05:48Z，均为 deepseek-v4.1-flash）。
   - **修复**：该分支内先查 `obj["usage"]`，存在则 `continue` 保留整帧（空 function_call / tool_calls 仍清理），否则维持原丢弃语义。
