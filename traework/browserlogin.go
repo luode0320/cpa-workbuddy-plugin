@@ -400,6 +400,7 @@ func handleBrowserLoginStart(req pluginapi.ManagementRequest) map[string]any {
 	q.Set("hide_saas_login", "true")
 	q.Set("channel_name", "common")
 
+	authURL := browserLoginHost + "/authorization?" + q.Encode()
 	browserLoginSessions.Store(state, &browserLoginSession{
 		Verifier:    verifier,
 		DeviceID:    deviceID,
@@ -407,11 +408,12 @@ func handleBrowserLoginStart(req pluginapi.ManagementRequest) map[string]any {
 		DevicePem:   pemKey,
 		RedirectURI: origin,
 		CreatedAt:   time.Now(),
+		AuthURL:     authURL,
 	})
 	log.Printf("[browser-login] session started: state=%s callback=%s", stateLogPrefix(state), truncateRedacted(callbackURL, 120))
 	return map[string]any{
 		"ok":       true,
-		"auth_url": browserLoginHost + "/authorization?" + q.Encode(),
+		"auth_url": authURL,
 		// The panel remembers this and sends it back on /browser-login/submit:
 		// the Trae authorization page never echoes state on the bounce
 		// (2026-09-05 live probe), so this is the primary session locator.

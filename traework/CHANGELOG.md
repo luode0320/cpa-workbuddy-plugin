@@ -1,5 +1,20 @@
 # TraeWork Plugin Changelog
 
+## 0.5.26
+
+### Fix - 面板发起的登录会话不携带授权链接，桥接页看不到复制入口
+
+- 背景（2026-11-08 生产验收）: 0.5.23 上线后，宿主弹窗路径的桥接页能看到复制按钮，
+  但从 CLIProxyAPI 管理页发起的登录，桥接页只渲染 JS 不渲染按钮与只读框。
+- 根因: `handleBrowserLoginStart`（面板路径）创建会话时没有填 `AuthURL`，
+  而 `browserLoginBridgePage` 按 `authURL` 非空决定是否渲染复制按钮与只读链接框，
+  于是整块 UI 被跳过。宿主路径的 `mintBrowserLoginSession` 一直有填，所以只有面板路径受影响。
+- 修复: `handleBrowserLoginStart` 抽出 `authURL` 变量，同时写入会话 `AuthURL` 与返回的 `auth_url`，
+  两条路径的会话形状一致。
+- 验证: `cgo-shim-build.py traework` build+vet+test 全绿；
+  新增 `TestBrowserLoginStartStoresAuthURLOnSession` 锁定面板路径会话携带授权链接；
+  生产 `plugin-store install` 后复核桥接页引导态含复制按钮与只读框。
+- 影响范围: 仅 traework 插件的浏览器登录会话创建与桥接页渲染。
 ## 0.5.25
 
 ### Fix - 解析 OpenAI 标准形态的 prompt cache 字段（前向兼容）

@@ -13,15 +13,15 @@ import (
 //
 // 锁定四件事：
 //   - 复制按钮与只读链接框同时存在（只有按钮没有全文，自动复制失败时仍要手动选中）；
-//   - 链接全文落在只读框里，复制逻辑从框内取值（页面里不另存第二份副本）；
-//   - 剪贴板主通道与 execCommand 兜底都在（宿主页面可能不是安全上下文）；
+//   - 链接全文落在只读框里，复制逻辑从框内取值（页面里不另存第二份可复制副本）；
+//   - 剪贴板主通道与 execCommand 兜底都要在（宿主页面可能不是安全上下文）；
 //   - 复制脚本不带 markdown 反引号（会截断 Go 原始字符串）。
 
 // TestBridgePageOffersCopyableAuthURL 验证引导页给出可复制的授权链接。
 //
 // [参数] 无。
 // [返回] 无。
-// 最近修改时间：2026-11-08 19:25:00；改动原因：新增，锁定桥接页复制授权链接能力。
+// 最近修改时间：2026-11-08 21:25:00；改动原因：新增，锁定桥接页复制授权链接能力。
 func TestBridgePageOffersCopyableAuthURL(t *testing.T) {
 	// 1. 构造一个带授权链接的会话，走引导页渲染分支。
 	authURL := "https://www.trae.cn/authorization?state=trw-copy&code_challenge=abc"
@@ -65,7 +65,7 @@ func TestBridgePageOffersCopyableAuthURL(t *testing.T) {
 	if !strings.Contains(boxTail, escaped) {
 		t.Fatal("read-only box must carry the full authorization URL")
 	}
-	if strings.Contains(boxTail[:strings.Index(boxTail, "</textarea>")], escaped) == false {
+	if !strings.Contains(boxTail[:strings.Index(boxTail, "</textarea>")], escaped) {
 		t.Fatal("authorization URL must live inside the read-only box")
 	}
 
@@ -86,5 +86,40 @@ func TestBridgePageOffersCopyableAuthURL(t *testing.T) {
 	// 5. 页面 JS 不能含 markdown 反引号（会截断 Go 原始字符串）。
 	if strings.Contains(html, "`") {
 		t.Fatal("bridge page HTML must not contain backticks")
+	}
+}
+
+// TestBrowserLoginStartStoresAuthURLOnSession 验证面板发起的会话也带上授权链接。
+//
+// 面板路径的 start 会话此前没填 AuthURL，桥接页按 authURL 非空决定是否渲染
+// 复制按钮，导致面板发起的登录在页面上看不到复制入口。
+//
+// [参数] 无。
+// [返回] 无。
+// 最近修改时间：2026-11-08 21:25:00；改动原因：新增，锁定面板路径会话携带授权链接。
+func TestBrowserLoginStartStoresAuthURLOnSession(t *testing.T) {
+	resp := handleBrowserLoginStart(pluginapi.ManagementRequest{
+		Method: "POST",
+		Path:   "/v0/management/plugins/" + providerName + "/browser-login/start",
+		Body:   []byte(`{"redirect_origin":"https://cpa.example.com"}`),
+	})
+	state, _ := resp["state"].(string)
+	if state == "" {
+		t.Fatalf("start must return a state: %v", resp)
+	}
+	t.Cleanup(func() { browserLoginSessions.Delete(state) })
+
+	authURL, _ := resp["auth_url"].(string)
+	if !strings.HasPrefix(authURL, browserLoginHost+"/authorization?") {
+		t.Fatalf("auth_url %q must be the Trae authorization page", authURL)
+	}
+
+	sRaw, ok := browserLoginSessions.Load(state)
+	if !ok {
+		t.Fatal("session missing under returned state")
+	}
+	s := sRaw.(*browserLoginSession)
+	if s.AuthURL != authURL {
+		t.Fatalf("session AuthURL %q must equal the returned auth_url %q", s.AuthURL, authURL)
 	}
 }
