@@ -12,6 +12,12 @@ import (
 
 const httpStatusPaymentRequired = 402
 
+// httpStatusBadRequest 是请求级与模型级失败对外的状态码。
+//
+// 选 400：宿主 IsRequestFault(400) 为真，判定为请求级故障后既不冷却凭据
+// 也不跨凭据轮转；402/429 会被宿主视为额度/限流并继续换号。
+const httpStatusBadRequest = 400
+
 // defaultMinRoutableCredits 是安全缓冲额度红线默认值（20 点）。
 // 剩余额度低于该阈值的账号不再承载新请求，防止推理中途断开。
 const defaultMinRoutableCredits int64 = 20
@@ -326,7 +332,30 @@ func isModelLevelFailure(body string) bool {
 			return true
 		}
 	}
-	return false
+	// 套餐限制：{"code":1005,"message":"","extra":"{\"plan\":5}"}。
+	// 生产实测该码对 kimi-k3.1-pro 在全部 25 个样本上命中，换账号同样失败。
+	return isPlanRestrictedFailure(body)
+}
+
+// planRestrictedBusinessCode 是上游「当前套餐不含该模型」的业务码。
+const planRestrictedBusinessCode = "1005"
+
+// isPlanRestrictedFailure 判定上游是否因套餐等级拒绝该模型。
+//
+// 该失败与账号健康度无关：换任何账号都返回同一码，统计上 25/25 全失败。
+// [参数] body：上游响应正文或错误文本。
+// [返回] true 表示属套餐限制，不应记账、不应换号。
+// 最近修改时间：2026-11-08 21:00:00；改动原因：新增，1005 未被识别致单请求扇出 12 个账号。
+func isPlanRestrictedFailure(body string) bool {
+	if strings.TrimSpace(body) == "" {
+		return false
+	}
+	// 业务码只在 JSON 键值位出现，避免与正文里的普通数字混淆。
+	if !containsBusinessCode(body, planRestrictedBusinessCode) &&
+		!strings.Contains(body, "\"code\":"+planRestrictedBusinessCode) {
+		return false
+	}
+	return strings.Contains(body, "plan") || strings.Contains(body, "套餐")
 }
 
 // AlreadyCheckedIn reports whether the body indicates the account already

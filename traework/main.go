@@ -247,6 +247,9 @@ type envelope struct {
 type envelopeError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// HTTPStatus 供宿主 statusCodeFromError 识别失败类别；缺该字段时恒得 0，
+	// 宿主会把任何失败都当成可重试，从而逐个凭据轮转。
+	HTTPStatus int `json:"http_status,omitempty"`
 }
 
 type identifierResponse struct {
@@ -278,7 +281,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.5.23"
+var version = "0.5.24"
 
 func wbRegistration() registration {
 	return registration{
@@ -435,8 +438,27 @@ func okEnvelope(v any) ([]byte, error) {
 }
 
 func errorEnvelope(code, message string) []byte {
-	raw, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{Code: code, Message: message}})
+	raw, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{
+		Code:       code,
+		Message:    message,
+		HTTPStatus: envelopeHTTPStatusForError(message),
+	}})
 	return raw
+}
+
+// envelopeHTTPStatusForError 决定失败信封对外携带的 HTTP 状态码。
+//
+// 宿主 statusCodeFromError 只认 StatusCode() int 数字接口，纯文本错误恒得 0，
+// isRequestInvalidError 判否后逐个凭据重试。请求级与模型级失败据此带上 400，
+// 让宿主按请求级故障处理，不再换凭据。
+// [参数] message：失败信封的错误文本。
+// [返回] 请求级/模型级失败返回 400；其余返回 0，保持既有行为。
+// 最近修改时间：2026-11-08 21:00:00；改动原因：新增，堵住单请求扇出整池。
+func envelopeHTTPStatusForError(message string) int {
+	if isRequestShapeErrorBody(message) || isModelLevelFailure(message) {
+		return httpStatusBadRequest
+	}
+	return 0
 }
 
 func writeResponse(response *C.cliproxy_buffer, raw []byte) {

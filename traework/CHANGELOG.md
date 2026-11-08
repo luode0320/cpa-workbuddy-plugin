@@ -1,5 +1,27 @@
 # TraeWork Plugin Changelog
 
+## 0.5.24
+
+### Fix - 识别套餐限制（1005）并补失败信封状态码，堵住单请求换遍整池
+
+- 背景: 2026-11-08 生产观测发现 `kimi-k3.1-pro` 全部 25 个样本返回
+  `upstream 200: {"code":1005,"message":"","extra":"{\"plan\":5}"}`；单请求换遍
+  **12 个账号**（requestId 8e169c66 / 9887bf54 各撞 12 个 auth）。
+- 根因双层:
+  1. `isModelLevelFailure` 的 marker 表不含 1005，套餐限制被当成账号级失败；
+  2. `envelopeError` 结构体**没有 `http_status` 字段**，宿主 `statusCodeFromError`
+     恒得 0、`isRequestInvalidError` 判否，于是逐个凭据轮转。
+- 修复:
+  - 新增 `isPlanRestrictedFailure`（认 `"code":1005` / `"code": 1005` 且正文含
+    `plan` 或 `套餐`），并在 `isModelLevelFailure` 末尾接入 —— 不记账、不换号。
+  - `envelopeError` 补 `HTTPStatus int \`json:"http_status,omitempty"\``，
+    `errorEnvelope` 用新增的 `envelopeHTTPStatusForError` 赋值：请求形状错误与
+    模型级失败返回 **400**，让宿主按请求级故障处理。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增
+  `plan_restricted_test.go` 三组用例（1005 识别边界、归入模型级、信封状态码）；
+  两轮变异（移除 1005 判据 / 移除信封赋值）均被捕获。
+- 涉及文件: `policy.go`、`main.go`、`plan_restricted_test.go`（新增）。
+
 ## 0.5.23
 
 ### Feature - 浏览器登录桥接页新增「复制授权链接」
