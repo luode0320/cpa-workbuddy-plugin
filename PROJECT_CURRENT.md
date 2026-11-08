@@ -34,6 +34,16 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-08 15:29-19:05）：**coze 积分红线默认 200 → 10（coze-provider 0.7.5，已发布生产）**：
+  - 诉求：用户报「coze 现在的积分每天是 60 签到积分」，要求把「低额自动禁用」改成低于 10 才禁用。
+  - 根因：`coze/policy.go` 的 `defaultMinRoutableCredits` 仍是 2026-10-25 定的 **200**，而扣子每日签到额度已降为 **60 分**——红线远高于单日额度，「刚领完签到、正常消耗」的号会在下一轮巡检被整批误禁再靠次日签到解禁。
+  - 改动：默认值 200 → 10；配置字段描述 / README 配置表 / 红线段落 / 注释同步；**面板签到徽标与按钮去掉 1500 硬编码**，改读服务端 `daily_credit.amount`；`daily_credit.go` 注释改为「额度随官方活动变化，不得当固定常量」。共 9 文件（+91/−74）。
+  - 测试：边界 199/200/201 → 9/10/11，低额夹具压到 10 以下，恢复用例改 60 分口径，用例改名 `TestMinRoutableCreditsDefaultIs10`；**变异反证**（改 11）触发 4 条 FAIL；cgo-shim build/vet/test 全绿、gofmt 干净、面板 2 段脚本语法 PASS。
+  - 发布：`eee6065`（代码）→ CI `42460399359` 首轮 darwin/arm64 取消致 Release skipped → `allow_partial=true` 重跑 `42460686443` Release success（5 平台）→ `452f5e7`（registry 0.7.5）→ 资产 URL 200、raw registry 与本地一致 → 生产 install `restart_required=false`，落盘 `.so` sha256 `74546d74…4b87068` 与 release zip 逐字节一致，**容器未重启**。
+  - 生产验收：`/v0/management/plugins` coze `registered/enabled/effective_enabled` 全 true、配置字段描述已是「默认 10 分」；`/accounts` 返回 `redline=10 / disabled=0 / low_credits=0 / sweep.refreshed=23 / re_enabled=23`；宿主 `/v0/management/auth-files` 23 个 coze 文件 `disabled=false / status=active`。
+  - **新增生产事实**：扣子每日签到额度确认为 **60 分**（账号余额 `remain=60`、`daily_credit.amount=60`、明细 `{"title":"每日登录","remaining":60}`）。历史记录里的 1500 分口径已作废。
+  - 遗留：darwin/arm64 平台缺件（registry 已移除该槽位）；红线 10 的业务适配性需生产观察禁用频次再定。
+
 - 会话（2026-11-08 13:24-15:36）：**traework 0.5.19 —— 下行帧从不携带 usage 致 new-api Tokens 全为 "-" 零计费**（详见 `doc/4-bugs/2026-11-08_135204_traework下行从不携带usage致new-api全量Tokens为空零计费根因诊断.md`）：
   - 诉求：new-api 使用日志里 `doubao-seed-2.1-pro` 的 Tokens 列全是 `-`，问是否出错；随后授权「执行并经过完整测试后再上线」。
   - **定性**：请求本身全部成功（首字 14~39s 是思考型模型正常行为），是**计费载体缺席**。`doubao-seed-2.1-pro` 的真实承接方是 **traework-provider**（`upstream.go` 的 `traeConfigNameAliases` 映射到 `Doubao-Seed-2.1-Pro`），不是已下线的 doubao 插件。

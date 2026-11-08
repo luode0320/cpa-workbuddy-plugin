@@ -21,6 +21,8 @@
 
 ### 插件架构事实
 
+- **扣子每日签到额度 = 60 分（2026-11-08 生产实测，取代历史 1500 分口径）**：账号余额 `remain=60`、`daily_credit.amount=60`、明细 `{"title":"每日登录","remaining":60}`、`claimed_today=true`。**推论（铁律）**：任何「扣子积分阈值」类常量必须显著低于单日签到额度，否则「刚领完签到、正常消耗」的号会被整批判低额并写盘禁用，再靠次日签到解禁，账号在路由里进进出出。coze 的 `min_routable_credits` 默认值已因此从 200 下调到 **10**（coze-provider 0.7.5）。上游额度会变，**代码与面板文案不得把签到额度写死成常量**——面板已改为读服务端 `daily_credit.amount`。
+
 - **账号「失败禁用」是三源状态，任何一侧变更都必须同步（2026-11-07 workbuddy 0.21.13 定稿；同批已推广到 workbuddy-ai 0.1.38 / traework 0.5.14 / qoderwork 0.13.7）**：三源 = 宿主 `disabled`（路由真相源，经 `PATCH /v0/management/auth-files/status` 写） + 物理文档三键 `failover_disable` / `failover_disable_model` / `failover_disable_at`（探活候选枚举依据） + sidecar `data/<plugin>-failover.json`（跨重启与宿主回写的权威排除来源；workbuddy-ai 无 sidecar，只有前两源）。
   - **铁律 1**：恢复走 API 成功后**也必须落盘清三键**，否则 `disabled:false + failover_disable:true` 的幽灵标记会让探活每轮把已启用的号重新「恢复」一次，`resetCooldownState` 顺带清零连续失败计数 → 真实失败永远攒不到门限（表现为「失败不再禁用」）。
   - **铁律 2**：探活候选判据是「盘上 `disabled:true` 且带本机制标记」或「sidecar 记禁用」，**不能只看标记**；同一轮按 `auth_index` 去重。
