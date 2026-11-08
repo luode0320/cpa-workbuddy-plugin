@@ -25,8 +25,6 @@
   `VERSION`、`accountFailover_test.go`、`failover_disable_switch_test.go`（新增）、
   `test/traework/failover_state_test.go`。
 
-## 0.5.29
-
 ### Fix - 伪完成判定输入阈值 200 → 20000 字符，消除长任务短答误判
 
 - 背景: 2026-11-09 生产观测到 traework `deepseek-v4.1-flash` 失败率 **16.8%**
