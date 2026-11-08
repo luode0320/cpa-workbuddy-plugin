@@ -321,6 +321,8 @@ type envelope struct {
 type envelopeError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// HTTPStatus 供宿主 statusCodeFromError 识别失败类别；缺该字段时恒得 0。
+	HTTPStatus int `json:"http_status,omitempty"`
 }
 
 type identifierResponse struct {
@@ -352,7 +354,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.21.17"
+var version = "0.21.18"
 
 func wbRegistration() registration {
 	return registration{
@@ -1021,7 +1023,11 @@ func okEnvelope(v any) ([]byte, error) {
 }
 
 func errorEnvelope(code, message string) []byte {
-	raw, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{Code: code, Message: message}})
+	raw, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{
+		Code:       code,
+		Message:    message,
+		HTTPStatus: envelopeHTTPStatusForError(message),
+	}})
 	return raw
 }
 

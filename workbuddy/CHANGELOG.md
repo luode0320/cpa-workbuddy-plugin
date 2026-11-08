@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.21.18
+
+### Fix - 失败信封补 http_status 字段，上游拦截不再跨凭据扇出（真正的根因）
+
+- 背景: 0.21.15 / 0.21.16 两次修复后，生产复验仍观测到单请求扇出 17 个账号
+  （19:24 两个请求各 17 次 `upstream execution failed`），日志中错误文本始终
+  是未包装的 `upstream 400: {"code":11128,...}`，说明前两次改动没有实际生效。
+- 根因: `envelopeError` 结构体只有 `code` + `message` 两个字段，
+  **没有 http_status**。`errorEnvelope` 因此从未把状态码写进信封，
+  宿主 `statusCodeFromError` 恒得 0、`isRequestInvalidError` 判否，
+  `executeMixedOnce` 逐个凭据重试。0.21.15 加在
+  `envelopeHTTPStatusForError` 里的 400 分支等于死代码。
+- 修复: `envelopeError` 补 `HTTPStatus int \`json:"http_status,omitempty"\``，
+  `errorEnvelope` 用 `envelopeHTTPStatusForError(message)` 赋值。
+  既有的 11128 → 400 判据随之生效，宿主按请求级故障处理，不再换凭据。
+- 验证: `cgo-shim-build.py workbuddy` build / vet / test 全绿；新增
+  `TestErrorEnvelopeCarriesChannelBlockStatus`（信封带 400、普通失败不带）；
+  变异移除 HTTPStatus 赋值后测试失败。生产 .so `strings` 校验确认含新代码。
+- 涉及文件: `main.go`、`stream_error_envelope_test.go`。
+
 ## 0.21.17
 
 ### Fix - cleanChunkJSON 整帧丢弃「空 delta + 顶层 usage」的终止计费帧，致下游 Tokens 记 "-" 零计费

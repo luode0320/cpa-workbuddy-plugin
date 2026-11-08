@@ -84,6 +84,42 @@ func TestMarshalStreamErrorEnvelopeCarriesResetStatus(t *testing.T) {
 	}
 }
 
+// TestErrorEnvelopeCarriesChannelBlockStatus 锁定非流式失败信封的状态码通道。
+//
+// 生产缺陷回归（2026-11-08）：envelopeError 只有 code + message，没有
+// http_status 字段，宿主 statusCodeFromError 恒得 0，isRequestInvalidError
+// 判否，于是逐个凭据重试——实测单请求扇出 17 个账号。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-08 19:30:00；改动原因：新增，堵住非流式路径缺状态码的回归。
+func TestErrorEnvelopeCarriesChannelBlockStatus(t *testing.T) {
+	blocked := `upstream 400: {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}`
+	raw := errorEnvelope("plugin_error", blocked)
+	var probe struct {
+		OK    bool `json:"ok"`
+		Error struct {
+			Code       string `json:"code"`
+			Message    string `json:"message"`
+			HTTPStatus int    `json:"http_status"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		t.Fatalf("unmarshal envelope: %v (raw=%s)", err, raw)
+	}
+	if probe.OK {
+		t.Fatal("failure envelope must not be ok")
+	}
+	if probe.Error.HTTPStatus != httpStatusBadRequest {
+		t.Fatalf("http_status = %d, want %d", probe.Error.HTTPStatus, httpStatusBadRequest)
+	}
+
+	// 普通失败不得携带状态码，避免改变既有分类。
+	plain := errorEnvelope("plugin_error", "upstream 500: internal error")
+	if strings.Contains(string(plain), "http_status") {
+		t.Fatalf("plain failure must omit http_status: %s", plain)
+	}
+}
+
 // TestMarshalStreamErrorEnvelopeChannelBlockJSON 锁定流式通道的上游拦截承载方式。
 //
 // 宿主流式 emit 只传纯文本 error，取不到 http_status；请求级判定因此必须靠
