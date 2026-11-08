@@ -1,5 +1,55 @@
 # TraeWork Plugin Changelog
 
+## 0.5.19
+
+### Fix - 流式与非流式下行从不携带 usage，new-api 使用日志 Tokens 显示 "-"、该段流量零计费
+
+- 背景（2026-11-08 生产实证）: new-api「使用日志」里 traework 的 `doubao-seed-2.1-pro`
+  三条记录（13:21:36 / 13:22:23 / 13:23:08）请求本身全部成功（首字 14.4s / 34.2s / 39.0s），
+  但 **Tokens 列统一显示 `-`**，等于这段流量在 new-api 侧零计费。同页 `deepseek-v4.1-flash`
+  与 `minimax-m3.1-flash` 都有完整数字，说明不是 new-api 显示问题，而是 traework 的
+  下行帧里根本没有 `usage`。
+- 根因: 双点，都在插件侧——
+  1. `chunkDelta` / `toolCallDeltaChunk` / `completionAggregate` 三个构造函数只拼
+     `id/object/created/model/choices`，**从不写 `usage`**；四条下行路径
+     （collect 同步流、pumpTraeStream、async 协调器、非流式聚合）收尾时都用它们拼终止帧。
+  2. 上游 `token_usage` 事件其实是给了真实用量的，但三处 `case "token_usage"` 只把
+     它喂给内部 `traeUsageCollector`（写 NDJSON feed 给自己 dashboard 看），从未转成
+     下行帧。于是「自家 dashboard 有用量、下游 new-api 全零」。
+  另外关键事实：插件 executor 在宿主侧**没有** usage 观测器
+  （`StreamUsageBuffer.ObserveOpenAIStream` 只挂在 openai_compat / kimi / codex 原生
+  executor 上，不在 `pluginhost` 路径），插件不自挂 `usage` 就等于用量彻底丢失。
+  同项目 qwenwork 在 2026-10-18 踩过完全同型的坑（usage 终止帧被清理逻辑丢弃），
+  coze 则确立了「流式只在终止帧挂 usage、非流式挂响应体顶层」的契约。
+- 修复:
+  - `stream.go` 新增 `deltaChunk(requestID, model, choices, usageObj)` 统一骨架，
+    抽出具名的 `chunkFinishWithUsage(requestID, model, finishReason, detail)` 作为
+    **终止帧唯一出口**；`chunkDelta` 保留原语义并恒定不挂 usage（中间帧带 usage 会被
+    客户端按重复计费累加）。
+  - 新增 `usageToOpenAI(d usage.Detail)`：输出宿主 `hasOpenAIStyleUsageTokenFields`
+    真正采信的 `prompt_tokens` / `completion_tokens` / `total_tokens`；cached 放
+    `prompt_tokens_details.cached_tokens`、reasoning 放
+    `completion_tokens_details.reasoning_tokens`（顶层 `reasoning_tokens` 宿主不读）；
+    全零明细返回 nil——挂 `0/0/0` 会被下游当真实用量采信，比未上报更糟。
+  - 四条路径全部改走 `chunkFinishWithUsage`：`collectTraeStream` 收尾、
+    `pumpTraeStream` 收尾、`executor.go` 异步协调器收尾、`completionAggregate`
+    非流式聚合（新增第 7 参数 `usageObj` 写入响应体顶层 `usage`）。
+  - 新增 `normalizeTraeDetail`：任一桶非零即视为真实用量并补齐 total，避免上游只回
+    `completion_tokens` 时被误判为空而丢 usage。
+  - 新增 `tokensFromChars`：短输出（如 `ok` = 2 字符）按 `chars/4` 整除会估成 0，
+    进而让终止帧不挂 usage，该请求继续零计费；非空内容保底 1 token。
+  - `collectTraeStream` / `aggregateTraeCompletion` 的**返回契约保持不变**（只回上游
+    真实用量，估算兜底仍由调用方 `usageDetailForAttempt` / `usageDetailForCompletion`
+    负责），保证「下行 usage」与「feed usage」数值一致、既有调用方语义不动。
+- 测试: 新增 `usage_emit_test.go`（10 个用例）与 `usage_emit_async_test.go`（2 个用例），
+  共 12 个：标准键渲染、cached/reasoning 落位（断言顶层不得出现 `reasoning_tokens`）、
+  全零不挂 usage、total 兜底、collect 终止帧带 usage 且**中间帧不带**、上游无 token_usage
+  时按字符估算、非流式响应体带 usage、部分桶归一化、`data: ` 前缀 SSE 包装后仍可解出、
+  异步流终止帧带 usage。
+  变异验证 6 组全部 KILLED：collect 终止帧退回 `chunkDelta`、键名改成非标准、
+  异步终止帧退回 `chunkDelta`（首轮 SURVIVED，补异步用例后 KILLED）、非流式传 nil、
+  reasoning 挂顶层、全零也挂 usage。`cgo-shim-build.py traework` build/vet/test 全绿。
+
 ## 0.5.18
 
 ### Fix - stream / temperature / top_p 畸形值不再让整包解析失败（同一类扇出缺陷的其余入口）

@@ -72,7 +72,35 @@ func streamHeaders() http.Header {
 	return h
 }
 
+// deltaChunk 构造一个 chat.completion.chunk 骨架：id/object/created/model 四处
+// 固定字段集中在此，choices 与 usage 由调用方决定。正文帧、工具帧、终止帧三条
+// 下行路径共用同一骨架，避免字段形态各自漂移。
+// [参数] requestID: 逻辑请求 ID；model: 客户端模型；choices: 分片选择体；
+// usageObj: OpenAI 键形态 usage 对象，nil 表示本帧不携带用量。
+// [返回] 分片 JSON；调用方须自行保证 choices 非空。
+// 最近修改时间：2026-11-08 13:40:00；改动原因：下行 usage 帧缺失——抽出骨架
+// 让终止帧复用同一构造路径挂 usage。
+func deltaChunk(requestID, model string, choices []map[string]any, usageObj map[string]any) ([]byte, error) {
+	chunk := map[string]any{
+		"id":      "chatcmpl-" + requestID,
+		"object":  "chat.completion.chunk",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": choices,
+	}
+	if usageObj != nil {
+		chunk["usage"] = usageObj
+	}
+	return json.Marshal(chunk)
+}
+
 // chunkDelta renders one chat.completion.chunk for an output fragment.
+// 本函数只产出正文/推理帧，恒定不挂 usage：OpenAI 约定流式用量只出现在最后一帧，
+// 中间帧带 usage 会被客户端按重复计费累加（见 coze/convert.go 的同款注释）。
+// [参数] requestID: 逻辑请求 ID；model: 客户端模型；text: 正文片段；reasoning: 推理片段；
+// finishReason: 非空时转为终止帧形态（delta 置空并带 finish_reason）。
+// [返回] 分片 JSON；无内容且无终止原因时返回 (nil, nil)。
+// 最近修改时间：2026-11-08 13:40:00；改动原因：骨架抽到 deltaChunk 复用。
 func chunkDelta(requestID, model string, text, reasoning string, finishReason string) ([]byte, error) {
 	delta := map[string]any{}
 	if text != "" {
@@ -84,28 +112,81 @@ func chunkDelta(requestID, model string, text, reasoning string, finishReason st
 	if len(delta) == 0 && finishReason == "" {
 		return nil, nil
 	}
-	chunk := map[string]any{
-		"id":      "chatcmpl-" + requestID,
-		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
-		"model":   model,
-		"choices": []map[string]any{
-			{
-				"index": 0,
-				"delta": delta,
-			},
-		},
+	choice := map[string]any{
+		"index": 0,
+		"delta": delta,
 	}
 	if finishReason != "" {
-		chunk["choices"] = []map[string]any{
-			{
-				"index":         0,
-				"delta":         map[string]any{},
-				"finish_reason": finishReason,
-			},
+		choice = map[string]any{
+			"index":         0,
+			"delta":         map[string]any{},
+			"finish_reason": finishReason,
 		}
 	}
-	return json.Marshal(chunk)
+	return deltaChunk(requestID, model, []map[string]any{choice}, nil)
+}
+
+// usageToOpenAI 把内部 usage.Detail 翻成 OpenAI 标准 usage 对象（蛇形键）。
+// 宿主 internal/runtime/executor/helps/usage_helpers.go 的
+// hasOpenAIStyleUsageTokenFields 只认 total_tokens 与 prompt/completion 等标准桶
+// 字段，键名写错等于没挂；cached / reasoning 也必须放在宿主实际读取的
+// prompt_tokens_details.cached_tokens 与 completion_tokens_details.reasoning_tokens
+// 位置上。全零 Detail 返回 nil——挂一个 0/0/0 的 usage 会被下游当成真实用量采信，
+// new-api 会把该请求记成 0 token，比"未上报"更糟。
+// [参数] d: 用量明细（上游 token_usage 真实值或字符估算兜底）。
+// [返回] OpenAI 键形态 usage 对象；d 全零时返回 nil。
+// 最近修改时间：2026-11-08 13:40:00；改动原因：插件 executor 在宿主侧没有 usage
+// 观测器（ObserveOpenAIStream 不在插件路径上），用量只能由插件自己挂到 chunk 顶层。
+func usageToOpenAI(d usage.Detail) map[string]any {
+	if d.TotalTokens <= 0 && d.InputTokens <= 0 && d.OutputTokens <= 0 {
+		return nil
+	}
+	total := d.TotalTokens
+	if total <= 0 {
+		total = d.InputTokens + d.OutputTokens
+	}
+	out := map[string]any{
+		"prompt_tokens":     d.InputTokens,
+		"completion_tokens": d.OutputTokens,
+		"total_tokens":      total,
+	}
+	cached := d.CacheReadTokens
+	if cached <= 0 {
+		cached = d.CachedTokens
+	}
+	if cached > 0 || d.CacheCreationTokens > 0 {
+		details := map[string]any{}
+		if cached > 0 {
+			details["cached_tokens"] = cached
+		}
+		if d.CacheCreationTokens > 0 {
+			details["cache_creation_tokens"] = d.CacheCreationTokens
+		}
+		out["prompt_tokens_details"] = details
+	}
+	if d.ReasoningTokens > 0 {
+		out["completion_tokens_details"] = map[string]any{
+			"reasoning_tokens": d.ReasoningTokens,
+		}
+	}
+	return out
+}
+
+// chunkFinishWithUsage 渲染携带 usage 的流式终止帧，是插件下行用量数据的唯一出口。
+// 三条流式路径（collect / pump / async）收尾时都必须走这里而不是 chunkDelta，
+// 否则宿主与 new-api 拿不到 token 数：new-api 使用日志的 Tokens 列显示 "-"、
+// 该段流量零计费（2026-11-08 生产现象）。
+// [参数] requestID: 逻辑请求 ID；model: 客户端模型；finishReason: 终止原因；
+// detail: 本次请求最终用量（真实值或估算兜底）。
+// [返回] 终止分片 JSON；detail 全零时不挂 usage，仍返回形态正常的终止帧。
+// 最近修改时间：2026-11-08 13:40:00；改动原因：下行缺 usage 帧致下游零计费。
+func chunkFinishWithUsage(requestID, model, finishReason string, detail usage.Detail) ([]byte, error) {
+	choice := map[string]any{
+		"index":         0,
+		"delta":         map[string]any{},
+		"finish_reason": finishReason,
+	}
+	return deltaChunk(requestID, model, []map[string]any{choice}, usageToOpenAI(detail))
 }
 
 // traeToolCallsToOpenAI 把上游 tool_calls 数组原始 JSON（function_call 变体
@@ -190,8 +271,12 @@ func toolCallDeltaChunk(requestID, model string, calls []map[string]any) ([]byte
 // completionAggregate renders the final chat.completion for non-streaming
 // requests from the accumulated text/reasoning. toolCalls（OpenAI function 键
 // 形态，可为 nil）非空时挂到 message.tool_calls，用于非流式工具调用响应。
-// 最近修改时间：2026-09-03；改动原因：P0-③——非流式 tool_calls 承载。
-func completionAggregate(requestID, model, text, reasoning, finishReason string, toolCalls []map[string]any) ([]byte, error) {
+// [参数] requestID/model/text/reasoning/finishReason: 同前；toolCalls: 聚合后的
+// 工具调用；usageObj: OpenAI 键形态 usage 对象，nil 表示本次不挂用量。
+// [返回] 响应体 JSON。
+// 最近修改时间：2026-11-08 13:52:00；改动原因：非流式响应体同样缺 usage，
+// 宿主只从顶层 usage 取 token 数，缺失时整条请求记 0 用量。
+func completionAggregate(requestID, model, text, reasoning, finishReason string, toolCalls []map[string]any, usageObj map[string]any) ([]byte, error) {
 	msg := map[string]any{"role": "assistant", "content": text}
 	if reasoning != "" {
 		msg["reasoning_content"] = reasoning
@@ -211,6 +296,9 @@ func completionAggregate(requestID, model, text, reasoning, finishReason string,
 				"finish_reason": finishReason,
 			},
 		},
+	}
+	if usageObj != nil {
+		out["usage"] = usageObj
 	}
 	return json.Marshal(out)
 }
@@ -475,12 +563,20 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 	case terminal.hasToolCalls:
 		finish = "tool_calls"
 	}
-	raw, _ := chunkDelta(requestID, model, "", "", finish)
+	// 1. 先定稿下行用量：上游 token_usage 真实值优先，缺失时按已收集正文分片
+	//    估算（与调用方 usageDetailForAttempt 同一兜底，且终止帧 delta 为空、
+	//    不改变估算基数，故两侧数值必然一致）。必须在渲染终止帧之前算完——
+	//    终止帧一旦发出就无法补挂 usage。
+	downDetail := usageDetailForAttempt(collector.detail(), chunks)
+	// 2. 终止帧携带 usage 下发，这是宿主与 new-api 取得 token 数的唯一来源。
+	raw, _ := chunkFinishWithUsage(requestID, model, finish, downDetail)
 	if raw != nil {
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
 	}
-	log.Printf("[traework] stream collect done: request_id=%s model=%s status=%d termination=%s chunks=%d finish=%s tool_calls=%v elapsed_ms=%d",
-		requestID, model, statusCode, terminationLabel(termination), len(chunks), finish, terminal.hasToolCalls, time.Since(started).Milliseconds())
+	log.Printf("[traework] stream collect done: request_id=%s model=%s status=%d termination=%s chunks=%d finish=%s tool_calls=%v usage_in=%d usage_out=%d usage_total=%d elapsed_ms=%d",
+		requestID, model, statusCode, terminationLabel(termination), len(chunks), finish, terminal.hasToolCalls, downDetail.InputTokens, downDetail.OutputTokens, downDetail.TotalTokens, time.Since(started).Milliseconds())
+	// 返回值保持原契约：只回上游真实用量（空 Detail 表示未收到 token_usage 事件），
+	// 由调用方 usageDetailForAttempt 统一决定是否估算兜底。
 	return chunks, terminal.hasToolCalls, firstOutputAt, collector.detail(), nil
 }
 
@@ -563,13 +659,24 @@ func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte,
 			calls = append(calls, toolCalls[idx])
 		}
 	}
-	log.Printf("[traework] stream aggregate done: request_id=%s model=%s status=%d termination=%s finish=%s chars=%d tool_calls=%d elapsed_ms=%d",
-		requestID, model, statusCode, terminationLabel(termination), finish, text.Len()+reasoning.Len(), len(calls), time.Since(started).Milliseconds())
-	raw, aggErr := completionAggregate(requestID, model, text.String(), reasoning.String(), finish, calls)
+	// 1. 定稿下行用量：真实 token_usage 优先；缺失时只按正文 content 字符估算
+	//    （口径与 estimateUsageFromCompletion 严格一致，不含 reasoning），保证
+	//    响应体 usage 与调用方后续发布的 feed 用量数值相同。
+	real := collector.detail()
+	downDetail := real
+	if _, ok := normalizeTraeDetail(real); !ok {
+		toks := tokensFromChars(text.Len())
+		downDetail = usage.Detail{OutputTokens: toks, TotalTokens: toks}
+	}
+	// 2. 聚合响应体必须带顶层 usage：宿主 ParseOpenAIUsage 与非流式计费都读这里。
+	raw, aggErr := completionAggregate(requestID, model, text.String(), reasoning.String(), finish, calls, usageToOpenAI(downDetail))
 	if aggErr != nil {
 		return nil, usage.Detail{}, aggErr
 	}
-	return raw, collector.detail(), nil
+	log.Printf("[traework] stream aggregate done: request_id=%s model=%s status=%d termination=%s finish=%s chars=%d tool_calls=%d usage_in=%d usage_out=%d usage_total=%d elapsed_ms=%d",
+		requestID, model, statusCode, terminationLabel(termination), finish, text.Len()+reasoning.Len(), len(calls), downDetail.InputTokens, downDetail.OutputTokens, downDetail.TotalTokens, time.Since(started).Milliseconds())
+	// 返回值保持原契约：只回上游真实用量，估算兜底由调用方负责。
+	return raw, real, nil
 }
 
 // mergeTraeToolCall 把单个 OpenAI 键形态的调用增量并入同 index 的聚合记录：
@@ -871,29 +978,47 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 	return result
 }
 
+// normalizeTraeDetail 判断上游是否真的报过用量，并在缺失 total 时用
+// input+output 补齐。上游只给 prompt_tokens / completion_tokens 而不给
+// total_tokens 时，只按 TotalTokens>0 判断会把真实值当成"未上报"丢掉、退回
+// 字符估算，下行 usage 也就与上游实际计数不一致。
+// [参数] d: 上游 token_usage 折出的明细。
+// [返回] 归一化后的明细；三个桶全为 0 时 ok=false（视为未上报）。
+// 最近修改时间：2026-11-08 13:56:00；改动原因：下行 usage 化后必须与 feed 用量
+// 同源同值，total 缺失不能再误判为"无真实用量"。
+func normalizeTraeDetail(d usage.Detail) (usage.Detail, bool) {
+	if d.TotalTokens <= 0 && d.InputTokens <= 0 && d.OutputTokens <= 0 {
+		return usage.Detail{}, false
+	}
+	if d.TotalTokens <= 0 {
+		d.TotalTokens = d.InputTokens + d.OutputTokens
+	}
+	return d, true
+}
+
 // usageDetailForAttempt 返回一次流式尝试的用量 detail：优先上游 token_usage
-// 真实值（total>0 即视为已收到），缺失时回退 content 字符估算——旧上游 /
-// 开启即失败 / 断流早于 token_usage 事件时保持与 0.1.35 一致的估算行为。
+// 真实值，缺失时回退 content 字符估算——旧上游 / 开启即失败 / 断流早于
+// token_usage 事件时保持与 0.1.35 一致的估算行为。
 // [参数] real: 尝试带出的真实用量（可为空）；chunks: 已收集分片（估算输入）。
-// [返回] usage.Detail: 发布到 feed / CPAMP 的最终用量。
-// 最近修改时间：2026-09-04；改动原因：dashboard Token 列真实 usage 的统一兜底。
+// [返回] usage.Detail: 同时用于终止帧 usage 与 feed / CPAMP 的最终用量。
+// 最近修改时间：2026-11-08 13:56:00；改动原因：真实用量判定放宽为
+// "任一桶非零"（上游可只给 prompt/completion），并补齐 total。
 func usageDetailForAttempt(real usage.Detail, chunks []pluginapi.ExecutorStreamChunk) usage.Detail {
-	if real.TotalTokens > 0 {
-		return real
+	if d, ok := normalizeTraeDetail(real); ok {
+		return d
 	}
 	return estimateUsageFromChunks(chunks)
 }
 
 // usageDetailForCompletion 返回非流式请求的用量 detail：优先上游 token_usage
-// 真实值（total>0 即视为已收到），缺失时回退 content 字符估算——与
-// usageDetailForAttempt 的流式语义同构，保证非流式路径在旧上游 / 断流时
-// 保持与 0.1.35 一致的估算行为。
+// 真实值，缺失时回退 content 字符估算——与 usageDetailForAttempt 的流式语义
+// 同构，保证非流式路径在旧上游 / 断流时保持与 0.1.35 一致的估算行为。
 // [参数] real: 聚合带出的真实用量（可为空）；completion: OpenAI 完成响应 JSON（估算输入）。
-// [返回] usage.Detail: 发布到 feed 的最终用量。
-// 最近修改时间：2026-09-04；改动原因：dashboard Token 列真实 usage 的非流式兜底。
+// [返回] usage.Detail: 同时用于响应体 usage 与 feed 的最终用量。
+// 最近修改时间：2026-11-08 13:56:00；改动原因：与流式路径同款放宽与补齐。
 func usageDetailForCompletion(real usage.Detail, completion []byte) usage.Detail {
-	if real.TotalTokens > 0 {
-		return real
+	if d, ok := normalizeTraeDetail(real); ok {
+		return d
 	}
 	return estimateUsageFromCompletion(completion)
 }
@@ -934,7 +1059,8 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	} else if result.HasToolCalls {
 		finish = "tool_calls"
 	}
-	raw, err := chunkDelta(requestID, ctx.Model, "", "", finish)
+	// 终止帧携带 usage：本函数的 result.Chunks 尚未包含终止帧，估算基数正确。
+	raw, err := chunkFinishWithUsage(requestID, ctx.Model, finish, usageDetailForAttempt(result.Usage, result.Chunks))
 	if err == nil && raw != nil {
 		err = streamEmit(ctx.StreamID, raw)
 		if err == nil {
@@ -1007,10 +1133,10 @@ type openAIRequest struct {
 	// 采样参数用 flexFloat：客户端发 `"temperature":"abc"` 时 *float64 会让整包解析失败
 	// （2026-11-08 实证日志 14 条 temperature + 1 条 top_p）。flexFloat 自带 set 标记，
 	// 调用方用 Float() 同时拿到「值」和「客户端是否声明」。
-	Temperature flexFloat `json:"temperature"`
-	TopP        flexFloat `json:"top_p"`
-	Tools               []map[string]any `json:"tools"`
-	ToolChoice          any      `json:"tool_choice"`
+	Temperature flexFloat        `json:"temperature"`
+	TopP        flexFloat        `json:"top_p"`
+	Tools       []map[string]any `json:"tools"`
+	ToolChoice  any              `json:"tool_choice"`
 }
 
 // toTraeMessages normalizes OpenAI messages into the Trae messages shape.

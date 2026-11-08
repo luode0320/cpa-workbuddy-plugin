@@ -597,7 +597,11 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 		} else if result.HasToolCalls {
 			finish = "tool_calls"
 		}
-		finishRaw, finishErr := chunkDelta(requestID, ctx.Model, "", "", finish)
+		// 终止帧携带 usage（宿主与 new-api 唯一取数来源）：此处 result.Chunks 尚未
+		// 包含终止帧，估算基数只含正文分片；下游 publishUsage 复用同一 detail，
+		// 保证「下行 usage」与「feed usage」数值一致。
+		asyncDetail := usageDetailForAttempt(result.Usage, result.Chunks)
+		finishRaw, finishErr := chunkFinishWithUsage(requestID, ctx.Model, finish, asyncDetail)
 		if finishErr == nil && finishRaw != nil {
 			finishErr = deps.Emit(ctx.StreamID, finishRaw)
 			if finishErr == nil {
@@ -847,6 +851,22 @@ func sseFrameChunks(chunks []pluginapi.ExecutorStreamChunk) []pluginapi.Executor
 	return out
 }
 
+// tokensFromChars 把正文字符数换算成估算 token 数（chars/4），并对非空内容
+// 保底 1 token：短输出（如 "ok"）按整除会估成 0，等于"没有用量"，终止帧就不会
+// 挂 usage，该请求依旧零计费——估算的全部意义就是给下行一个非零基数。
+// [参数] chars: 正文字符数。
+// [返回] 估算 token 数；chars<=0 时为 0。
+// 最近修改时间：2026-11-08 14:14:00；改动原因：短输出估算为 0 会让终止帧丢 usage。
+func tokensFromChars(chars int) int64 {
+	if chars <= 0 {
+		return 0
+	}
+	if toks := int64(chars / 4); toks > 0 {
+		return toks
+	}
+	return 1
+}
+
 // estimateUsageFromCompletion estimates token usage from a chat.completion
 // aggregate payload (best-effort: content length / 4).
 func estimateUsageFromCompletion(completion []byte) usage.Detail {
@@ -864,7 +884,7 @@ func estimateUsageFromCompletion(completion []byte) usage.Detail {
 	for _, ch := range c.Choices {
 		chars += len(ch.Message.Content)
 	}
-	toks := int64(chars / 4)
+	toks := tokensFromChars(chars)
 	return usage.Detail{InputTokens: 0, OutputTokens: toks, TotalTokens: toks}
 }
 
@@ -886,7 +906,7 @@ func estimateUsageFromChunks(chunks []pluginapi.ExecutorStreamChunk) usage.Detai
 			chars += len(c2.Delta.Content)
 		}
 	}
-	toks := int64(chars / 4)
+	toks := tokensFromChars(chars)
 	return usage.Detail{InputTokens: 0, OutputTokens: toks, TotalTokens: toks}
 }
 
