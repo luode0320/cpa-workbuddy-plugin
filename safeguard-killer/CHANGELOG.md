@@ -2,6 +2,18 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.4
+
+### Fix - 宿主缺少 host.auth.models 回调时降级运行，不再整体失效并输出红色致命横幅
+
+- 背景: 生产宿主 commit 7417cfb（BuiltAt 2026-10-15）早于上游 2026-10-21 才引入的 `host.auth.models` 回调，插件查询各凭据模型列表时得到 `unsupported host callback host.auth.models`。旧实现把该失败当成致命错误直接上报，导致整份 host snapshot 作废：面板红横幅「路由组件读取宿主凭据列表失败」、凭据与模型列表全空。又因 `skipReason` 用 `containsString(snapshot.models[auth.ID], model)` 过滤，模型列表为空时会把所有凭据全部跳过，模型维度的分组路由实际不可用。
+- 改动: `balance.go` 的 `hostSnapshot` 新增 `modelsErr` 承载降级原因，`hostState` 只在 `host.auth.list` 失败时返回错误，模型列表失败改为返回空表继续；新增 `hostModelsUnsupported` 闩（首次发现宿主不支持即记住，避免每个 15s 缓存窗口重复打回调）、`hostCredentialModels()`、`mergedModels()`（宿主优先、管理 API 兜底补空缺）、`servesKnownModel()`（模型列表为空的凭据视为可服务任意模型）。
+- 改动: `quota.go` 新增 `ensureFallbackModels` / `fallbackModels` / `credentialModelsCall`，用既有的 `GET /v0/management/auth-files/models?name=` 异步（10 分钟 TTL、4 并发、单飞）补齐模型列表；空结果不覆盖旧表，避免把「该 provider 由代码静态定义模型」误判成「不服务任何模型」。
+- 改动: `groups.go` 的 `skipReason` 与 `refusal.go` 的 `orderByQuotaWeightedRandom` 改用 `mergedModels` + `servesKnownModel`；`types.go` 的 `uiState` 新增 `models_error`；`ui.go` 新增黄色 warn 横幅「模型列表来源降级」（`zhModelsError`），删掉 `zhHostError` 里把该情形说成致命的旧分支，凭据表在模型列表未知时标注「按可服务任意模型处理」。
+- 不动的部分: `host.auth.list` 失败仍是致命错误并显示红色横幅；后端 `skipped: ` / `failed: ` / `%s has %.0f%% left` 等被测试断言的字符串、`Menu: "Safeguard Killer"`、两个接口常量、默认提示前缀全部保持原样。
+- 验证: `python scripts/cgo-shim-build.py safeguard-killer` 的 build / vet / test 全绿；新增三个用例并单独 `-v` 复跑通过——`TestHostStateDegradesWithoutHostAuthModels`（models 回调报 unsupported 时 hostState 不报错、记录 modelsErr、闩置位）、`TestSkipReasonTreatsUnknownModelListAsUsable`（模型未知时不被跳过）、`TestBuildUIStateUsesFallbackModelLists`（管理 API 兜底列表进入 credentials 与 models，`state.error` 为空、`models_error` 有值）；重新提取 `uiHTML` 内嵌 `<script>`（36905 字节）跑 `node --check` 退出码 0。
+- 涉及文件: `safeguard-killer/balance.go`、`safeguard-killer/quota.go`、`safeguard-killer/groups.go`、`safeguard-killer/refusal.go`、`safeguard-killer/types.go`、`safeguard-killer/ui.go`、`safeguard-killer/balance_test.go`、`safeguard-killer/VERSION`、`safeguard-killer/main.go`、`safeguard-killer/CHANGELOG.md`。
+
 ## 0.1.3
 
 ### Fix - 补齐 0.1.2 遗漏的三处英文残留（凭据状态、宿主回调错误、配额窗口重置前缀）

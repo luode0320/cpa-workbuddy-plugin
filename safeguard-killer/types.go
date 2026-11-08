@@ -97,6 +97,10 @@ type uiState struct {
 	Error string `json:"error,omitempty"`
 	// ManagementError explains why quota collection is not running (no key, rejected key, IP ban).
 	ManagementError string `json:"management_error,omitempty"`
+	// ModelsError reports that the host could not supply per-credential model lists, which is a
+	// degraded-but-working state: the management API answers instead, and credentials without a
+	// list are treated as serving any model.
+	ModelsError string `json:"models_error,omitempty"`
 }
 
 // uiCredential joins a credential with its models and quota.

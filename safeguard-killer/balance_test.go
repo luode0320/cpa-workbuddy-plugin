@@ -57,6 +57,13 @@ func resetHostState(t *testing.T) {
 	hostMu.Lock()
 	hostCache = hostSnapshot{}
 	hostMu.Unlock()
+	hostModelsUnsupported.Store(false)
+	modelsFallbackMu.Lock()
+	modelsFallback = map[string][]string{}
+	modelsFallbackAt = time.Time{}
+	modelsFallbackMu.Unlock()
+	modelsRefreshing.Store(false)
+	credentialModelsCall = credentialModels
 	stateMu.Lock()
 	sessions = make(map[string]*sessionBinding)
 	groupSessions = make(map[string]*sessionBinding)
@@ -67,6 +74,8 @@ func resetHostState(t *testing.T) {
 		hostMu.Lock()
 		hostCache = hostSnapshot{}
 		hostMu.Unlock()
+		hostModelsUnsupported.Store(false)
+		credentialModelsCall = credentialModels
 	})
 }
 
@@ -202,5 +211,88 @@ func TestValidateConfigGroups(t *testing.T) {
 	cfg.IdleMinutes = -1
 	if errValidate := validateConfig(cfg); errValidate == nil {
 		t.Fatalf("validateConfig(idle_minutes=-1) = nil, want error")
+	}
+}
+
+func TestHostStateDegradesWithoutHostAuthModels(t *testing.T) {
+	hostCall = func(method string, _ any) (json.RawMessage, error) {
+		switch method {
+		case methodHostAuthList:
+			return json.Marshal(hostAuthListResponse{Files: []hostAuth{{ID: "a", AuthIndex: "1", Provider: "claude"}}})
+		case methodHostAuthModels:
+			return nil, &statusError{Code: "unsupported_callback", Message: "host callback host.auth.models: unsupported host callback host.auth.models"}
+		}
+		t.Fatalf("unexpected host call %s", method)
+		return nil, nil
+	}
+	resetHostState(t)
+	snapshot, errState := hostState(testNow)
+	if errState != nil {
+		t.Fatalf("hostState() error = %v, want a degraded snapshot", errState)
+	}
+	if len(snapshot.auths) != 1 || snapshot.auths[0].ID != "a" {
+		t.Fatalf("hostState() auths = %+v, want credential a", snapshot.auths)
+	}
+	if snapshot.modelsErr == nil || !strings.Contains(snapshot.modelsErr.Error(), "unsupported") {
+		t.Fatalf("hostState() modelsErr = %v, want the callback error", snapshot.modelsErr)
+	}
+	if !hostModelsUnsupported.Load() {
+		t.Fatalf("hostModelsUnsupported = false, want latched after the first unsupported answer")
+	}
+}
+
+func TestSkipReasonTreatsUnknownModelListAsUsable(t *testing.T) {
+	hostCall = func(method string, _ any) (json.RawMessage, error) {
+		switch method {
+		case methodHostAuthList:
+			return json.Marshal(hostAuthListResponse{Files: []hostAuth{{ID: "only-cred", AuthIndex: "1", Provider: "claude"}}})
+		case methodHostAuthModels:
+			return nil, &statusError{Code: "unsupported_callback", Message: "unsupported host callback host.auth.models"}
+		}
+		t.Fatalf("unexpected host call %s", method)
+		return nil, nil
+	}
+	resetHostState(t)
+	now := time.Now()
+	setQuota(t, "only-cred", quotaWindow{Name: "7d", Remaining: 0.5, ResetAt: now.Add(24 * time.Hour), Period: 7 * 24 * time.Hour})
+	reason, errSkip := skipReason(balanceConfig(), "any-model-at-all", now)
+	if errSkip != nil || reason != "" {
+		t.Fatalf("skipReason() = %q, %v; want usable when the model list is unknown", reason, errSkip)
+	}
+}
+
+func TestBuildUIStateUsesFallbackModelLists(t *testing.T) {
+	hostCall = func(method string, _ any) (json.RawMessage, error) {
+		switch method {
+		case methodHostAuthList:
+			return json.Marshal(hostAuthListResponse{Files: []hostAuth{{ID: "a", AuthIndex: "1", Provider: "qoderwork-provider"}}})
+		case methodHostAuthModels:
+			return nil, &statusError{Code: "unsupported_callback", Message: "unsupported host callback host.auth.models"}
+		}
+		t.Fatalf("unexpected host call %s", method)
+		return nil, nil
+	}
+	resetHostState(t)
+	setQuota(t, "a", weekly(0.5, 24*time.Hour))
+	modelsFallbackMu.Lock()
+	modelsFallback = map[string][]string{"a": {"qmodel_38max", "Auto"}}
+	modelsFallbackAt = time.Now()
+	modelsFallbackMu.Unlock()
+	previous := currentConfig()
+	activeConfig.Store(balanceConfig())
+	t.Cleanup(func() { activeConfig.Store(previous) })
+
+	state := buildUIState()
+	if state.Error != "" {
+		t.Fatalf("buildUIState() error = %q, want no fatal error", state.Error)
+	}
+	if !strings.Contains(state.ModelsError, "host.auth.models") {
+		t.Fatalf("buildUIState() models_error = %q, want the degradation note", state.ModelsError)
+	}
+	if len(state.Credentials) != 1 || len(state.Credentials[0].Models) != 2 {
+		t.Fatalf("buildUIState() credentials = %+v, want the fallback model list", state.Credentials)
+	}
+	if strings.Join(state.Models, ",") != "Auto,qmodel_38max" {
+		t.Fatalf("buildUIState() models = %v, want the sorted fallback union", state.Models)
 	}
 }

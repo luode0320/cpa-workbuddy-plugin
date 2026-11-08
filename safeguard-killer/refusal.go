@@ -134,12 +134,16 @@ func orderByQuotaWeightedRandom(cfg pluginConfig, models []string, now time.Time
 	snapshot, errHost := hostState(now)
 	if errHost == nil && cfg.ManagementKey != "" {
 		ensureQuotaFresh(cfg.ManagementKey, snapshot.auths)
+		modelMap := mergedModels(snapshot)
+		if snapshot.modelsErr != nil {
+			ensureFallbackModels(cfg.ManagementKey, snapshot.auths)
+		}
 		for i, model := range models {
 			bestRate := 0.0
 			sawCred := false
 			allExhausted := true
 			for _, auth := range snapshot.auths {
-				if auth.Disabled || !containsString(snapshot.models[auth.ID], model) {
+				if auth.Disabled || !servesKnownModel(modelMap, auth.ID, model) {
 					continue
 				}
 				sawCred = true

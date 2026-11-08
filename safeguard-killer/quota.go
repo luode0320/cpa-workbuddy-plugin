@@ -298,6 +298,82 @@ func credentialModels(key string, cred hostAuth) ([]string, error) {
 	return models, nil
 }
 
+// --- per-credential model lists without host.auth.models ---
+
+// Older hosts predate the host.auth.models callback but still serve the same data over the
+// management API, so the router keeps a model map even on those builds. The read is asynchronous
+// and cached: the scheduling path must never block on it.
+const modelsFallbackTTL = 10 * time.Minute
+
+var (
+	modelsFallbackMu sync.Mutex
+	modelsFallback   = map[string][]string{}
+	modelsFallbackAt time.Time
+	modelsRefreshing atomic.Bool
+
+	// credentialModelsCall is the management API read; unit tests replace it because they run
+	// without a host to answer on 127.0.0.1:8317.
+	credentialModelsCall = credentialModels
+)
+
+// ensureFallbackModels starts a background management read of the per-credential model lists. It
+// never blocks and never starts a second refresh while one runs.
+func ensureFallbackModels(key string, creds []hostAuth) {
+	if key == "" || len(creds) == 0 {
+		return
+	}
+	modelsFallbackMu.Lock()
+	fresh := !modelsFallbackAt.IsZero() && time.Since(modelsFallbackAt) < modelsFallbackTTL
+	modelsFallbackMu.Unlock()
+	if fresh || !modelsRefreshing.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer modelsRefreshing.Store(false)
+		slots := make(chan struct{}, quotaFetchConcurrency)
+		var wg sync.WaitGroup
+		var resultMu sync.Mutex
+		fetched := make(map[string][]string, len(creds))
+		for _, cred := range creds {
+			wg.Add(1)
+			slots <- struct{}{}
+			go func(cred hostAuth) {
+				defer wg.Done()
+				defer func() { <-slots }()
+				models, errModels := credentialModelsCall(key, cred)
+				// A provider whose models CPA defines in code answers with an empty list; leaving it
+				// out keeps the map meaning "known model list" instead of "serves nothing".
+				if errModels != nil || len(models) == 0 {
+					return
+				}
+				resultMu.Lock()
+				fetched[cred.ID] = models
+				resultMu.Unlock()
+			}(cred)
+		}
+		wg.Wait()
+		modelsFallbackMu.Lock()
+		// An entirely empty round usually means the management key or IP is blocked; keeping the
+		// previous map avoids blanking model detail, and the timestamp still rate-limits retries.
+		if len(fetched) > 0 {
+			modelsFallback = fetched
+		}
+		modelsFallbackAt = time.Now()
+		modelsFallbackMu.Unlock()
+	}()
+}
+
+// fallbackModels copies the cached management-API model lists.
+func fallbackModels() map[string][]string {
+	modelsFallbackMu.Lock()
+	defer modelsFallbackMu.Unlock()
+	out := make(map[string][]string, len(modelsFallback))
+	for id, models := range modelsFallback {
+		out[id] = models
+	}
+	return out
+}
+
 // authFileEntry is the subset of a GET /v0/management/auth-files entry the collectors need.
 type authFileEntry struct {
 	ProjectID string `json:"project_id"`

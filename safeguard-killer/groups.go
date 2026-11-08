@@ -378,9 +378,13 @@ func skipReason(cfg pluginConfig, model string, now time.Time) (string, error) {
 	if errHost != nil {
 		return "", errHost
 	}
+	modelMap := mergedModels(snapshot)
+	if snapshot.modelsErr != nil {
+		ensureFallbackModels(cfg.ManagementKey, snapshot.auths)
+	}
 	var exhausted []string
 	for _, auth := range snapshot.auths {
-		if auth.Disabled || !containsString(snapshot.models[auth.ID], model) {
+		if auth.Disabled || !servesKnownModel(modelMap, auth.ID, model) {
 			continue
 		}
 		entry := rankEntry{AuthID: auth.ID}

@@ -469,6 +469,7 @@ const uiHTML = `<!doctype html>
   <div id="errorBanner" class="banner" style="display:none;"></div>
   <div id="saveBanner" class="banner" style="display:none;"></div>
   <div id="hostErrorBanner" class="banner" style="display:none;"></div>
+  <div id="modelsWarnBanner" class="banner warn" style="display:none;"></div>
   <div id="mgmtErrorBanner" class="banner" style="display:none;"></div>
 
   <nav class="tabs" id="tabBar">
@@ -1227,11 +1228,20 @@ function zhStatus(text) {
 // 宿主回调失败返回的原文是英文技术串，展示层给出中文说明并保留原文便于排查。
 function zhHostError(text) {
   if (!text) return '';
-  if (text.indexOf('host.auth.models') >= 0 && text.toLowerCase().indexOf('unsupported') >= 0) {
-    return '宿主未实现 host.auth.models 回调，插件无法读取凭据下的模型列表；按模型维度的分组路由会全部跳过，请升级宿主或改用支持该回调的版本。原文：' + text;
-  }
   if (text.indexOf('host.auth.list') >= 0 && text.toLowerCase().indexOf('unsupported') >= 0) {
     return '宿主未实现 host.auth.list 回调，插件无法读取凭据列表。原文：' + text;
+  }
+  return text;
+}
+
+// 宿主缺少 host.auth.models 只是降级：模型列表改由管理 API 补充，未列出模型的凭据按可用处理。
+function zhModelsError(text) {
+  if (!text) return '';
+  if (text.indexOf('host.auth.models') >= 0 && text.toLowerCase().indexOf('unsupported') >= 0) {
+    return '当前宿主未实现 host.auth.models 回调，插件已改用管理 API 补充各凭据的模型列表；管理 API 也取不到模型的凭据按「可服务任意模型」处理，路由照常工作。升级宿主后可恢复由宿主直接上报模型列表。原文：' + text;
+  }
+  if (text.indexOf('host.auth.models') >= 0) {
+    return '读取宿主模型列表失败，已改用管理 API 补充；取不到模型的凭据按「可服务任意模型」处理。原文：' + text;
   }
   return text;
 }
@@ -1263,6 +1273,8 @@ function renderCredentials() {
     const name = credName(a);
     const secondary = [a.email, a.name, a.id].filter(v => v && v !== name);
     const models = c.models === null ? [] : c.models;
+    // 模型列表缺失是宿主降级态：这类凭据按「可服务任意模型」参与路由，界面上要说明语义。
+    const modelsNote = models.length > 0 ? '' : '<div class="win-meta">模型列表未知（按可服务任意模型处理）</div>';
 
     const status = [];
     if (a.disabled) status.push('<span class="badge bad">已禁用</span>');
@@ -1287,7 +1299,7 @@ function renderCredentials() {
       '<td><div class="cred-name">' + esc(name) + '</div>' +
         '<div class="win-meta"><span class="badge">' + esc(a.provider) + '</span> ' + secondary.map(esc).join(' · ') + '</div>' +
         (q.error ? '<div class="err-box">配额错误：' + esc(q.error) + '</div>' : '') +
-        (models.length > 0 ? '<div style="margin-top:6px">' + details('models:' + a.id, '模型（' + models.length + '）', '<div class="small mono">' + models.map(esc).join('<br>') + '</div>') + '</div>' : '') +
+        (models.length > 0 ? '<div style="margin-top:6px">' + details('models:' + a.id, '模型（' + models.length + '）', '<div class="small mono">' + models.map(esc).join('<br>') + '</div>') + '</div>' : modelsNote) +
       '</td>' +
       '<td class="nowrap">' + status.join(' ') + '</td>' +
       '<td>' + windows + '</td>' +
@@ -1381,6 +1393,13 @@ function render() {
     hostBanner.style.display = 'block';
   } else {
     hostBanner.style.display = 'none';
+  }
+  const modelsBanner = document.getElementById('modelsWarnBanner');
+  if (state.models_error) {
+    modelsBanner.innerHTML = '<strong>模型列表来源降级</strong>' + esc(zhModelsError(state.models_error));
+    modelsBanner.style.display = 'block';
+  } else {
+    modelsBanner.style.display = 'none';
   }
   const mgmtBanner = document.getElementById('mgmtErrorBanner');
   if (state.management_error) {
