@@ -58,6 +58,28 @@ func TestPlanRestrictedIsModelLevel(t *testing.T) {
 	}
 }
 
+// TestAccountPoolExhaustedIsRequestLevel 验证「换号预算耗尽」被宿主判为请求级。
+//
+// 生产缺陷回归（2026-11-08）：插件换号预算耗尽后的终局错误经 stream.emit 发出时
+// 不带状态码，宿主判定为可重试并继续换凭据，与插件自身的换号叠加成双重放大 ——
+// 实测单请求换遍 8 个账号后仍失败。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-08 23:35:00；改动原因：新增，堵住双重换号放大。
+func TestAccountPoolExhaustedIsRequestLevel(t *testing.T) {
+	const exhausted = "upstream account pool exhausted after 8 attempt(s)"
+	if !isAccountPoolExhausted(exhausted) {
+		t.Fatal("换号预算耗尽必须被识别")
+	}
+	if got := envelopeHTTPStatusForError(exhausted); got != httpStatusBadRequest {
+		t.Fatalf("http_status = %d, want %d", got, httpStatusBadRequest)
+	}
+	// 普通错误不携带状态码，避免改变既有分类。
+	if got := envelopeHTTPStatusForError("upstream 500: internal error"); got != 0 {
+		t.Fatalf("普通错误 http_status = %d, want 0", got)
+	}
+}
+
 // TestErrorEnvelopeCarriesRequestLevelStatus 锁定失败信封的 http_status 通道。
 //
 // 宿主 statusCodeFromError 只认数字状态码；缺该字段时任何失败都会被当成可重试，

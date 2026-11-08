@@ -1,5 +1,24 @@
 # TraeWork Plugin Changelog
 
+## 0.5.28
+
+### Fix - 「换号预算耗尽」判为请求级终局，堵住插件换号与宿主换号双重放大
+
+- 背景: 2026-11-08 生产观测到 requestId `6e896e6c` 单请求连续失败 **8 次**，
+  每个失败换一个 traework 账号（30846061→48096266→88558359→99113674→13077954→
+  18189615→12022422→99113674），最终 500 `upstream account pool exhausted after 8
+  attempt(s)`，整轮耗时 45 秒。
+- 根因: `upstream account pool exhausted` 是**插件自身**换号预算耗尽后的终局错误，
+  但它经 `emitTraeAsyncError` 发出时不带状态码，宿主 `statusCodeFromError` 得 0、
+  `isRequestInvalidError` 判否，于是宿主再换一轮凭据 —— 插件换号与宿主换号叠加，
+  把一次失败放大成 8 次上游调用。
+- 修复: 新增 `isAccountPoolExhausted`（认 `upstream account pool exhausted`），
+  `envelopeHTTPStatusForError` 据此返回 **400**，让宿主按请求级故障处理、不再换凭据。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增
+  `TestAccountPoolExhaustedIsRequestLevel`（耗尽判 400、普通错误不带状态码两条断言）；
+  变异移除该分支后测试失败。
+- 涉及文件: `policy.go`、`main.go`、`plan_restricted_test.go`。
+
 ## 0.5.27
 
 ### Fix - 探活逐账号检查实例所有权，消除多实例并行探测

@@ -315,6 +315,20 @@ func isRequestShapeErrorBody(body string) bool {
 	return false
 }
 
+// accountPoolExhaustedMarker 是「插件换号预算耗尽」的固定文案。
+const accountPoolExhaustedMarker = "upstream account pool exhausted"
+
+// isAccountPoolExhausted 判定失败是否为插件自身的换号预算耗尽。
+//
+// 该错误表示本插件已经把候选账号全部试过一遍，属于终局信号：宿主若再换一轮
+// 凭据，只会把同一个失败在整池重放（生产实测单请求换遍 8 个账号后仍失败）。
+// [参数] body：失败文本。
+// [返回] true 表示换号预算已耗尽。
+// 最近修改时间：2026-11-08 23:30:00；改动原因：新增，堵住插件换号与宿主换号双重放大。
+func isAccountPoolExhausted(body string) bool {
+	return strings.Contains(strings.ToLower(body), accountPoolExhaustedMarker)
+}
+
 // isModelLevelFailure 判定失败是否属于模型级/后端池级故障。
 //
 // 调用方必须把它放在账号级判据之前：硬额度（402 / 额度标记）与凭据类 4xx
