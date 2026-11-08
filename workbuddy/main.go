@@ -122,6 +122,8 @@ var (
 const loginStatesPruneInterval = time.Minute
 
 func init() {
+	// 先抢占实例所有权：热重载后新实例立即生效，旧实例在下一轮 tick 自行退出。
+	claimPluginInstance()
 	// Account watchdog: every interval (default 10m) it refreshes the credits
 	// snapshot for every workbuddy account and fires the scheduled active ping
 	// (the 「hi」 reasoning request) that keeps accounts warm and writes/clears
@@ -354,7 +356,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.21.20"
+var version = "0.21.21"
 
 func wbRegistration() registration {
 	return registration{

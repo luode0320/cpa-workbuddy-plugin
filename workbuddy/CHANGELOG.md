@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.21.21
+
+### Fix - 补实例所有权守卫，热重载后旧实例不再并行探活
+
+- 背景: 2026-11-08 观测到 workbuddy 单账号 `33d23f97` 在 60 分钟内被探活 **54 次**
+  （探活周期为 10 分钟，应为 6 次）；同期 18 条 11128 渠道级拦截日志也来自探活
+  逐账号触发。
+- 根因: 本插件缺少实例所有权守卫。宿主热重载只把旧 `.so` 记入 retired 列表、
+  **不调用 `plugin_shutdown`**，旧实例的 `for range ticker.C` 常驻循环不会结束；
+  而 `failoverTickMu` 是**进程内** mutex，旧实例与新实例各有独立副本，TryLock
+  完全无法跨实例去重。
+- 修复: 新增 `instance_guard.go`（与 traework 同源，标记文件名按插件区分）；
+  `init()` 抢占实例所有权；探活循环每轮与**逐账号**两处检查，被取代的旧实例
+  在探到下一个账号前即退出；外部启用对账循环同样加守卫。
+- 验证: `cgo-shim-build.py workbuddy` build / vet / test 全绿；新增
+  `instance_guard_test.go` 与 `probe_guard_test.go`（被取代实例零探测、活跃实例正常
+  探测、标记缺失放行）；变异移除逐账号守卫后测试失败。
+- 涉及文件: `instance_guard.go`（新增）、`instance_guard_test.go`（新增）、
+  `probe_guard_test.go`（新增）、`main.go`、`failover_disable.go`。
+
 ## 0.21.20
 
 ### Fix - 改用可见连字符改写 system prompt 黑名单品牌词（0.21.19 的零宽方案经上游实测无效）
