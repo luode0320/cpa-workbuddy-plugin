@@ -12,11 +12,17 @@ func resetFailover(t *testing.T) {
 	t.Helper()
 	clearFailoverStates()
 	oldEnabled := failoverActive()
+	oldDisable := failoverDisableActive()
 	t.Cleanup(func() {
 		clearFailoverStates()
 		setFailoverEnabled(oldEnabled)
+		setFailoverDisableEnabled(oldDisable)
 	})
 	setFailoverEnabled(true)
+	// 既有用例都在验证「失败 → 写盘禁用 → 探活恢复」这条历史链路，
+	// 而生产默认已关闭该层（failover_disable_enabled 默认 false）。
+	// 测试侧统一开启，关闭语义由 failover_disable_switch_test.go 单独锁定。
+	setFailoverDisableEnabled(true)
 }
 
 // assertCooldownNear verifies the account's cooldown deadline is roughly the

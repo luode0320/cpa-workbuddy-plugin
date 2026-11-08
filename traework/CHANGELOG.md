@@ -1,5 +1,30 @@
 # TraeWork Plugin Changelog
 
+## 0.5.29
+
+### Feat - 失败写盘禁用改为默认关闭，只保留错误冷却
+
+- 背景: 用户裁定 traework 不再启用「连续失败 → 写盘 disabled → 10 分钟探活恢复」
+  这一层。失败禁用会因网关抖动把健康账号摘出路由，且恢复依赖探活周期，账号池
+  规模上来后代价与误判风险都不划算；错误冷却（阶梯让位、到期自愈）足以覆盖。
+- 变更: 新增配置 `failover_disable_enabled`（**默认 false = 关闭**）。关闭态下
+  上游失败只写内存阶梯冷却与 sidecar 冷却计数：不写 `disabled`、不写
+  `failover_disable` 三键、不启动禁用探活。冷却仍按 60s×连续失败次数阶梯递增、
+  10 分钟封顶，任意一次成功立即清零。
+- 收口: 关闭态不留下历史包袱——启动后立即执行一次
+  `reconcileFailoverDisableOff`，把旧版本写下的本机制禁用逐号解除，之后每 10
+  分钟持续收敛（覆盖运行期从开启切到关闭的场景）。只认本机制标记，用户手动
+  禁用（`manual_disable`）与低额度禁用一律不碰。
+- 配置: `failover_disable_min_count` 保留但仅在开关开启时生效，描述已更新；
+  新键已登记进 `ConfigFields`，面板可见可改。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿（已在移走并行
+  stream 改动的纯发布环境验证）。新增 `failover_disable_switch_test.go` 六组
+  用例：关闭态只冷却不写盘、确定性失败同样不写盘、直接调用被拒、历史禁用被
+  解除、手动禁用不被误解除、配置开关与 kill-switch 语义。
+- 涉及文件: `accountFailover.go`、`failover_disable.go`、`config.go`、`main.go`、
+  `VERSION`、`accountFailover_test.go`、`failover_disable_switch_test.go`（新增）、
+  `test/traework/failover_state_test.go`。
+
 ## 0.5.28
 
 ### Fix - 「换号预算耗尽」判为请求级终局，堵住插件换号与宿主换号双重放大

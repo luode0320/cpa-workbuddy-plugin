@@ -274,6 +274,12 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
 				setFailoverDisableMinCount(n)
 			}
+		case "failover_disable_enabled":
+			// 失败写盘禁用总开关，默认 false（只保留错误冷却）。
+			// 缺省键保持当前值：未出现该键的 reconfigure 不得把显式开启冲回默认关闭。
+			if b, ok := parseYAMLBool(val); ok {
+				setFailoverDisableEnabled(b)
+			}
 		case "token_keepalive":
 			if b, ok := parseYAMLBool(val); ok {
 				setKeepaliveEnabled(b)

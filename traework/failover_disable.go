@@ -22,7 +22,12 @@
 // 落盘一律走「读物理文件 → 改顶层键 → 整体写回」，不重建文档，也不用
 // host.auth.save：前者保留盘上所有既有顶层键，后者会重建记录。
 //
-// 最近修改时间：2026-10-22；改动原因：按 workbuddy 样板新增，取代冷却到期前探活。
+// 开关与生命周期（2026-11-09 用户裁定）：本节全部逻辑由 `failover_disable_enabled`
+// 控制，默认 **关闭**——失败只走 accountFailover.go 的内存阶梯冷却，不写盘禁用、
+// 不启动探活。关闭态下探活循环改为执行一次遗留禁用清理（reconcileFailoverDisableOff），
+// 把历史版本写下的 failover_disable 逐号解除，避免升级后旧禁用没有任何恢复通道。
+//
+// 最近修改时间：2026-11-09；改动原因：写盘禁用改为默认关闭，探活降级为遗留清理。
 package main
 
 import (
@@ -544,6 +549,13 @@ func disableAccountForFailover(authID, model string) bool {
 	if authID == "" || !failoverActive() {
 		return false
 	}
+	// 写盘禁用默认关闭：调用方（recordFailureScoped*）已先判一次，这里再判一次
+	// 是为了兜住任何直接调用点，确保关掉开关后绝不会有新的 disabled 被写出去。
+	if !failoverDisableActive() {
+		log.Printf("[traework] failover disable skipped: feature disabled auth=%s model=%s",
+			authID, strings.TrimSpace(model))
+		return false
+	}
 	rememberFailoverProbeModel(authID, model)
 
 	authIndex, _ := failoverResolveIndexFn(authID)
@@ -925,6 +937,35 @@ func runFailoverTickNonOverlap(tick func()) bool {
 	return true
 }
 
+// reconcileFailoverDisableOff 在「失败写盘禁用」关闭时解除历史遗留的禁用。
+//
+// 关闭后不再有探活周期，「禁用 → 探活通过 → 恢复」这条唯一通道随之消失。盘上或
+// sidecar 里由本机制写下的 disabled 若不主动清理，对应账号会永久退出路由，只能
+// 人工启用——这是关闭该功能时必须一并收口的副作用。
+//
+// 判据只认本机制自己的记录（failover_disable 标记 / sidecar Disabled）：用户手动
+// 禁用（manual_disable）与低额度禁用一律不动，它们各有自己的恢复通道。
+//
+// 不走探活：禁用这一层已经关闭，恢复不需要再验证上游是否可用——冷却仍按时间
+// 自然衰减，恢复后的账号即便再次失败也只进冷却，不会再被写盘禁用。
+//
+// [返回] 本轮解除的账号数。
+// 最近修改时间：2026-11-09；改动原因：新增，关闭功能后清理历史禁用。
+func reconcileFailoverDisableOff() int {
+	if failoverDisableActive() {
+		return 0
+	}
+	cleared := 0
+	for _, tc := range failoverProbeTargets() {
+		if reenableAccountForFailover(tc.authIndex, tc.authID) {
+			cleared++
+			log.Printf("[traework] failover disable-off cleanup: auth=%s model=%s re-enabled",
+				tc.authID, strings.TrimSpace(tc.model))
+		}
+	}
+	return cleared
+}
+
 // reconcileFailoverLocalSet 把本地禁用集合与盘上真相核对一轮，清掉已被外部启用的号。
 //
 // 为什么必须做：本地集合只在「本进程写的恢复」时清除，但启用不止这一条路——用户
@@ -1102,6 +1143,13 @@ func failoverReconcileLoop() {
 func failoverProbeLoop() {
 	// init() 早于宿主装配，立即 tick 会静默失败，与 watchdog 一致先等宿主就绪。
 	waitHostReadyForWatchdog(watchdogStartupWait, hostReadyForWatchdog)
+	// 启动即收敛一次：从「禁用开启」升级到「禁用关闭」后，历史禁用不能等满一个
+	// 10 分钟周期才恢复——期间这些号既不被路由，也不会被探活。
+	if !failoverDisableActive() {
+		if n := reconcileFailoverDisableOff(); n > 0 {
+			log.Printf("[traework] failover disable-off cleanup on startup: re-enabled %d account(s)", n)
+		}
+	}
 	ticker := time.NewTicker(failoverProbeInterval)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -1110,6 +1158,13 @@ func failoverProbeLoop() {
 		if pluginInstanceSuperseded() {
 			log.Printf("[traework] failover probe loop stopped: superseded by newer instance")
 			return
+		}
+		// 关闭态：不探活（本就不该有新禁用），只持续收敛历史遗留禁用。
+		// 放在 ticker 里而不是一次性执行：运行期 reconfigure 可能把开关从开启
+		// 切到关闭，届时启动阶段已经跑过的那一次清理不能覆盖新产生的禁用。
+		if !failoverDisableActive() {
+			reconcileFailoverDisableOff()
+			continue
 		}
 		runFailoverTickNonOverlap(func() {
 			// 先对账本地集合：外部（面板 / 宿主 UI / management）已把号启用时，

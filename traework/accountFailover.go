@@ -17,7 +17,11 @@
 // （见 failover_disable.go），恢复由 10 分钟禁用探活统一裁决。冷却因此不再是唯一的
 // 排除手段，它只覆盖写盘到宿主 watcher 生效之间的窗口与写盘失败的情况。
 //
-// 最近修改时间：2026-10-22；改动原因：失败记账改为冷却 + 禁用双写，冷却探活移除。
+// 2026-11-09 用户裁定关闭写盘禁用这一层（failover_disable_enabled 默认 false）：
+// 失败只记账内存阶梯冷却，不写 disabled、不写禁用标记、不启动探活；账号靠冷却
+// 到期自动回到路由。双写代码保留但默认不执行，需要时可用配置重新打开。
+//
+// 最近修改时间：2026-11-09；改动原因：失败写盘禁用改为默认关闭，只保留错误冷却。
 package main
 
 import (
@@ -57,6 +61,18 @@ var (
 	// 填 1 等价于恢复修复前行为（首次失败即禁用）。
 	failoverDisableMinCount   = defaultFailoverDisableMinCount
 	failoverDisableMinCountMu sync.RWMutex
+
+	// failoverDisableEnabled 控制「失败写盘禁用」这一层是否启用。
+	//
+	// 默认 false（2026-11-09 用户裁定「关闭失败禁用、保留错误冷却」）：上游失败
+	// 只写内存阶梯冷却与 sidecar 冷却计数，不写 disabled、不写禁用自己的标记、
+	// 也不启动禁用探活——冷却按时间衰减，到期后账号自动回到路由，没有任何账号
+	// 会因为连续失败被永久摘出池子。
+	//
+	// 置 true 才恢复双写：失败达到门限后写盘 disabled，由 10 分钟探活裁决恢复。
+	// 该开关只影响「禁用」这一层，冷却阶梯（failoverCooldownFor）始终生效。
+	failoverDisableEnabled   = false
+	failoverDisableEnabledMu sync.RWMutex
 
 	// failoverMu guards failoverStates.
 	failoverMu     sync.Mutex
@@ -131,6 +147,27 @@ func setFailoverEnabled(on bool) {
 	failoverEnabledMu.Lock()
 	failoverEnabled = on
 	failoverEnabledMu.Unlock()
+}
+
+// failoverDisableActive 报告「失败写盘禁用」这一层是否启用。
+//
+// 与 failoverActive 分工：failoverActive 关掉的是整套失败处理（含冷却）；
+// 本函数只关禁用，冷却阶梯照常工作。
+// [返回] true 表示失败达到门限后会写盘禁用账号。
+// 最近修改时间：2026-11-09；改动原因：新增，支持「关禁用、留冷却」。
+func failoverDisableActive() bool {
+	failoverDisableEnabledMu.RLock()
+	defer failoverDisableEnabledMu.RUnlock()
+	return failoverDisableEnabled
+}
+
+// setFailoverDisableEnabled 切换失败写盘禁用（配置 / 测试）。
+// [参数] on：true 启用写盘禁用；false 只保留内存冷却。
+// 最近修改时间：2026-11-09；改动原因：新增，配置项 failover_disable_enabled 的落点。
+func setFailoverDisableEnabled(on bool) {
+	failoverDisableEnabledMu.Lock()
+	failoverDisableEnabled = on
+	failoverDisableEnabledMu.Unlock()
 }
 
 // failoverCooldownFor 返回第 count 次连续失败对应的阶梯冷却时长。
@@ -274,7 +311,10 @@ func recordAccountFailureForModel(authID, model string, status int, body string)
 }
 
 // recordFailureScoped 按给定维度记账，是失败处理的唯一落点：先写内存阶梯冷却，
-// 再把账号写盘禁用（双写）。
+// 再（仅在 failover_disable_enabled 开启时）把账号写盘禁用（双写）。
+//
+// 写盘禁用默认关闭：关掉时本函数只写冷却，账号在冷却窗口内被路由跳过，窗口到期
+// 自动恢复，不会产生任何需要探活裁决的持久禁用。
 //
 // 为什么必须双写：冷却只存在插件内存里，宿主选择器看不见它，同一个请求内宿主仍会
 // 把这个已知的坏号发过来、拿一次失败再换下一个号。禁用走的是宿主自己的路由判据，
@@ -296,7 +336,7 @@ func recordFailureScoped(authID, model string, scope failureScope) bool {
 	// 禁用写盘内部同时落 sidecar（路由判据的权威来源）。写在这里会绕过该函数的
 	// 认领规则：宿主查不到账号或盘上已是别人的禁用时，sidecar 会记下一个永远
 	// 没有本地标记、也没有探活候选的禁用状态——任何成功请求都解不掉它。
-	if scope.disablesAccount() {
+	if scope.disablesAccount() && failoverDisableActive() {
 		disableAccountForFailover(authID, model)
 	}
 	return true
@@ -318,7 +358,8 @@ func recordFailureScopedWithCause(authID, model string, scope failureScope, stat
 	if !recordCooldownScoped(authID, model, scope) {
 		return false
 	}
-	if scope.disablesAccount() && failureCountReachedDisableThreshold(authID, model, scope, status, body) {
+	if scope.disablesAccount() && failoverDisableActive() &&
+		failureCountReachedDisableThreshold(authID, model, scope, status, body) {
 		disableAccountForFailover(authID, model)
 	}
 	return true

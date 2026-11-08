@@ -112,6 +112,10 @@ func TestFailoverState_FailurePathWritesSidecar(t *testing.T) {
 	h.addAccount("acc-integration", "idx-integration", nil)
 	setFailoverEnabled(true)
 	t.Cleanup(func() { setFailoverEnabled(true) })
+	// 本用例验证「失败记账 → 写盘禁用」双写链路；生产默认已关闭该层
+	// （failover_disable_enabled=false，只保留冷却），这里显式开启。
+	setFailoverDisableEnabled(true)
+	t.Cleanup(func() { setFailoverDisableEnabled(false) })
 
 	if !recordAccountFailure("acc-integration", 401, `{"error":"invalid token"}`) {
 		t.Fatalf("401 必须记账")
@@ -136,6 +140,10 @@ func TestFailoverState_TransientFailureRespectsDisableThreshold(t *testing.T) {
 	h.addAccount("acc-transient", "idx-transient", nil)
 	setFailoverEnabled(true)
 	t.Cleanup(func() { setFailoverEnabled(true) })
+	// 同 TestFailoverState_FailurePathWritesSidecar：验证双写与门限关系，
+	// 生产默认关闭禁用，用例内显式开启。
+	setFailoverDisableEnabled(true)
+	t.Cleanup(func() { setFailoverDisableEnabled(false) })
 
 	for i := 1; i <= 2; i++ {
 		if !recordAccountFailure("acc-transient", 500, "upstream 500: internal error") {
