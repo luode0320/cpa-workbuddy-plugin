@@ -83,3 +83,27 @@ func TestMarshalStreamErrorEnvelopeCarriesResetStatus(t *testing.T) {
 		t.Fatalf("non-classified error must omit http_status: %s", plain)
 	}
 }
+
+// TestEnvelopeHTTPStatusForChannelBlock 锁定上游拦截（11128）的信封状态码。
+//
+// 生产缺陷回归（2026-11-08）：渠道级拦截在插件内已停止换号，但信封不带
+// 状态码时宿主 statusCodeFromError 恒得 0，isRequestInvalidError 判否，
+// 于是逐个凭据重试——实测单请求扇出 17 个账号、3 小时 583 次失败。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-08 14:45:00；改动原因：新增，堵住 11128 跨凭据扇出的回归。
+func TestEnvelopeHTTPStatusForChannelBlock(t *testing.T) {
+	blocked := `upstream 400: {"code":11128,"msg":"Illegal API invocation from an unapproved channel","retry_policy":{"retry":false}}`
+	if got := envelopeHTTPStatusForError(blocked); got != httpStatusBadRequest {
+		t.Fatalf("channel block http_status = %d, want %d", got, httpStatusBadRequest)
+	}
+	// 账号级封禁 11140 不走该通道：宿主对 400 不轮转，仍由插件记账。
+	ban := `upstream 403: {"code":11140,"msg":"Your account has been restricted"}`
+	if got := envelopeHTTPStatusForError(ban); got == httpStatusBadRequest {
+		t.Fatalf("11140 must not be treated as channel block, got %d", got)
+	}
+	// 普通业务错误保持无状态码。
+	if got := envelopeHTTPStatusForError("upstream 400: some other failure"); got != 0 {
+		t.Fatalf("plain 400 error http_status = %d, want 0", got)
+	}
+}

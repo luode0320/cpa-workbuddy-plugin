@@ -198,6 +198,10 @@ func isAccountLevel4xx(status int) bool {
 // account-level 4xx heuristic. （同步自 workbuddy：200 SSE 业务错误换号，
 // 2026-09-06）
 func shouldRotateOnUpstreamErr(status int, errBody string) bool {
+	// 套餐权益缺失与账号无关：换号只会把同一失败复制到下一个账号。
+	if isEntitlementRequiredFailure(errBody) {
+		return false
+	}
 	if status == http.StatusOK {
 		return isAccountFailure(status, errBody)
 	}

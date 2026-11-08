@@ -1,5 +1,27 @@
 # QoderWork Plugin Changelog
 
+## 0.13.12
+
+### Fix - 套餐无权益（112）不再跨账号扇出
+
+- 背景: 2026-11-08 生产观测发现 qoderwork 24h 内 749 个请求中 354 次失败（47.26%），
+  其中 294 条是「HTTP 200 但零 token、约 1 秒返回」；同一 requestId 连续撞 2~6 个账号。
+- 根因: 上游对无该模型权益的账号返回 `HTTP 200 + {"code":112,"pricingUrl":...}`，
+  插件没有任何 112 判据 —— `isAccountFailure(200, body)` 判否（不记账，这部分是对的），
+  但失败信封缺 `http_status`，宿主 `statusCodeFromError` 恒得 0、`isRequestInvalidError`
+  判否，于是逐个凭据重试，把一次请求放大成 N 次上游调用。
+- 修复:
+  - 新增 `isEntitlementRequiredFailure`：认 `pricingUrl` 字段与 canonical
+    `upstream 200: 112:` 前缀；裸数字 112 不误命中。
+  - 归入 `isModelLevelFailure`：不记账号、不冷却、不禁用。
+  - `shouldRotateOnUpstreamErr` 前置短路：无论状态码是 200 还是 4xx 都不换号。
+  - `envelopeHTTPStatusForError` 补「权益缺失 → 400」，让宿主按请求级故障处理。
+- 验证: `python scripts/cgo-shim-build.py qoderwork` build / vet / test 全绿；
+  新增 `TestIsEntitlementRequiredFailure`（11 组）与
+  `TestEntitlementFailureIsModelLevelAndNotRotated`；四轮变异验证中 3 轮被捕获，
+  第 4 轮暴露「200 路径的换号短路是冗余分支」，已补 403 断言使其可被捕获。
+- 涉及文件: `policy.go`、`accountFailover.go`、`policy_test.go`。
+
 ## 0.13.11
 
 ### Fix - stream 畸形值不再让整包解析失败（同一类扇出缺陷的其余入口）

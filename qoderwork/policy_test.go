@@ -39,6 +39,63 @@ func TestIsRequestShapeFailure(t *testing.T) {
 	}
 }
 
+// TestIsEntitlementRequiredFailure 验证「套餐无该模型权益」的识别。
+//
+// 生产缺陷回归（2026-11-08）：上游对无权益模型返回 HTTP 200 + 业务码 112 +
+// pricingUrl，旧逻辑无判据，既不计账也不拦换号，宿主逐个凭据重试，
+// 24h 内 294 次零 token 失败、单请求扇出 2~6 个账号。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-08 14:05:00；改动原因：新增，堵住 112 跨账号扇出的回归。
+func TestIsEntitlementRequiredFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "生产实测原文", body: `upstream 200: 112: {"pricingUrl":"https://qoder.com.cn/pricing?client=qoder"}`, want: true},
+		{name: "帧首业务码", body: `112: {"pricingUrl":"https://qoder.com/pricing?client=qoder"}`, want: true},
+		{name: "仅 pricingUrl 字段", body: `{"pricingUrl":"https://qoder.com.cn/pricing"}`, want: true},
+		{name: "大写字段名", body: `{"PricingUrl":"x"}`, want: true},
+		{name: "空正文不误判", body: "", want: false},
+		{name: "空白正文不误判", body: "   ", want: false},
+		{name: "排队帧不归此类", body: `upstream 200: 403: 10605: {"isQueued":true}`, want: false},
+		{name: "110 日上限不归此类", body: "upstream 200: 110: Billing daily count exceeded", want: false},
+		{name: "额度不足不归此类", body: "upstream 200: 额度不足", want: false},
+		{name: "裸 112 数字不误判", body: "the answer is 112 tokens", want: false},
+		{name: "非 200 前缀不误判", body: "upstream 500: 112: internal", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isEntitlementRequiredFailure(tc.body); got != tc.want {
+				t.Fatalf("isEntitlementRequiredFailure(%q) = %v, want %v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEntitlementFailureIsModelLevelAndNotRotated 锁定 112 的两个行为：
+// 归入模型级失败（不记账号），且不允许同请求换号。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-08 14:05:00；改动原因：新增，锁定 112 的记账与换号边界。
+func TestEntitlementFailureIsModelLevelAndNotRotated(t *testing.T) {
+	const body = `upstream 200: 112: {"pricingUrl":"https://qoder.com.cn/pricing?client=qoder"}`
+	if !isModelLevelFailure(body) {
+		t.Fatal("112 权益缺失应归入模型级失败，不记在账号头上")
+	}
+	if shouldRotateOnUpstreamErr(200, body) {
+		t.Fatal("112 权益缺失不应换号：换任何账号结果相同")
+	}
+	// 上游若把同一业务码包在 4xx 里，同样不得换号。
+	if shouldRotateOnUpstreamErr(403, body) {
+		t.Fatal("112 权益缺失带 403 时也不应换号")
+	}
+	if got := envelopeHTTPStatusForError(body); got != httpStatusBadRequest {
+		t.Fatalf("envelopeHTTPStatusForError(112) = %d, want %d", got, httpStatusBadRequest)
+	}
+}
+
 // TestValidateOpenAIMessages 验证请求体 role 前置校验。
 //
 // 生产缺陷回归（2026-11-07）：上游对非法 role 的报错文案不固定（qoderwork 只回

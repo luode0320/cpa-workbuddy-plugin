@@ -144,6 +144,34 @@ var modelLevelFailureMarkers = []string{
 	"model unavailable",
 }
 
+// entitlementBusinessCode 是 Qoder 上游「该账号无此模型权益」的业务码。
+const entitlementBusinessCode = "112"
+
+// isEntitlementRequiredFailure 判定上游是否返回「套餐无该模型权益」。
+//
+// 生产原文：upstream 200: 112: {"pricingUrl":"https://qoder.com.cn/pricing?client=qoder"}。
+// 该响应与账号健康度无关，也与模型后端可用性无关，只表示当前套餐不含该模型。
+//
+// [参数] body：上游响应正文或 SSE 错误帧文本。
+// [返回] true 表示属套餐权益缺失，不应记账、不应换号。
+// 最近修改时间：2026-11-08；改动原因：新增，112 未被识别致单请求扇出 2~6 个账号。
+func isEntitlementRequiredFailure(body string) bool {
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" {
+		return false
+	}
+	// pricingUrl 是上游引导购买的固定字段，唯一性最强。
+	if strings.Contains(strings.ToLower(trimmed), "pricingurl") {
+		return true
+	}
+	// 业务码只在 canonical "upstream N: 112:" 与帧首出现，避免任意正文误命中。
+	code := entitlementBusinessCode + ":"
+	if strings.HasPrefix(trimmed, code) {
+		return true
+	}
+	return strings.Contains(trimmed, "upstream 200: "+code)
+}
+
 // modelLevelResourceMarkers 是上游容量类响应里的「资源不足」子码。
 // 只有同时命中 queueFrame 语义或 resource 子码时才归为模型级：
 // 单独出现 subCode 不足以证明与账号无关，保守起见要求成对出现。
@@ -272,7 +300,8 @@ func isModelLevelFailure(body string) bool {
 	if strings.Contains(lower, `"serviceavailable":false`) || strings.Contains(lower, "serviceavailable:false") {
 		return true
 	}
-	return false
+	// 套餐权益缺失同属「换账号也改变不了结果」：按模型级处理，不计账号。
+	return isEntitlementRequiredFailure(body)
 }
 
 // isHardCreditError reports business "out of credits" style failures.
@@ -303,6 +332,12 @@ const httpStatusBadGateway = 502
 
 // httpStatusServiceUnavailable 是排队帧对外的状态码（见 queueFrameHTTPStatus）。
 const httpStatusServiceUnavailable = 503
+
+// httpStatusBadRequest 是套餐权益缺失对外的状态码。
+//
+// 选 400 而非 402：宿主 IsRequestFault(400) 为真，会把该失败判成请求级故障，
+// 既不冷却凭据也不跨凭据轮转；402 则被宿主视为额度失败并继续换号。
+const httpStatusBadRequest = 400
 
 // isSoftRateLimit is pure throttling without hard-credit semantics.
 func isSoftRateLimit(status int, body string) bool {
@@ -497,6 +532,9 @@ func isQueueFrame(body string) bool {
 func envelopeHTTPStatusForError(message string) int {
 	if isQueueFrame(message) {
 		return queueFrameHTTPStatus
+	}
+	if isEntitlementRequiredFailure(message) {
+		return httpStatusBadRequest
 	}
 	if isStreamReadError(message) {
 		return httpStatusBadGateway

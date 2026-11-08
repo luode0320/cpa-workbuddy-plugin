@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.21.15
+
+### Fix - 上游拦截（11128）不再跨凭据扇出整池
+
+- 背景: 2026-11-08 生产观测发现单请求扇出 **17 个账号**，3 小时内 62 个请求产生 583 条
+  `upstream 400: {"code":11128,...}` 失败；上游报文自带 `retry_policy:{"retry":false}`。
+- 根因: 插件侧已由 `noteUpstreamBlockHit` 停止同请求换号且不罚号，但失败信封
+  （`envelopeError`）没有 `http_status` 字段，宿主 `statusCodeFromError` 恒得 0，
+  `isRequestInvalidError` 判否，`executeMixedOnce` / `executeStreamMixedOnce` 于是逐个
+  凭据重试，把一次请求放大成 N 次上游调用。
+- 修复: `envelopeHTTPStatusForError` 在断流 502 之外新增「上游拦截 → 400」分支，
+  使宿主 `IsRequestFault(400)` 命中请求级故障，既不冷却凭据也不跨凭据轮转。
+  判据复用 `isModelBlockedError`（11128 且非 11140），账号级封禁不受影响。
+- 验证: `python scripts/cgo-shim-build.py workbuddy` build / vet / test 全绿；
+  新增 `TestEnvelopeHTTPStatusForChannelBlock` 覆盖渠道级拦截 400、11140 不误判、
+  普通 400 无状态码三条边界；变异验证移除该分支后测试失败。
+- 涉及文件: `policy.go`、`stream_error_envelope_test.go`。
+
 ## 0.21.13
 
 ### Fix - 失败禁用与手动启用联动（生产整池被禁用的根因）

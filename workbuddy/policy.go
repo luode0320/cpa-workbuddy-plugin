@@ -303,6 +303,12 @@ const streamReadErrorReasoningOnlyMarker = "reasoning only, no content"
 // httpStatusBadGateway 是上游流读取中断对外呈现的状态码。
 const httpStatusBadGateway = 502
 
+// httpStatusBadRequest 是上游拦截（11128）对外的状态码。
+//
+// 选 400：宿主 IsRequestFault(400) 为真，会把该失败判成请求级故障，
+// 既不冷却凭据也不跨凭据轮转。
+const httpStatusBadRequest = 400
+
 // isStreamReadError 判定错误文本是否描述上游 SSE 读取中断。
 // [参数] body：错误文本。
 // [返回] 命中可重试断流语义时返回 true。
@@ -369,11 +375,16 @@ func streamChunkHasContent(chunkJSON string) bool {
 // 断流补 502 让宿主看到明确的网关类状态而不是成功帧。该插件无排队帧识别，
 // 因此不返回 503。
 // [参数] message：失败信封的错误文本。
-// [返回] 断流返回 502；其余返回 0，保持既有行为。
+// [返回] 断流返回 502；上游拦截（11128）返回 400；其余返回 0，保持既有行为。
 // 最近修改时间 2026-10-17 21:30:00 新增断流信封状态码通道。
+// 最近修改时间 2026-11-08 14:40:00；改动原因：上游拦截补 400，堵住单请求扇出整池。
 func envelopeHTTPStatusForError(message string) int {
 	if isStreamReadError(message) {
 		return httpStatusBadGateway
+	}
+	// 上游拦截在插件内已停止换号，但信封缺状态码时宿主仍会逐个凭据重试。
+	if isModelBlockedError(httpStatusBadRequest, message) {
+		return httpStatusBadRequest
 	}
 	return 0
 }
