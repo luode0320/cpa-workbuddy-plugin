@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,15 +26,40 @@ import (
 // host.http.* RPC). All production upstream calls should route via hostHTTPDo
 // / hostHTTPDoStream so request-log captures them and host transport policy
 // applies. Direct use of this client in new code is a compliance bug.
+// 上游 HTTP 分阶段超时。
+//
+// ResponseHeaderTimeout 取 120s：生产实测 traework 的 TTFT p90 达 26.6s、
+// p99 达 55.2s（大 input prefill），30s 会切断 p90 以上的合法慢请求；
+// 同类开源反代（connectedgraph/trae2api-web）同样取 120s。
+const (
+	// upstreamDialTimeout 限制 TCP 建连耗时。
+	upstreamDialTimeout = 10 * time.Second
+	// upstreamTLSHandshakeTimeout 限制 TLS 握手耗时。
+	upstreamTLSHandshakeTimeout = 10 * time.Second
+	// upstreamResponseHeaderTimeout 限制「请求已发出 → 响应头到达」的耗时。
+	upstreamResponseHeaderTimeout = 120 * time.Second
+)
+
 func sharedHTTPClient() *http.Client {
 	httpClientOnce.Do(func() {
 		// No cookie jar here: auth is carried by Bearer headers, and a shared
 		// jar would leak upstream set-cookie state across accounts (multi-account
 		// deployments could cross-contaminate sessions). Only the short-lived
 		// login clients get a jar.
+		// 分阶段超时：只设 Timeout 时，首字节之前的静默期（半开 TCP、上游排队）
+		// 仍可在总超时内部无限挂起，而命中总超时会把已产出正文的长流一起掐断。
 		sharedClient = &http.Client{
 			Timeout: 120 * time.Second,
 			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   upstreamDialTimeout,
+					KeepAlive: 15 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout:   upstreamTLSHandshakeTimeout,
+				ResponseHeaderTimeout: upstreamResponseHeaderTimeout,
+				// 置空 TLSNextProto 才能真正禁 h2；只设 ForceAttemptHTTP2=false 时
+				// ALPN 仍会协商出 h2，半死流上表现为响应头等待超时。
+				TLSNextProto:        map[string]func(string, *tls.Conn) http.RoundTripper{},
 				MaxIdleConns:        20,
 				IdleConnTimeout:     90 * time.Second,
 				MaxIdleConnsPerHost: 5,
@@ -415,6 +441,9 @@ func hostHTTPDoStreamDirect(req *http.Request, bodyBytes []byte) (*hostHTTPStrea
 // right when the bridge read degraded. Only per-operation dial/TLS deadlines
 // apply so a wedged connection still fails fast while a healthy long stream
 // runs to completion.
+//
+// 上游 HTTP 分阶段超时：拨号与 TLS 握手挡住「连不上」，ResponseHeaderTimeout
+// 挡住「连上了但首字节迟迟不来」，http.Client.Timeout 仍是整体兜底。
 func streamHTTPClient() *http.Client {
 	streamHTTPClientOnce.Do(func() {
 		streamClient = &http.Client{
@@ -426,8 +455,8 @@ func streamHTTPClient() *http.Client {
 					Timeout:   10 * time.Second,
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
+				TLSHandshakeTimeout:   upstreamTLSHandshakeTimeout,
+				ResponseHeaderTimeout: upstreamResponseHeaderTimeout,
 			},
 		}
 	})
