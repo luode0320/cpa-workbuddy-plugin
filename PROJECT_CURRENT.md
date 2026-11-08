@@ -35,6 +35,28 @@
 ## 活动会话进展摘要
 
 
+- 会话（2026-11-08 20:55-21:15，接续上条）：**traework 0.5.24 — 第四类未识别业务码 1005 + 信封状态码缺失**：
+  - **发布 0.5.23**：含并行会话的浏览器登录桥接页 + 本轮超时闸门 30s→120s；`hot reloaded active 0.5.23 retired 0.5.22`，sha256 `f5d5c547…` 与 zip 一致。
+  - **实例守卫生产实证**：20:41:29 日志 `[traework] failover reconcile loop stopped: superseded by newer instance` 出现 —— 0.5.22 旧实例在 0.5.23 抢占所有权后自行退出。
+  - **缺陷七（1005 套餐限制）**：`kimi-k3.1-pro` 全部 25 个样本返回 `{"code":1005,"message":"","extra":"{\"plan\":5}"}`，无判据 + traework `envelopeError` **同样缺 `http_status` 字段**（此前只修了 workbuddy），单请求换遍 **12 个账号**（8e169c66 / 9887bf54）。
+  - **修复（0.5.24）**：新增 `isPlanRestrictedFailure` 归入 `isModelLevelFailure`；`envelopeError` 补 `HTTPStatus`，新增 `envelopeHTTPStatusForError`（请求形状/模型级 → 400）。变异两轮全部 KILLED。生产 `hot reloaded active 0.5.24`，sha256 `d655ef1b…` 一致。
+  - **首字延迟深挖（同模型公平对比）**：72h 内同模型 `deepseek-v4.1-flash`，workbuddy n=12734 ttft50=2820/p90=4958/慢10%=0.3%；traework n=779 ttft50=3490/**p90=26137**/**慢10%=17.6%**。控制 input 100k-200k：workbuddy p50 2524/p90 3375，traework p50 3234/**p90 25720**。⇒ 平均只慢 28%，**长尾慢 7.6 倍**。
+  - **并发排队假设被否定**：用「请求开始时刻的同账号在途数」重算（排除反向因果）——在途 0/1/2-3/4+ 的慢请求占比为 16.5%/34.3%/13.4%/24.4%，无单调关系。
+  - **部署后终态（21:03 起）**：上游失败 **0**、1005 **0**、11128 扇出 **0**、112 **0**、param invalid **0**；探活失败由 12 次/分钟降至 **2 次**（实例守卫逐次热重载持续收敛）。
+  - **文档**：诊断文档扩至 10 节，新增第四类业务码对照表（10605 / 112 / 11128 / 1005 的载体与处置）。
+- 会话（2026-11-08 15:29-21:00）：**coze 积分红线默认 200 → 10（0.7.5）+ 修掉热重载僵尸实例写盘缺陷（0.7.6），已发布生产**：
+  - 诉求：用户报「coze 现在的积分每天是 60 签到积分」，要求「低于 10 才禁用」。
+  - **第一层根因**：`coze/policy.go` 的 `defaultMinRoutableCredits` 仍是 200，而扣子签到额度已降为 **60 分**（生产实证 `remain=60` / `daily_credit.amount=60`）——红线远高于单日额度，刚领完签到的号被整批误禁再靠次日签到解禁。
+  - **第二层根因（真缺陷）**：**宿主热重载只把旧实例标记 retired，不调它的 `cliproxyPluginShutdown`** → 0.7.4 僵尸巡检在 19:02:52 用旧红线 **200** 把 0.7.5 刚解禁的 23 个号整批重禁，引发 19:02:55-19:02:58 连续 4 个 503。判定证据 = 写盘内容 `low_credit_disable_below=200`（只存在于旧二进制）。
+  - **0.7.5 改动**：默认值 200→10；配置描述/README/注释同步；面板签到徽标与按钮去掉 1500 硬编码，改读服务端 `daily_credit.amount`；用例边界 199/200/201 → 9/10/11。
+  - **0.7.6 改动**：新增 `coze/cpa_active_guard.go`（写盘前问宿主「当前活跃的 .so 是哪个」，版本号不是自己就放弃整轮写盘；宿主查不到时按活跃处理）；`credit_sweep.go` 接入 `canWrite`，退役实例跳过分级写盘/快照落盘/闸门发布，仍照常刷新积分与内存缓存。
+  - **生产事故处置**：23 个账号在 auth_store 里 `disabled=true, below=200`（11-05 遗留）+ 19:02 旧实例重写盘，三方不一致。按项目 skill 处置：建还原点 → **卸载插件触发宿主 shutdown 清僵尸** → 重装 → 用 **JSON 字面量直接 UPDATE auth_store**（`CAST(X'<hex>' AS JSON)` 会二次编码成 `"base64:type15:..."` 字符串，踩坑）→ 清 7 个残留 `low_credit_disable` 标记（否则下次巡检会把人工禁用号误解禁）→ 人工禁用的 8 个一律不动。
+  - **验证**：3 组变异全部 KILLED；生产三层一致（redline=10 / low_credits=0 / disabled=8 全为人工禁用 / DB below200=0）；落盘 `.so` sha256 `382a60c1…ee2397c7` 与 release zip 逐字节一致；真实入口 200 + `finish_reason=stop` + 正文「收到」；**重装同一版本模拟热重载后状态完全未变**，防线在生产实际生效。
+  - **发布**：`eee6065`(0.7.5) → `452f5e7`(registry) → `f235291`(文档) → `38d8e96`(0.7.6) → `b0f2ddc`(registry)；两次均 5 平台（darwin/arm64 CI job 被取消，registry 已移除该槽位）。**容器未重启**。
+  - **新增生产事实**：扣子每日签到额度 = **60 分**（历史 1500 分口径作废）。
+  - 遗留：红线 10 的业务适配性需生产观察禁用频次再定；darwin/arm64 平台待补发。
+
+
 - 会话（2026-11-08 20:35-20:55，接续上条）：**traework 0.5.23 发布 + 首字延迟决定性证据 + 实例守卫生产实证**：
   - **发布**：traework 0.5.23（含并行会话的浏览器登录桥接页 + 本轮的超时闸门 30s→120s）。CI run 42480619699 Release success → 资产 5/5 checksum OK → registry 0.5.23（远端 raw 已生效）→ 生产 `hot reloaded active_version=0.5.23`，落盘 sha256 `f5d5c547…` 与 release zip 逐字节一致。
   - **决定性证据（首字延迟不是插件 bug）**：同一 traework 插件、同一条宿主桥、同一组超时配置，仅模型不同 —— `deepseek-v4.1-flash` TTFT p50 **1297ms / 0.0% 慢请求**（n=23），`minimax-m3.1-flash` 4245ms / 22.6%（n=515），`Doubao-Seed-2.1-Pro` 7742ms / 27.1%（n=145），跨插件对照 workbuddy `deepseek-v4.1-flash` 1008ms / 0.0%。⇒ 转发链路无问题，慢的是特定上游模型服务；排除了「payload 冗余」「流式读取节流」「宿主桥瓶颈」三类假设。
