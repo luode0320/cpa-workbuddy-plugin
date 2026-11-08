@@ -199,36 +199,36 @@
             "goos": "darwin",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.29/traework-provider_0.5.29_darwin_amd64.zip",
-            "sha256": "d6598c0a435077c310f896514338a41cd835e303e703a9c2e083a7b9bf4b025c",
-            "size": 3233117
+            "sha256": "8962e2440d267bccaab49d901bc27ed6c1102330342f3c164ad00482613c4cb3",
+            "size": 3233113
           },
           {
             "goos": "linux",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.29/traework-provider_0.5.29_linux_amd64.zip",
-            "sha256": "e66de97f4df3a21fc377986f2b620f3b7586a44fe416cc32b0e0eab76ced4ef5",
-            "size": 3400993
+            "sha256": "2521443203382ca70d00d44c79a76a2873d628b1ff68d1bbf721e5bb99bc808f",
+            "size": 3400991
           },
           {
             "goos": "linux",
             "goarch": "arm64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.29/traework-provider_0.5.29_linux_arm64.zip",
-            "sha256": "6e114a1952f4fa5d316992f3b0489bb3787a67e0ab8f1f5a2eaca3423d14a7ba",
-            "size": 3089975
+            "sha256": "0bcc756f603ecf017705e6e68ee31572b26a43ea4155fe6814889dc1d9c8d97d",
+            "size": 3089992
           },
           {
             "goos": "windows",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.29/traework-provider_0.5.29_windows_amd64.zip",
-            "sha256": "21614d7ef01927e968e6670715d247fd03cd41f6bba2f8099ee301fdddf8696a",
+            "sha256": "7af7ac2d747cfdebcd17fbf7bd06a72a04b5b04be54923cc2ee88e8aa80571b7",
             "size": 3317678
           },
           {
             "goos": "windows",
             "goarch": "arm64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.29/traework-provider_0.5.29_windows_arm64.zip",
-            "sha256": "06f89b75474b8e90250d3d13bd1b518c1db95f15cb5b8cb2cdb242bca1d9dfaa",
-            "size": 3065844
+            "sha256": "41e7a4ce16076783b222d845fddafe084b41f4190a06a0bfd3a07ff8286ce2b0",
+            "size": 3065895
           }
         ]
       }
