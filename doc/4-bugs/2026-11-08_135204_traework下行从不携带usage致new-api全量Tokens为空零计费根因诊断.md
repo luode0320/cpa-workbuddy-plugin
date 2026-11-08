@@ -310,7 +310,74 @@ data: [DONE]
 
 用户截图的三条（13:21:36 / 13:22:23 / 13:23:08）正在「零值」集合内，与根因判断完全吻合。
 
-## 8. 未验证项
+
+## 8. 同族缺陷扩散修复（2026-11-08 19:16）
+
+### 8.1 发现
+
+修复 traework 后做长窗口复核（1468 条 traework 请求 / 1410 成功 / **0 条成功却零用量**），
+但 new-api 仍有零星「上游没有返回计费信息，无法扣费」记录。按 provider 归因后发现：
+
+**同一份 `cleanChunkJSON` 在 4 个兄弟插件里仍是修复前版本**——qwenwork 在 2026-10-18
+（0.2.8）已修过这处，但 workbuddy / workbuddy-ai / qoderwork / qoder-ai 的副本漏改。
+上游把 `usage` 挂在 `delta:{}` 且无 `finish_reason` 的 chunk 上，旧逻辑把这类「全空
+delta」整帧丢弃 → 下游拿不到 token 数。
+
+当日 feed 佐证：workbuddy 有 **6 条「成功但零用量」**记录（05:35–05:48Z，均为
+`deepseek-v4.1-flash`），new-api 同时段对应「上游没有返回计费信息」。
+
+### 8.2 修复
+
+四个插件的 `stream.go` 中 `cleanChunkJSON` 的「全空 delta 整帧丢弃」分支内加计费载体豁免：
+
+```go
+if len(delta) == 0 {
+    if fr, _ := choice["finish_reason"].(string); fr == "" {
+        if _, hasUsage := obj["usage"]; hasUsage {
+            continue      // 顶层 usage 是唯一计费载体，整帧必须保留
+        }
+        return ""
+    }
+}
+```
+
+`continue` 让循环继续处理其余 choice 的清理（空 `function_call` / 空 `tool_calls` 仍被清掉），
+同时不返回 `""`，整帧得以保留。
+
+### 8.3 版本与验证
+
+| 插件 | 版本 | 测试 | 变异反证 |
+|---|---|---|---|
+| workbuddy | 0.21.17 | 既有 `cleanchunk_test.go` 追加 2 用例（共 9 个 func） | 删 `hasUsage` 分支 → 2 条精确 FAIL |
+| workbuddy-ai | 0.1.39 | 同上 | 同上 |
+| qoderwork | 0.13.14 | 新建 `cleanchunk_test.go`（4 用例） | 同上 |
+| qoder-ai | 0.1.39 | 新建 `cleanchunk_test.go`（4 用例） | 同上 |
+
+四插件 `cgo-shim-build.py` build/vet/test 全绿，改动文件 gofmt 全 FMT_OK。
+
+### 8.4 发布与生产验收
+
+| 项 | 结果 |
+|---|---|
+| 提交 | `3782b64`（代码）→ `9ec91f4`（registry） |
+| CI | 四条 run 全部 **Release job = success**（`darwin/arm64` 均 cancelled，属既有常态） |
+| 资产 | 四插件各 5/5 `ALL CHECKSUMS OK` |
+| 生产 install | 四条均 `status=installed` |
+| 热重载 | 四个 `hot reloaded`（workbuddy 0.21.17←0.21.16 / workbuddy-ai 0.1.39←0.1.38 / qoderwork 0.13.14←0.13.13 / qoder-ai 0.1.39←0.1.38） |
+| 落盘哈希 | 四个 `.so` sha256 与本地 release zip **逐一逐字节一致**（`814e2ca1…` / `94c8dfb6…` / `cecf4cd5…` / `aba3f24f…`） |
+| 容器 | `cli-proxy-api Up 28 hours` —— **未重启** |
+| 行为验收 | 部署后真实请求 3 次，响应均含 1 个非 null usage 帧；`oneapi.logs` 新记录 `5/9、5/9、5/17` 全部非零 |
+| 部署后窗口 | 20 条记录（traework 16 成功 + 1 失败，workbuddy 3 成功），**零用量 = 0** |
+
+### 8.5 需要披露的提交瑕疵
+
+本轮 `git add workbuddy workbuddy-ai qoderwork qoder-ai`（目录粒度）把并行会话未提交的
+`qoderwork/policy.go`（3 行：`requestShapeFailureMarkers` 追加 `param is invalid` 两条）
+一并带进了 `3782b64`。该改动是纯追加、随同一次 cgo-shim 全绿、功能无害，未做历史改写；
+如实记录以免后续追溯失真。**教训：共享工作树里 `git add <目录>` 会带上他人未提交改动，
+应按文件粒度暂存。**
+
+## 9. 未验证项
 
 - 修复前那 40 条零值记录无法回溯补记（当时插件未下发 usage，数据从未存在）。
 - `darwin_arm64` 平台产物缺失：GitHub macos-14 runner 连续被取消，与 0.5.18 同状态；

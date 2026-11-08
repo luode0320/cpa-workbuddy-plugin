@@ -34,6 +34,14 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-08 19:00-19:20，接续上条）：**同族缺陷扩散修复（workbuddy 0.21.17 / workbuddy-ai 0.1.39 / qoderwork 0.13.14 / qoder-ai 0.1.39）**：
+  - **触发**：traework 修复后长窗口复核（1468 条 / 1410 成功 / **0 条成功却零用量**）干净，但 new-api 仍有零星「上游没有返回计费信息」。归因发现**同一份 `cleanChunkJSON` 在四个兄弟插件里仍是修复前版本**（qwenwork 2026-10-18 已修，其余漏改），会把「空 delta + 顶层 usage」的终止计费帧整帧丢弃。当日 feed 佐证：workbuddy 有 6 条成功但零用量（05:35–05:48Z，均为 deepseek-v4.1-flash）。
+  - **修复**：该分支内先查 `obj["usage"]`，存在则 `continue` 保留整帧（空 function_call / tool_calls 仍清理），否则维持原丢弃语义。
+  - **验证**：workbuddy / workbuddy-ai 在既有 `cleanchunk_test.go` 追加 2 用例（**首轮误覆盖了原文件，已 git checkout 恢复后改为追加**）；qoderwork / qoder-ai 新建 4 用例。四插件变异反证全部 KILLED；cgo-shim build/vet/test 全绿。
+  - **发布**：`3782b64`（代码）→ 四条 CI 全部 **Release job success**（darwin/arm64 均 cancelled）→ 各 5/5 checksums OK → `9ec91f4`（registry）→ 生产四条 install 全部 installed + 四个 `hot reloaded`，落盘 `.so` sha256 与 release zip 逐一逐字节一致，**容器未重启**（Up 28h）。
+  - **生产验收**：部署后真实请求 3 次响应均含 1 个非 null usage 帧；`oneapi.logs` 新记录 5/9、5/9、5/17 全非零；部署后窗口 20 条记录**零用量 = 0**。
+  - **提交瑕疵（如实记录）**：`git add workbuddy workbuddy-ai qoderwork qoder-ai`（目录粒度）把并行会话未提交的 `qoderwork/policy.go`（3 行 marker 追加）带进了 `3782b64`；纯追加、随同一次 cgo-shim 全绿、功能无害，未改写历史。**教训：共享工作树里 `git add <目录>` 会带上他人未提交改动，应按文件粒度暂存。**
+
 - 会话（2026-11-08 15:29-19:05）：**coze 积分红线默认 200 → 10（coze-provider 0.7.5，已发布生产）**：
   - 诉求：用户报「coze 现在的积分每天是 60 签到积分」，要求把「低额自动禁用」改成低于 10 才禁用。
   - 根因：`coze/policy.go` 的 `defaultMinRoutableCredits` 仍是 2026-10-25 定的 **200**，而扣子每日签到额度已降为 **60 分**——红线远高于单日额度，「刚领完签到、正常消耗」的号会在下一轮巡检被整批误禁再靠次日签到解禁。
@@ -171,32 +179,5 @@
   - 生产现状：6 插件 enabled+registered（coze 0.7.4 / qoderwork 0.13.3 / traework 0.5.9 / workbuddy-ai 0.1.36 / workbuddy 0.21.10 / token-usage 0.2.8），账号 qoderwork 18 / traework 12 / workbuddy 21 / coze 23，模型 19 个；真实入口 `glm-5.3`、`kimi-k3.1-pro` 均 `finish_reason=stop`。
   - **可迁移教训**：模型从 `/v1/models` 消失时，**先查 `excluded-models` 与管理 API 审计日志（`config_reload.go` 的 `updated (A -> B entries)` 行）**，再怀疑热重载/注册链路。本次为错误假设复了一次容器重启，成本不必要。
 
-- 会话（2026-11-07 14:45）：**traework 12 个被删账号找回（账号数据恢复 + 插件启用，未改代码）**：
-  - 诉求：「tear 的好像也有，看看能不能还原」。`traework` 池恢复前仅 1 个账号且**插件处于 `enabled=false / registered=false`**（`/accounts` 返回空）。
-  - **恢复源**：`/root/traework-recovery/restored/`（10-25 误删恢复时产出的 17 个账号文件）+ `refreshed_tokens.json`（10-25 的 16 个刷新结果）。**10-25 的全表 dump 里 traework=0**，因为那是「恢复 traework 之前」建的还原点——按前缀查会得出「无源可恢复」的错误结论。
-  - **刷新实测**：对 16 个逐个重放 `POST api.trae.cn/cloudide/api/v3/trae/oauth/ExchangeToken`（ClientID 用 `en1oxy7wnw8j9n`，不是代码常量 `ono9krqynydwx5`）→ **12 成功 / 4 失败（401/20101，真死）**。失败 uid：`1712389365702043`、`1941087193676826`、`2046641643717561`、`2750333044403947`。
-  - **关键新事实（推翻旧假设）**：traework 的 `refreshToken` 每次都返回新值（16/16 全部不同），但**旧值在有效期内可重复使用**——同一 RT 连续两次调用均返回 200。因此「轮换 ≠ 一次性作废」，不能因怕消费而放弃实测；正确做法是每成功一个立即落盘。`note` 的 "Session expired" 不能作判据（6 个带此 note 的账号里 3 个照样刷新成功）。
-  - **写回与验收**：还原点 `PRE2_auth_store_20261107_143807.sql`（220KB）+ `PRE2_spool_*.tar.gz`（59KB）+ 基线 `traework=1/1`；写 auth_store 12 行 + 原子写 spool 12 个 → `auth_store=13 / spool=13`；启用插件后 `enabled=true / registered=true`，`/accounts` 加载 **12** 条（旧的 `3313287900183084` 未加载：spool 文件是 `str` 而非 dict，且 note 为 session expired）。
-  - **探活**：12 个全量 `test-active` → **9 通过 / 3 上游业务态失败**（`1114256688551036` quota exceeded、`3841050312977305` 与 `4491956683805020` all models failed），**0 个凭据失效**。
-  - **踩坑（新）**：`/v1/models` 看不到任何 traework 模型、真实入口报 `unknown provider for model` —— 根因是 `config.yaml` 的 `excluded-models.traework-provider` 列了 **52 个**模型名，而插件动态拉到 **44 个**，其中 **43 个被排除**，只剩 `kimi-k3.1-pro`。用该模型真实入口 `finish_reason=stop`、正文「正常」、119 tokens，证明链路通。**excluded-models 待用户决策是否清理**（属配置策略变更，未擅自改）。
-  - 产物：`/root/traework-recovery/restored_v2/`（12 个 600）、`restored_tokens_v2.json`（12 条新凭据）、`restore_traework.sql`。
-
-- 会话（2026-11-07 14:15）：**qoderwork 16 个被删账号全量找回（账号数据恢复，未改代码）**：
-  - 诉求：「qoder 之前有很多账号，后来被删了，254、65 都有删除，可以找回吗」。
-  - **结论：16 个账号完整找回，上游 18/18 存活**。恢复后 qoderwork 池 2 → 18，全部 `active / disabled=false / exhausted=false`。
-  - **唯一恢复源**：`/root/traework-recovery/PRE_RESTORE_auth_store_20261025_134113.sql`（md5 `b0320129…`，10-25 为恢复 traework 误删而建的全表 dump）——它是全表备份，顺带保住了另外 5 个 provider 的历史账号。
-  - **已排除的源**：11-06 23:21 迁移备份与 11-07 01:30 的 254 最终归档均 qoderwork=0（证明删除早于 11-06 23:21）；254 binlog 仅存 000036~000061（最早 11-06 03:43，24h 窗口）检索不到 qoderwork；`auth-backup-20260908` 只有 4 traework + 1 workbuddy。
-  - **决定性判据（新增事实）**：能否救回取决于**凭据家族**——`dt-/drt-`（OAuth device，drt- ~1 年、rotating）可恢复；`jt-/jrt-`（PAT，jrt- 仅 48h）超 48 小时即不可救。本次 18 个全为 `dt-/drt-`，`accessToken` 有效期到 2026-11-23，故 13 天后仍 18/18 上游 200 且返回 uid 与本地逐一匹配。
-  - **写回与验收**：先建三层还原点（`PRE_RESTORE_auth_store_20261107_141226.sql` 206KB / spool tar 56KB / 基线 `0`）；写 auth_store 16 行（`CAST(X'…' AS JSON)`）+ 原子写 spool 16 个 → 宿主 14:12:48 自动加载；**发现并修掉存储层不一致**：在役 2 个账号原本只存在于 spool、不在 auth_store（qoderwork 由插件直写物理文件），已用**当前 spool 最新内容**（非 dump 旧 token）补写，避免重启回滚旧凭据。最终三方对齐 `auth_store=18 / spool=18 / /accounts=18`。
-  - **行为验收**：抽样 3 个新恢复账号 `/test-active` 全 `ok=true`；真实入口 `POST /v1/chat/completions`（model `QoDuck`）`finish_reason=stop`、正文「正常」、credits 0.36 正常结算。
-  - 产物：`/root/qoderwork-recovery/`（`restored/` 16 个凭据文件 600、`manifest.json`、还原点、`backfill_2.sql`）。知识库：本次「凭据家族决定可恢复窗口」「全表 dump 是跨 provider 兜底源」两条已补进项目 skill。
-
-
-- 会话（2026-11-07 13:40）：**qoderwork 0.13.2 签到核验 + 修 3 缺陷**（已发布）——链路正常；修 `StreakDays` 硬编码 1、success 不返回该字段、签到零日志。`b43d089`→`32df5df`。
-- 会话（2026-11-07 02:00）：**qoderwork 0.13.1 修复「推理各种失败、断开」**——根因是 `recordAccountFailure` 无条件写盘禁用 + 三处把 HTTP 200 错误帧 remap 成 403（软限流被当凭据故障、首败即禁）。新增 `failover_disable_min_count`（默认 3）。`af216de`→`020313e`→`6c7d253`。
-- 当前会话（2026-11-07 01:50）：**非推理输出上限 64k → 128k（7 插件）**——`defaultMaxOutputTokens` 64000→128000；新增 CI `allow_partial` 输入（macOS runner 长期排不到机器，`darwin/arm64` 常常 cancelled，带该参数才能发布，判据看 Release job 而非 run conclusion）。`59a8fee`+`0d83256`+`cf54224`。
-- 会话（2026-11-07 01:10）：**qoderwork 0.13.0 面板批量导入**——多文件多选 + 统一识别（PAT/凭据/数组/accounts[]/JSONL/混排），判定先凭据后 PAT。`dfaecb6`→`8c41737`。
-- 会话（2026-10-31 下午）：**宿主 management.html 自动升级导致 10 插件面板集体 401**——根因：宿主把 key 混淆从 `enc::v1::`（XOR key 含 userAgent）换成 `enc::v2::`（去掉 UA），插件 `deobfuscate()` 只认 v1；放大因素是旧版曾把未解密密文写进 sessionStorage 且 `getKey()` 优先读它 → 永远 401 不自愈。修复：双前缀分支 + `readSessionKey()` 丢弃 `enc::` 遗留密文，覆盖 10 个 panel。`79b581e`+`368b4f3`。排查入口：`docker cp` 出生产 `management.html` 比对其 `enc::v` 前缀与 `yl()` 派生函数。
-- 会话（2026-10-31 凌晨）：**workbuddy 高峰期拥堵识别与失败分类修正（0.21.8）**——结论：不是「看不到状态」，而是拥堵被系统性误判成账号故障形成雪崩。新增 `failureScopeUpstreamBusy`（6021/queue.full）与 `failureScopeModelRateLimit`（6004）。六项变异全 KILLED。
-- 会话（2026-10-29 深夜）：**deepseek-v4.1-flash 16 点后变慢根因（只读）**——双因叠加：主力快号 `1d7eca06` 一条 429 后触发禁用且探活因无 failed_model 标记永久跳过；16:42 一次空操作配置保存触发全量 client reload 清空 session-affinity（17-20 点亲和命中率 0%，TTFB +23%）。两个待修缺陷记在 `doc/4-bugs/2026-10-29_160000_*.md`。
-- 会话（2026-10-26 晚）：**traework 0.5.3 面板改纯读积分快照**——删除前端 10 分钟定时器与连带死代码；新鲜度由后端 `watchdogIntervalDefault` 保证。
+- 会话（2026-11-07 14:15 及更早，已沉淀归档）：**qoderwork 16 个 / traework 12 个被删账号全量找回**——恢复源为 `/root/traework-recovery/PRE_RESTORE_auth_store_20261025_134113.sql`（全表 dump，跨 provider 兜底）；决定性判据是**凭据家族**：`dt-/drt-`（OAuth device，drt- 约 1 年）可恢复，`jt-/jrt-`（PAT，jrt- 仅 48h）超期即不可救。写回顺序 auth_store → spool 并做三方数量对齐，还原点三层（表 dump + spool 快照 + 数量基线）。详见项目 skill `project-cpa-workbuddy-plugin-account-data-recovery-rules`。
+- 会话（2026-11-07 13:40 及更早）：qoderwork 0.13.2 签到核验 + 修 3 缺陷（`b43d089`→`32df5df`）；0.13.1 修「推理各种失败、断开」（`af216de`→`020313e`→`6c7d253`）；0.13.0 面板批量导入（`dfaecb6`→`8c41737`）；2026-10-31 宿主 management.html 自动升级致 10 插件面板集体 401（`79b581e`+`368b4f3`，根因是 key 混淆从 `enc::v1::` 换成 `enc::v2::`）；2026-10-31 workbuddy 0.21.8 高峰期拥堵识别（`failureScopeUpstreamBusy` / `failureScopeModelRateLimit`）；2026-10-29 deepseek-v4.1-flash 16 点后变慢根因（只读，双因：快号单次 429 后禁用 + 空操作配置保存清空 session-affinity）；2026-10-26 traework 0.5.3 面板改纯读积分快照。细节见 `PROJECT_HISTORY.md` 与 `doc/`。
