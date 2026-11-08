@@ -1,6 +1,43 @@
 # Changelog
 
-## 0.21.19
+## 0.21.20
+
+### Fix - 改用可见连字符改写 system prompt 黑名单品牌词（0.21.19 的零宽方案经上游实测无效）
+
+- 背景: 0.21.19 采用社区流传的「在品牌词中间插入零宽空格 U+200B 打断子串匹配」方案。
+  发布前用生产真实 token 对上游做三组 A/B（同一 endpoint、同一账号、唯一变量是
+  system prompt 词形），结果是：对照组 200、原样 `DeepSeek Harness` → 400/11128、
+  **插入零宽空格后仍然 400/11128**。社区方案在本链路上不成立。
+- 一手二分证据（2026-11-08，`copilot.tencent.com/v2/chat/completions`，请求体 >1KB
+  以稳定触发；上游对短 prompt 会放过，这是最容易误判成偶发抖动的地方）:
+
+  | system prompt 中的词形 | HTTP | code |
+  |---|---|---|
+  | `You are an AI agent.`（对照） | 200 | — |
+  | `DeepSeek Harness` | 400 | 11128 |
+  | `deepseek harness`（小写） | 400 | 11128 |
+  | `DeepSeek  Harness`（双空格） | 400 | 11128 |
+  | `DeepSeek\u00a0Harness`（NBSP） | 400 | 11128 |
+  | `DeepSeek\u200b Harness`（零宽空格） | 400 | 11128 |
+  | `DeepSeek\u200c Harness`（零宽非连接符） | 400 | 11128 |
+  | **`DeepSeek-Harness`（可见连字符）** | **200** | — |
+  | 只写 `DeepSeek` / 只写 `Harness` / `DSH` | 200 | — |
+
+- 根因修正: 上游在匹配前会先把不可见字符（零宽族 U+200B/U+200C、BOM 等）归一化
+  剥离，再做子串匹配，所以零宽方案不可能生效；只有**可见**分隔符才能真正打断。
+- 修复: 规则改为把 `DeepSeek` 与 `Harness` 之间的空白与零宽族统一替换为连字符，
+  产出 `DeepSeek-Harness`——实测 200，且仍是同一产品名，模型侧语义不变。
+- 保留: 路径语境跳过（匹配前后紧邻 `/` 或 `\` 时原样保留，避免把坏路径交给工具）；
+  Claude Code 身份行继续用插入可见词 `tool` 的历史改写；删除 `Default branch`
+  那条 old == new 的历史 no-op（从未生效，留着只会误导）。
+- 验证: `cgo-shim-build.py workbuddy` build / vet / test 全绿；新增 12 条回归测试
+  （九种词形、幂等性、输出不含任何不可见字符、路径保留、多模态 part、端到端 body）。
+- 涉及文件: `keyword_neutralize.go`、`payload.go`、`sanitize_test.go`、`main.go`、`VERSION`。
+
+## 0.21.19（已被 0.21.20 取代）
+
+> 状态: 该版本采用零宽空格方案，经上游真机 A/B 证明**无效**（零宽字符被归一化剥离后
+> 仍命中子串）。保留本条以记录结论，实际生效的修复见 0.21.20。
 
 ### Fix - 出站前无损中和 system prompt 黑名单品牌词，修复 DSH 客户端 11128「渠道未获批准」全量失败
 

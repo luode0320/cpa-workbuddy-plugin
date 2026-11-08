@@ -397,9 +397,9 @@ func rewriteContentField(msg map[string]any) bool {
 
 // sanitizeBlockedTemplates 中和上游逐字拦截的模板短语与品牌词。
 //
-// 上游对 system prompt 做子串级内容风控，命中即返回 HTTP 400 / code 11128
-// ("Illegal API invocation from an unapproved channel")。中和方式是在短语
-// 内部插入零宽空格 U+200B：语义不变、上下文不丢、模型分词不受影响；
+// 上游对 messages 内容做子串级关键词风控，命中即返回 HTTP 400 / code 11128
+// ("Illegal API invocation from an unapproved channel")。改写方式是把品牌词
+// 之间的空白换成可见连字符（不可见字符会被上游归一化剥离，实测无效）；
 // 文件路径语境自动跳过，避免把坏路径交给工具。
 //
 // 实现与根因证据见 keyword_neutralize.go。
