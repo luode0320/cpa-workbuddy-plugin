@@ -1,5 +1,39 @@
 # TraeWork Plugin Changelog
 
+## 0.5.21
+
+### Fix - 第三方导出账号导入后落盘成 legacy 单文件，面板账号列表看不到
+
+- 背景（2026-11-08 用户现场）: 用户导入一个 Trae 账号 JSON（`{"accounts":[{"name":"用户…",
+  "token":"<JWT>","refreshToken":"…","deviceId":"…","machineId":"…","enabled":true,
+  "cookies":[…]}]}`）后，宿主「认证文件管理」里只看到一个 `traework` 条目，TraeWork
+  面板账号列表里却没有这个账号。
+- 根因: 这类导出格式**不带 `uid`/`userId`**，身份只编码在访问令牌 JWT 的
+  `payload.data.id`，展示名在顶层 `name`。旧版 `parseTraeAuth` 的 flat 路径只
+  映射 token/refreshToken/deviceId/machineId，`UserID` 为空 →
+  `authFileNameFor` 回退 legacy 单文件名 `traework.json`。而面板枚举
+  `hostAuthList` 按 `traework-` 前缀过滤，`traework.json`（前缀是 `traework.`）
+  不匹配，于是「导入成功、面板空白」，且宿主侧只留下一个 legacy 文件。
+- 修复:
+  - `credential.go` 新增 `uidFromTraeJWT`：从 JWT payload 的 `data.id` 提取
+    账号 id（不验签，只用于文件命名与展示）；`parseTraeAuth` 在 credential
+    解密后统一兜底——`Nickname` 空则取顶层 `name`，`UserID` 空则取 JWT
+    `data.id`，nested/flat 两种形状同时受益。显式 uid/nickname 一律优先。
+  - 新增 `legacy_auth_migrate.go`：watchdog 启动时（与 `purgeLegacy*` 同序列）
+    用不过滤前缀的 `hostAuthListAll` 找到 legacy `traework.json`，能解析出 uid
+    就迁移成 `traework-<uid>.json`（原样字节 + 原子直写 + 删除旧名）；同 uid
+    新文件已存在时只清孤儿。只对 legacy 名读盘，不触碰其它插件的认证。
+  - `host_auth.go` 抽出 `hostAuthListAll`（全量列表，仅供迁移使用）；
+    `hostAuthList` 行为不变，仍按 `traework-` 前缀过滤，避免把其它插件账号
+    纳入本插件面板与调度。
+- 验证: 新增 `credential_test.go` / `legacy_auth_migrate_test.go`，覆盖真实
+  1.json 形状（无 uid、JWT 含 `data.id`）解析出 `traework-181896157339808.json`、
+  name→nickname、显式字段优先、legacy 迁移/孤儿清理/宿主未就绪不写盘；
+  `python scripts/cgo-shim-build.py traework` build+vet+test 全绿（2026-11-08），
+  并以必失败哨兵确认新测试真实进入编译链路。
+- 影响范围: 仅 traework 插件的凭据解析与启动自愈；cookies 不参与业务认证
+  （请求走 `Cloud-IDE-JWT` Bearer 头），故导出格式里的 cookies 不落盘。
+
 ## 0.5.19
 
 ### Fix - 流式与非流式下行从不携带 usage，new-api 使用日志 Tokens 显示 "-"、该段流量零计费

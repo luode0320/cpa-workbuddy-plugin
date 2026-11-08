@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -84,9 +85,13 @@ type traeAuth struct {
 	RefreshExpiredAt string `json:"refreshExpiredAt,omitempty"`
 	UserID           string `json:"uid,omitempty"`
 	Nickname         string `json:"nickname,omitempty"`
-	Host             string `json:"host,omitempty"`
-	DeviceID         string `json:"deviceId,omitempty"`
-	MachineID        string `json:"machineId,omitempty"`
+	// Name 承接第三方账号导出格式的展示名（{"name":"用户..."}）。
+	// 这类格式没有 nickname/uid，解析后 Name 提升为 Nickname，uid 由
+	// JWT 兜底；原样保留该键便于导出回灌与回溯。
+	Name      string `json:"name,omitempty"`
+	Host      string `json:"host,omitempty"`
+	DeviceID  string `json:"deviceId,omitempty"`
+	MachineID string `json:"machineId,omitempty"`
 }
 
 // hasToken reports whether the auth carries a usable access token.
@@ -225,6 +230,40 @@ func decryptCredentialString(raw string) (*traeCredential, error) {
 	return &cred, nil
 }
 
+// uidFromTraeJWT 从 Trae 访问令牌（JWT）的 payload 段提取账号 id。
+//
+// 第三方账号导出格式（{"accounts":[{name, token, ...}]}）不单独给 uid，
+// 身份只编码在 JWT 的 payload.data.id 里。缺 uid 会让账号落盘成 legacy
+// 单文件 traework.json，被面板的 traework- 前缀过滤排除——导入返回成功
+// 但面板空白，正是本函数要修掉的静默失败。这里只取标识用于文件命名与
+// 展示，不验证签名：token 是否有效仍由上游鉴权决定。
+//
+// [参数]
+//   - token: Trae Cloud-IDE-JWT 访问令牌（header.payload.signature）
+//
+// [返回]
+//   - string: payload.data.id；非 JWT、base64 或 JSON 解析失败时返回空串
+func uidFromTraeJWT(token string) string {
+	parts := strings.Split(trimSpace(token), ".")
+	if len(parts) < 2 || trimSpace(parts[1]) == "" {
+		return ""
+	}
+	// JWT 规范使用无填充的 base64url；TrimRight 兼容少数实现补的 '='。
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return trimSpace(claims.Data.ID)
+}
+
 // parseTraeAuth builds the plugin-side auth model from a host auth-file JSON.
 // Accepts both shapes seen in the wild:
 //
@@ -234,6 +273,14 @@ func decryptCredentialString(raw string) (*traeCredential, error) {
 // When a credential blob is present it is decrypted and the runtime fields
 // (token/refreshToken/uid/nickname/host) are filled. A usable token is
 // required for the auth to be considered valid.
+//
+// [参数]
+//   - raw: 宿主 auth 文档或导入内容（nested / flat / 第三方导出账号对象）
+//
+// [返回]
+//   - *traeAuth: 解析后的认证模型；error: 无可用 token 或结构不可解析
+//
+// 最近修改时间：2026-11-08；改动原因：补 name→nickname 与 JWT data.id→uid 兜底。
 func parseTraeAuth(raw []byte) (*traeAuth, error) {
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("empty auth storage")
@@ -303,6 +350,16 @@ func parseTraeAuth(raw []byte) (*traeAuth, error) {
 		if a.Host == "" {
 			a.Host = cred.Host
 		}
+	}
+	// 身份兜底：第三方导出格式既没有 uid 也没有 nickname，展示名在顶层
+	// name、身份在 JWT 的 data.id。缺 uid 会让账号落盘成 legacy 单文件
+	// traework.json（面板前缀过滤不到），缺 nickname 则面板只显示 UID。
+	// 放在 credential 解密之后统一兜底，nested / flat 两种形状都覆盖。
+	if trimSpace(a.Nickname) == "" {
+		a.Nickname = trimSpace(a.Name)
+	}
+	if trimSpace(a.UserID) == "" {
+		a.UserID = uidFromTraeJWT(a.Token)
 	}
 	if !a.hasToken() {
 		return nil, fmt.Errorf("parse_error: missing access token (paste the credential value from storage.json)")

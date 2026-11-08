@@ -166,6 +166,9 @@ func watchdogLoop() {
 	// auto-disable pair (disabled:true + "Session expired" note) — the
 	// manual-toggle-only policy's legacy-flag sweep. Idempotent, runs once.
 	purgeLegacyDisabledFlags()
+	// 把缺 uid 的 legacy 单文件 traework.json 迁移成 per-uid 命名，让这类
+	// 导入过的账号重新出现在面板（见 legacy_auth_migrate.go）。同样幂等。
+	migrateLegacyAuthFiles()
 	runWatchdogTick()
 	for {
 		timer := time.NewTimer(watchdogIntervalDefault)

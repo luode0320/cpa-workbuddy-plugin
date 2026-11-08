@@ -25,8 +25,16 @@ type rpcHostAuthGetResponse struct {
 	JSON      json.RawMessage `json:"json"`
 }
 
-// hostAuthList returns all traework credentials known to the host.
-func hostAuthList() ([]pluginapi.HostAuthFileEntry, error) {
+// hostAuthListAll 返回宿主认证目录里的全部条目，不做任何前缀过滤。
+//
+// 只供 legacy 单文件迁移（legacy_auth_migrate.go）使用：它必须能看见
+// legacy 名 traework.json，而该名称恰好不匹配 traework- 前缀，会被常规
+// 枚举漏掉。除此之外的调用方一律走 hostAuthList，避免把其它插件的认证
+// 纳入本插件的面板与调度。
+//
+// [返回]
+//   - []pluginapi.HostAuthFileEntry: 宿主返回的全部认证文件条目；error: RPC 失败
+func hostAuthListAll() ([]pluginapi.HostAuthFileEntry, error) {
 	raw, err := hostCall(pluginabi.MethodHostAuthList, nil)
 	if err != nil {
 		return nil, err
@@ -39,15 +47,32 @@ func hostAuthList() ([]pluginapi.HostAuthFileEntry, error) {
 	if err := json.Unmarshal(env.Result, &resp); err != nil {
 		return nil, err
 	}
+	return resp.Files, nil
+}
+
+// hostAuthList returns all traework credentials known to the host.
+//
+// [参数]
+//   - 无
+//
+// [返回]
+//   - []pluginapi.HostAuthFileEntry: 文件名带 traework- 前缀的条目；error: RPC 失败
+//
+// 最近修改时间：2026-11-08；改动原因：改为复用 hostAuthListAll 再过滤，行为不变。
+func hostAuthList() ([]pluginapi.HostAuthFileEntry, error) {
+	files, err := hostAuthListAll()
+	if err != nil {
+		return nil, err
+	}
 	// Filter by filename prefix, NOT by Type/Provider: many existing auth
 	// files on disk don't carry a "type"/"provider" field, and the prefix is
 	// the only reliable cross-version discriminator.
-	out := make([]pluginapi.HostAuthFileEntry, 0, len(resp.Files))
+	out := make([]pluginapi.HostAuthFileEntry, 0, len(files))
 	// Disk files are named traework-<uid>.json (authFilePrefix), NOT
 	// providerName+"-" — filtering by "traework-provider-" hid every
 	// imported credential from the panel (accounts always empty).
 	prefix := authFilePrefix
-	for _, f := range resp.Files {
+	for _, f := range files {
 		if strings.HasPrefix(strings.ToLower(f.Name), prefix) {
 			out = append(out, f)
 		}
