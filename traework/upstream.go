@@ -282,12 +282,35 @@ func resolveModelOptions(model string) (fn, configName string) {
 	}
 	// 模型目录合并时记录了每个模型的上架通道（chat_v3 / solo_agent）。
 	// 聊天必须走同一通道，拿未上架通道的模型去问会回 4001。
+	// 查表用小写键，回填必须用目录登记的原值：客户端可能按品牌大小写传
+	// （MiniMax-M3.1-Flash），上游只认 config_name 的原始写法。
 	if value, ok := traeModelFunctions.Load(strings.ToLower(model)); ok {
 		if recorded, _ := value.(string); recorded != "" {
-			return recorded, model
+			return recorded, canonicalTraeConfigName(model)
 		}
 	}
-	return soloWorkLite, model
+	return soloWorkLite, canonicalTraeConfigName(model)
+}
+
+// canonicalTraeConfigName 把客户端模型名还原成目录登记的精确 config_name。
+//
+// 模型目录对外同时暴露 config_name（ID）与品牌展示名（Name），客户端可能用
+// 任一形态请求；上游只认 config_name 的原始大小写，其它写法一律回
+// "the param is invalid"。
+// [参数] model：客户端传入的模型名（可能大小写不一致）。
+// [返回] 目录中登记的精确 config_name；目录未收录时原样返回。
+// 最近修改时间：2026-11-08 19:10:00；改动原因：新增，堵住大小写不一致导致的全池轮询。
+func canonicalTraeConfigName(model string) string {
+	key := strings.ToLower(strings.TrimSpace(model))
+	if key == "" {
+		return model
+	}
+	if v, ok := traeCanonicalModelNames.Load(key); ok {
+		if name, _ := v.(string); name != "" {
+			return name
+		}
+	}
+	return model
 }
 
 // traeConfigNameAliases 把稳定的客户端短 ID 映射到 get_detail_param 返回的精确 config_name。

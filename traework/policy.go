@@ -278,6 +278,10 @@ var requestShapeFailureMarkers = []string{
 	"field validation",
 	"bad request",
 	"tool call failed",
+	// Trae 对模型名大小写/写法不匹配时回此文案（生产实测 2026-11-08：
+	// 客户端按 MiniMax-M3.1-Flash 请求，上游只认 config_name 原始写法）。
+	"param is invalid",
+	"the param is invalid",
 }
 
 // isRequestShapeErrorBody 判定失败正文是否表明「客户端请求体形状不合法」。

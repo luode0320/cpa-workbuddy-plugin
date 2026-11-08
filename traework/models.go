@@ -32,6 +32,10 @@ var traeCatalogFunctions = []string{traeCatalogChat, traeCatalogSolo}
 // key 为 config_name 小写。
 var traeModelFunctions sync.Map
 
+// traeCanonicalModelNames 记录 小写模型名 → 目录登记的精确 config_name。
+// 客户端按品牌大小写请求时，上游只认目录里的原始写法。
+var traeCanonicalModelNames sync.Map
+
 // traeModelDetailRequest 对齐 Trae get_detail_param 的模型发现请求结构。
 type traeModelDetailRequest struct {
 	Function          string   `json:"function"`            // 模型池功能类型，取 traeCatalogFunctions 中的通道。
@@ -415,6 +419,9 @@ func fetchTraeModels(auth *traeAuth) ([]pluginapi.ModelInfo, error) {
 			seen[key] = struct{}{}
 			models = append(models, entry.model)
 			traeModelFunctions.Store(key, entry.function)
+			if canonical := strings.TrimSpace(entry.model.ID); canonical != "" {
+				traeCanonicalModelNames.Store(key, canonical)
+			}
 		}
 	}
 	if len(models) == 0 {

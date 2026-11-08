@@ -65,6 +65,41 @@ func TestResolveModelOptionsPassesThroughExactConfigName(t *testing.T) {
 	}
 }
 
+// TestResolveModelOptionsReturnsCanonicalConfigName 验证品牌大小写请求回填精确 config_name。
+//
+// 生产缺陷回归（2026-11-08）：客户端按 MiniMax-M3.1-Flash 请求，目录登记的
+// config_name 是小写 minimax-m3.1-flash；旧实现只用小写键查通道、却把原始
+// 大小写透传给上游，上游回 "the param is invalid" 并逐个轮询整池账号。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-08 19:15:00；改动原因：新增，堵住大小写不一致导致的全池轮询。
+func TestResolveModelOptionsReturnsCanonicalConfigName(t *testing.T) {
+	resetTraeModelFunctions()
+	traeCanonicalModelNames.Range(func(k, _ any) bool { traeCanonicalModelNames.Delete(k); return true })
+	t.Cleanup(func() {
+		resetTraeModelFunctions()
+		traeCanonicalModelNames.Range(func(k, _ any) bool { traeCanonicalModelNames.Delete(k); return true })
+	})
+
+	// 1. 目录登记小写 config_name 与所属通道。
+	traeModelFunctions.Store("minimax-m3.1-flash", traeCatalogChat)
+	traeCanonicalModelNames.Store("minimax-m3.1-flash", "minimax-m3.1-flash")
+
+	// 2. 客户端按品牌大小写请求时，必须回填目录登记值而不是原样透传。
+	fn, configName := resolveModelOptions("MiniMax-M3.1-Flash")
+	if fn != traeCatalogChat {
+		t.Fatalf("function = %q, want %q", fn, traeCatalogChat)
+	}
+	if configName != "minimax-m3.1-flash" {
+		t.Fatalf("config_name = %q, want minimax-m3.1-flash", configName)
+	}
+
+	// 3. 未收录的模型维持原样透传，不得被改名。
+	if _, got := resolveModelOptions("Some-Unknown-Model"); got != "Some-Unknown-Model" {
+		t.Fatalf("unknown model config_name = %q, want passthrough", got)
+	}
+}
+
 // TestResolveModelOptionsUsesRecordedCatalogFunction 验证目录记录的通道优先于默认池。
 //
 // 上游按「配置 × 通道」判定模型是否上架，拿未上架通道的模型去问会回 4001，

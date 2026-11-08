@@ -25,6 +25,9 @@ func TestIsRequestShapeFailure(t *testing.T) {
 		{name: "限流文案不归此类", body: "too many requests", want: false},
 		{name: "额度耗尽不归此类", body: "quota exceeded", want: false},
 		{name: "普通 5xx 文本不归此类", body: "the model provider is temporarily unavailable", want: false},
+		// 生产实测（2026-11-08）：客户端按品牌大小写请求模型，上游回此文案。
+		{name: "模型名写法不匹配（生产实测）", body: "upstream 200: We're sorry, the param is invalid. Please try with a valid param.", want: true},
+		{name: "param is invalid 直写", body: "the param is invalid", want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
