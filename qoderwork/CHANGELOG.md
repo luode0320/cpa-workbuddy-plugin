@@ -1,5 +1,20 @@
 # QoderWork Plugin Changelog
 
+## 0.13.13
+
+### Fix - 套餐无权益（112）在流式路径同样不再跨账号扇出
+
+- 背景: 0.13.12 给失败信封补了 http_status=400，非流式路径的 112 已归零，
+  但流式路径缺少状态码通道，同型风险仍在。
+- 根因: 宿主流式 emit 通道只有 `stream_id` / `payload` / `error`，没有 http_status；
+  `error` 映射为 `chunk.Err` 纯文本，宿主取不到状态码即继续换凭据。
+- 修复: `marshalStreamErrorEnvelope` 在命中权益缺失时把 `error` 改写成标准
+  OpenAI 错误 JSON（`code=invalid_request_error`），走宿主 `IsRequestFault` 的
+  文本 JSON 通路，判为请求级故障后停止换凭据。普通错误保持纯文本。
+- 验证: `cgo-shim-build.py qoderwork` build / vet / test 全绿；新增
+  `TestMarshalStreamErrorEnvelopeEntitlementJSON`；变异移除包装后测试失败。
+- 涉及文件: `stream.go`、`policy_test.go`。
+
 ## 0.13.12
 
 ### Fix - 套餐无权益（112）不再跨账号扇出

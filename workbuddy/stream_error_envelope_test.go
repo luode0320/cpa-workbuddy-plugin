@@ -84,6 +84,63 @@ func TestMarshalStreamErrorEnvelopeCarriesResetStatus(t *testing.T) {
 	}
 }
 
+// TestMarshalStreamErrorEnvelopeChannelBlockJSON 锁定流式通道的上游拦截承载方式。
+//
+// 宿主流式 emit 只传纯文本 error，取不到 http_status；请求级判定因此必须靠
+// 错误文本本身是合法 JSON 且 error.code 命中宿主白名单。
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-08 15:40:00；改动原因：新增，流式路径缺状态码通道。
+func TestMarshalStreamErrorEnvelopeChannelBlockJSON(t *testing.T) {
+	blocked := `upstream 400: {"code":11128,"msg":"Illegal API invocation from an unapproved channel","retry_policy":{"retry":false}}`
+	raw, err := marshalStreamErrorEnvelope("stream-cb", blocked)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var errText string
+	if err := json.Unmarshal(probe["error"], &errText); err != nil {
+		t.Fatalf("error field: %v (raw=%s)", err, raw)
+	}
+	// 错误文本本身必须是合法 JSON，且 error.code 命中宿主请求级白名单。
+	if !json.Valid([]byte(errText)) {
+		t.Fatalf("channel block error text must be valid JSON: %s", errText)
+	}
+	var parsed struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(errText), &parsed); err != nil {
+		t.Fatalf("parse wrapped error: %v", err)
+	}
+	if parsed.Error.Code != "invalid_request_error" {
+		t.Fatalf("code = %q, want invalid_request_error", parsed.Error.Code)
+	}
+	if !strings.Contains(parsed.Error.Message, "11128") {
+		t.Fatalf("message must keep the upstream code for triage: %q", parsed.Error.Message)
+	}
+
+	// 普通错误仍以纯文本发送，不得被包装成请求级故障。
+	plain, err := marshalStreamErrorEnvelope("stream-pl", "upstream 500: internal error")
+	if err != nil {
+		t.Fatalf("marshal plain: %v", err)
+	}
+	var plainProbe map[string]json.RawMessage
+	if err := json.Unmarshal(plain, &plainProbe); err != nil {
+		t.Fatalf("unmarshal plain: %v", err)
+	}
+	var plainText string
+	_ = json.Unmarshal(plainProbe["error"], &plainText)
+	if json.Valid([]byte(plainText)) {
+		t.Fatalf("non-block error must stay plain text: %s", plainText)
+	}
+}
+
 // TestEnvelopeHTTPStatusForChannelBlock 锁定上游拦截（11128）的信封状态码。
 //
 // 生产缺陷回归（2026-11-08）：渠道级拦截在插件内已停止换号，但信封不带

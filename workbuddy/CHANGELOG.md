@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.21.16
+
+### Fix - 上游拦截（11128）在流式路径同样不再跨凭据扇出
+
+- 背景: 0.21.15 给失败信封补了 http_status=400，但生产复验显示 11128 仍单请求扇出
+  17 个账号（部署后 25 分钟 65 个请求）。112 已归零，说明非流式路径修好了，
+  流式路径没修好。
+- 根因: 宿主流式 emit 通道（`rpcStreamEmitRequest`）只有 `stream_id` / `payload` /
+  `error` 三个字段，**没有 http_status**；`error` 被映射为 `chunk.Err` 纯文本，
+  宿主 `statusCodeFromError` 恒得 0，`isRequestInvalidError` 判否，
+  `executeStreamWithModelPool` 继续换下一个凭据。
+- 修复: `marshalStreamErrorEnvelope` 在命中上游拦截时把 `error` 改写成标准
+  OpenAI 错误 JSON（`{"error":{"code":"invalid_request_error","type":"invalid_request_error","message":...}}`）。
+  宿主 `clienterror.IsRequestFault` 的第二条通路要求错误文本本身是合法 JSON 且
+  `error.code` 命中其白名单，命中即判请求级故障，不冷却凭据、不跨凭据轮转。
+  普通错误仍以纯文本发送，行为不变。
+- 验证: `cgo-shim-build.py workbuddy` build / vet / test 全绿；新增
+  `TestMarshalStreamErrorEnvelopeChannelBlockJSON`（JSON 合法性、code 白名单、
+  保留 11128 便于排障、普通错误不包装四条断言）；变异移除包装后测试失败。
+- 涉及文件: `stream.go`、`stream_error_envelope_test.go`。
+
 ## 0.21.15
 
 ### Fix - 上游拦截（11128）不再跨凭据扇出整池

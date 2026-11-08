@@ -44,7 +44,33 @@ func marshalStreamErrorEnvelope(streamID, message string) ([]byte, error) {
 	if status := envelopeHTTPStatusForError(message); status > 0 {
 		body["http_status"] = status
 	}
+	// 流式错误通道只承载纯文本，宿主取不到 http_status；套餐权益缺失必须改用
+	// 标准 OpenAI 错误 JSON 承载，宿主才能判为请求级故障并停止换凭据。
+	if isEntitlementRequiredFailure(message) {
+		body["error"] = requestScopedErrorBody(message)
+	}
 	return json.Marshal(body)
+}
+
+// requestScopedErrorBody 把失败文本包装成宿主可识别的请求级错误 JSON。
+//
+// 宿主的请求级判定有两条通路：状态码通道（流式不可用）与错误文本本身是合法
+// JSON 且 error.code 命中其内置白名单。这里走后者，code 取 invalid_request_error。
+// [参数] message：已脱敏的失败文本。
+// [返回] 标准 OpenAI 错误 JSON 字符串；序列化失败时原样返回 message。
+// 最近修改时间：2026-11-08 15:45:00；改动原因：新增，流式路径缺少状态码通道。
+func requestScopedErrorBody(message string) string {
+	raw, err := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"code":    "invalid_request_error",
+			"type":    "invalid_request_error",
+			"message": message,
+		},
+	})
+	if err != nil {
+		return message
+	}
+	return string(raw)
 }
 
 // emitStreamErrorEnvelope 通过 host.stream.emit 信封的 "error" 字段发送终态错误。
