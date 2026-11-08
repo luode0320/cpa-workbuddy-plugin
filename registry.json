@@ -600,7 +600,7 @@
       "name": "Coze Provider",
       "description": "Coze (扣子) account provider for CLIProxyAPI: one-shot same-origin authorization script that trades a login token for session cookies, login-state validation, triple-keyed cookie persistence with rolling token renewal, and a dedicated management panel.",
       "author": "luode0320",
-      "version": "0.7.4",
+      "version": "0.7.5",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
       "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/Coze.png",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/coze",
@@ -617,44 +617,37 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/coze-provider-v0.7.4/coze-provider_0.7.4_darwin_amd64.zip",
-            "sha256": "2abcb3068560ed39f1b6093493e5b8b800e8f1ba314746dc04152c8ce75e9d7f",
-            "size": 3249581
-          },
-          {
-            "goos": "darwin",
-            "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/coze-provider-v0.7.4/coze-provider_0.7.4_darwin_arm64.zip",
-            "sha256": "44a695c6e56d4e923f2d659a13546f04c4f5b61beb9fde85e05b982a59c89900",
-            "size": 2997506
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/coze-provider-v0.7.5/coze-provider_0.7.5_darwin_amd64.zip",
+            "sha256": "d67d3add356021bde63557341ddee8d44102bc3aa733dc4fab4640862480ca30",
+            "size": 3249776
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/coze-provider-v0.7.4/coze-provider_0.7.4_linux_amd64.zip",
-            "sha256": "4d06f977f1b2843feb34d2c17bb1b4f7105defdc3cd6701017d9cb599c2ac11e",
-            "size": 3408672
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/coze-provider-v0.7.5/coze-provider_0.7.5_linux_amd64.zip",
+            "sha256": "7520509ab46094c655b2624feba3dcbc0439e9e7c67df8549f0da2be7f0e0556",
+            "size": 3408820
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/coze-provider-v0.7.4/coze-provider_0.7.4_linux_arm64.zip",
-            "sha256": "d7fb3a08d39efee628c6e088abf8bf441a9ea0788c25e91fbaea4abf64401c26",
-            "size": 3093071
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/coze-provider-v0.7.5/coze-provider_0.7.5_linux_arm64.zip",
+            "sha256": "fbed5cbf03316d89fd2131eebea665d472baceabaaa3417abc76957cd04b32ad",
+            "size": 3093082
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/coze-provider-v0.7.4/coze-provider_0.7.4_windows_amd64.zip",
-            "sha256": "ce205555bf418a15d509dcef88cb10cd51a4b0369eca2209e0cbe4342fcd7beb",
-            "size": 3323290
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/coze-provider-v0.7.5/coze-provider_0.7.5_windows_amd64.zip",
+            "sha256": "01b5bf109a71426e8f6b5740665ce208495c55d6d0d276b246bda299fd19bd35",
+            "size": 3323539
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/coze-provider-v0.7.4/coze-provider_0.7.4_windows_arm64.zip",
-            "sha256": "6659dac6048d9212e5bccda6e2af59ab2f9dc2eccfa0f5f16340e53d24c74548",
-            "size": 3067839
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/coze-provider-v0.7.5/coze-provider_0.7.5_windows_arm64.zip",
+            "sha256": "b121b6c8f6ac4bcf4ed43af710c6a2503eb023da0f65c37a3237b9f8c430f057",
+            "size": 3066252
           }
         ]
       }
