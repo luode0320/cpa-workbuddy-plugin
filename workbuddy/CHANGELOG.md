@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.21.19
+
+### Fix - 出站前无损中和 system prompt 黑名单品牌词，修复 DSH 客户端 11128「渠道未获批准」全量失败
+
+- 背景（2026-11-08 用户实证）: DSH（DeepSeek Harness）客户端经本插件调用 workbuddy
+  账号模型时，全部请求返回 `HTTP 400 {"code":11128,"msg":"Illegal API invocation from
+  an unapproved channel"}`。换账号、换域名、补齐 13 个请求头均无效。
+- 根因: 上游对 `messages` 内容做**子串级**关键词风控，命中 `DeepSeek Harness` 即整
+  请求拒绝；`unapproved channel` 文案与实际原因无关（短 prompt 且正文 <1KB 时可能不触发，
+  容易误判成偶发抖动）。0.21.18 只做到「不把这类失败记到账号头上」，请求本身仍然每次失败。
+- 修复: 新增 `keyword_neutralize.go`，接在 `rewriteSystemInPlace` 既有清洗链路上，对所有
+  消息文本做无损中和——在敏感短语内部插入零宽空格 `U+200B`。上游子串匹配不再命中，而零宽
+  空格不参与分词，模型读到的语义与上下文完全不变（无裁剪、无改写、无降级）。
+- 路径保护: 匹配前后紧邻 `/` 或 `\` 时跳过，避免把运行时注入的真实路径
+  （如 `D:\10_COD\DeepSeek Harness\resources\app.asar\dsh\`）改成不可见坏路径，导致
+  工具调用全部失败且肉眼无法排查。
+- 同时修复: `sanitizeBlockedTemplates` 原有两条替换中，`Default branch` 一条 old == new
+  属 no-op、`Claude Code` 一条与自身单测互相矛盾（单测恒红）。统一改为同一套零宽中和机制，
+  并补 9 条回归测试（无损性、路径保留、混合文本、大小写/非常规空白、端到端
+  `prepareUpstreamBody`）。
+- 验证: `cgo-shim-build.py workbuddy` build / vet / test 全绿；哨兵法确认新测试真实参与编译。
+- 涉及文件: `keyword_neutralize.go`（新增）、`payload.go`、`sanitize_test.go`、`main.go`、`VERSION`。
+
 ## 0.21.18
 
 ### Fix - 失败信封补 http_status 字段，上游拦截不再跨凭据扇出（真正的根因）

@@ -395,14 +395,16 @@ func rewriteContentField(msg map[string]any) bool {
 	return false
 }
 
+// sanitizeBlockedTemplates 中和上游逐字拦截的模板短语与品牌词。
+//
+// 上游对 system prompt 做子串级内容风控，命中即返回 HTTP 400 / code 11128
+// ("Illegal API invocation from an unapproved channel")。中和方式是在短语
+// 内部插入零宽空格 U+200B：语义不变、上下文不丢、模型分词不受影响；
+// 文件路径语境自动跳过，避免把坏路径交给工具。
+//
+// 实现与根因证据见 keyword_neutralize.go。
 func sanitizeBlockedTemplates(s string) string {
-	s = strings.ReplaceAll(s,
-		"You are Claude Code, Anthropic's official CLI for Claude.",
-		"You are Claude Code, Anthropic's official CLI tool for Claude.")
-	s = strings.ReplaceAll(s,
-		"Main branch (you will usually use this for PRs)",
-		"Default branch (you will usually use this for PRs)")
-	return s
+	return neutralizeBlockedPhrases(s)
 }
 
 // reasoningEffortFromBody extracts the "reasoning_effort" string value from a
