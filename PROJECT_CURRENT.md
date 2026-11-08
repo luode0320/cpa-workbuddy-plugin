@@ -27,11 +27,23 @@
 - **2026-11-07 20:33 workbuddy 已升级 0.21.12 → 0.21.13**（失败禁用与手动启用联动，`hot reloaded active_version=0.21.13 retired 0.21.12`，落盘 sha256 `574f6921…` 与本地 zip 一致）。
 - **2026-11-07 21:25 三插件同步升级**：workbuddy-ai **0.1.38** / traework **0.5.14** / qoderwork **0.13.7**（同型缺陷整改），三者 `hot reloaded` 且 `.so` sha256 与 release zip 一致。
 - **2026-11-07 22:17 workbuddy 升级 0.21.13 → 0.21.14**（P0 分阶段超时 + P1 HostCallbackID 透传，见下条会话摘要）：`hot reloaded active_version=0.21.14 retired_version=0.21.13`，落盘 sha256 `8433a54c…` 与 release zip 逐字节一致；只有 5 平台资产（缺 `darwin_arm64`）。
+- **2026-11-08 14:51 traework 升级 0.5.18 → 0.5.19**（下行 usage 帧缺失修复，`hot reloaded active_version=0.5.19 retired 0.5.18`，落盘 sha256 `27d74d19…` 与 release zip 逐字节一致；容器未重启）。同刻 workbuddy 0.21.15 / qoderwork 0.13.12 由并行会话上线。
 - 2026-10-25 历史发布批（已过期，仅存档）：zcode 0.3.1 / qoderwork 0.12.1 / traework 0.5.1 / workbuddy 0.21.2 / cursor 0.1.6 / qoder-ai 0.1.31 / coze 0.6.2 / qwenwork 0.2.9 / copilot 0.1.11 / workbuddy-ai 0.1.30 / token-usage 0.2.8（细节见 git log 与 CHANGELOG）。
 - 活动工作区：F:\cpa-plugin
 - 当前时间：2026-11-07 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 会话（2026-11-08 13:24-15:36）：**traework 0.5.19 —— 下行帧从不携带 usage 致 new-api Tokens 全为 "-" 零计费**（详见 `doc/4-bugs/2026-11-08_135204_traework下行从不携带usage致new-api全量Tokens为空零计费根因诊断.md`）：
+  - 诉求：new-api 使用日志里 `doubao-seed-2.1-pro` 的 Tokens 列全是 `-`，问是否出错；随后授权「执行并经过完整测试后再上线」。
+  - **定性**：请求本身全部成功（首字 14~39s 是思考型模型正常行为），是**计费载体缺席**。`doubao-seed-2.1-pro` 的真实承接方是 **traework-provider**（`upstream.go` 的 `traeConfigNameAliases` 映射到 `Doubao-Seed-2.1-Pro`），不是已下线的 doubao 插件。
+  - **双点根因**：①`chunkDelta` / `toolCallDeltaChunk` / `completionAggregate` 三个构造函数只拼 `id/object/created/model/choices`，**从不写 `usage`**，四条下行路径的终止帧全走它们；②上游 `token_usage` 事件真实用量只喂内部 `traeUsageCollector` 写 NDJSON feed 给自家 dashboard，**从不转下行**。决定性事实：宿主 `pluginhost` 对插件 executor 只透传 payload、**没有 usage 观测器**（`ObserveOpenAIStream` 只挂在 openai_compat / kimi / codex 原生 executor），插件不自挂就等于用量彻底丢失。
+  - **修复**：抽出 `deltaChunk` 骨架 + `chunkFinishWithUsage`（终止帧唯一出口）；新增 `usageToOpenAI`（输出 `prompt_tokens`/`completion_tokens`/`total_tokens`，cached 落 `prompt_tokens_details.cached_tokens`、reasoning 落 `completion_tokens_details.reasoning_tokens`——**宿主不读顶层 `reasoning_tokens`**，全零返回 nil）；四条路径接入（collect / pump / async 协调器 / 非流式聚合新增 `usageObj` 参数）；新增 `normalizeTraeDetail`（任一桶非零即真实并补 total）与 `tokensFromChars`（短输出保底 1 token，否则估算 0 等于不挂 usage）。`chunkDelta` 恒定不挂 usage（中间帧带 usage 会被客户端按重复计费累加）。**collect/aggregate 返回契约保持不变**（首轮改成返回兜底值导致既有用例 `TestCollectTraeStreamWithoutTokenUsageEmptyDetail` 失败，随即恢复）。
+  - **验证**：新增 12 个用例（`usage_emit_test.go` / `usage_emit_async_test.go`），**6 组变异全部 KILLED**（其中异步路径首轮 SURVIVED，补异步用例后 KILLED）；`cgo-shim-build.py traework` build/vet/test 全绿，gofmt 全 FMT_OK。
+  - **发布**：`563d8bd`（代码）→ CI `42453870678`（Release success，`darwin/arm64` 的 macos-14 runner 连续三次被取消，与 0.5.18 同状态）→ `d303204`（registry 0.5.19，5 artifacts）→ 生产 install `restart_required=false` + `hot reloaded`，**未重启容器**。
+  - **生产验收**：直连 CPA 流式响应 380,644 字节，**usage 帧数 = 1 且在终止帧**（`prompt=53 / completion=1854 / reasoning=1491 / total=1907`）；经 new-api 实测 `oneapi.logs` 流式 53/843/quota 87、非流式 55/560/quota 59 **均非零**，与 feed 同刻记录数值同源。**零值率：修复前 57 条中 40 条零值（70.2%）→ 修复后 0%**。
+  - **新踩坑**：①管理密钥在 `config.yaml` 是 bcrypt，明文取插件段 `cpa_management_key`（9 字节），须用服务器自带 `bcrypt.checkpw` 离线验证后再用，错 key 会按源 IP 封 30 分钟；②`nginx cpa.conf` 的 `upstream cpa_pool` 里 `155.103.157.254:8317` 已下线（connection refused），weight=3 的轮询会白白失败——不影响 usage 修复但会拖慢请求；③`download-release-assets.py` 参数是 `<version> <plugin>`（与 publish 相反）。
+  - **遗留**：修复前 40 条零值记录无法回溯；`darwin_arm64` 产物缺失（runner 取消，与 0.5.18 同）。
 
 - 会话（2026-11-07 21:45 起，跨 6 轮）：**qoder/trae 生产高强度压测（详见 doc/4-bugs/2026-11-07_223000_qoder-trae畸形请求打穿整池账号根因诊断与修复.md）**
   - **诉求**：高强度测试 qoder/trae 的 deepseek-flash 找 bug 并修复；同时关注 workbuddy 的 deepseek-v4.1-flash。
