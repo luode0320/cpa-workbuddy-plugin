@@ -77,6 +77,35 @@ func TestUsageDetailFromTraeMapNestedReasoningFallback(t *testing.T) {
 	}
 }
 
+// TestUsageDetailFromTraeMapOpenAICachedTokens 锁定 prompt_tokens_details.cached_tokens 解析。
+//
+// Trae 当前不返回该字段（社区反代亦未处理），此处对齐 OpenAI 标准：
+// 上游一旦提供即应进入 feed 与下行 usage，而不是被当成 0。
+// [参数] t: 当前测试。
+// [返回] 无。
+// 最近修改时间：2026-11-08 21:20:00；改动原因：新增 OpenAI 形态缓存字段解析。
+func TestUsageDetailFromTraeMapOpenAICachedTokens(t *testing.T) {
+	var m map[string]any
+	raw := `{"prompt_tokens":1000,"completion_tokens":50,"total_tokens":1050,"prompt_tokens_details":{"cached_tokens":800}}`
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	d := usageDetailFromTraeMap(m)
+	if d.CachedTokens != 800 {
+		t.Fatalf("CachedTokens = %d; want 800 (prompt_tokens_details.cached_tokens)", d.CachedTokens)
+	}
+
+	// Anthropic 形态优先，不被子对象覆盖。
+	m2 := map[string]any{
+		"prompt_tokens":            int64(1000),
+		"cache_read_input_tokens":  int64(700),
+		"prompt_tokens_details":    map[string]any{"cached_tokens": int64(800)},
+	}
+	if d2 := usageDetailFromTraeMap(m2); d2.CacheReadTokens != 700 {
+		t.Fatalf("CacheReadTokens = %d; want 700 (顶层形态优先)", d2.CacheReadTokens)
+	}
+}
+
 // TestUsageDetailFromTraeMapEmptyAndAliases 锁定空输入返回零 Detail，且顶层
 // reasoning_tokens 存在时不被子对象零值覆盖；顺带覆盖 input_tokens/output_tokens
 // 别名键形态。

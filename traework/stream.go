@@ -385,6 +385,23 @@ func usageDetailFromTraeMap(m map[string]any) usage.Detail {
 		CacheCreationTokens: num("cache_creation_input_tokens"),
 		ReasoningTokens:     num("reasoning_tokens"),
 	}
+	// OpenAI 惯例形态：cached_tokens 位于 prompt_tokens_details 子对象。
+	// Trae 当前不返回该字段（社区反代亦未处理），此处对齐标准，上游一旦提供即生效。
+	if d.CacheReadTokens == 0 && d.CachedTokens == 0 {
+		if pt, ok := m["prompt_tokens_details"].(map[string]any); ok {
+			if v, ok := pt["cached_tokens"]; ok {
+				switch n := v.(type) {
+				case float64:
+					d.CachedTokens = int64(n)
+				case int64:
+					d.CachedTokens = n
+				case json.Number:
+					i, _ := n.Int64()
+					d.CachedTokens = i
+				}
+			}
+		}
+	}
 	// OpenAI 惯例形态：reasoning_tokens 位于 completion_tokens_details 子对象
 	// （CodeBuddy 等）。Trae 顶层已命中时跳过，避免子对象零值覆盖。
 	if d.ReasoningTokens == 0 {

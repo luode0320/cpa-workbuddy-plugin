@@ -1,5 +1,23 @@
 # TraeWork Plugin Changelog
 
+## 0.5.25
+
+### Fix - 解析 OpenAI 标准形态的 prompt cache 字段（前向兼容）
+
+- 背景: 2026-11-08 观测到 traework 的 input 中位 **16.2 万 tokens**，但 72h 内
+  `cache_read_tokens` / `cache_creation_tokens` 命中率恒为 **0%**。
+- 排查结论: 同类开源反代（`connectedgraph/trae2api-web`）的全部 `.go` 文件**同样
+  不处理任何 cache 关键字**，说明 Trae 上游目前不返回缓存信息；该延迟无法在
+  插件侧通过缓存命中改善。
+- 修复（前向兼容）: `usageDetailFromTraeMap` 增补 OpenAI 标准形态
+  `prompt_tokens_details.cached_tokens` 的解析（此前只认 Anthropic 形态的
+  `cache_read_input_tokens`）。Anthropic 形态仍优先，不被子对象覆盖。
+  上游一旦开始提供该字段，feed 与下行 usage 即刻生效。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增
+  `TestUsageDetailFromTraeMapOpenAICachedTokens`（解析 + 优先级两条断言）；
+  变异禁用该分支后测试失败。
+- 涉及文件: `stream.go`、`token_usage_test.go`。
+
 ## 0.5.24
 
 ### Fix - 识别套餐限制（1005）并补失败信封状态码，堵住单请求换遍整池
