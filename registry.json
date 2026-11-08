@@ -227,8 +227,8 @@
             "goos": "windows",
             "goarch": "arm64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.29/traework-provider_0.5.29_windows_arm64.zip",
-            "sha256": "41e7a4ce16076783b222d845fddafe084b41f4190a06a0bfd3a07ff8286ce2b0",
-            "size": 3065895
+            "sha256": "5947bc7f27f7d293a630fdef91b7dd6dce32d2ace6b4a5dbcba90e5f57c5cde3",
+            "size": 3065896
           }
         ]
       }
