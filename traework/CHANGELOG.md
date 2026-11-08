@@ -25,6 +25,27 @@
   `VERSION`、`accountFailover_test.go`、`failover_disable_switch_test.go`（新增）、
   `test/traework/failover_state_test.go`。
 
+## 0.5.29
+
+### Fix - 伪完成判定输入阈值 200 → 20000 字符，消除长任务短答误判
+
+- 背景: 2026-11-09 生产观测到 traework `deepseek-v4.1-flash` 失败率 **16.8%**
+  （264/1575），其中 218 条为 status=200 失败。追溯日志发现单请求 `3332598a`
+  连续 `pseudo retry` **11 次**，换遍 11 个账号全部判伪完成，最终 pool exhausted。
+- 根因: `isPseudoCompletion` 的输入阈值 `pseudoCompletionMinInputChars = 200`
+  **过低**。长任务不必然要求长输出 —— 模型判断无需展开时回一句「好的」是完全
+  正常的短答，但 input 字符数超过 200 就被判伪完成，触发换号重试。
+  实测佐证：632 条伪完成样本的 input_tokens **中位仅 188**（全部是短请求被误判），
+  而成功请求的 input 中位是 24.9 万。
+- 修复: 阈值提到 **20000 字符**（约 5000 token）。真正的伪完成（上游掐断长任务）
+  input 通常在数万字符量级，20000 足以区分；生产短请求（中位 188）不再误判。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增
+  `pseudo_input_threshold_test.go` 锁定阈值边界（低于不判伪、达到判伪、阈值本身
+  不得低于 10000）；同步更新 `test/traework/` 下 4 个镜像测试的长输入构造值；
+  变异把阈值改回 200 后新测试失败。
+- 涉及文件: `stream.go`、`pseudo_input_threshold_test.go`（新增）、
+  `pseudo_toolcalls_test.go`、`test/traework/` 下 4 个镜像测试。
+
 ## 0.5.28
 
 ### Fix - 「换号预算耗尽」判为请求级终局，堵住插件换号与宿主换号双重放大

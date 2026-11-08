@@ -39,7 +39,7 @@ func TestRunTraeSyncStreamRetriesPseudoCompletionOnSameRequest(t *testing.T) {
 		AuthID:        "auth-a",
 		AuthUID:       authA.UserID,
 		Started:       time.Now(),
-		InputChars:    3000,
+		InputChars:     30000,
 		Budget:        1,
 	}, deps)
 	if err != nil {
@@ -82,7 +82,7 @@ func TestRunTraeSyncStreamFailsWhenPseudoCompletionPoolIsExhausted(t *testing.T)
 		AuthID:        "auth-a",
 		AuthUID:       authA.UserID,
 		Started:       time.Now(),
-		InputChars:    3000,
+		InputChars:     30000,
 		Budget:        1,
 	}, deps)
 	if err == nil || !strings.Contains(err.Error(), "account pool exhausted after 2 attempt(s)") {
@@ -114,7 +114,7 @@ func TestRunTraeSyncStreamDoesNotRetryAnAccountTwice(t *testing.T) {
 	}
 	chunks, err := runTraeSyncStream(authA, nil, traeSyncStreamContext{
 		Model: "qwen-max-latest", UpstreamModel: "qwen3.8-max", AuthID: "auth-a", AuthUID: authA.UserID,
-		Started: time.Now(), InputChars: 3000, Budget: 3,
+		Started: time.Now(), InputChars:     30000, Budget: 3,
 	}, deps)
 	if err == nil || !strings.Contains(err.Error(), "account pool exhausted after 2 attempt(s)") {
 		t.Fatalf("err = %v, want two-attempt pool exhaustion", err)

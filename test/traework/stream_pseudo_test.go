@@ -26,7 +26,7 @@ func TestIsPseudoCompletion(t *testing.T) {
 	// feed a few thousand chars, a greeting is a few chars.
 	const (
 		shortInput = 10
-		longInput  = 3000
+		longInput  = 30000
 	)
 	pseudoShort := strings.Repeat("x", 15*4-1) // ≈14 tokens (59 chars), below 600
 	pseudoMid := strings.Repeat("x", 120*4-1)  // ≈119 tokens (479 chars), below 600 — the 01:49 gap
@@ -86,7 +86,7 @@ func TestPumpTraeStreamAttemptHealthGate(t *testing.T) {
 		out.WriteString("event: done\ndata: {}\n\n")
 		return out.String()
 	}
-	ctx := traeStreamPumpContext{Model: "qwen-max-latest", StatusCode: 200, InputChars: 3000}
+	ctx := traeStreamPumpContext{Model: "qwen-max-latest", StatusCode: 200, InputChars:     30000}
 
 	// 1. 599 字节正文后 done 必须判伪完成，失败账号的任何分片都不能下发。
 	var emitted [][]byte
@@ -215,7 +215,7 @@ func TestPumpTraeStreamAttemptReasoningFlushes(t *testing.T) {
 		out.WriteString("event: done\ndata: {}\n\n")
 		return out.String()
 	}
-	ctx := traeStreamPumpContext{Model: "qwen3.8-max", StatusCode: 200, InputChars: 3000}
+	ctx := traeStreamPumpContext{Model: "qwen3.8-max", StatusCode: 200, InputChars:     30000}
 
 	// 1. reasoning-only 流累计 ≥600 字符（两段 300+300）必须 gate 打开并按序放行，
 	//    且 isPseudoCompletion 对 reasoning 长流豁免 → 不判伪。

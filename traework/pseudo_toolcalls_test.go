@@ -86,10 +86,12 @@ func TestIsPseudoCompletionToolCallsExempt(t *testing.T) {
 	short := []pluginapi.ExecutorStreamChunk{
 		shortContentChunk(t, "我先读取一下项目文件"),
 	}
-	if isPseudoCompletion(short, 5000, true) {
+	// 长输入用 30000：高于 pseudoCompletionMinInputChars（20000），
+	// 与生产长任务量级一致（20 万 token ≈ 80 万字符）。
+	if isPseudoCompletion(short, 30000, true) {
 		t.Fatalf("isPseudoCompletion(hasToolCalls=true) = true; want false (tool-call stream exempt)")
 	}
-	if !isPseudoCompletion(short, 5000, false) {
+	if !isPseudoCompletion(short, 30000, false) {
 		t.Fatalf("isPseudoCompletion(hasToolCalls=false) = false; want true (original pseudo detection preserved)")
 	}
 	// 短输入 + 短答不受影响（原语义）。

@@ -800,8 +800,16 @@ func attemptTTFTNS(attemptStarted, requestStarted, firstOutputAt time.Time) uint
 // （860+ 字符）不受影响。旧实现用 120 字符阈值，漏掉 ~120 token（≈480 字符）
 // 的伪完成。用字符数而非估算 token，避免短输出 chars/4 取整归零误判。
 const (
-	pseudoCompletionMaxChars      = 600
-	pseudoCompletionMinInputChars = 200
+	pseudoCompletionMaxChars = 600
+	// pseudoCompletionMinInputChars 是判伪完成所需的最小输入字符数。
+	//
+	// 取 20000（约 5000 token）：长任务不必然要求长输出——模型判断无需展开时
+	// 回一句「好的」是完全正常的短答。阈值过低会把这类健康短答误判为伪完成，
+	// 触发换号重试。2026-11-09 生产实测：单请求连续 pseudo retry 11 次换遍
+	// 11 个账号全部判伪，最终 pool exhausted；同期 632 条伪完成样本的 input
+	// 中位仅 188 字符，全部是短请求被误判。
+	// 真正的伪完成（上游掐断长任务）input 通常在数万字符量级，20000 足以区分。
+	pseudoCompletionMinInputChars = 20000
 	// pseudoRetryBudget 是同一账号在同一逻辑请求内被判伪完成后的同号重试次数。
 	// 伪完成常是上游对该账号的窗口性限流（2351 实证：同号约 30s 后恢复 18696
 	// tokens），立即 noteForcedAccountFailure（打入固定 15s 冷却）+ 换号在池中
