@@ -49,18 +49,19 @@ var (
 	creditSweepLast   *creditSweepReport
 
 	// 宿主读写与拉取注入点，供单测替换。
-	creditSweepListFn    = listAllAuthFiles
-	creditSweepFetchFn   = fetchCreditSummary
-	creditSweepClaimFn   = claimDailyCreditForAccount
-	creditSweepConfirmFn = confirmDailyCreditBySummary
-	creditSweepStoreFn   = storeCreditSummary
-	creditSweepRecordFn  = recordCreditSnapshot
-	creditSweepGradeFn   = gradeCreditsForAccount
-	creditSweepPersistFn = persistCreditSnapshot
-	creditSweepPublishFn = publishCreditPool
-	creditSweepLogf      = hostLogf
-	creditSweepSleepFn   = time.Sleep
-	creditSweepNowFn     = time.Now
+	creditSweepListFn     = listAllAuthFiles
+	creditSweepCanWriteFn = ensureActiveInstanceBeforeWrite
+	creditSweepFetchFn    = fetchCreditSummary
+	creditSweepClaimFn    = claimDailyCreditForAccount
+	creditSweepConfirmFn  = confirmDailyCreditBySummary
+	creditSweepStoreFn    = storeCreditSummary
+	creditSweepRecordFn   = recordCreditSnapshot
+	creditSweepGradeFn    = gradeCreditsForAccount
+	creditSweepPersistFn  = persistCreditSnapshot
+	creditSweepPublishFn  = publishCreditPool
+	creditSweepLogf       = hostLogf
+	creditSweepSleepFn    = time.Sleep
+	creditSweepNowFn      = time.Now
 )
 
 // creditSweepDeps 是一轮巡检的可注入依赖。
@@ -80,6 +81,9 @@ type creditSweepDeps struct {
 	publish func([]*StoredAuth)
 	logf    func(string, string, map[string]any)
 	now     func() time.Time
+	// canWrite 判定本轮是否允许写盘。已退役的实例必须为 false：
+	// 它的旧阈值会把新实例刚解禁的账号整批重新禁用（2026-11-08 生产事故）。
+	canWrite func(func(string, string, map[string]any)) bool
 }
 
 // defaultCreditSweepDeps 返回生产依赖。
@@ -88,17 +92,18 @@ type creditSweepDeps struct {
 // 最近修改时间：2026-10-25；改动原因：新增，生产装配。
 func defaultCreditSweepDeps() creditSweepDeps {
 	return creditSweepDeps{
-		list:    creditSweepListFn,
-		claim:   creditSweepClaimFn,
-		fetch:   creditSweepFetchFn,
-		confirm: creditSweepConfirmFn,
-		store:   creditSweepStoreFn,
-		record:  creditSweepRecordFn,
-		grade:   creditSweepGradeFn,
-		persist: creditSweepPersistFn,
-		publish: creditSweepPublishFn,
-		logf:    creditSweepLogf,
-		now:     creditSweepNowFn,
+		list:     creditSweepListFn,
+		claim:    creditSweepClaimFn,
+		fetch:    creditSweepFetchFn,
+		confirm:  creditSweepConfirmFn,
+		store:    creditSweepStoreFn,
+		record:   creditSweepRecordFn,
+		grade:    creditSweepGradeFn,
+		persist:  creditSweepPersistFn,
+		publish:  creditSweepPublishFn,
+		logf:     creditSweepLogf,
+		now:      creditSweepNowFn,
+		canWrite: creditSweepCanWriteFn,
 	}
 }
 
@@ -150,6 +155,15 @@ func runCreditSweepWith(deps creditSweepDeps) *creditSweepReport {
 		return report
 	}
 
+	// 0. 活跃实例自检：已退役的实例（宿主热重载后未收到 shutdown 的旧实例）
+	// 必须放弃整轮写盘。它用的是编译期的旧阈值，会把新实例刚解禁的账号
+	// 整批重新禁用（2026-11-08 生产事故：19:02:52 旧实例用红线 200
+	// 重禁 23 个号，引发连续 4 个 503）。
+	allowWrite := true
+	if deps.canWrite != nil {
+		allowWrite = deps.canWrite(deps.logf)
+	}
+
 	// 1. 并发上限与账号数取小；账号少时不必要地开满 worker 只是浪费。
 	workers := creditRefreshConcurrency
 	if workers > len(accounts) {
@@ -164,7 +178,7 @@ func runCreditSweepWith(deps creditSweepDeps) *creditSweepReport {
 		go func() {
 			defer wg.Done()
 			for sa := range queue {
-				outcome := sweepOneAccount(deps, sa)
+				outcome := sweepOneAccount(deps, sa, allowWrite)
 				mu.Lock()
 				switch outcome {
 				case sweepOutcomeFailed:
@@ -194,11 +208,19 @@ func runCreditSweepWith(deps creditSweepDeps) *creditSweepReport {
 	wg.Wait()
 
 	// 3. 整轮只在末尾落盘一次：中途崩溃时磁盘保留上一轮的完整快照。
-	if errPersist := deps.persist(); errPersist != nil {
-		deps.logf("warn", "积分快照落盘失败", map[string]any{"error": errPersist.Error()})
+	//
+	// 退役实例连快照落盘也要跳过：它的快照是旧阈值下算出来的，
+	// 覆盖过去会让新实例的闸门读到过期余额。
+	if allowWrite {
+		if errPersist := deps.persist(); errPersist != nil {
+			deps.logf("warn", "积分快照落盘失败", map[string]any{"error": errPersist.Error()})
+		}
 	}
 	// 4. 刷新完成后再发布闸门快照：先发布会让闸门读到上一轮的余额。
-	if deps.publish != nil {
+	//
+	// 退役实例不得发布：闸门快照是进程级共享状态，旧实例发布会把
+	// 新实例刚算好的余额覆盖回旧值。
+	if allowWrite && deps.publish != nil {
 		deps.publish(accounts)
 	}
 
@@ -234,10 +256,10 @@ const (
 // 顺序不可调换：签到必须先于余额查询。反了会让刚领到 1500 分的账号
 // 被当日旧余额判成 0 分，进而写盘禁用，而它下一轮才会解禁——
 // 账号凭空下线一小时（见 daily_credit.go 的领取契约）。
-// [参数] deps：可注入依赖；sa：账号。
+// [参数] deps：可注入依赖；sa：账号；allowWrite：本轮是否允许写盘。
 // [返回] 本账号的结局。
-// 最近修改时间：2026-10-25；改动原因：新增，单账号处理内核。
-func sweepOneAccount(deps creditSweepDeps, sa *StoredAuth) sweepOutcome {
+// 最近修改时间：2026-11-08；改动原因：新增 allowWrite，退役实例不得写盘。
+func sweepOneAccount(deps creditSweepDeps, sa *StoredAuth, allowWrite bool) sweepOutcome {
 	if sa == nil {
 		return sweepOutcomeFailed
 	}
@@ -269,7 +291,11 @@ func sweepOneAccount(deps creditSweepDeps, sa *StoredAuth) sweepOutcome {
 	}
 
 	// 6. 分级：可能是新禁用、新解禁，或仅刷新档位。
-	if deps.grade == nil {
+	//
+	// 已退役的实例不得分级写盘：它用的是编译期的旧阈值，会把新实例
+	// 刚解禁的账号整批重新禁用（2026-11-08 生产事故）。积分与快照
+	// 照常刷新——那两步没有副作用，只有分级会改账号状态。
+	if deps.grade == nil || !allowWrite {
 		return sweepOutcomeRefreshed
 	}
 	wasDisabled := sa.Disabled
