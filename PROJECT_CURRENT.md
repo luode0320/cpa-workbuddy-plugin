@@ -35,6 +35,13 @@
 ## 活动会话进展摘要
 
 
+- 会话（2026-11-08 20:35-20:55，接续上条）：**traework 0.5.23 发布 + 首字延迟决定性证据 + 实例守卫生产实证**：
+  - **发布**：traework 0.5.23（含并行会话的浏览器登录桥接页 + 本轮的超时闸门 30s→120s）。CI run 42480619699 Release success → 资产 5/5 checksum OK → registry 0.5.23（远端 raw 已生效）→ 生产 `hot reloaded active_version=0.5.23`，落盘 sha256 `f5d5c547…` 与 release zip 逐字节一致。
+  - **决定性证据（首字延迟不是插件 bug）**：同一 traework 插件、同一条宿主桥、同一组超时配置，仅模型不同 —— `deepseek-v4.1-flash` TTFT p50 **1297ms / 0.0% 慢请求**（n=23），`minimax-m3.1-flash` 4245ms / 22.6%（n=515），`Doubao-Seed-2.1-Pro` 7742ms / 27.1%（n=145），跨插件对照 workbuddy `deepseek-v4.1-flash` 1008ms / 0.0%。⇒ 转发链路无问题，慢的是特定上游模型服务；排除了「payload 冗余」「流式读取节流」「宿主桥瓶颈」三类假设。
+  - **实例守卫生产实证**：20:41:29 日志 `[traework] failover reconcile loop stopped: superseded by newer instance` 出现 1 次 —— 0.5.22 旧实例在 0.5.23 抢占所有权后自行退出，机制在真实热重载下成立。
+  - **部署后综合观测（20:40 起 15 分钟）**：11128 宿主扇出 **0**、112 **0**、param invalid **0**、上游失败 **0**；探活失败由 11 次/分钟降至 **5.2 次/分钟**（其余为 0.5.21 及更早的无守卫实例，彻底清理需容器重启，属红线待确认）。
+  - **文档**：`doc/4-bugs/2026-11-08_210000_traework首字延迟与生成耗时偏高根因分析.md` 扩至 9 节，含阈值占比表、prefill/生成阶段拆分、同插件跨模型对照、实例守卫实证。
+
 - 会话（2026-11-08 20:35-21:10，接续上条）：**traework 首字延迟根因分析 + 两个超时缺口（qoderwork 0.13.15 已发布 / traework 超时随 0.5.23）**：
   - **观测结论**：12h feed 中 traework `minimax-m3.1-flash` TTFT p50 5578ms / p90 26580ms / p99 55150ms，`Doubao-Seed-2.1-Pro` p50 6875ms / p90 30332ms；对照 workbuddy `deepseek-v4.1-flash` p50 2464ms / p90 3185ms。
   - **归因（三项证据）**：① 大 input prefill 是主因（大 input 归一化 29.3 vs 22.4 ms/1k tokens，仅差 31%）；② 长尾异常（100k-200k 区间 p50 3433ms 但 p90 16349ms，workbuddy 同区间 p90 仅 3240ms）；③ 慢请求（TTFT>15s，占 14.6%）input 中位 36 万 tokens、集中在 17-19 点高峰、集中在随后因配额耗尽被禁用的账号。
