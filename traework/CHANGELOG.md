@@ -1,5 +1,25 @@
 # TraeWork Plugin Changelog
 
+## 0.5.34
+
+### Fix - 内容审核拦截按请求级终局处理，客户端不再收到看似成功的 200
+
+- 背景: 2026-11-09 生产观测到 `glm-5.3-flashx` 返回
+  `sensitive content error finish reason: sensitive` 时，客户端仍收到 **HTTP 200**
+  （`gin_logger` 记录 `200 | 10.02s | POST /v1/responses`），无法区分「正常完成」
+  与「被审核截断」。
+- 说明: 0.5.31 已让 done 事件的审核原因被识别并终止（耗时从 1m26s 降到 4.7s），
+  但错误信封 `marshalStreamErrorEnvelope` 只带 `error` 字段、不带 `http_status`，
+  宿主 `statusCodeFromError` 得 0，客户端仍按成功收尾。
+- 修复: 新增 `isContentModerationFailure`（认 `sensitive content` 与
+  `content error finish reason`），`envelopeHTTPStatusForError` 据此返回 **400**。
+  这类失败与账号健康度、模型可用性无关 —— 同一段对话换号重试必然重演，
+  必须按请求级终局处理。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增
+  `content_moderation_test.go` 两组用例（7 条识别边界含配额/渠道/500 反例、
+  状态码映射）；变异移除该分支后 `TestEnvelopeHTTPStatusForContentModeration` 失败。
+- 涉及文件: `policy.go`、`main.go`、`content_moderation_test.go`（新增）。
+
 ## 0.5.33
 
 ### Fix - 闸门延迟观测点移到生产实际路径（async executor）

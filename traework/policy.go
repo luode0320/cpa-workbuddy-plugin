@@ -325,6 +325,23 @@ func isRequestShapeErrorBody(body string) bool {
 // accountPoolExhaustedMarker 是「插件换号预算耗尽」的固定文案。
 const accountPoolExhaustedMarker = "upstream account pool exhausted"
 
+// isContentModerationFailure 判定失败是否为上游内容审核拦截。
+//
+// 上游在 done 事件的 data 里返回 "sensitive content error finish reason: sensitive"，
+// 表示模型输出被内容安全策略截断。这类失败与账号健康度、模型可用性都无关，
+// 换号重试必然重演（同一段对话内容触发同样的审核），必须按请求级终局处理，
+// 让客户端拿到明确的 400 而不是一个看似成功的截断响应。
+// [参数] body：失败文本。
+// [返回] true 表示内容审核拦截。
+// 最近修改时间：2026-11-09 23:30:00；改动原因：新增，审核失败需明确报错。
+func isContentModerationFailure(body string) bool {
+	lower := strings.ToLower(body)
+	if strings.Contains(lower, "sensitive content") {
+		return true
+	}
+	return strings.Contains(lower, "content error finish reason")
+}
+
 // isAccountPoolExhausted 判定失败是否为插件自身的换号预算耗尽。
 //
 // 该错误表示本插件已经把候选账号全部试过一遍，属于终局信号：宿主若再换一轮

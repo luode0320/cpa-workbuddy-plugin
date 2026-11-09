@@ -281,7 +281,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.5.33"
+var version = "0.5.34"
 
 func wbRegistration() registration {
 	return registration{
@@ -462,6 +462,11 @@ func envelopeHTTPStatusForError(message string) int {
 	// 插件自身的换号预算耗尽是终局信号：本插件已把所有候选账号试过一遍，
 	// 宿主再换一轮凭据只会把同一个失败在整池重放（生产实测单请求换遍 8 个账号）。
 	if isAccountPoolExhausted(message) {
+		return httpStatusBadRequest
+	}
+	// 内容审核拦截是请求级终局：同一段对话换号重试必然重演，
+	// 必须让客户端拿到明确错误而不是看似成功的截断响应。
+	if isContentModerationFailure(message) {
 		return httpStatusBadRequest
 	}
 	return 0
