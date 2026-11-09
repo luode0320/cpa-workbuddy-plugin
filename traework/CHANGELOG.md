@@ -1,5 +1,25 @@
 # TraeWork Plugin Changelog
 
+## 0.5.31
+
+### Fix - done 事件携带的终止原因（内容审核拦截）不再被丢弃
+
+- 背景: 2026-11-09 生产观测到 `glm-5.3-flashx` 两次请求耗时 **1m26s / 1m34s**、
+  生成 **2946 个分片**后才报 `upstream 200: sensitive content error finish reason: sensitive`。
+- 根因: 上游把终止原因放在 `done` 事件的 **data** 里，而三条扫描路径（collect /
+  aggregate / pump）的 `case "done"` 分支都只调 `terminal.recordDone()` 后立即返回，
+  **完全不解析 payload** —— 审核失败被当业务完整收尾，客户端拿到已生成正文却无任何
+  错误标记，直到宿主侧把整个请求判失败。
+- 修复: 新增 `doneTerminalError`，在 `recordDone()` 之前解析 done 的 data；命中
+  内容审核类终止（`sensitive` / `content error`）时返回 `upstream <status>: <原因>`
+  错误，让该次尝试按失败记账并正常换号/报错。三条路径统一接入。
+- 判据方向: 只认内容审核类关键词，其余未知 payload 一律按正常完成处理 —— 上游新增
+  无关字段时宁可放过，不误判成失败。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增 `done_terminal_test.go`
+  两组用例（11 条识别边界含 7 种正常完成形态、脱敏截断）；变异使 `doneTerminalError`
+  恒返回空串后 4 条用例失败。
+- 涉及文件: `stream.go`、`done_terminal_test.go`（新增）。
+
 ## 0.5.30
 
 ### Feat - 积分硬禁用线默认改为 100（低于 100 自动停用，回升自动解禁）

@@ -458,6 +458,30 @@ func (t *traeSSETerminal) recordDone() {
 	t.hasDone = true
 }
 
+// doneTerminalError 从 done 事件的 data 里提取上游终止原因，仅返回需要报错的
+// 那一类（内容审核拦截）；正常完成返回空串。
+//
+// 上游把终止原因放在 done 的 data 中，形如
+// "sensitive content error finish reason: sensitive" 或含
+// finish_reason / finishReason 字段的结构化载荷。正常完成时 data 为空、
+// 为 {} 或 [DONE]。
+// [参数] data: done 事件的原始 data 文本。
+// [返回] 需要作为错误上报的原因文本；正常完成为空串。
+// 最近修改时间：2026-11-09 22:20:00；改动原因：新增，内容审核拦截需明确报错。
+func doneTerminalError(data string) string {
+	raw := strings.TrimSpace(data)
+	if raw == "" || raw == "{}" || raw == "[DONE]" || raw == "null" {
+		return ""
+	}
+	lower := strings.ToLower(raw)
+	// 只认内容审核类终止：其余未知 payload 一律按正常完成处理，避免把上游
+	// 新增的无关字段误判成失败（错误方向必须是「宁可放过」）。
+	if !strings.Contains(lower, "sensitive") && !strings.Contains(lower, "content error") {
+		return ""
+	}
+	return truncateRedacted(raw, 200)
+}
+
 // hasPayload 报告本次扫描是否已收到可交付的业务事件（正文输出或明确完成）。
 // 供 scanSSE 在读取错误时判定：已有可交付内容的上游断流应按截断收尾，
 // 而非把已生成内容连同错误一起丢弃。
@@ -550,6 +574,13 @@ func collectTraeStream(r io.Reader, model string, statusCode int) ([]pluginapi.E
 		case "token_usage":
 			collector.feed(ev.Data)
 		case "done":
+			// done 事件的 data 可能携带上游终止原因（如内容审核拦截）。
+			// 旧实现直接丢弃 payload，把审核失败当业务完整收尾 —— 客户端会收到
+			// 已生成的正文且无任何错误标记（生产实测 glm-5.3-flashx 耗时 1m34s、
+			// 2946 分片后才报 sensitive content，此时错误信息已无处传达）。
+			if msg := doneTerminalError(ev.Data); msg != "" {
+				return fmt.Errorf("upstream %d: %s", statusCode, msg)
+			}
 			terminal.recordDone()
 			return errTraeStreamDone
 		case "error":
@@ -641,6 +672,13 @@ func aggregateTraeCompletion(r io.Reader, model string, statusCode int) ([]byte,
 		case "token_usage":
 			collector.feed(ev.Data)
 		case "done":
+			// done 事件的 data 可能携带上游终止原因（如内容审核拦截）。
+			// 旧实现直接丢弃 payload，把审核失败当业务完整收尾 —— 客户端会收到
+			// 已生成的正文且无任何错误标记（生产实测 glm-5.3-flashx 耗时 1m34s、
+			// 2946 分片后才报 sensitive content，此时错误信息已无处传达）。
+			if msg := doneTerminalError(ev.Data); msg != "" {
+				return fmt.Errorf("upstream %d: %s", statusCode, msg)
+			}
 			terminal.recordDone()
 			return errTraeStreamDone
 		case "error":
@@ -963,6 +1001,13 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 		case "token_usage":
 			collector.feed(ev.Data)
 		case "done":
+			// done 事件的 data 可能携带上游终止原因（如内容审核拦截）。
+			// 旧实现直接丢弃 payload，把审核失败当业务完整收尾 —— 客户端会收到
+			// 已生成的正文且无任何错误标记（生产实测 glm-5.3-flashx 耗时 1m34s、
+			// 2946 分片后才报 sensitive content，此时错误信息已无处传达）。
+			if msg := doneTerminalError(ev.Data); msg != "" {
+				return fmt.Errorf("upstream %d: %s", ctx.StatusCode, msg)
+			}
 			terminal.recordDone()
 			return errTraeStreamDone
 		case "error":
