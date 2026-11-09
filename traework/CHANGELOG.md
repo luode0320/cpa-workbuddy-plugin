@@ -1,5 +1,21 @@
 # TraeWork Plugin Changelog
 
+## 0.5.33
+
+### Fix - 闸门延迟观测点移到生产实际路径（async executor）
+
+- 背景: 0.5.32 把闸门时间上限与观测点都加在 `pumpTraeStream` 包装函数里。
+  生产实测发现该包装**不被调用** —— 全部流量走 `exec stream async`，它直接调用
+  `pumpTraeStreamAttempt`。结果是修复本身生效（同一函数），但观测日志一条都没有。
+- 修复: 把 `gate delay` 观测日志移到 `executor.go` 的 async 循环内，紧跟
+  `pumpTraeStreamAttempt` 返回之后。`pumpTraeStream` 里的旧观测点保留（兼容路径）。
+- 补充证据: 生产 2 小时 async done 样本 1289 条，`chunks` p50 仅 **34**
+  （p10=8 / p90=222），即典型输出约 136 字符，**远达不到 600 门槛** ——
+  闸门在多数请求里全程不开，分片一直留在 pending 直到 done 才统一释放，
+  这是首字被拖后的直接机制。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿。
+- 涉及文件: `executor.go`。
+
 ## 0.5.32
 
 ### Fix - 首字闸门增加时间上限，长任务不再等攒满 600 字符才下发首帧

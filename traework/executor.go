@@ -515,6 +515,15 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 			})
 		}()
 
+		// 闸门延迟观测：上游首帧到客户端首帧的间隔。生产流量全部走本路径，
+		// 观测点必须在这里（pumpTraeStream 只是兼容包装，生产不经过它）。
+		if !result.FirstOutputAt.IsZero() && !result.GateOpenedAt.IsZero() {
+			log.Printf("[traework] exec stream async gate delay: request_id=%s stream_id=%s model=%s gate_ms=%d ttft_ms=%d",
+				requestID, ctx.StreamID, ctx.Model,
+				result.GateOpenedAt.Sub(result.FirstOutputAt).Milliseconds(),
+				time.Duration(attemptTTFTNS(attemptStarted, ctx.Started, result.FirstOutputAt)).Milliseconds())
+		}
+
 		// 2. 门槛前伪完成不产生任何客户端输出；核算失败后换号，仅当无候选才同号退避重试。
 		if result.Pseudo {
 			reason := "pseudo completion: upstream returned done with near-empty output"
