@@ -35,6 +35,15 @@
 ## 活动会话进展摘要
 
 
+- 会话（2026-11-09 22:10-22:40，接续上条）：**缺陷八「done 事件终止原因被丢弃致内容审核失败无标记」（traework 0.5.31）**：
+  - **现象**：`glm-5.3-flashx` 两次请求耗时 **1m26s / 1m34s**、生成 **2946 个分片**后才报 `upstream 200: sensitive content error finish reason: sensitive`，且客户端收到 **HTTP 200**（被截断但无错误标记）。
+  - **根因**：上游把终止原因放在 `done` 事件的 **data** 里，而三条扫描路径（collect / aggregate / pump）的 `case "done"` 分支都只调 `terminal.recordDone()` 后立即返回，**完全不解析 payload** —— 审核失败被当业务完整收尾。
+  - **修复（0.5.31）**：新增 `doneTerminalError`，在 `recordDone()` 之前解析 done 的 data；命中 `sensitive` / `content error` 时返回 `upstream <status>: <原因>` 错误。三条路径统一接入（pump 路径用 `ctx.StatusCode`）。判据方向为「宁可放过」——只认内容审核关键词，其余未知 payload 按正常完成处理。
+  - **验证**：新增 `done_terminal_test.go` 两组用例（11 条识别边界含 7 种正常完成形态、脱敏截断）；变异使 `doneTerminalError` 恒返回空串后 4 条用例失败。
+  - **部署验收**：`hot reloaded 0.5.30→0.5.31`（22:35:50），落盘 `.so` sha256 `fc538b6b…` 与 release zip 逐字节一致。部署后 10 分钟：上游失败 **0**、内容审核 0、探活失败 0、11128 0、换号耗尽 0、伪完成重试 0。
+  - **发布踩坑（复现第 2 次）**：CDN 缓存导致 `plugin-store install` 连续 6 次返回旧版本（`{"status":"installed"}` 但无版本号）；等待约 5 分钟缓存过期后第 7 次拿到 0.5.31。**教训：install 返回不带目标版本号即视为未生效，需等待后重试，不能凭 status=installed 判定成功。**
+  - **本轮失败率基线（近 6h）**：workbuddy 0.26%（2/757）、traework 1.39%（7/505），其中 traework 剩余失败为本次修复的内容审核 4 条 + 零星 504。
+
 - 会话（2026-11-09 21:31-22:10，接续上条）：**约束确认「不重启 cpa 容器」+ 缺陷七「11140 永久封禁仍被探活」（workbuddy 0.21.22）**：
   - **用户明确约束**：不允许重启 cpa 容器。据此确认：实例守卫已正常生效（24h 日志 10 次 `superseded by newer instance`，每次热重载后旧循环确实退出），`/proc/1/maps` 中的 20 个 traework + 11 个 workbuddy 版本映射只是**内存页残留**，不是活跃循环。探活已从 12 次/分钟降到 1.1 次/分钟，无需重启。
   - **缺陷七**：被封禁账号 `33d23f97` 在 60 分钟内被探活 **66 次**，全部返回 `403 {"code":11140,"msg":"request illegal"}`。根因：`failoverProbeTargets` 只判「是否被本机制禁用」，不区分禁用原因；11140 是**账号级永久封禁**（凭据被封死，换模型/等冷却/人工启用都不解除），却与可恢复临时禁用走同一条 10 分钟探活路径。
