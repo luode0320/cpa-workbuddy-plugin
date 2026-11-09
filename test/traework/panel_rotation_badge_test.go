@@ -148,8 +148,8 @@ func TestPanel_RotationServedMinutesVisible(t *testing.T) {
 	h.addAccount(authID, "idx-served", nil)
 	cacheCredits(authID, &traeCredits{TotalRemain: 500})
 
-	// 连续使用 5 分钟后仍在承流（未达让位阈值）。
-	base := time.Now().Add(-5 * time.Minute)
+	// 连续使用 2 分钟后仍在承流（未达 serve 阈值，且间隔在 idle 窗口内不被重置）。
+	base := time.Now().Add(-2 * time.Minute)
 	markAuthUsed(authID, base)
 	markAuthUsed(authID, time.Now())
 
@@ -160,8 +160,8 @@ func TestPanel_RotationServedMinutesVisible(t *testing.T) {
 	if row["rotation_cooling"] == true {
 		t.Fatal("未达阈值时不应显示轮换让位")
 	}
-	if v, _ := row["rotation_served_m"].(float64); v < 4 {
-		t.Fatalf("承流时长应约为 5 分钟，got %v", row["rotation_served_m"])
+	if v, _ := row["rotation_served_m"].(float64); v < 1 {
+		t.Fatalf("承流时长应约为 2 分钟，got %v", row["rotation_served_m"])
 	}
 }
 

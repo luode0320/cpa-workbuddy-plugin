@@ -37,11 +37,24 @@ const (
 	// 频率限制，默认轮换可把负载摊到全池。
 	defaultRotationEnabled = true
 	// defaultRotationServeMinutes 是单账号连续承流多久后让位（分钟）。
-	defaultRotationServeMinutes = 60
+	//
+	// 2026-11-10 用户反馈「轮询没生效，一直用一个号」后从 60 分钟改为 10 分钟。
+	// 生产实证（24h）：60 分钟配置下全池只让位 4 次，最长连续段 351 个请求 /
+	// 29 分钟全压在一个号上，账号间负载极不均衡（主号占比 21%~35%，理想 1/13≈8%）。
+	// 10 分钟与「积分刷新周期」「慢速判定窗口」同量级，能把负载真正摊开。
+	defaultRotationServeMinutes = 10
 	// defaultRotationCooldownMinutes 是让位后停留在冷却的时长（分钟）。
-	defaultRotationCooldownMinutes = 60
+	//
+	// 从 60 分钟改为 10 分钟：冷却必须与 serve 同量级，否则一轮过后大量账号同时
+	// 处于冷却，可用池骤缩反而更集中。10 分钟让「让位 → 冷却 → 回归」形成
+	// 与 serve 对称的循环。
+	defaultRotationCooldownMinutes = 10
 	// defaultRotationIdleResetMinutes 是「中断多久算重新开始计时」（分钟）。
-	defaultRotationIdleResetMinutes = 10
+	//
+	// 必须显著小于 serve 阈值：idle 与 serve 相等时，一次中断后重新计时的账号
+	// 会立刻又满足「已连续服务 serve 时长」的判据（因为计时起点被重置到很早），
+	// 表现为刚恢复就被再次让位。serve=10 时取 3。
+	defaultRotationIdleResetMinutes = 3
 )
 
 var (

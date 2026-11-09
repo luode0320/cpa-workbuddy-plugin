@@ -41,19 +41,21 @@ func TestRotation_ServesThenCoolsDown(t *testing.T) {
 	if served := markAuthUsed(authID, now); served != 0 {
 		t.Fatalf("首次使用连续时长应为 0，got %v", served)
 	}
-	// 未达阈值不冷却。
-	if evaluateRotation(authID, []string{authID, "rot-other"}, now.Add(59*time.Minute)) {
-		t.Fatal("未满 60 分钟不得让位")
+	// 未达阈值不冷却。阈值取自 defaultRotationServeMinutes，改配置时测试自动跟随。
+	serve := time.Duration(defaultRotationServeMinutes) * time.Minute
+	cool := time.Duration(defaultRotationCooldownMinutes) * time.Minute
+	if evaluateRotation(authID, []string{authID, "rot-other"}, now.Add(serve-time.Minute)) {
+		t.Fatalf("未满 %v 不得让位", serve)
 	}
-	if !evaluateRotation(authID, []string{authID, "rot-other"}, now.Add(61*time.Minute)) {
-		t.Fatal("满 60 分钟必须让位")
+	if !evaluateRotation(authID, []string{authID, "rot-other"}, now.Add(serve+time.Minute)) {
+		t.Fatalf("满 %v 必须让位", serve)
 	}
-	if !rotationCoolingDown(authID, now.Add(62*time.Minute)) {
+	if !rotationCoolingDown(authID, now.Add(serve+2*time.Minute)) {
 		t.Fatal("让位后必须处于轮换冷却")
 	}
 	// 冷却结束后恢复可路由。
-	if rotationCoolingDown(authID, now.Add(61*time.Minute+61*time.Minute)) {
-		t.Fatal("冷却 60 分钟后必须恢复")
+	if rotationCoolingDown(authID, now.Add(serve+cool+time.Minute)) {
+		t.Fatalf("冷却 %v 后必须恢复", cool)
 	}
 }
 
@@ -63,20 +65,22 @@ func TestRotation_IdleResetsTimer(t *testing.T) {
 
 	const authID = "rot-acc-idle"
 	now := time.Now()
+	idle := time.Duration(defaultRotationIdleResetMinutes) * time.Minute
 	markAuthUsed(authID, now)
 
-	// 中断 11 分钟（超过 idle=10）后再来一次：本轮从此刻重新开始。
-	served := markAuthUsed(authID, now.Add(11*time.Minute))
+	// 中断超过 idle 阈值后再来一次：本轮从此刻重新开始。
+	gap := idle + time.Minute
+	served := markAuthUsed(authID, now.Add(gap))
 	if served != 0 {
 		t.Fatalf("中断后应重新计时，连续时长应为 0，got %v", served)
 	}
-	// 于是 total 71 分钟时实际只连续了 60 分钟中的 0 分钟起步。
-	if evaluateRotation(authID, []string{authID, "rot-other"}, now.Add(11*time.Minute+10*time.Minute)) {
-		t.Fatal("中断重新计时后，10 分钟不该触发让位")
+	// 重新计时后只过了 1 分钟，远未达到 serve 阈值，不得让位。
+	if evaluateRotation(authID, []string{authID, "rot-other"}, now.Add(gap+time.Minute)) {
+		t.Fatal("中断重新计时后不该触发让位")
 	}
-	// 续期在 idle 窗口内：不重置。
-	markAuthUsed(authID, now.Add(11*time.Minute+10*time.Minute))
-	if served := markAuthUsed(authID, now.Add(11*time.Minute+15*time.Minute)); served < 14*time.Minute {
+	// 续期在 idle 窗口内：不重置，连续时长继续累计。
+	markAuthUsed(authID, now.Add(gap+time.Minute))
+	if served := markAuthUsed(authID, now.Add(gap+2*time.Minute)); served < 2*time.Minute {
 		t.Fatalf("idle 窗口内续期应累计连续时长，got %v", served)
 	}
 }

@@ -1,5 +1,30 @@
 # TraeWork Plugin Changelog
 
+## 0.5.36
+
+### Fix - 轮换参数收紧（serve/cooldown 60→10 分钟，idle 10→3 分钟），修复「一直用一个号」
+
+- 背景: 2026-11-10 用户反馈「trae 轮询好像没有生效，一直使用的是一个号」。
+- 实证（24h 生产数据）:
+  - 轮换让位日志**仅 4 次**，每次都是账号连续使用满 `1h0m0s` 才触发；
+  - 最长连续段 `3735516826058092` **351 个请求 / 1756 秒（29 分钟）**全压在一个号上；
+  - 账号分布主号占比 **21%~35%**（理想 1/13 ≈ 7.7%）。
+- 根因: `defaultRotationServeMinutes = 60` —— 设计目标是「每号连续用 1 小时后让位」，
+  对日活请求量高的场景过于宽松，表现为长时间粘一个号。
+- 修复:
+  - `defaultRotationServeMinutes` **60 → 10**（与积分刷新周期、慢速判定窗口同量级）；
+  - `defaultRotationCooldownMinutes` **60 → 10**（必须与 serve 同量级，否则一轮后
+    大量账号同时冷却、可用池骤缩反而更集中）；
+  - `defaultRotationIdleResetMinutes` **10 → 3**（必须显著小于 serve，否则「中断后
+    重新计时」与「已服务满 serve」判据冲突，刚恢复就被再次让位）。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；
+  - 更新 `usage_rotation_test.go` 改为引用常量（原断言写死 60 分钟）；
+  - 更新 `panel_rotation_badge_test.go` 的时间线以匹配 idle=3；
+  - 新增 `rotation_defaults_test.go` 锁定三个默认值的具体取值与相互关系（serve ≤15、
+    cooldown ≤ 2×serve、idle < serve）；变异把 serve 改回 60 后该测试失败。
+- 涉及文件: `usage_rotation.go`、`rotation_defaults_test.go`（新增）、
+  `test/traework/usage_rotation_test.go`、`test/traework/panel_rotation_badge_test.go`。
+
 ## 0.5.35
 
 ### Fix - 积分耗尽账号不再触发探活，停止无效上游调用
