@@ -1,5 +1,18 @@
 # TraeWork Plugin Changelog
 
+## 0.5.37
+
+### Chore - 轮换诊断日志：区分「计时未推进」与「判定失败」
+
+- 背景: 0.5.36 把 serve/cooldown 从 60 分钟收到 10 分钟后，生产仍未观察到
+  `rotation: account served ...` 让位日志，需要定位是计时没推进还是判定失败。
+- 变更: `noteRotationUsage` 在连续使用达到 serve 的 80% 时输出一条
+  `rotation approaching` 诊断日志（同一进度只打一次）。
+- 用途: 若日志出现但让位不触发 → 判定侧问题（池视图/全冷检查）；
+  若日志完全不出现 → 计时侧问题（`markAuthUsed` 未被调用或反复重置）。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿。
+- 涉及文件: `usage_rotation.go`。
+
 ## 0.5.36
 
 ### Fix - 轮换参数收紧（serve/cooldown 60→10 分钟，idle 10→3 分钟），修复「一直用一个号」

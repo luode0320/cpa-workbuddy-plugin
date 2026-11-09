@@ -458,7 +458,14 @@ func noteRotationUsage(authID string) {
 		return
 	}
 	now := time.Now()
-	if markAuthUsed(authID, now) < cfg.serve {
+	served := markAuthUsed(authID, now)
+	if served < cfg.serve {
+		// 诊断日志：达到 serve 的 80% 时记录一次，便于确认计时是否在推进。
+		// 生产排查「轮换不生效」时，最需要区分「计时没推进」与「计时推进但判定失败」。
+		if served >= cfg.serve*4/5 && served-cfg.serve/5 < time.Second {
+			log.Printf("[traework] rotation approaching: auth=%s served=%v serve=%v",
+				authID, served.Round(time.Second), cfg.serve)
+		}
 		return
 	}
 	if evaluateRotation(authID, rotationPoolFn(), now) {
