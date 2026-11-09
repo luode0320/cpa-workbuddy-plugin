@@ -37,8 +37,8 @@ func TestRotationDefaultValues(t *testing.T) {
 	}
 
 	// 4. 锁定调整后的目标值，防止无意回退。
-	if defaultRotationServeMinutes != 10 {
-		t.Fatalf("serve 应为 10 分钟（2026-11-10 用户反馈后调整），got %d", defaultRotationServeMinutes)
+	if defaultRotationServeMinutes != 5 {
+		t.Fatalf("serve 应为 5 分钟（宿主自然切换周期 6~7 分钟，须早于它），got %d", defaultRotationServeMinutes)
 	}
 	if defaultRotationCooldownMinutes != 10 {
 		t.Fatalf("cooldown 应为 10 分钟，got %d", defaultRotationCooldownMinutes)
