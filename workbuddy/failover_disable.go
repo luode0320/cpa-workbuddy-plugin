@@ -58,6 +58,14 @@ const (
 	failoverDisableModelKey = "failover_disable_model"
 	failoverDisableAtKey    = "failover_disable_at"
 
+	// failoverPermanentKey 标记「账号级永久封禁」：上游明确返回 11140 时写入。
+	//
+	// 与 failover_disable 的区别：后者是可恢复的临时禁用（限流/额度/抖动），
+	// 探活会定期回放验证；前者表示凭据已被上游封死，探活无论如何都只会失败。
+	// 2026-11-09 生产实测：被封禁账号 33d23f97 在 60 分钟内被探活 66 次，
+	// 全部返回 403 11140，纯属浪费上游调用。
+	failoverPermanentKey = "failover_permanent"
+
 	// failoverProbeFallbackModel 是探活兜底模型：当盘上标记与 sidecar 都没记
 	// 模型时用它回放，保证被禁用的号始终存在恢复通道。取插件固定兜底模型，
 	// 不依赖账号状态与网络。
@@ -227,6 +235,8 @@ type failoverAuthDoc struct {
 	failoverModel string
 	// manualDisable 是用户的禁用意图，恢复时必须让位，绝不解除。
 	manualDisable bool
+	// permanent 标记上游账号级永久封禁（11140）：探活必须跳过。
+	permanent bool
 }
 
 // parseFailoverAuthDoc 从物理 auth JSON 里取出本机制关心的顶层键。
@@ -242,6 +252,7 @@ func parseFailoverAuthDoc(raw []byte) failoverAuthDoc {
 		FailoverDisable bool   `json:"failover_disable"`
 		FailoverModel   string `json:"failover_disable_model"`
 		ManualDisable   bool   `json:"manual_disable"`
+		Permanent       bool   `json:"failover_permanent"`
 	}
 	_ = json.Unmarshal(raw, &m)
 	return failoverAuthDoc{
@@ -249,6 +260,7 @@ func parseFailoverAuthDoc(raw []byte) failoverAuthDoc {
 		failoverDisable: m.FailoverDisable,
 		failoverModel:   strings.TrimSpace(m.FailoverModel),
 		manualDisable:   m.ManualDisable,
+		permanent:       m.Permanent,
 	}
 }
 
@@ -792,6 +804,13 @@ func failoverProbeTargets() []failoverProbeCandidate {
 		// 失败计数清零——真实失败永远攒不到写盘门限，表现为「失败不再禁用」。
 		disabledByUs := doc.disabled && doc.failoverDisable
 		if !disabledByUs && !sidecarDisabled {
+			continue
+		}
+		// 永久封禁的账号不进入探活候选：上游 11140 表示凭据已被封死，
+		// 回放只会重复失败（生产实测 60 分钟 66 次无效探测）。
+		// 永久封禁的账号不进入探活候选：上游 11140 表示凭据已被封死，
+		// 回放只会重复失败（生产实测 60 分钟 66 次无效探测）。
+		if doc.permanent {
 			continue
 		}
 		model := failoverProbeModelFor(f.ID)

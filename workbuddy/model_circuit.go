@@ -18,7 +18,9 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
+	"net/http"
 	"strings"
 )
 
@@ -57,6 +59,12 @@ func noteModelBlockedHit(authID, model string) bool {
 // [返回] true 表示已按账号×模型记账；渠道级拦截返回 false 且不产生任何状态。
 // 最近修改时间：2026-11-07；改动原因：新增，渠道级拦截不再惩罚账号。
 func noteUpstreamBlockHit(authID, model string, status int, body string) bool {
+	// 账号级永久封禁（11140）：凭据已被上游封死，探活回放只会重复失败。
+	// 写入独立标记，让 failoverProbeTargets 跳过该号。
+	if isPermanentBanError(status, body) {
+		markPermanentBan(authID, model)
+		return noteModelBlockedHit(authID, model)
+	}
 	if isChannelBlockError(status, body) {
 		// 渠道级拦截：同一个进程内换号必然重演，不记冷却、不禁用。
 		// 只留一条可检索的日志，便于把「客户端渠道被拒」与「账号坏了」分开。
@@ -65,6 +73,63 @@ func noteUpstreamBlockHit(authID, model string, status int, body string) bool {
 		return false
 	}
 	return noteModelBlockedHit(authID, model)
+}
+
+// isPermanentBanError 判定上游是否返回「账号级永久封禁」。
+//
+// 只认 11140（request illegal + account blocked）。它与 11128 渠道级拦截、
+// 6004 模型限流的区别：11140 表示凭据本身被封死，换模型、等冷却都无效。
+// [参数] status：上游 HTTP 状态码；body：上游响应正文。
+// [返回] true 表示账号已被永久封禁。
+// 最近修改时间：2026-11-09 21:45:00；改动原因：新增，探活需跳过被封禁账号。
+func isPermanentBanError(status int, body string) bool {
+	if status != http.StatusForbidden && status != http.StatusBadRequest {
+		return false
+	}
+	return strings.Contains(body, "11140")
+}
+
+// markPermanentBan 把账号标记为永久封禁，使探活不再回放该号。
+//
+// 只写盘上 failover_permanent 标记，不改变 disabled 语义：账号仍由既有
+// failover_disable 机制禁用，人工启用后该标记仍在，探活继续跳过——
+// 这是刻意的，因为上游封禁不会因人工启用而解除。
+// [参数] authID：账号标识；model：触发封禁的模型名，可为空。
+// [返回] 无。
+// 最近修改时间：2026-11-09 21:45:00；改动原因：新增。
+func markPermanentBan(authID, model string) {
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return
+	}
+	authIndex, _ := failoverResolveIndexFn(authID)
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return
+	}
+	lock := failoverDocLock(authIndex)
+	lock.Lock()
+	defer lock.Unlock()
+	phys, err := failoverGetPhysicalFn(authIndex)
+	if err != nil || phys == nil || len(phys.JSON) == 0 {
+		return
+	}
+	var rawDoc map[string]any
+	if err := json.Unmarshal(phys.JSON, &rawDoc); err != nil || rawDoc == nil {
+		return
+	}
+	if rawDoc[failoverPermanentKey] == true {
+		return
+	}
+	rawDoc[failoverPermanentKey] = true
+	raw, errMarshal := json.Marshal(rawDoc)
+	if errMarshal != nil {
+		return
+	}
+	if errPersist := persistAuthDirect(phys.Name, phys.Path, "", raw); errPersist == nil {
+		log.Printf("[workbuddy] account marked permanently banned (11140): auth=%s model=%s",
+			authID, strings.TrimSpace(model))
+	}
 }
 
 // resetModelBlockedState 在一次成功请求后清理该模型的残留冷却。

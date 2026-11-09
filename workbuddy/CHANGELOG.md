@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.21.22
+
+### Fix - 账号级永久封禁（11140）不再进入探活候选
+
+- 背景: 2026-11-09 生产观测到被封禁账号 `33d23f97` 在 60 分钟内被探活 **66 次**，
+  全部返回 `403 {"code":11140,"msg":"request illegal"}`，纯属浪费上游调用。
+- 根因: `failoverProbeTargets` 的候选判据只看「是否被本机制禁用」，不区分禁用原因。
+  11140 表示**凭据已被上游封死**（账号级永久封禁），换模型、等冷却、人工启用都不会
+  解除；它却与可恢复的临时禁用（限流/额度/抖动）走同一条 10 分钟探活路径。
+- 修复: 新增 `failover_permanent` 盘上标记与 `isPermanentBanError` 判据（只认 11140，
+  与 11128 渠道级拦截、6004 模型限流严格区分）；`noteUpstreamBlockHit` 命中时写入该
+  标记；`failoverProbeTargets` 跳过带该标记的账号。
+- 语义边界: 只写 `failover_permanent`，不改变 `disabled` 语义 —— 账号仍由既有
+  `failover_disable` 机制禁用，人工启用后该标记仍在，探活继续跳过。这是刻意的：
+  上游封禁不会因人工启用而解除。
+- 验证: `cgo-shim-build.py workbuddy` build / vet / test 全绿；新增 `permanent_ban_test.go`
+  三组用例（11140 识别边界 6 条、盘上标记解析、探活候选端到端排除）；变异移除候选
+  筛选中的 `doc.permanent` 判断后 `TestFailoverProbeTargetsSkipsPermanentBan` 失败。
+- 涉及文件: `failover_disable.go`、`model_circuit.go`、`permanent_ban_test.go`（新增）。
+
 ## 0.21.21
 
 ### Fix - 补实例所有权守卫，热重载后旧实例不再并行探活
