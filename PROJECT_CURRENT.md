@@ -35,6 +35,15 @@
 ## 活动会话进展摘要
 
 
+- 会话（2026-11-09 22:45-23:10，接续上条）：**缺陷九「首字闸门无时间上限致长任务首帧被拖后」（traework 0.5.32）**：
+  - **用户核心诉求**：traework 首字延迟高。本轮定位到插件侧一个此前未发现的可干预点。
+  - **根因**：`pump` 路径的首字闸门按**字符数**攒够 `pseudoCompletionMaxChars(600)` 才把缓冲分片下发给客户端。0.5.29 把伪完成阈值从 200 提到 20000 后，`gateOpen := ctx.InputChars < 20000` 使 **99.1%** 的真实请求（input ≥ 5000 token）全部走闸门。
+  - **量化证据**：闸门组 TTFT p50 **5630ms**（n=1103）vs 直通组 **1866ms**（n=10），相差 **3 倍**。对照 workbuddy：**完全没有首字闸门**（grep `gateOpen|pending` 零命中），其 TTFT p50 仅 2526ms。
+  - **修复（0.5.32）**：新增 `pseudoGateMaxHold = 1200ms`，闸门改为**双条件** —— 攒够健康字符 **或** 持有超上限，任一满足即放行。伪完成防护让位于首字体感：「已生成内容被回滚」可接受，「长时间零输出」不可接受。
+  - **可观测性**：`traeStreamAttemptResult` 新增 `GateOpenedAt`，成功路径输出 `stream pump gate delay: gate_ms=… ttft_ms=…`，可直接量出闸门给用户感知首字带来的额外延迟。
+  - **验证**：新增 `gate_hold_test.go` 三组用例（上限取值合理性 500ms~2s 区间、持有超时放行、未超时仍按字符判定且伪完成零泄漏）；变异把 `heldTooLong` 置 false 后 `TestPumpGateOpensOnHoldTimeout` 失败。
+  - **部署验收**：`hot reloaded 0.5.31→0.5.32`（23:01:03），落盘 `.so` sha256 `6382f250…` 与 release zip 逐字节一致。部署后 12 分钟错误指标全零；闸门延迟样本因夜间低谷暂无真实请求，下轮补采。
+
 - 会话（2026-11-09 22:10-22:40，接续上条）：**缺陷八「done 事件终止原因被丢弃致内容审核失败无标记」（traework 0.5.31）**：
   - **现象**：`glm-5.3-flashx` 两次请求耗时 **1m26s / 1m34s**、生成 **2946 个分片**后才报 `upstream 200: sensitive content error finish reason: sensitive`，且客户端收到 **HTTP 200**（被截断但无错误标记）。
   - **根因**：上游把终止原因放在 `done` 事件的 **data** 里，而三条扫描路径（collect / aggregate / pump）的 `case "done"` 分支都只调 `terminal.recordDone()` 后立即返回，**完全不解析 payload** —— 审核失败被当业务完整收尾。
