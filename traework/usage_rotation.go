@@ -77,6 +77,10 @@ var (
 	rotationMu     sync.Mutex
 	rotationStates = make(map[string]*rotationState)
 
+	// rotationDiagAt 记录各账号上次诊断日志时刻，避免高频请求刷屏。
+	rotationDiagMu sync.Mutex
+	rotationDiagAt = make(map[string]time.Time)
+
 	// rotationPoolFn 是池视图来源，生产走宿主账号列表，单测可注入。
 	rotationPoolFn = rotationPoolIDs
 )
@@ -462,13 +466,20 @@ func noteRotationUsage(authID string) {
 	}
 	now := time.Now()
 	served := markAuthUsed(authID, now)
+	// 诊断日志：每 30 秒最多打一次，直接暴露「当前账号连续服务了多久」。
+	// 排查「轮换不生效」时必须区分「计时没推进」「计时被重置」「判定失败」三种，
+	// 只看阈值附近是否打点无法区分前两者。
+	rotationDiagMu.Lock()
+	lastLog := rotationDiagAt[authID]
+	if now.Sub(lastLog) >= 30*time.Second {
+		rotationDiagAt[authID] = now
+		rotationDiagMu.Unlock()
+		log.Printf("[traework] rotation diag: auth=%s served=%v serve=%v enabled=%v",
+			authID, served.Round(time.Second), cfg.serve, cfg.enabled)
+	} else {
+		rotationDiagMu.Unlock()
+	}
 	if served < cfg.serve {
-		// 诊断日志：达到 serve 的 80% 时记录一次，便于确认计时是否在推进。
-		// 生产排查「轮换不生效」时，最需要区分「计时没推进」与「计时推进但判定失败」。
-		if served >= cfg.serve*4/5 && served-cfg.serve/5 < time.Second {
-			log.Printf("[traework] rotation approaching: auth=%s served=%v serve=%v",
-				authID, served.Round(time.Second), cfg.serve)
-		}
 		return
 	}
 	if evaluateRotation(authID, rotationPoolFn(), now) {

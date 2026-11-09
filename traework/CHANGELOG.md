@@ -1,5 +1,21 @@
 # TraeWork Plugin Changelog
 
+## 0.5.39
+
+### Chore - 轮换诊断日志改为每账号每 30 秒一条，暴露真实 served 值
+
+- 背景: 0.5.37 的 `rotation approaching`（serve 80% 时打点）在 0.5.38 部署后
+  **依然一条都没出现**，但账号跨度已观测到 7.7 分钟 > serve=5 分钟。
+  这说明「阈值附近打点」无法区分「计时没推进」「计时被重置」「判定失败」三种情况。
+- 变更: 改为**每账号每 30 秒最多一条** `rotation diag`，直接输出当前
+  `served`（连续服务时长）、`serve`（阈值）、`enabled`（开关）。
+  三个值同屏即可定位：
+  - `served` 始终很小 → 计时被反复重置（idle 或键不一致）；
+  - `served` 增长但不到 serve 就归零 → 账号被宿主换走；
+  - `served` 超过 serve 却无让位日志 → 判定侧问题（池视图/全冷检查）。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿。
+- 涉及文件: `usage_rotation.go`。
+
 ## 0.5.38
 
 ### Fix - 轮换 serve 阈值 10→5 分钟，让它早于宿主自然切换周期
