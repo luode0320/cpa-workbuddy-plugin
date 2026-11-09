@@ -35,6 +35,14 @@
 ## 活动会话进展摘要
 
 
+- 会话（2026-11-09 23:25-23:45，接续上条）：**缺陷十「内容审核失败客户端仍收 200」（traework 0.5.34）**：
+  - **修复效果确认（0.5.31 生效）**：`glm-5.3-flashx` 审核失败耗时从 **1m26s/1m34s 降到 4.7s/2.2s**，因 0.5.31 让插件在 done 时立即识别审核原因并终止，不再等完整生成。
+  - **新缺陷十**：但客户端仍收到 **HTTP 200**（`gin_logger` 记录 `200 | 10.02s | POST /v1/responses`），无法区分「正常完成」与「被审核截断」。根因：流式错误信封 `marshalStreamErrorEnvelope` 只带 `error` 字段、**不带 `http_status`**，宿主 `statusCodeFromError` 得 0，客户端按成功收尾。
+  - **修复（0.5.34）**：新增 `isContentModerationFailure`（认 `sensitive content` 与 `content error finish reason`），`envelopeHTTPStatusForError` 据此返回 **400**。宿主 `IsRequestFault(400)` 判定为请求级故障，既不冷却凭据也不跨凭据轮转 —— 这类失败与账号健康度无关，同一段对话换号必然重演。
+  - **验证**：新增 `content_moderation_test.go` 两组用例（7 条识别边界含配额/渠道/500 反例、状态码映射）；变异移除该分支后 `TestEnvelopeHTTPStatusForContentModeration` 失败。
+  - **部署验收**：`hot reloaded 0.5.33→0.5.34`（23:39:32），落盘 `.so` sha256 `31dd3b16…` 与 release zip 逐字节一致。
+  - **闸门数据持续稳定**：54 条样本 `gate_ms` p50=0 / p90=1075ms，全部被 1200ms 上限压住。
+
 - 会话（2026-11-09 23:05-23:25，接续上条）：**闸门延迟实测验收 + 观测点修正（traework 0.5.33）**：
   - **路径核实（重要修正）**：生产流量**全部走 `exec stream async`**（2h 内 1289 次），该路径直接调用 `pumpTraeStreamAttempt`，因此 0.5.32 的闸门修复**对生产有效**；但 0.5.32 把观测日志加在 `pumpTraeStream` 包装函数里（生产不经过它），导致日志一条都没有。0.5.33 把观测点移到 `executor.go` 的 async 循环内。
   - **闸门机制实证**：生产 2h async done 样本 1289 条，`chunks` p50 仅 **34**（p10=8 / p90=222），即典型输出约 136 字符，**远达不到 600 门槛** —— 闸门在多数请求里全程不开，分片一直留在 pending 直到 done 才统一释放。这是首字被拖后的直接机制。
