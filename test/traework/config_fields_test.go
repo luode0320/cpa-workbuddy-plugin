@@ -136,9 +136,11 @@ func TestConfigFields_LowCreditDisableBelowWired(t *testing.T) {
 		t.Fatalf("low_credit_disable_below = %d, want 150", got)
 	}
 	// 负值是笔误，必须按 0（关闭）处理，绝不能变成「全部禁用」。
+	// 注意不能与 defaultLowCreditDisableBelow 比较：默认值已是 100，负值的
+	// 语义是明确的「关闭」而不是「回落默认」。
 	configureYAML(t, "low_credit_disable_below: -5\n")
-	if got := loadedLowCreditDisableBelow(); got != defaultLowCreditDisableBelow {
-		t.Fatalf("负值必须保持关闭态，got %d", got)
+	if got := loadedLowCreditDisableBelow(); got != 0 {
+		t.Fatalf("负值必须按 0（关闭）处理，got %d", got)
 	}
 }
 

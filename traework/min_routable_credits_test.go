@@ -21,8 +21,9 @@ func TestMinRoutableCredits_TraeWork(t *testing.T) {
 	resetFailover(t)
 	restoreMin := setMinRoutableCredits(defaultMinRoutableCredits)
 	defer restoreMin()
-	// 禁用线必须是关闭状态，否则下面的低积分号会被硬禁用，测不到排序语义。
-	restoreBelow := setLowCreditDisableBelow(defaultLowCreditDisableBelow)
+	// 本用例只测「保活档降级排序」，必须显式关闭禁用线：默认值已改为 100，
+	// 若沿用默认，下面 remain=15 的号会被直接判停用，测不到排序语义。
+	restoreBelow := setLowCreditDisableBelow(0)
 	defer restoreBelow()
 
 	// 1. 默认阈值为 20
@@ -39,9 +40,10 @@ func TestMinRoutableCredits_TraeWork(t *testing.T) {
 		t.Fatalf("configured minRoutableCredits = %d, want 50", got)
 	}
 	setMinRoutableCredits(20)
-	// configure 会按默认值重写禁用线；这里显式确认它仍是关闭态。
+	// 无关 reconfigure 不得覆盖显式设置的禁用线（kill-switch 安全）：本用例
+	// setup 已把它设为 0，config_yaml 不含该键时必须保持 0。
 	if got := loadedLowCreditDisableBelow(); got != 0 {
-		t.Fatalf("low_credit_disable_below 默认应为 0（关闭），got %d", got)
+		t.Fatalf("不含 low_credit_disable_below 的 reconfigure 必须保持当前值 0，got %d", got)
 	}
 
 	// 3. 保活档不再硬排除：remain=15 仍可被选中，只是排在健康号之后。

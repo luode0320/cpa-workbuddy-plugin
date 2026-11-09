@@ -1,5 +1,30 @@
 # TraeWork Plugin Changelog
 
+## 0.5.30
+
+### Feat - 积分硬禁用线默认改为 100（低于 100 自动停用，回升自动解禁）
+
+- 背景: 用户裁定 trae 需要「低于 100 积分禁用」。该机制此前已完整实现，但默认值
+  为 0（关闭），必须显式配置才生效；本轮把默认值改为 100，让新部署开箱即用。
+- 变更: `defaultLowCreditDisableBelow` 0 → **100**。未显式配置
+  `low_credit_disable_below` 时即按 100 生效；显式填 0 仍是 kill switch，行为回到
+  0.3.0。
+- 影响面（2026-11-09 生产实测 21 个在池账号）: remain < 100 的有 **14 个**
+  （11 个为 0、3 个为 38/70/92），启用后可用池由 21 降到 7。remain=0 的号本就
+  无法承载请求，停用可减少无效路由；38/70/92 三个号会被直接摘出。
+- 恢复路径: 禁用只写本机制自己的 `low_credit_disable` 标记；被禁用账号仍参与
+  10 分钟全量积分刷新（`hostAuthList` 不按 disabled 过滤），余额回升到 100 即由
+  下一轮刷新自动解禁。`manual_disable` / `failover_disable` / `exhausted_disable`
+  一律不接管。
+- 保活线交互: 禁用线 100 高于保活线默认 20，保活档因此不再出现（低于 100 直接
+  停用）。若需要「禁用线以上、保活线以下」的降级区间，把 `min_routable_credits`
+  调到 100 以上。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿。新增
+  `TestLowCreditDisableDefaultIs100`（99 停用 / 100 正常 / 未知余量不降级 +
+  写盘停用→回升解禁闭环）；原「默认 0」用例改为「显式 0 = kill switch」回归。
+- 涉及文件: `policy.go`、`main.go`、`min_routable_credits_test.go`、
+  `test/traework/low_credit_dual_threshold_test.go`、`test/traework/config_fields_test.go`。
+
 ## 0.5.29
 
 ### Feat - 失败写盘禁用改为默认关闭，只保留错误冷却

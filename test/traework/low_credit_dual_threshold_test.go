@@ -6,14 +6,15 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// 积分双阈值分级（2026-10-25）。
+// 积分双阈值分级（2026-10-25；2026-11-09 禁用线默认值改为 100）。
 //
 // 两条线职责必须分清：
-//   - 保活线 min_routable_credits（默认 20）：只影响排序，不再硬排除；
-//   - 禁用线 low_credit_disable_below（默认 0 = 关闭）：低于它才写盘禁用。
+//   - 保活线 min_routable_credits（默认 20）：只影响排序，不硬排除；
+//   - 禁用线 low_credit_disable_below（默认 100）：低于它才写盘禁用。
 //
-// 红线：未配置禁用线时，remain=50 这类常见生产账号必须仍然可路由。默认值一旦
-// 被改成 100（照搬 workbuddy），现网一大批号会在首轮扫描里被直接写盘禁用。
+// 默认值由用户裁定从 0（关闭）改为 100：低于 100 的号不再承载请求，余额回升后
+// 由下一轮积分刷新自动解禁。填 0 仍是 kill switch——下面保留该语义的回归用例，
+// 防止「改成默认 100」时把显式配置的关闭态一起吃掉。
 
 // TestCreditTierFor_Boundaries 锁定档位边界六点。
 func TestCreditTierFor_Boundaries(t *testing.T) {
@@ -41,10 +42,11 @@ func TestCreditTierFor_Boundaries(t *testing.T) {
 	}
 }
 
-// TestLowCreditDisableBelowZeroKeepsLegacyBehavior 是本次改动的红线用例。
+// TestLowCreditDisableBelowZeroKeepsLegacyBehavior 锁定 kill switch：
 //
-// 未配置禁用线（默认 0）时，remain=50 的账号必须仍然可路由、可被调度选中，
-// 且不得被写盘禁用——行为与 0.3.0 完全一致。
+// 显式配置 0 时，remain=50 的账号必须仍然可路由、可被调度选中，且不得被写盘
+// 禁用——行为与 0.3.0 完全一致。默认值已改为 100，所以这里必须显式设为 0，
+// 不能再用 defaultLowCreditDisableBelow。
 func TestLowCreditDisableBelowZeroKeepsLegacyBehavior(t *testing.T) {
 	resetActiveAuth(t)
 	resetTestFailed(t)
@@ -52,13 +54,13 @@ func TestLowCreditDisableBelowZeroKeepsLegacyBehavior(t *testing.T) {
 	clearAccountCacheForTest(t)
 	restoreMin := setMinRoutableCredits(defaultMinRoutableCredits)
 	defer restoreMin()
-	restoreBelow := setLowCreditDisableBelow(defaultLowCreditDisableBelow)
+	restoreBelow := setLowCreditDisableBelow(0)
 	defer restoreBelow()
 	oldMode := setSchedulerMode(schedulerModeCredits)
 	defer oldMode()
 
 	if got := loadedLowCreditDisableBelow(); got != 0 {
-		t.Fatalf("禁用线默认值必须为 0（关闭），got %d", got)
+		t.Fatalf("显式关闭后禁用线 = %d, want 0", got)
 	}
 
 	const authID = "tier-legacy-50"
@@ -84,6 +86,46 @@ func TestLowCreditDisableBelowZeroKeepsLegacyBehavior(t *testing.T) {
 	resp := parsePickResponse(t, raw)
 	if !resp.Handled || resp.AuthID != authID {
 		t.Fatalf("禁用线关闭时 remain=50 的账号必须被选中，got %+v", resp)
+	}
+}
+
+// TestLowCreditDisableDefaultIs100 锁定 2026-11-09 的默认值裁定：
+// 99 停用、100 正常，且默认配置下真实走完「写盘停用 → 余额回升解禁」闭环。
+func TestLowCreditDisableDefaultIs100(t *testing.T) {
+	if defaultLowCreditDisableBelow != 100 {
+		t.Fatalf("禁用线默认值 = %d, want 100", defaultLowCreditDisableBelow)
+	}
+	// 边界：99 判停用、100 判正常、未知余量不降级。
+	if got := creditTierFor(99, defaultLowCreditDisableBelow, defaultMinRoutableCredits); got != creditTierDisabled {
+		t.Fatalf("remain=99 应判停用，got %s", got)
+	}
+	if got := creditTierFor(100, defaultLowCreditDisableBelow, defaultMinRoutableCredits); got != creditTierNormal {
+		t.Fatalf("remain=100 应判正常，got %s", got)
+	}
+	if got := creditTierFor(-1, defaultLowCreditDisableBelow, defaultMinRoutableCredits); got != creditTierNormal {
+		t.Fatalf("未知余量不得降级，got %s", got)
+	}
+
+	// 真实链路：默认配置下 99 必须写盘停用，回升到 100 必须自动解禁。
+	resetFailover(t)
+	h := newFailoverFakeHost(t)
+	h.addAccount("tier-default", "idx-default", nil)
+	restoreBelow := setLowCreditDisableBelow(defaultLowCreditDisableBelow)
+	defer restoreBelow()
+
+	gradeCreditsForAuth("idx-default", "tier-default", nil, &traeCredits{TotalRemain: 99})
+	doc := h.docOf("idx-default")
+	if doc["disabled"] != true || doc[creditDisableKey] != true {
+		t.Fatalf("remain=99 必须写盘停用并带本机制标记: %v", doc)
+	}
+
+	gradeCreditsForAuth("idx-default", "tier-default", nil, &traeCredits{TotalRemain: 100})
+	doc = h.docOf("idx-default")
+	if doc["disabled"] == true {
+		t.Fatalf("remain=100 必须自动解禁: %v", doc)
+	}
+	if _, ok := doc[creditDisableKey]; ok {
+		t.Fatalf("解禁后不得残留本机制标记: %v", doc)
 	}
 }
 

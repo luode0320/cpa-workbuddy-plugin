@@ -19,12 +19,25 @@ func resetTestFailed(t *testing.T) {
 	})
 }
 
+// disableLowCreditLine 关闭积分硬禁用线：本文件的用例只测「测试」标签与排序，
+// 账号 remain 是象征值（12~90）。0.5.30 起默认禁用线为 100，若不关闭，这些
+// 账号会先被判停用，用例测到的就不是标签语义了。
+// [参数] t：测试上下文。
+// [返回] 无；用例结束时自动恢复原值。
+// 最近修改时间：2026-11-09；改动原因：默认禁用线改为 100，隔离本文件的测点。
+func disableLowCreditLine(t *testing.T) {
+	t.Helper()
+	restore := setLowCreditDisableBelow(0)
+	t.Cleanup(restore)
+}
+
 // TestSchedulerPick_TestFailedFiltered: a 「测试」account must never carry
 // traffic — not even when it is the panel-selected card.
 func TestSchedulerPick_TestFailedFiltered(t *testing.T) {
 	resetActiveAuth(t)
 	resetTestFailed(t)
 	resetFailover(t)
+	disableLowCreditLine(t)
 	storeCredits(t, "tr-tagged", 30)
 	storeCredits(t, "tr-clean", 40)
 	testFailedSetPut("tr-tagged")
@@ -52,6 +65,7 @@ func TestSchedulerPick_AllTestFailed_Defers(t *testing.T) {
 	resetActiveAuth(t)
 	resetTestFailed(t)
 	resetFailover(t)
+	disableLowCreditLine(t)
 	storeCredits(t, "tr-a", 30)
 	storeCredits(t, "tr-b", 40)
 	testFailedSetPut("tr-a")
@@ -83,6 +97,7 @@ func TestSchedulerPick_LowCreditFirst(t *testing.T) {
 	resetActiveAuth(t)
 	resetTestFailed(t)
 	resetFailover(t)
+	disableLowCreditLine(t)
 	storeCredits(t, "tr-mid", 300)
 	storeCredits(t, "tr-low", 12)
 	raw, err := handleSchedulerPick(mustMarshal(t, pluginapi.SchedulerPickRequest{
@@ -133,6 +148,7 @@ func TestSchedulerPick_RecoversAfterTagCleared(t *testing.T) {
 	resetActiveAuth(t)
 	resetTestFailed(t)
 	resetFailover(t)
+	disableLowCreditLine(t)
 	storeCredits(t, "tr-recovered", 20)
 	storeCredits(t, "tr-other", 90)
 	testFailedSetPut("tr-recovered")

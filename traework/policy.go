@@ -22,12 +22,19 @@ const httpStatusBadRequest = 400
 // 剩余额度低于该阈值的账号不再承载新请求，防止推理中途断开。
 const defaultMinRoutableCredits int64 = 20
 
-// defaultLowCreditDisableBelow 是积分硬禁用线的默认值：0 表示关闭。
+// defaultLowCreditDisableBelow 是积分硬禁用线的默认值：100 点。
 //
-// 刻意与 workbuddy 的默认 100 不同：traework 现有生产账号的 remain 落在 20–99
-// 区间的不在少数，直接照搬会在首轮扫描时把它们全部写盘禁用，可用池骤减。
-// 0 = kill switch，行为与 0.3.0 完全一致；需要硬禁用时显式配置该键。
-const defaultLowCreditDisableBelow int64 = 0
+// 2026-11-09 用户裁定从 0（关闭）改为 100：Trae 账号积分低于 100 时已难以承载
+// 一次完整请求，继续留在池里只会把请求打到半途断流或额度错误的号上。低于该线
+// 即写盘停用，由 10 分钟积分刷新在余额回升到线上后自动解禁。
+//
+// 停用与恢复必须成对：禁用只写本机制自己的 low_credit_disable 标记，
+// manual_disable / failover_disable / exhausted_disable 一律不接管；禁用后的账号
+// 仍参与全量积分刷新（hostAuthList 不按 disabled 过滤），因此不存在「禁了之后
+// 再也刷不到积分、永远解不了」的死锁。
+//
+// 设 0 仍表示关闭（kill switch），行为回到 0.3.0。
+const defaultLowCreditDisableBelow int64 = 100
 
 var (
 	minRoutableCredits   int64 = defaultMinRoutableCredits
