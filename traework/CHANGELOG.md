@@ -1,5 +1,21 @@
 # TraeWork Plugin Changelog
 
+## 0.5.35
+
+### Fix - 积分耗尽账号不再触发探活，停止无效上游调用
+
+- 背景: 2026-11-09 23:20 生产观测到 **14 个已配额耗尽的账号在 2 分钟内被探活
+  各 2~3 次**，全部返回 `upstream 200: Your requests have exceeded the quota.`。
+- 根因: `doFetchOne`（积分刷新）在末尾**无条件调用** `triggerActivePing`，
+  不检查刚刷新的余额。这些账号已被 lifecycle 禁用，探活对它们只会重复失败。
+- 修复: 抽出 `shouldActivePingForCredits` 判据（`cr != nil && cr.TotalRemain > 0`），
+  `doFetchOne` 据此决定是否探活。恢复仍由积分刷新驱动 —— 余额回升后本函数会
+  再次执行并恢复正常探活，不依赖探活本身。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增
+  `active_ping_exhausted_test.go`（5 条边界：0 / 负数 / nil 不探活，1 / 500 探活）；
+  变异使判据恒返回 true 后 3 条用例失败。
+- 涉及文件: `refresh_runner.go`、`active_ping_exhausted_test.go`（新增）。
+
 ## 0.5.34
 
 ### Fix - 内容审核拦截按请求级终局处理，客户端不再收到看似成功的 200

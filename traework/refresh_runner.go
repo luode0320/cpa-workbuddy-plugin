@@ -76,24 +76,24 @@ type refreshSnapshot struct {
 // injectable so unit tests can drive the state machine without the host API;
 // production uses doFetchOne.
 type refreshRunner struct {
-	mu           sync.Mutex
-	batch        []refreshJobState
-	idx          int // next index to fetch (monotonic within a generation)
-	generation   int // monotonic round id; guards against a stale in-flight worker
-	inFlight     bool // true from Enqueue until drainBatch fully completes
-	sources      []string
-	startedAt    time.Time
-	finishedAt   time.Time
-	wake         chan struct{}
-	stop         chan struct{}
-	fetchFn      func(authIndex, authID string) error
+	mu         sync.Mutex
+	batch      []refreshJobState
+	idx        int  // next index to fetch (monotonic within a generation)
+	generation int  // monotonic round id; guards against a stale in-flight worker
+	inFlight   bool // true from Enqueue until drainBatch fully completes
+	sources    []string
+	startedAt  time.Time
+	finishedAt time.Time
+	wake       chan struct{}
+	stop       chan struct{}
+	fetchFn    func(authIndex, authID string) error
 }
 
 func newRefreshRunner() *refreshRunner {
 	return &refreshRunner{
-		wake:         make(chan struct{}, 1),
-		stop:         make(chan struct{}),
-		fetchFn:      doFetchOne,
+		wake:    make(chan struct{}, 1),
+		stop:    make(chan struct{}),
+		fetchFn: doFetchOne,
 	}
 }
 
@@ -289,6 +289,19 @@ func (r *refreshRunner) Snapshot() refreshSnapshot {
 	return snap
 }
 
+// shouldActivePingForCredits 判定该账号当前是否值得探活。
+//
+// 积分耗尽的账号不探活：上游对它只会返回 "Your requests have exceeded the
+// quota."，探活必然失败且纯属浪费调用。生产实测（2026-11-09 23:20）：14 个
+// 已禁用账号在 2 分钟内被探活各 2~3 次，全部返回配额耗尽。
+// 恢复由积分刷新驱动（余额回升后 doFetchOne 会再次执行），不依赖探活。
+// [参数] cr：刚刷新的积分快照，可为 nil。
+// [返回] true 表示可以探活。
+// 最近修改时间：2026-11-10 00:25:00；改动原因：新增，配额耗尽不探活。
+func shouldActivePingForCredits(cr *traeCredits) bool {
+	return cr != nil && cr.TotalRemain > 0
+}
+
 // doFetchOne refreshes one account's points snapshot through the existing
 // credits source (accountCredits → cacheCredits). It reports an error only
 // when the account's credits could not be read — the panel's core datum.
@@ -312,6 +325,9 @@ func doFetchOne(authIndex, authID string) error {
 	// 这里只管「0 < remain < 禁用线」。两者各解各的标记，互不接管
 	// manual_disable / failover_disable。禁用线默认 0（关闭），未配置时本行不动作。
 	gradeCreditsForAuth(authIndex, authID, sa, cr)
+	if !shouldActivePingForCredits(cr) {
+		return nil
+	}
 	if pingErr := triggerActivePing(authIndex, authID, sa); pingErr != nil {
 		log.Printf("[traework] active ping account %s warning: %v", authID, pingErr)
 	}
