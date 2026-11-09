@@ -1,5 +1,25 @@
 # TraeWork Plugin Changelog
 
+## 0.5.32
+
+### Fix - 首字闸门增加时间上限，长任务不再等攒满 600 字符才下发首帧
+
+- 背景: 2026-11-09 生产分析发现 `pump` 路径的首字闸门按**字符数**攒够
+  `pseudoCompletionMaxChars(600)` 才把缓冲分片下发给客户端。实测 **99.1%** 的
+  traework 请求 input ≥ 5000 token 会走闸门（阈值 0.5.29 从 200 提到 20000 后），
+  闸门组 TTFT p50 **5630ms**、直通组仅 **1866ms**，相差 3 倍。思考型模型在
+  reasoning 阶段可能数十秒都不满 600 字符，用户侧首字被整段拖后。
+- 修复: 新增 `pseudoGateMaxHold = 1200ms`，闸门改为**双条件**：攒够健康字符
+  **或** 持有超过上限，任一满足即放行已缓冲分片。伪完成防护让位于首字体感 ——
+  「已生成内容被回滚」对用户是可接受的降级，「长时间零输出」不可接受。
+- 可观测性: `traeStreamAttemptResult` 新增 `GateOpenedAt`，成功路径输出
+  `stream pump gate delay: gate_ms=… ttft_ms=…`，可直接量出闸门给用户感知首字
+  带来的额外延迟。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增 `gate_hold_test.go`
+  三组用例（上限取值合理性、持有超时放行、未超时仍按字符判定且伪完成零泄漏）；
+  变异把 `heldTooLong` 置为 false 后 `TestPumpGateOpensOnHoldTimeout` 失败。
+- 涉及文件: `stream.go`、`gate_hold_test.go`（新增）。
+
 ## 0.5.31
 
 ### Fix - done 事件携带的终止原因（内容审核拦截）不再被丢弃

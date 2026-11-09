@@ -854,6 +854,17 @@ const (
 	// 只剩该健康账号时会直接 pool exhausted。同号重试一次让窗口性限流有机会自愈，
 	// 仍伪才核算 + 换号；不消耗跨账号 Budget，仅受本预算约束。
 	pseudoRetryBudget = 1
+
+	// pseudoGateMaxHold 是首字闸门的最长持有时间。
+	//
+	// 闸门的存在目的是「长输入 + 双轴都短」时不在换号前把正文泄漏给客户端；
+	// 但它按字符数攒够 pseudoCompletionMaxChars(600) 才放行，思考型模型在
+	// reasoning 阶段可能持续数十秒都不满 600 字符，用户侧首字被整段拖后。
+	// 生产实测（2026-11-09）：99.1% 的 traework 请求 input ≥ 5000 token 走闸门，
+	// 闸门组 TTFT p50 5630ms、直通组仅 1866ms。
+	// 上限设为 1200ms：超过它即无条件放行已缓冲分片 —— 伪完成防护让位于首字体感，
+	// 因为「已生成内容被回滚」对用户是可接受的降级，而「长时间零输出」不可接受。
+	pseudoGateMaxHold = 1200 * time.Millisecond
 )
 
 // isPseudoCompletion reports whether a done-terminated stream carried far less
@@ -917,6 +928,11 @@ type traeStreamAttemptResult struct {
 	// FirstOutputAt 是第一个有效 output 事件的到达时间（TTFT 观测点）；
 	// 零值表示该尝试未观测到任何输出（如开启即失败）。
 	FirstOutputAt time.Time
+	// GateOpenedAt 是首帧真正下发给客户端的时刻；零值表示闸门从未打开
+	// （分片全部留在 pending 里，由收尾逻辑统一释放）。与 FirstOutputAt 的
+	// 差值即闸门缓冲给用户感知首字带来的额外延迟。
+	// 最近修改时间：2026-11-09 22:50:00；改动原因：新增，量化闸门对首字延迟的贡献。
+	GateOpenedAt time.Time
 	// Usage 是上游 token_usage 事件带出的真实用量（未收到该事件时为空，
 	// 调用方应回退 estimateUsageFromChunks 估算，见 usageDetailForAttempt）。
 	// 最近修改时间：2026-09-04；改动原因：dashboard Token 列真实 usage。
@@ -939,6 +955,8 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 	gateOpen := ctx.InputChars < pseudoCompletionMinInputChars
 	healthChars := 0
 	pending := make([][]byte, 0)
+	// gateOpenedAt 记录闸门打开（首帧下发）时刻，用于观测闸门对首字延迟的贡献。
+	var gateOpenedAt time.Time
 	var terminal traeSSETerminal
 	var collector traeUsageCollector
 
@@ -980,10 +998,16 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 				result.Chunks = append(result.Chunks, pluginapi.ExecutorStreamChunk{Payload: raw})
 				if !gateOpen {
 					pending = append(pending, raw)
-					if healthChars < pseudoCompletionMaxChars && !terminal.hasToolCalls {
+					// 双闸门：攒够健康字符（防伪完成泄漏）**或**持有超过
+					// pseudoGateMaxHold（保首字体感），任一满足即放行。
+					heldTooLong := !result.FirstOutputAt.IsZero() &&
+						time.Since(result.FirstOutputAt) >= pseudoGateMaxHold
+					if healthChars < pseudoCompletionMaxChars && !terminal.hasToolCalls && !heldTooLong {
 						continue
 					}
 					gateOpen = true
+					gateOpenedAt = time.Now()
+					result.GateOpenedAt = gateOpenedAt
 					for _, buffered := range pending {
 						if err := emit(buffered); err != nil {
 							return err
@@ -1153,6 +1177,14 @@ func pumpTraeStream(r io.Reader, ctx traeStreamPumpContext) {
 	// 互斥的成功返回点，任何一处漏接都会让该模式的流量不计入连续承流。
 	noteRotationUsage(ctx.AuthID)
 	pumpTTFT := attemptTTFTNS(ctx.AttemptStarted, ctx.Started, result.FirstOutputAt)
+	// 闸门延迟观测：上游首帧到客户端首帧的间隔。为 0 表示未走闸门（短输入直通），
+	// 明显大于 0 说明首帧被缓冲到攒够健康字符才下发。
+	if !result.FirstOutputAt.IsZero() && !result.GateOpenedAt.IsZero() {
+		log.Printf("[traework] stream pump gate delay: request_id=%s stream_id=%s model=%s gate_ms=%d ttft_ms=%d",
+			requestID, ctx.StreamID, ctx.Model,
+			result.GateOpenedAt.Sub(result.FirstOutputAt).Milliseconds(),
+			time.Duration(pumpTTFT).Milliseconds())
+	}
 	publishUsage(ctx.Model, ctx.UpstreamModel, ctx.AuthUID, ctx.Started, usageDetailForAttempt(result.Usage, result.Chunks), false, 0, "", "", pumpTTFT, ctx.AuthUID, ctx.SessionKey)
 	// 慢速观测：直通流式收尾路径。此处与 executor 的 collect/async 是三个互斥的
 	// 成功返回点，任何一处漏接都会让该模式的流量不计入慢速判定。
