@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -128,10 +129,40 @@ func hostBridgeUnwrap(raw []byte, method string) (json.RawMessage, error) {
 	return env.Result, nil
 }
 
+// streamDirectForced 报告是否强制流式请求走插件直连（跳过宿主桥）。
+//
+// 用途：生产流式请求默认走宿主桥 `host.stream.do`，插件的连接池配置对它无效。
+// 本开关让运维可以做「直连 vs 桥接」的 A/B 对照，验证延迟差异来自哪一层。
+// 默认 false（走宿主桥，与既有行为一致）。
+// [返回] true 表示强制直连。
+// 最近修改时间：2026-11-10 21:30:00；改动原因：新增，支持路径对照实验。
+func streamDirectForced() bool {
+	streamDirectMu.RLock()
+	defer streamDirectMu.RUnlock()
+	return streamDirectForce
+}
+
 // hostBridgeAvailable reports whether host.http.* RPC is wired up. False in
 // unit tests (no hostAPI) and when the host binary predates the bridge.
 func hostBridgeAvailable() bool {
 	return hostBridgeAvailableFn()
+}
+
+var (
+	// streamDirectMu 保护 streamDirectForce。
+	streamDirectMu sync.RWMutex
+	// streamDirectForce 为 true 时流式请求强制走插件直连，跳过宿主桥。
+	streamDirectForce bool
+)
+
+// setStreamDirectForce 设置直连开关（配置加载与测试使用）。
+// [参数] on：true 表示强制直连。
+// [返回] 无。
+// 最近修改时间：2026-11-10 21:30:00；改动原因：新增。
+func setStreamDirectForce(on bool) {
+	streamDirectMu.Lock()
+	defer streamDirectMu.Unlock()
+	streamDirectForce = on
 }
 
 // hostBridgeAvailableFn is the availability probe seam, injectable in tests to
@@ -353,7 +384,10 @@ func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream
 		_ = req.Body.Close()
 		bodyBytes = b
 	}
-	if !hostBridgeAvailable() {
+	// 直连开关：用于实测「插件直连」与「宿主桥」两条路径的 TTFT 差异。
+	// 生产流量默认全部走宿主桥（host.stream.do RPC），插件的连接池配置因此
+	// 对生产无效 —— 这个开关让运维可以在不改代码的前提下做 A/B 对照。
+	if !hostBridgeAvailable() || streamDirectForced() {
 		return hostHTTPDoStreamDirect(req, bodyBytes)
 	}
 	wire := rpcHostHTTPRequestWire{

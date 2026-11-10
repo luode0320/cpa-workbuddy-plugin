@@ -312,6 +312,10 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 {
 				nextRotationIdle = n
 			}
+		case "stream_direct_forced":
+			if b, ok := parseYAMLBool(val); ok {
+				setStreamDirectForce(b)
+			}
 		case "slow_account_enabled":
 			slowSeen = true
 			if b, ok := parseYAMLBool(val); ok {

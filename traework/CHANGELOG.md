@@ -1,5 +1,22 @@
 # TraeWork Plugin Changelog
 
+## 0.5.41
+
+### Chore - 新增 stream_direct_forced 开关，支持「直连 vs 宿主桥」延迟对照
+
+- 关键发现（2026-11-10）: 生产流式请求走 `hostHTTPDoStream` → 宿主 `host.stream.do`
+  RPC，**完全绕过插件的 `streamHTTPClient`**。因此 0.5.40 的连接池扩容
+  （MaxIdleConns 200 / PerHost 64）对生产流量**无效** —— 这解释了扩容后 TTFT
+  未见改善。降级日志统计为 0，确认生产 100% 走宿主桥。
+- 变更: 新增 `stream_direct_forced` 配置项（默认 false）与 `setStreamDirectForce`，
+  `hostHTTPDoStream` 在该开关为 true 时直接走 `hostHTTPDoStreamDirect`，
+  跳过宿主桥。
+- 用途: 运维可在不改代码的前提下做 A/B 对照，实测两条路径的 TTFT 差异，
+  定位延迟究竟来自宿主桥还是上游本身。**默认关闭，不改变生产路径。**
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增
+  `stream_direct_test.go` 锁定默认值必须为 false（防止误改生产路径）与开关读写。
+- 涉及文件: `host_bridge.go`、`config.go`、`main.go`、`stream_direct_test.go`（新增）。
+
 ## 0.5.40
 
 ### Perf - 连接池容量按账号池规模扩容，消除高并发下的反复建连开销

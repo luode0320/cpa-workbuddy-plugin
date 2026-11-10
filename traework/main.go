@@ -281,7 +281,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.5.40"
+var version = "0.5.41"
 
 func wbRegistration() registration {
 	return registration{
@@ -318,6 +318,7 @@ func wbRegistration() registration {
 				{Name: "ide_version_code", Type: pluginapi.ConfigFieldTypeString, Description: "客户端版本号（YYYYMMDD 形态）。一般无需修改；留空时自动生成当日值。"},
 				{Name: "min_routable_credits", Type: pluginapi.ConfigFieldTypeInteger, Description: "保活线（默认 20 点）：剩余积分低于该值但高于禁用线的账号打「保活」标，仍可路由但排在正常号之后。填 0 关闭保活降级。"},
 				{Name: "low_credit_disable_below", Type: pluginapi.ConfigFieldTypeInteger, Description: "积分硬禁用线（默认 100 点）：刷新积分时发现剩余低于该值就写盘停用该账号，积分回升到线上后由下一轮刷新自动解禁。填 0 关闭该机制。注意：禁用线高于保活线（min_routable_credits，默认 20）时保活档不再出现——低于禁用线的号直接停用，而不是降级排序；若想保留「禁用线以上、保活线以下」的降级区间，请把保活线调到禁用线之上。"},
+				{Name: "stream_direct_forced", Type: pluginapi.ConfigFieldTypeBoolean, Description: "强制流式请求走插件直连，跳过宿主 host.stream.do 桥（默认 false）。仅用于对照实验：生产默认走宿主桥，插件连接池配置对它无效。"},
 				{Name: "rotation_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用连续使用轮换（默认开启）：单个账号连续承流达到 rotation_serve_minutes 后主动让位，进入 rotation_cooldown_minutes 冷却，后续请求改由其它账号承接。已在会话粘性绑定中的会话同样生效；关闭填 false。"},
 				{Name: "rotation_serve_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "单账号连续承流多少分钟后让位（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
 				{Name: "rotation_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "轮换让位后停留在冷却的时长（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
