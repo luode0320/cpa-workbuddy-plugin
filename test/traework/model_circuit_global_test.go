@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 // TestModelCircuitOpensAfterCrossAuthHits 锁定模型级跨账号熔断的开启条件。
@@ -42,6 +43,89 @@ func TestModelCircuitOpensAfterCrossAuthHits(t *testing.T) {
 	resetModelCircuit("mc-model")
 	if isModelCircuitOpen("mc-model") {
 		t.Fatal("resetModelCircuit 后应关闭")
+	}
+}
+
+// TestModelCircuitWindowBacksOff 锁定熔断窗口的指数退避。
+//
+// 生产背景（2026-11-11）：固定 60s 窗口下，glm-5.3-flashx 持续 100% 失败时
+// 窗口一到期流量就回来撞一轮——实测开闸 8 次、间隔 60~90s、cross_auth_hits
+// 从 3 涨到 10，15 分钟内 done=0 / attempt error=136。窗口必须随连续失败增长。
+//
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-11；改动原因：新增，锁定退避阶梯与上限。
+func TestModelCircuitWindowBacksOff(t *testing.T) {
+	cases := []struct {
+		streak int
+		want   time.Duration
+	}{
+		{0, 60 * time.Second},
+		{1, 120 * time.Second},
+		{2, 240 * time.Second},
+		{3, 480 * time.Second},
+		{4, 960 * time.Second},
+		{10, modelCircuitMaxWindow}, // 远超上限时必须封顶
+	}
+	for _, tc := range cases {
+		if got := modelCircuitWindowFor(tc.streak); got != tc.want {
+			t.Fatalf("modelCircuitWindowFor(%d) = %v, want %v", tc.streak, got, tc.want)
+		}
+	}
+}
+
+// TestModelCircuitWindowSurvivesReopen 锁定「窗口到期不清零 streak」。
+//
+// 若到期时把 streak 一起清掉，退避永远停在 60s，等于没做退避。
+//
+// [参数] t：测试上下文
+// [返回] 无
+// 最近修改时间：2026-11-11；改动原因：新增，防止退避被窗口重置抹掉。
+func TestModelCircuitWindowSurvivesReopen(t *testing.T) {
+	const model = "mc-backoff-model"
+	defer resetModelCircuit(model)
+
+	openOnce := func(prefix string) {
+		for i := 1; i <= modelCircuitCrossAuthThreshold; i++ {
+			noteModelCircuitHit(prefix+"-"+string(rune('a'+i)), model)
+		}
+	}
+
+	openOnce("first")
+	if got := modelCircuitStreak[model]; got != 1 {
+		t.Fatalf("首次开闸后 streak 应为 1，实际 %d", got)
+	}
+	// 模拟窗口到期：hits 回落到门限以下，但 streak 必须保留。
+	modelCircuitMu.Lock()
+	modelCircuitUntil[model] = time.Now().Add(-time.Second)
+	modelCircuitMu.Unlock()
+	if isModelCircuitOpen(model) {
+		t.Fatal("过期窗口不得仍判为开闸")
+	}
+	if got := modelCircuitStreak[model]; got != 1 {
+		t.Fatalf("窗口过期不得清零 streak，实际 %d", got)
+	}
+
+	// 再次开闸必须用退避后的窗口（streak=1 -> 120s）。
+	openOnce("second")
+	modelCircuitMu.Lock()
+	until := modelCircuitUntil[model]
+	streak := modelCircuitStreak[model]
+	modelCircuitMu.Unlock()
+	if streak != 2 {
+		t.Fatalf("第二次开闸后 streak 应为 2，实际 %d", streak)
+	}
+	if remain := time.Until(until); remain < 100*time.Second {
+		t.Fatalf("第二次开闸窗口应约 120s，实际剩余 %v", remain)
+	}
+
+	// 一次成功必须把退避惩罚彻底清零。
+	resetModelCircuit(model)
+	modelCircuitMu.Lock()
+	_, hasStreak := modelCircuitStreak[model]
+	modelCircuitMu.Unlock()
+	if hasStreak {
+		t.Fatal("resetModelCircuit 必须清掉 streak")
 	}
 }
 

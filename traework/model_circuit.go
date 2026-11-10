@@ -78,12 +78,26 @@ const modelCircuitCrossAuthThreshold = 3
 // 窗口过长会让上游已经恢复时用户继续被拒。
 const modelCircuitOpenWindow = 60 * time.Second
 
+// modelCircuitMaxWindow 是退避上限。
+//
+// 取 30 分钟：上游模型级故障（通道下线、套餐失效、风控策略变更）通常以小时计，
+// 但过长的窗口会让上游已恢复时用户继续拿不到该模型；30 分钟是与
+// failoverCooldownMax 同量级的保守上界，且一次真实成功会立即清零。
+const modelCircuitMaxWindow = 30 * time.Minute
+
 // modelCircuitMu guards modelCircuitHits / modelCircuitAuths / modelCircuitUntil.
 var (
 	modelCircuitMu    sync.Mutex
 	modelCircuitHits  = map[string]int{}
 	modelCircuitAuths = map[string]map[string]struct{}{}
 	modelCircuitUntil = map[string]time.Time{}
+	// modelCircuitStreak 记录连续开闸次数，驱动窗口指数退避。
+	//
+	// 只有固定窗口是不够的（2026-11-11 生产实证）：glm-5.3-flashx 持续 100% 失败时，
+	// 60s 窗口一到期流量就回来撞一轮（实测开闸 8 次、间隔 60~90s、cross_auth_hits
+	// 从 3 涨到 10、15 分钟内 done=0 / attempt error=136）。窗口必须随连续失败次数
+	// 增长，让已确认不可用的模型真正退到后台，而不是每分钟骚扰一次。
+	modelCircuitStreak = map[string]int{}
 )
 
 // noteModelCircuitHit 记录一次确定性模型级失败，并在跨账号命中达门限时开闸。
@@ -129,11 +143,36 @@ func noteModelCircuitHit(authID, model string) bool {
 	auths[authID] = struct{}{}
 	modelCircuitHits[model]++
 	if modelCircuitHits[model] >= modelCircuitCrossAuthThreshold {
-		modelCircuitUntil[model] = now.Add(modelCircuitOpenWindow)
-		log.Printf("[traework] model circuit opened: model=%s cross_auth_hits=%d window=%s",
-			model, modelCircuitHits[model], modelCircuitOpenWindow)
+		window := modelCircuitWindowFor(modelCircuitStreak[model])
+		modelCircuitStreak[model]++
+		modelCircuitUntil[model] = now.Add(window)
+		log.Printf("[traework] model circuit opened: model=%s cross_auth_hits=%d streak=%d window=%s",
+			model, modelCircuitHits[model], modelCircuitStreak[model], window)
 	}
 	return true
+}
+
+// modelCircuitWindowFor 按连续开闸次数给出指数退避窗口。
+//
+// 第 1 次开闸用基数 60s（抖动仍可能是个例，需要尽快恢复）；此后每多一次连续
+// 失败就把窗口翻倍，上限 modelCircuitMaxWindow。一次成功即由 resetModelCircuit
+// 把 streak 清零，所以短暂抖动不会累积惩罚。
+//
+// [参数] streak：本次开闸前的连续开闸次数（0 表示首次）。
+// [返回] 该次熔断的窗口时长。
+// 最近修改时间：2026-11-11；改动原因：新增，固定窗口导致持续失败模型每分钟重试。
+func modelCircuitWindowFor(streak int) time.Duration {
+	if streak <= 0 {
+		return modelCircuitOpenWindow
+	}
+	window := modelCircuitOpenWindow
+	for i := 0; i < streak && window < modelCircuitMaxWindow; i++ {
+		window *= 2
+	}
+	if window > modelCircuitMaxWindow {
+		window = modelCircuitMaxWindow
+	}
+	return window
 }
 
 // isModelCircuitOpen 报告该模型是否处于全局熔断窗口内。
@@ -155,10 +194,13 @@ func isModelCircuitOpen(model string) bool {
 	if time.Now().Before(until) {
 		return true
 	}
-	// 窗口到期：整组清零，让该模型重新获得完整的跨账号额度。
-	delete(modelCircuitUntil, model)
-	delete(modelCircuitHits, model)
-	delete(modelCircuitAuths, model)
+	// 窗口到期：把跨账号额度降到门限以下，让该模型重新获得探测机会，
+	// 但**保留 modelCircuitStreak**——连续开闸次数是退避窗口的依据，
+	// 清零会让持续故障的模型永远停留在 60s 窗口（2026-11-11 生产实证：
+	// glm-5.3-flashx 连续 15 分钟 100% 失败，开闸 8 次、每次间隔仅 60~90s）。
+	// streak 只在一次真实成功（resetModelCircuit）时才清零。
+	modelCircuitHits[model] = modelCircuitCrossAuthThreshold - 1
+	modelCircuitAuths[model] = map[string]struct{}{}
 	return false
 }
 
@@ -177,6 +219,8 @@ func resetModelCircuit(model string) {
 	delete(modelCircuitUntil, model)
 	delete(modelCircuitHits, model)
 	delete(modelCircuitAuths, model)
+	// streak 一并清零：真实成功是「该模型已恢复」的唯一证据，退避惩罚必须解除。
+	delete(modelCircuitStreak, model)
 	modelCircuitMu.Unlock()
 }
 

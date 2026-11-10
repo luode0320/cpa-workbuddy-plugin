@@ -1,5 +1,29 @@
 # TraeWork Plugin Changelog
 
+## 0.5.50
+
+### Fix - 熔断窗口指数退避：持续不可用的模型不再每分钟被重试一轮
+
+- 根因：0.5.47 引入的模型级熔断用**固定 60s 窗口**，而 `isModelCircuitOpen`
+  在窗口到期时把 `modelCircuitHits` / `modelCircuitAuths` 整组清零
+  （`delete`），计数归零后要重新累计 3 个账号才再开闸。
+- 后果（2026-11-11 生产实证，0.5.48 部署后 15 分钟）：
+  `glm-5.3-flashx` **`done` = 0、`attempt error` = 136，即 100% 失败**；
+  熔断开闸 **8 次**，间隔恒为 **60~90 秒**，`cross_auth_hits` 从 3 一路涨到 10。
+  窗口一到期流量就回来重新撞一轮，用户持续被派到一个已确认不可用的模型。
+- 修复：
+  - 新增 `modelCircuitStreak` 记录**连续开闸次数**，驱动窗口指数退避：
+    首次 60s，此后 120s → 240s → 480s → 960s …封顶
+    `modelCircuitMaxWindow = 30min`（与 `failoverCooldownMax` 同量级）；
+  - `isModelCircuitOpen` 窗口到期时**不再清零 streak**，只把 hits 降到
+    门限以下（`threshold-1`）让模型重新获得探测机会，退避惩罚得以累积；
+  - `resetModelCircuit`（任一真实成功触发）才清零 streak——成功是「该模型已恢复」
+    的唯一证据，退避必须就此解除。
+- 回归：`test/traework/model_circuit_global_test.go` 新增
+  `TestModelCircuitWindowBacksOff`（退避阶梯与封顶）与
+  `TestModelCircuitWindowSurvivesReopen`（窗口过期不得清 streak、成功必须清）。
+  哨兵验证：把到期分支改回 `delete` 后后者立即 FAIL。
+
 ## 0.5.49
 
 ### Fix - 孤儿禁用账号自愈：归属标记被宿主抹掉后账号永久孤悬，可用池塌缩至 10/51
