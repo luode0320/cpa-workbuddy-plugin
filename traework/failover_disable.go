@@ -1120,8 +1120,7 @@ func failoverReconcileLoop() {
 	ticker := time.NewTicker(failoverReconcileInterval)
 	defer ticker.Stop()
 	for range ticker.C {
-		if pluginInstanceSuperseded() {
-			log.Printf("[traework] failover reconcile loop stopped: superseded by newer instance")
+		if retireIfSuperseded("failover reconcile loop") {
 			return
 		}
 		// 对账是幂等读改写，不加 TryLock：上一轮再慢也只是多读一次，
@@ -1155,8 +1154,7 @@ func failoverProbeLoop() {
 	for range ticker.C {
 		// 热重载后旧实例的 ticker 仍在跑：探测会随实例数线性放大，
 		// 必须在每轮前确认自己仍是当前活跃实例。
-		if pluginInstanceSuperseded() {
-			log.Printf("[traework] failover probe loop stopped: superseded by newer instance")
+		if retireIfSuperseded("failover probe loop") {
 			return
 		}
 		// 关闭态：不探活（本就不该有新禁用），只持续收敛历史遗留禁用。

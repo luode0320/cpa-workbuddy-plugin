@@ -155,6 +155,10 @@ func checkinRetryLoop() {
 	ticker := time.NewTicker(checkinRetryTick)
 	defer ticker.Stop()
 	for range ticker.C {
+		// 实例守卫：补签同样打上游，旧实例继续跑会和当前实例抢同一批账号。
+		if retireIfSuperseded("checkin retry loop") {
+			return
+		}
 		runCheckinRetryRound()
 	}
 }

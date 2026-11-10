@@ -131,6 +131,11 @@ func authFlagGuardLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
+		// 实例守卫：authguard 会改写账号文件的 disabled 标记，旧实例继续跑就是
+		// 跨代写同一个文件。
+		if retireIfSuperseded("auth flag guard loop") {
+			return
+		}
 		if !guardEnabled() {
 			continue
 		}

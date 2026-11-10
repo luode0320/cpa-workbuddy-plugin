@@ -264,7 +264,7 @@ func handleAccounts() map[string]any {
 			view.Exhausted = isCreditsExhausted(cr)
 			// LowCredits 语义收窄为「低于禁用线」：保活档不再算低积分告警，
 			// 它只是排序靠后，仍然可路由。
-			below := loadedLowCreditDisableBelow()
+			below := effectiveLowCreditDisableBelow()
 			view.LowCredits = !view.Exhausted && below > 0 && cr.TotalRemain < below
 		}
 		// Failover snapshot. cool_until is Unix seconds (panel countdown ticker).
@@ -296,7 +296,7 @@ func handleAccounts() map[string]any {
 		view.SlowCoolingModels = slowCoolingModelsFor(f.ID, now)
 		// 积分档位：未知积分为空串（不显示徽章），避免把「没测到」显示成「正常」。
 		if cr != nil {
-			view.CreditTier = creditTierFor(cr.TotalRemain, loadedLowCreditDisableBelow(), loadedMinRoutableCredits()).String()
+			view.CreditTier = creditTierFor(cr.TotalRemain, effectiveLowCreditDisableBelow(), loadedMinRoutableCredits()).String()
 			view.LowCreditDisable = lowCreditDisableFromAuthJSON(phys.JSON) && phys.Disabled
 		}
 		view.CheckinToday = checkinDoneToday(f.AuthIndex)

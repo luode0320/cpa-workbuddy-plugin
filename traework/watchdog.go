@@ -156,6 +156,12 @@ func watchdogLoop() {
 	case <-watchdogTickCh:
 	default:
 	}
+	// 实例守卫：热重载后旧实例的 watchdog 仍在跑，会按自己那一代的编译期低
+	// 积分禁用线重写账号标记（0.5.41 = 100，把 remain=97 的号也禁掉）。首轮
+	// 写盘前必须确认自己仍是当前活跃实例。见 instance_guard.go。
+	if retireIfSuperseded("watchdog loop") {
+		return
+	}
 	// Seed the in-memory success/failure counters from the persisted json so
 	// the panel reads restart-recovered values (memory-first; see counter.go).
 	loadCountersFromDisk()
@@ -184,6 +190,10 @@ func watchdogLoop() {
 				}
 			}
 		case <-timer.C:
+		}
+		// 实例守卫：每轮都要重判，热重载可能发生在任意两次 tick 之间。
+		if retireIfSuperseded("watchdog loop") {
+			return
 		}
 		// Fold pending counter deltas into the auth files on the watchdog's
 		// cadence (default 10m). The counters are best-effort backup: the

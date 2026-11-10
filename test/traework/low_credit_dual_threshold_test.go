@@ -257,6 +257,10 @@ func TestGradeCredits_DisablesBelowLine(t *testing.T) {
 	resetFailover(t)
 	h := newFailoverFakeHost(t)
 	h.addAccount("tier-low", "idx-low", nil)
+	// 保活线必须同步抬到 100：禁用线高于保活线时会被夹取到保活线（见
+	// effectiveLowCreditDisableBelow），不抬保活线就测不到「禁用线 100 生效」。
+	restorePreserve := setMinRoutableCredits(100)
+	defer restorePreserve()
 	restoreBelow := setLowCreditDisableBelow(100)
 	defer restoreBelow()
 

@@ -1,5 +1,41 @@
 # TraeWork Plugin Changelog
 
+## 0.5.45
+
+### Fix - 热重载遗留实例持续改写禁用线 + 禁用线高于保活线导致的池子塌缩
+
+- 根因 A（跨代写入）：宿主热重载只把旧 `.so` 记入 retired 列表，
+  `cliproxyPluginShutdown`（`main.go:141`）是**有意的空实现**，旧实例的 goroutine
+  会一直跑到进程结束。`instance_guard.go` 早就存在，但只接入了 2 个循环：
+  0.5.41 → 0.5.42 → 0.5.44 三次热重载后，生产进程内同时 mmap 着**三个** `.so`，
+  旧实例的 `watchdogLoop` 仍按自己编译期的禁用线常量（0.5.41 = 100）每 10 分钟
+  重写「`disabled:true` + `low_credit_disable_below:100`」，把 `remain=97` 的号也禁掉；
+  同时它的 keepalive / checkin / authguard / slowPoolSize 循环也各自打上游，
+  探活与签到请求随热重载次数线性放大，并发堆到少数幸存账号上，首字延迟尾部抬升。
+- 根因 B（阈值反转）：`low_credit_disable_below`（0.5.30 起默认 100）长期高于
+  `min_routable_credits`（默认 20）。`creditTierFor` 先判禁用线，禁用线更高时
+  **保活档在数学上不可达**，整个池子被压到只剩「余额 >= 100」的少数账号。
+  0.5.42 把默认值回滚成 10，但配置项本身仍接受任意整数，运维填 100 会再次
+  触发同一故障（0.5.30 实测池子 21 → 7、只有 2 个号扛下全部流量）。
+- 变更：
+  - 新增 `retireIfSuperseded(loop string) bool`：常驻循环的统一实例守卫闸门，
+    已被取代时打一条带循环名的停止日志并返回 true。接线覆盖 **8 个**循环：
+    `failoverReconcileLoop` / `failoverProbeLoop` / `watchdogLoop`（入口 + 每轮）/
+    `slowPoolSizeLoop`（入口 + 每轮）/ `keepaliveLoop` / `autoCheckinLoop`（入口 +
+    定时器唤醒后）/ `checkinRetryLoop` / `authFlagGuardLoop`。
+    定时代价是一次 `os.ReadFile`（标记文件在 tmpfs、几十字节），相对各自
+    1~10 分钟的周期可忽略。
+  - 新增 `effectiveLowCreditDisableBelow()`：生效禁用线不得超过保活线，
+    所有读点统一走它（`cache.go` / `credit_disable.go` / `management.go` 两处 /
+    `scheduler.go`）。夹取放在**读路径**而不是配置解析处，是为了保住
+    `<= 0` 这个 kill switch 的语义，也避免改写生产配置。
+  - 新增 3 个回归用例：`low_credit_clamp_test.go` 锁定夹取方向与 kill switch、
+    锁定「被旧阈值禁掉的号在生效线回落后必须自愈解禁」；
+    `instance_guard_wiring_test.go` 静态锁定 8 个循环的接线，并用必失败哨兵
+    反证测试真实进编译（把 `authguard.go` 的守卫名改一个字符即 FAIL 且只有该项 FAIL）。
+  - 既有 `credits_sweep_test.go` / `low_credit_dual_threshold_test.go` 同步把
+    保活线抬到 100：它们断言的是「禁用线 100 生效」，不抬保活线就会被夹取吃掉。
+
 ## 0.5.44
 
 ### Fix - 积分禁用标记不落盘：14 个余额 100+ 的账号被永久孤悬在候选池外

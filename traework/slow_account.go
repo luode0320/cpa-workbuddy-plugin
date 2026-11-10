@@ -250,10 +250,17 @@ func slowPoolAdmitted(minPoolSize int) bool {
 // [返回] 无；本函数在独立 goroutine 中常驻。
 // 最近修改时间：2026-10-25；改动原因：新增，账号池规模的唯一刷新入口。
 func slowPoolSizeLoop() {
+	// 实例守卫：账号池规模是宿主 RPC 探测，旧实例继续跑只会成倍放大 RPC 压力。
+	if retireIfSuperseded("slow pool size loop") {
+		return
+	}
 	refreshSlowPoolSize()
 	ticker := time.NewTicker(slowPoolSizeRefreshInterval)
 	defer ticker.Stop()
 	for range ticker.C {
+		if retireIfSuperseded("slow pool size loop") {
+			return
+		}
 		refreshSlowPoolSize()
 	}
 }

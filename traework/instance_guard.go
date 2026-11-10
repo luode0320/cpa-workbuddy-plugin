@@ -7,6 +7,7 @@
 package main
 
 import (
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -55,4 +56,28 @@ func pluginInstanceSuperseded() bool {
 		return false
 	}
 	return strings.TrimSpace(string(raw)) != instanceGuardID
+}
+
+// retireIfSuperseded 是常驻循环的标准实例守卫闸门：已被更新实例取代时打一条
+// 带 loop 名的停止日志并返回 true，调用方据此直接 return 退出循环。
+//
+// 为什么必须由每个常驻循环自己调用：宿主热重载只把旧 .so 记入 retired 列表、
+// 从不调用 plugin_shutdown，旧实例的 goroutine 会一直跑到进程结束。0.5.41 →
+// 0.5.42 → 0.5.44 三次热重载后，生产进程内同时 mmap 着三个 .so；旧实例的
+// watchdog 仍按自己编译期常量低积分禁用线（0.5.41 = 100）每 10 分钟重写
+// 「disabled:true + low_credit_disable_below:100」标记，把 remain=97 的账号
+// 也禁掉，账户池被反复削到个位数，并发堆到少数账号上，首字延迟尾部同步抬升
+// （2026-11-11 生产实证）。
+//
+// 幂等且廉价：一次 os.ReadFile（标记文件在 tmpfs，几十字节），每轮循环只调用
+// 一次，相对各自的 1~10 分钟周期可忽略。
+// [参数] loop：循环名，仅用于停止日志定位。
+// [返回] true 表示本实例已被取代，调用方必须立即 return。
+// 最近修改时间：2026-11-11 01:30:00；改动原因：新增，把实例守卫收敛成统一闸门。
+func retireIfSuperseded(loop string) bool {
+	if !pluginInstanceSuperseded() {
+		return false
+	}
+	log.Printf("[traework] %s stopped: superseded by newer instance", loop)
+	return true
 }

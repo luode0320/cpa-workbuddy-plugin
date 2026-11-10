@@ -94,7 +94,7 @@ func gradeCreditsForAuth(authIndex, authID string, sa *traeAuth, cr *traeCredits
 		// 积分未知时不做任何动作：没有数据不等于没钱，误判会误禁健康号。
 		return creditTierNormal
 	}
-	disableBelow := loadedLowCreditDisableBelow()
+	disableBelow := effectiveLowCreditDisableBelow()
 	tier := creditTierFor(cr.TotalRemain, disableBelow, loadedMinRoutableCredits())
 
 	phys, errPhys := failoverGetPhysicalFn(strings.TrimSpace(authIndex))

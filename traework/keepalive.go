@@ -550,6 +550,11 @@ func keepaliveLoop() {
 	defer ticker.Stop()
 	lastDay := -1
 	for range ticker.C {
+		// 实例守卫：刷新令牌会打上游并写账号文件，旧实例继续跑等于同一批账号
+		// 被多次刷新，是 keepalive 侧「refresh rejected」噪声的来源之一。
+		if retireIfSuperseded("keepalive loop") {
+			return
+		}
 		if !keepaliveEnabled() {
 			continue
 		}

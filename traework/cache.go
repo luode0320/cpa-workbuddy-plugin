@@ -77,7 +77,7 @@ func isCreditsLowOrExhausted(cr *traeCredits) bool {
 	if cr == nil || isCreditsExhausted(cr) {
 		return true
 	}
-	below := loadedLowCreditDisableBelow()
+	below := effectiveLowCreditDisableBelow()
 	return below > 0 && cr.TotalRemain < below
 }
 

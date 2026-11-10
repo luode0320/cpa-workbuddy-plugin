@@ -66,6 +66,35 @@ func loadedLowCreditDisableBelow() int64 {
 	return lowCreditDisableBelow
 }
 
+// effectiveLowCreditDisableBelow 返回真正参与判定的积分硬禁用线。
+//
+// 配置值只在不超过保活线时才生效：禁用线高于保活线时，保活档在数学上不可达
+// （creditTierFor 先判禁用线），整个池子会被压到只剩「余额 >= 禁用线」的少数
+// 账号，并发堆到它们身上，首字延迟尾部同步抬升——这正是 0.5.30 把默认值从
+// 10 改成 100 后，21 个在池账号掉到 7 个、实测只有 2 个账号在扛全部流量的成因；
+// 0.5.42 把默认值回滚成 10，但配置项本身仍然接受任意整数，运维填 100 就会
+// 再次触发同一个故障。
+//
+// 取消禁用线（<=0）不受此约束：那是 kill switch，语义是「关闭本机制」。
+//
+// 所有判定点都必须走本函数而不是 loadedLowCreditDisableBelow，否则会出现
+// 「分级按夹取后的值判、写盘标记按原始值记」的错位。
+// [参数] 无。
+// [返回] 生效的禁用线；0 表示关闭。
+// 最近修改时间：2026-11-11 01:35:00；改动原因：新增，堵住禁用线与保活线配反的入口。
+func effectiveLowCreditDisableBelow() int64 {
+	below := loadedLowCreditDisableBelow()
+	if below <= 0 {
+		return 0
+	}
+	preserve := loadedMinRoutableCredits()
+	// 保活线 <= 0 表示不设保活档：此时禁用线没有可比对象，按原值生效。
+	if preserve > 0 && below > preserve {
+		return preserve
+	}
+	return below
+}
+
 // setLowCreditDisableBelow 设置积分硬禁用线并返回清理函数。
 // [参数] n：阈值，负值按 0（关闭）处理。
 // [返回] 恢复原值的函数。

@@ -134,7 +134,7 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	preserveBelow := loadedMinRoutableCredits()
 	preserveRank := func(id string) int {
 		remain, _ := cachedCreditsScore(id)
-		if creditTierFor(remain, loadedLowCreditDisableBelow(), preserveBelow) == creditTierPreserve {
+		if creditTierFor(remain, effectiveLowCreditDisableBelow(), preserveBelow) == creditTierPreserve {
 			return 1
 		}
 		return 0

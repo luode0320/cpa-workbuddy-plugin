@@ -547,12 +547,20 @@ func nextAutoCheckinFireTime(now time.Time) time.Time {
 // 要求 now.Minute()==0，ticker 相位由 init 时刻锚定，只有启动秒相位恰为 0
 // 时才命中，导致自动签到几乎永不触发（2026-10-10 生产实证）。
 func autoCheckinLoop() {
+	// 实例守卫：签到是全账号批量打上游，旧实例继续跑会让整池账号被重复签到。
+	if retireIfSuperseded("auto checkin loop") {
+		return
+	}
 	for {
 		// 叠加随机抖动：各插件槽位同刻对齐时会形成整点尖峰，抖动把全机
 		// 唤醒摊平到数分钟窗口内。
 		next := nextAutoCheckinFireTime(time.Now().Local())
 		timer := time.NewTimer(time.Until(next))
 		<-timer.C
+		// 周期最长 4 小时，热重载随时可能发生，唤醒后必须重判。
+		if retireIfSuperseded("auto checkin loop") {
+			return
+		}
 		if autoCheckinEnabled() {
 			go runFleetCheckin("auto")
 		}

@@ -88,6 +88,9 @@ func TestGradeAfterCreditsRefresh_StaleSnapshotNotReusedOnError(t *testing.T) {
 // 语义正确；真正接入与否由 TestRefreshChain_SourceHasGradeCall 静态锁定。
 func TestRefreshChain_GradeFollowsReconcile(t *testing.T) {
 	h := setupSweepFixture(t)
+	// 保活线同步抬到 100：禁用线高于保活线会被夹取（见 effectiveLowCreditDisableBelow）。
+	restorePreserve := setMinRoutableCredits(100)
+	defer restorePreserve()
 	restoreBelow := setLowCreditDisableBelow(100)
 	defer restoreBelow()
 	// lifecycle 默认关闭，避免它先按「耗尽」把号处理掉。
