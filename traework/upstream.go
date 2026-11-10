@@ -447,7 +447,35 @@ type sseEvent struct {
 // 最近修改时间：2026-08-31 15:20:00；改动原因：读错误型断流（RST/unexpected EOF）若已有可交付内容，应与干净 EOF 同款兜底收尾，不再中断并丢弃已生成内容。
 var errTraeStreamDone = fmt.Errorf("trae: stream done")
 
-func scanSSE(r io.Reader, fn func(ev sseEvent) error, hasPayload func() bool) error {
+// idleFlushFn 是 scanSSE 的空闲放行回调。
+//
+// 触发时机：一次 r.Read 返回 n>0 但当前批次没有产生任何 data 事件之后
+// （即上游只送了心跳/注释/半个帧），以及一次成功的读之后仍未配对到 data 行时。
+// 目的只有一个：让「闸门已持有缓冲、但上游长时间不发新事件」的场景有机会放行，
+// 而不是把首字一直压到下一个事件到达。
+type idleFlushFn func() error
+
+// scanSSEWithIdle 在 scanSSE 基础上增加空闲回调：每完成一个读批次的解析后
+// 调用一次 onIdle（可为 nil）。回调返回 errorTraeStreamDone 视为正常终止。
+//
+// [参数] r：上游 SSE 字节流；fn：每条 data 事件的处理函数；
+//
+//	hasPayload：报告当前是否已累积可交付业务事件（可为 nil）；
+//	onIdle：读批次结束后的空闲回调（可为 nil）。
+//
+// [返回] 同 scanSSE。
+// 最近修改时间：2026-11-11；改动原因：新增，堵住「上游空闲期间闸门无法放行」。
+func scanSSEWithIdle(r io.Reader, fn func(ev sseEvent) error, hasPayload func() bool, onIdle idleFlushFn) error {
+	return scanSSE(r, fn, hasPayload, onIdle)
+}
+
+// scanSSE 是事件扫描主体。onIdle 为可选参数：不传等价于历史行为（无空闲放行），
+// 这样既有的 4 个调用点无需改动，新调用点按需传入回调。
+func scanSSE(r io.Reader, fn func(ev sseEvent) error, hasPayload func() bool, idle ...idleFlushFn) error {
+	var onIdle idleFlushFn
+	if len(idle) > 0 {
+		onIdle = idle[0]
+	}
 	buf := make([]byte, 0, 4096)
 	chunk := make([]byte, 16*1024)
 	event := ""
@@ -490,6 +518,21 @@ func scanSSE(r io.Reader, fn func(ev sseEvent) error, hasPayload func() bool) er
 				}
 			default:
 				// 注释、retry 和 id 行不参与当前业务事件转换。
+			}
+		}
+
+		// 2.5 读批次结束后的空闲放行：上游可能只发了心跳/注释/半个帧，
+		//     或干脆长时间不发新事件。此时本批次不会产生任何 data 回调，
+		//     闸门的「持有超时」判据（原本只在 output 回调里算）就永远算不到，
+		//     首字会被压到下一个事件到达。生产实测（2026-11-11）：
+		//     minimax-m3.1-flash 出现过 gate_ms=19850 / ttft_ms=10001 的样本
+		//     ——首字其实早已到达，客户端却多等了 19.8 秒。
+		if onIdle != nil {
+			if idleErr := onIdle(); idleErr != nil {
+				if idleErr == errTraeStreamDone {
+					return nil
+				}
+				return idleErr
 			}
 		}
 

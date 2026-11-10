@@ -963,7 +963,34 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 	// 1. 转换每个 output；长输入在 content+reasoning 合计达到健康门槛前只缓存，
 	//    不向客户端承诺当前账号（双轴都短的真伪完成全程零泄漏）。含结构化工具调用的
 	//    流立即放行——工具型任务以短输出 + tool_calls 终止是正常中间态，不受 gate 约束。
-	scanErr := scanSSE(r, func(ev sseEvent) error {
+	// flushPending 在闸门持有超时时无条件放行已缓冲分片。
+	//
+	// 抽成闭包的原因：同一个放行动作既要在 output 回调里触发（攒够健康字符），
+	// 也要在「上游本次读批次没送来新事件」时触发（见 scanSSE 的 onIdle）。
+	// 旧实现只在 output 回调里算 heldTooLong，上游一空闲这个判据就永远算不到——
+	// 生产实测（2026-11-11）minimax-m3.1-flash 出现 gate_ms=19850 / ttft_ms=10001
+	// 与 gate_ms=11902 / chunks=14 的样本：首字早已到达，客户端却被多压了十几秒。
+	flushPending := func() error {
+		if gateOpen || len(pending) == 0 {
+			return nil
+		}
+		if result.FirstOutputAt.IsZero() || time.Since(result.FirstOutputAt) < pseudoGateMaxHold {
+			return nil
+		}
+		gateOpen = true
+		gateOpenedAt = time.Now()
+		result.GateOpenedAt = gateOpenedAt
+		for _, buffered := range pending {
+			if err := emit(buffered); err != nil {
+				return err
+			}
+			result.Emitted = true
+		}
+		pending = nil
+		return nil
+	}
+
+	scanErr := scanSSEWithIdle(r, func(ev sseEvent) error {
 		switch ev.Event {
 		case "output":
 			text, reasoning, tcRaw, ok := terminal.recordOutput(ev.Data)
@@ -1042,7 +1069,7 @@ func pumpTraeStreamAttempt(r io.Reader, ctx traeStreamPumpContext, requestID str
 			return fmt.Errorf("upstream %d: %s", ctx.StatusCode, truncateRedacted(msg, 200))
 		}
 		return nil
-	}, terminal.hasPayload)
+	}, terminal.hasPayload, flushPending)
 	// 无论成败都把真实用量带出（协调器在发布前对空 Detail 回退估算）。
 	result.Usage = collector.detail()
 	if scanErr != nil {

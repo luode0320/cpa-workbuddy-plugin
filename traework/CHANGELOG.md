@@ -1,5 +1,30 @@
 # TraeWork Plugin Changelog
 
+## 0.5.55
+
+### Fix - 首字闸门在上游空闲期间无法放行，实测多压 19.8 秒
+
+- 根因：`pumpTraeStreamAttempt` 的「持有超时」判据 `heldTooLong`
+  （`stream.go:1003`）**只在 `output` 事件回调里计算**。上游若在首帧之后
+  长时间不发新事件（只送心跳 / 注释 / 半个帧），`scanSSE` 的 `r.Read` 会一直
+  阻塞，回调根本不会被调用，判据就永远算不到——已缓冲的首字被一直压到
+  下一个事件到达。`pseudoGateMaxHold = 1200ms` 因此形同虚设。
+- 生产实证（2026-11-11，`minimax-m3.1-flash`）：
+  - `gate_ms=19850` 而 `ttft_ms=10001` —— **首字其实早已到达，客户端多等 19.8 秒**
+  - `gate_ms=11902` 但 `chunks=14` —— 仅 14 个分片却积压 11.9 秒
+  - 该模型 gate `p50=546ms` 但 **`p99=16003ms` / max=25780ms**，长尾完全由此造成
+  - 全量 6091 个 gate 样本里，`>2000ms` 的 45 条中有 **42 条是 minimax-m3.1-flash**
+- 修复：
+  - `scanSSE` 新增**可选** `onIdle` 回调，在每个读批次解析结束后调用一次。
+    用可变参数实现，**既有 4 个调用点零改动**，行为与历史完全一致；
+  - `pumpTraeStreamAttempt` 把放行动作抽成 `flushPending` 闭包，
+    同时挂在 `output` 回调（攒够健康字符）与 `onIdle`（上游空闲超时）两处；
+  - 通过新增 `scanSSEWithIdle` 显式传入，语义清晰不依赖隐式全局。
+- 回归：新增 `test/traework/gate_idle_flush_test.go` 四个用例 ——
+  `onIdle` 每批次必被调用、不传时行为与历史一致、`errTraeStreamDone` 正常终止、
+  `pseudoGateMaxHold` 不得被调大超过 2s。
+  哨兵验证：短路 `onIdle` 后 `TestScanSSECallsOnIdlePerBatch` 立即 FAIL。
+
 ## 0.5.54
 
 ### Fix - 纠正循环漏掉无标记孤儿：5 个余额充足的账号（含 remain=681）长期不可用
