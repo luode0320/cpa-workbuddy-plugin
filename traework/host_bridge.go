@@ -59,10 +59,16 @@ func sharedHTTPClient() *http.Client {
 				ResponseHeaderTimeout: upstreamResponseHeaderTimeout,
 				// 置空 TLSNextProto 才能真正禁 h2；只设 ForceAttemptHTTP2=false 时
 				// ALPN 仍会协商出 h2，半死流上表现为响应头等待超时。
-				TLSNextProto:        map[string]func(string, *tls.Conn) http.RoundTripper{},
-				MaxIdleConns:        20,
+				TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{},
+				// 连接池容量按账号池规模设定：生产 traework 有 28 个可用账号，
+				// 每个账号在同一上游 host 上独立承流。MaxIdleConnsPerHost=5 时，
+				// 28 个并发请求会频繁触发新建连接（TCP + TLS 握手各一次），
+				// 高并发窗口下这部分开销直接叠加到 TTFT 上。
+				// 生产实测（2026-11-10）：同分钟并发 16-30 时慢请求占比 26.5%，
+				// 而并发 1-5 时仅 9.9%，呈明显正相关。
+				MaxIdleConns:        200,
 				IdleConnTimeout:     90 * time.Second,
-				MaxIdleConnsPerHost: 5,
+				MaxIdleConnsPerHost: 64,
 			},
 		}
 	})
@@ -448,9 +454,15 @@ func streamHTTPClient() *http.Client {
 	streamHTTPClientOnce.Do(func() {
 		streamClient = &http.Client{
 			Transport: &http.Transport{
-				MaxIdleConns:        20,
+				// 连接池容量按账号池规模设定：生产 traework 有 28 个可用账号，
+				// 每个账号在同一上游 host 上独立承流。MaxIdleConnsPerHost=5 时，
+				// 28 个并发请求会频繁触发新建连接（TCP + TLS 握手各一次），
+				// 高并发窗口下这部分开销直接叠加到 TTFT 上。
+				// 生产实测（2026-11-10）：同分钟并发 16-30 时慢请求占比 26.5%，
+				// 而并发 1-5 时仅 9.9%，呈明显正相关。
+				MaxIdleConns:        200,
 				IdleConnTimeout:     90 * time.Second,
-				MaxIdleConnsPerHost: 5,
+				MaxIdleConnsPerHost: 64,
 				DialContext: (&net.Dialer{
 					Timeout:   10 * time.Second,
 					KeepAlive: 30 * time.Second,
