@@ -308,6 +308,19 @@ func TestContentModerationClassifiedAsModelRateLimit(t *testing.T) {
 			t.Fatalf("审核拦截不得写盘禁用账号 body=%q", body)
 		}
 	}
+
+	// 生产真实形态是 403，不是 200：执行器收尾 reconcileAfterExecutorErrorForModel
+	// 把 status==200 重映射成 403 后再记账。若审核判定排在账号级 4xx 之后，
+	// 403 会被 isAccountLevel4xxExcludingRateLimit 吞掉、归到 account 并写盘禁用，
+	// 熔断也永远拿不到跨账号命中（0.5.46 生产未生效的真实原因）。
+	const body403 = "upstream 200: sensitive content error finish reason: sensitive"
+	scope403 := classifyUpstreamFailure(403, body403)
+	if scope403 != failureScopeModelRateLimit {
+		t.Fatalf("classifyUpstreamFailure(403, sensitive) = %v, want model_rate_limit（不得被账号级 4xx 吞掉）", scope403)
+	}
+	if scope403.disablesAccount() {
+		t.Fatal("403 形态的审核拦截同样不得写盘禁用账号")
+	}
 }
 
 // TestRecordAccountFailureHonorsClassification 验证记账入口真的按分类结果执行：

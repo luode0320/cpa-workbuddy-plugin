@@ -1,5 +1,29 @@
 # TraeWork Plugin Changelog
 
+## 0.5.48
+
+### Fix - 内容审核判定被 200→403 重映射吞掉，0.5.46/0.5.47 在生产上从未生效
+
+- 根因（本轮最关键的发现）：`reconcileAfterExecutorErrorForModel`
+  （`executor.go:845`）在记账前把 `status==200` 重映射成 **403**：
+  `if status == 200 { status = 403 }`。上游的内容审核拦截是以
+  **HTTP 200 + event:error** 下发的，因此 `classifyUpstreamFailure` 实际收到的
+  是 `(403, "sensitive content …")`。
+- 0.5.46 把审核判定放在判定链第 7.5 步（账号级 4xx 之后），
+  `isAccountLevel4xxExcludingRateLimit(403)` 先命中并返回
+  `failureScopeAccount`，审核分支**永远走不到**。表现为：
+  - 账号被误记成"凭据/端点故障"（该维度与账号健康无关）；
+  - 模型级冷却与跨账号熔断都拿不到命中，`glm-5.3-flashx` 继续被无限重派。
+- 生产实证：0.5.47 部署后 5 分钟，`glm-5.3-flashx` 单请求 `duration`
+  仍为 **p50=27.9s / p90=33.3s / max=63.1s**，扇出 **10 个账号**，
+  熔断日志一条都没有（`model circuit opened` 为空）。
+- 修复：把 `isContentModerationFailure` 从第 7.5 步上移到**第 4.5 步**，
+  即模型级限流之后、账号级 4xx 之前。同时保留 200 形态的覆盖（同一函数对
+  200/403 两种状态码都返回 `failureScopeModelRateLimit`）。
+- 回归：`TestContentModerationClassifiedAsModelRateLimit` 增加 403 生产形态断言
+  「不得被账号级 4xx 吞掉、不得写盘禁用」。哨兵验证：把判定移回账号级 4xx 之后
+  该用例立即 FAIL，还原后全绿。
+
 ## 0.5.47
 
 ### Fix - 模型级跨账号熔断，止血「确定性失败逐个账号扇出」的秒级白等
