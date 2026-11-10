@@ -1,5 +1,33 @@
 # TraeWork Plugin Changelog
 
+## 0.5.46
+
+### Fix - 内容审核拦截未进入失败分类，导致 100% 失败模型被无限重派（首字延迟主因）
+
+- 根因：上游把「输出被安全策略截断」包在 **HTTP 200 的 event:error** 里返回
+  （`sensitive content` / `content error finish reason`）。
+  `isContentModerationFailure`（`policy.go:371`）早在 2026-11-09 就已实现，
+  但**只被 `envelopeHTTPStatusForError` 用于决定对外状态码，从未进入
+  `classifyUpstreamFailure`**。于是这类失败落到判定链最后一步
+  `failureScopeNone`：既不写冷却、也不写禁用，插件没有任何机制让它退出路由。
+- 后果（2026-11-11 生产实证，近 24h feed 全量）：
+  `glm-5.3-flashx` 755 次请求失败 **500 次（66.2%）**，
+  `qwen3.8-flash` 14 条失败同源；日志错误模板聚合显示
+  `sensitive content` 共命中 **924 次**，是该时段最大的失败源。
+  更关键的是每次失败都要**先等上游思考 14~23 秒**才被审核截断
+  （`conductor_execution` 实测 `duration=14.421s/17.268s/23.331s`），
+  用户每次白等 15~20 秒后拿到截断结果——这是「首字延迟高」的**主要插件侧成因**。
+- 修复：在 `classifyUpstreamFailure` 第 7.5 步接入
+  `isContentModerationFailure`，归入 `failureScopeModelRateLimit`。
+  选该维度而非 account / account_model 的理由：前两者 `disablesAccount()==true`，
+  会把与账号健康无关的审核失败写盘禁用、逐个摘掉整池；只有
+  `model_rate_limit` 同时满足「`recordsCooldown()==true`（写冷却）」
+  与「`disablesAccount()==false`（不禁用账号）」，冷却后由
+  `isAuthModelCoolingDown` 在 `scheduler.go:104` / `executor.go:220` 跳过该模型。
+- 回归：新增 `TestContentModerationClassifiedAsModelRateLimit`，三条生产原文
+  全量断言分类落点与「必须冷却、必须不禁用」两条边界；哨兵验证确认改坏后该用例
+  FAIL（`--- FAIL: TestContentModerationClassifiedAsModelRateLimit`）。
+
 ## 0.5.45
 
 ### Fix - 热重载遗留实例持续改写禁用线 + 禁用线高于保活线导致的池子塌缩

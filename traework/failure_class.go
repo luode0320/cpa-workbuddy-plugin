@@ -149,6 +149,22 @@ func classifyUpstreamFailure(status int, body string) failureScope {
 	if isModelBlockedError(status, body) {
 		return failureScopeAuthModel
 	}
+	// 7.5 内容审核拦截按模型级冷却：上游把「输出被安全策略截断」包在 HTTP 200 的
+	//     event:error 里返回（sensitive content / content error finish reason）。
+	//     must-not 走账号级：该失败与账号健康完全无关，写盘禁用会把整池逐个摘掉。
+	//     must 走模型级：同一模型在该账号上对同类对话必然重演，不记冷却就没有任何
+	//     机制让它退出路由，插件会把 100% 失败的模型无限重派给用户。
+	//
+	//     2026-11-11 生产实证：glm-5.3-flashx 近 24h 755 次请求失败 500 次
+	//     （66.2%），每次失败都要先等上游思考 14~23 秒才被审核截断；因为本函数
+	//     落到第 9 步 failureScopeNone，冷却从未写入，插件持续把流量派给该模型，
+	//     用户每次白等 15~20 秒——这是「首字延迟高」的主要插件侧成因。
+	//     isContentModerationFailure 早在 2026-11-09 就已实现，但只被
+	//     envelopeHTTPStatusForError 用于决定对外状态码，从未进入本分类，故修复
+	//     方式是把它接进本函数而不是新增判据。
+	if isContentModerationFailure(body) {
+		return failureScopeModelRateLimit
+	}
 	// 8. 限流文案与零字节断流按账号×模型处理：这类信号通常随模型变化。
 	//    顺序与历史一致——先判文案再判状态，故 400 携带限流文案时仍会记账。
 	if isSoftRateLimit(status, body) || isEmptyStreamBody(body) {

@@ -273,6 +273,43 @@ func TestModelRateLimitDoesNotDisable(t *testing.T) {
 	}
 }
 
+// TestContentModerationClassifiedAsModelRateLimit 锁定内容审核拦截的记账落点。
+//
+// 生产背景（2026-11-11）：上游把「输出被安全策略截断」包在 HTTP 200 的
+// event:error 里返回（sensitive content / content error finish reason）。
+// 修复前 classifyUpstreamFailure 没有这一支，落到第 9 步 failureScopeNone：
+// 既不写冷却也不写禁用，插件没有任何机制让该模型退出路由。近 24h 实测
+// glm-5.3-flashx 755 次请求失败 500 次（66.2%），每次都要先等上游思考
+// 14~23 秒才被截断，用户每次白等 15~20 秒。
+//
+// 必须落 model_rate_limit 而不是 account：
+//   - account 会写盘禁用，而该失败与账号健康无关，整池会被逐个摘掉；
+//   - account_model 同样会禁用账号，问题同上。
+//
+// 只有 model_rate_limit 同时满足「写冷却」与「不禁用账号」。
+// 最近修改时间：2026-11-11；改动原因：新增，锁定审核拦截不得退化为不记账。
+func TestContentModerationClassifiedAsModelRateLimit(t *testing.T) {
+	bodies := []string{
+		"upstream 200: sensitive content",
+		"upstream 200: sensitive content error finish reason: sensitive",
+		"upstream 200: sensitive content error finish reason: content",
+	}
+	for _, body := range bodies {
+		scope := classifyUpstreamFailure(200, body)
+		if scope != failureScopeModelRateLimit {
+			t.Fatalf("classifyUpstreamFailure(200, %q) = %v, want model_rate_limit", body, scope)
+		}
+		// 必须写冷却：否则该模型永远不会被 isAuthModelCoolingDown 跳过。
+		if !scope.recordsCooldown() {
+			t.Fatalf("审核拦截必须冷却该模型，否则插件会无限重派 body=%q", body)
+		}
+		// 必须不禁用：审核拦截与账号健康无关，禁用会摘掉整池。
+		if scope.disablesAccount() {
+			t.Fatalf("审核拦截不得写盘禁用账号 body=%q", body)
+		}
+	}
+}
+
 // TestRecordAccountFailureHonorsClassification 验证记账入口真的按分类结果执行：
 // 400 不入账、429 入账、402 入账，且计数按阶梯递增。
 func TestRecordAccountFailureHonorsClassification(t *testing.T) {
