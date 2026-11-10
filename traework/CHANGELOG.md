@@ -1,5 +1,34 @@
 # TraeWork Plugin Changelog
 
+## 0.5.49
+
+### Fix - 孤儿禁用账号自愈：归属标记被宿主抹掉后账号永久孤悬，可用池塌缩至 10/51
+
+- 现象：生产 `/accounts` 长期 `total=51 disabled=41`，只有 **10** 个可用；
+  首字延迟与失败率都被这个塌缩放大。
+- 根因（2026-11-11 生产实证）：41 个禁用账号里 **36 个没有任何归属标记**，
+  `failed_count` / `success_count` / `note` 全部丢失，mtime 集中在
+  **`01:46`**（0.5.45 热重载那一刻），而它们的 `remain` 在 **6~98**——
+  不是积分不足，是标记被宿主重建文档抹掉。
+  对照：5 个带 `low_credit_disable` 的账号字段完整，说明差异就在「有没有被重建」。
+- 机制：`gradeCreditsForAuth` 的归属判据 `ours` 只看
+  `low_credit_disable` 键与停用 note 指纹（`credit_disable.go:111`）。
+  这两者在孤儿号上都不存在 ⇒ `ours=false` ⇒ 第 134 行直接 return，
+  **解禁分支再也进不来**，账号被永久挡在候选池外。
+- 修复：在解禁路径前增加孤儿兜底——`disabled` 为真、且
+  `manual_disable` / `failover_disable` / `exhausted_disable` /
+  `low_credit_disable` **四者皆无**时，认定该号无主，按当前余额释放
+  （`remain >= 生效禁用线` 才会走到这一段）。
+  `reenableForLowCredits` 同步放行孤儿（原本的 `!ours` 早退同样会挡住它），
+  但仍保留 `manual` / `failover` 的硬排除——那两类各有自己的恢复通道，
+  被本机制抢先放开会让它们绕过各自的校验。
+- 边界：额度耗尽（`exhausted_disable`）必须尊重，孤儿兜底不得抢走它；
+  该标记由 `lifecycle.go` 独占。
+- 回归：`test/traework/low_credit_orphan_marker_test.go` 新增
+  `TestGradeCredits_ReleasesOrphanDisabledAccount`（无主号余额充足必须释放）与
+  `TestGradeCredits_KeepsManualAndExhaustedDisabled`（manual / failover /
+  exhausted 三类必须保持禁用）。哨兵验证：注入 `false &&` 后前者立即 FAIL。
+
 ## 0.5.48
 
 ### Fix - 内容审核判定被 200→403 重映射吞掉，0.5.46/0.5.47 在生产上从未生效

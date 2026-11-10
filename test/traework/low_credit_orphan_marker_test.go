@@ -128,5 +128,61 @@ func TestLowCreditNoteDoesNotAdoptEnabledDoc(t *testing.T) {
 	}
 }
 
+// TestGradeCredits_ReleasesOrphanDisabledAccount 锁定孤儿禁用的自愈。
+//
+// 生产现场（2026-11-11）：41 个禁用账号里 36 个没有任何归属标记、
+// failed_count / success_count / note 全部丢失（mtime 集中在 0.5.45 热重载那一刻），
+// remain 却在 6~98。它们不是积分不足，是宿主重建 auth 文档把标记抹掉后，
+// ours=false 让解禁分支再也进不来，可用池塌缩到 10/51。
+//
+// 兜底口径：盘上 disabled:true 且 manual / failover / exhausted / low_credit
+// 四者皆无 → 无主，插件有权按当前余额释放。
+func TestGradeCredits_ReleasesOrphanDisabledAccount(t *testing.T) {
+	resetFailover(t)
+	restoreBelow := setLowCreditDisableBelow(10)
+	defer restoreBelow()
+
+	const authID = "acc-orphan"
+	// 生产形态：只有 disabled 与凭据字段，没有任何本机制/其它机制的标记。
+	state := fakeHostAuth(t, "idx-orphan", authID, map[string]any{
+		"disabled": true,
+		"uid":      authID,
+		"note":     "",
+	})
+
+	gradeCreditsForAuth("idx-orphan", authID, nil, &traeCredits{TotalRemain: 79})
+
+	if disabled, _ := (*state)["disabled"].(bool); disabled {
+		t.Fatalf("无主禁用账号在余额充足时必须被释放，实际仍 disabled=true；state=%v", *state)
+	}
+}
+
+// TestGradeCredits_KeepsManualAndExhaustedDisabled 反向守卫：
+// 有明确归属的禁用账号不得被孤儿兜底抢走。
+func TestGradeCredits_KeepsManualAndExhaustedDisabled(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  map[string]any
+	}{
+		{"手动停用不得接管", map[string]any{"disabled": true, "manual_disable": true}},
+		{"故障停用不得接管", map[string]any{"disabled": true, "failover_disable": true}},
+		{"额度耗尽停用不得接管", map[string]any{"disabled": true, "exhausted_disable": true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetFailover(t)
+			restoreBelow := setLowCreditDisableBelow(10)
+			defer restoreBelow()
+
+			authID := "acc-" + strings.ReplaceAll(tc.name, " ", "-")
+			state := fakeHostAuth(t, "idx-"+authID, authID, tc.doc)
+			gradeCreditsForAuth("idx-"+authID, authID, nil, &traeCredits{TotalRemain: 79})
+			if disabled, _ := (*state)["disabled"].(bool); !disabled {
+				t.Fatalf("%s：必须保持 disabled，实际被误释放；state=%v", tc.name, *state)
+			}
+		})
+	}
+}
+
 // 保持 pluginapi 引用，避免假宿主改造后导入被判定未使用。
 var _ = pluginapi.HostAuthFileEntry{}

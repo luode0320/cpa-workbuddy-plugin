@@ -105,6 +105,8 @@ func gradeCreditsForAuth(authIndex, authID string, sa *traeAuth, cr *traeCredits
 	disabled := parseDisabledFromAuthJSON(phys.JSON)
 	manual := parseFailoverAuthDoc(phys.JSON).manualDisable
 	failover := parseFailoverAuthDoc(phys.JSON).failoverDisable
+	// exhausted 单独读：额度耗尽由 lifecycle.go 独占，孤儿兜底不得抢走它。
+	_, _, exhausted := authDocFlags(phys.JSON)
 	// ours 是归属判据：宿主 API 成功路径曾经不写盘，宿主重建文档时又会丢掉
 	// 白名单外的顶层键，三键可能已经不在——但 note 仍带停用指纹，同样算本机制
 	// 停的（2026-11-11 生产实证：14 个号 remain 100~133 被永久挡在池外）。
@@ -132,6 +134,22 @@ func gradeCreditsForAuth(authIndex, authID string, sa *traeAuth, cr *traeCredits
 	// 真相源而没落盘，盘上是陈旧 false、路由仍然被挡。归属（ours）成立就再走一遍
 	// 解禁，写盘是幂等的，note 也会被刷成「积分回升启用」，下次自然不再进来。
 	if !ours || manual || failover {
+		// 孤儿号兜底：disabled 为真、但盘上没有任何归属标记时，说明禁用标记已被
+		// 宿主重建文档抹掉（host.auth.save 只保留白名单键），本机制认不出它——
+		// 归属判据一旦为假就再没有任何路径能把这个号放回池子。
+		//
+		// 2026-11-11 生产实证：41 个禁用账号里 36 个 failed_count / success_count /
+		// note 全部丢失（mtime 集中在 0.5.45 热重载的 01:46），remain 却在 6~98，
+		// 可用池塌缩到 10/51。这些号不是积分不足，是标记被抹后永久孤悬。
+		//
+		// 只接管「无主」的号：manual（用户手动开关）与 exhausted（额度耗尽）都必须
+		// 各自尊重，所以两者任一存在时依旧不动。
+		if disabled && !ours && !manual && !failover && !exhausted {
+			if err := reenableForLowCredits(authIndex, authID, sa, cr); err != nil {
+				log.Printf("[traework] orphan re-enable failed: auth=%s err=%v", authID, err)
+			}
+			return tier
+		}
 		return tier
 	}
 	if err := reenableForLowCredits(authIndex, authID, sa, cr); err != nil {
@@ -234,7 +252,12 @@ func reenableForLowCredits(authIndex, authID string, sa *traeAuth, cr *traeCredi
 	// 归属复核与 gradeCreditsForAuth 同口径：三键与停用 note 任一成立即算本机制停的。
 	// 只认三键会让「宿主丢键、只剩 note」的号永远走不到解禁（2026-11-11 缺陷⑳）。
 	ours := lowCreditDisableFromAuthJSON(phys.JSON) || lowCreditDisableFromNote(phys.JSON)
-	if !ours || doc0.manualDisable || doc0.failoverDisable {
+	// 孤儿号（disabled 为真但无任何归属标记）同样放行：调用方已判过
+	// manual / failover / exhausted 三者皆无，这里不再重复排除。
+	if doc0.manualDisable || doc0.failoverDisable {
+		return nil
+	}
+	if !ours && !doc0.disabled {
 		return nil
 	}
 	var doc map[string]any
