@@ -17,7 +17,13 @@
 // （min_routable_credits，默认 20），从而保留「正常 / 保活降级 / 停用」三档完整语义。
 // 把禁用线设 0 关闭本机制时，只停止新增禁用；本机制历史禁的号仍会在积分刷新时解禁。
 //
-// 最近修改时间：2026-10-25；改动原因：新增，积分三档分级中的硬禁用落点。
+// 归属必须落盘（2026-11-11 缺陷⑳）：写禁用与写解禁一律「先落盘、再打宿主管理 API」。
+// 旧实现 API 成功即 return，标记从不落盘；而宿主重建 auth 文档只保留白名单键，标记
+// 再也补不回来，账号于是既无人认领也无人解禁。生产实测 14 个号 remain 100~133 被
+// 永久挡在候选池外。现在三键 + 停用 note 同时作为归属判据，note 落在宿主白名单里，
+// 即使三键被宿主丢弃也能认领并解禁。
+//
+// 最近修改时间：2026-11-11；改动原因：修复禁用标记不落盘导致的账号永久孤儿化。
 package main
 
 import (
@@ -35,6 +41,12 @@ const (
 	creditDisableKey      = "low_credit_disable"
 	creditDisableBelowKey = "low_credit_disable_below"
 	creditDisableAtKey    = "low_credit_disable_at"
+
+	// creditDisableNotePrefix 是「积分不足停用」note 的固定开头，作为归属的第二判据。
+	// 存在意义：宿主重建 auth 文档时会丢掉白名单外的顶层键（见 failover_state.go
+	// 文件头），三键可能全部蒸发；note 在宿主白名单内且能存活，所以只要它还在，
+	// 就能认出这个号是本机制停的，避免账号被永久卡在池外。
+	creditDisableNotePrefix = "积分不足停用"
 )
 
 // lowCreditDisableFromAuthJSON 读取本机制的顶层标记。
@@ -47,6 +59,21 @@ func lowCreditDisableFromAuthJSON(raw []byte) bool {
 	}
 	_ = json.Unmarshal(raw, &m)
 	return m.LowCreditDisable
+}
+
+// lowCreditDisableFromNote 按 note 指纹判断该文档是否由本机制停用。
+//
+// 它只认停用文案，不认「积分回升启用」文案：后者表示本机制已经解禁，不能再
+// 当成归属依据，否则会把已经自由流通的号重新纳入本机制的解除逻辑。
+// [参数] raw：物理 auth JSON 原文。
+// [返回] true 表示 note 带本机制停用指纹。
+// 最近修改时间：2026-11-11；改动原因：新增，宿主丢键时的第二归属判据。
+func lowCreditDisableFromNote(raw []byte) bool {
+	var m struct {
+		Note string `json:"note"`
+	}
+	_ = json.Unmarshal(raw, &m)
+	return strings.HasPrefix(strings.TrimSpace(m.Note), creditDisableNotePrefix)
 }
 
 // gradeCreditsForAuth 对单个账号执行一次三档分级检查，并在必要时写盘。
@@ -78,7 +105,10 @@ func gradeCreditsForAuth(authIndex, authID string, sa *traeAuth, cr *traeCredits
 	disabled := parseDisabledFromAuthJSON(phys.JSON)
 	manual := parseFailoverAuthDoc(phys.JSON).manualDisable
 	failover := parseFailoverAuthDoc(phys.JSON).failoverDisable
-	ours := lowCreditDisableFromAuthJSON(phys.JSON)
+	// ours 是归属判据：宿主 API 成功路径曾经不写盘，宿主重建文档时又会丢掉
+	// 白名单外的顶层键，三键可能已经不在——但 note 仍带停用指纹，同样算本机制
+	// 停的（2026-11-11 生产实证：14 个号 remain 100~133 被永久挡在池外）。
+	ours := lowCreditDisableFromAuthJSON(phys.JSON) || lowCreditDisableFromNote(phys.JSON)
 
 	// 2. 低于禁用线且线处于开启状态：仅在无人认领时写盘。
 	//
@@ -97,7 +127,11 @@ func gradeCreditsForAuth(authIndex, authID string, sa *traeAuth, cr *traeCredits
 	}
 
 	// 3. 积分回到禁用线以上（或禁用线已关闭）：只有本机制禁的号才考虑解禁。
-	if !disabled || !ours || manual || failover {
+	//
+	// 这里不把盘上 !disabled 当作「已经解禁」：宿主 API 成功路径可能只改了宿主
+	// 真相源而没落盘，盘上是陈旧 false、路由仍然被挡。归属（ours）成立就再走一遍
+	// 解禁，写盘是幂等的，note 也会被刷成「积分回升启用」，下次自然不再进来。
+	if !ours || manual || failover {
 		return tier
 	}
 	if err := reenableForLowCredits(authIndex, authID, sa, cr); err != nil {
@@ -152,16 +186,27 @@ func disableForLowCredits(authIndex, authID string, sa *traeAuth, cr *traeCredit
 	if name == "" {
 		name = authFileNameFor(sa)
 	}
-	apiErr := setHostAuthDisabled(name, authIndex, true)
-	if apiErr == nil {
-		log.Printf("[traework] low-credit disabled via cpa api: auth=%s remain=%d below=%d", authID, cr.TotalRemain, below)
-		return nil
-	}
-	if !errors.Is(apiErr, errCPAManagementNotConfigured) {
-		log.Printf("[traework] cpa disable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
-	}
+	// 5. 先把标记落盘，再打宿主管理 API。
+	//
+	// 顺序不能反过来（2026-11-11 修正，缺陷⑳）：旧实现先调 API，成功就
+	// `return nil` 不写盘，结果是宿主真相源里 disabled=true 而盘上没有任何
+	// 本机制标记。宿主重建文档只保留白名单键，标记永远补不回来，于是这些号
+	// 既没人认领、也没人解禁，余额 100+ 仍被永久挡在候选池外，生产实测 14 个。
+	// 落盘是幂等的，宿主 API 成功与否都不该省掉这一步。
 	if err := failoverPersistFn(name, phys.Path, "", raw); err != nil {
+		// 写盘失败时仍要尝试宿主 API：让路由先挡住这个号，比继续消耗它更安全。
+		log.Printf("[traework] low-credit persist failed, still disabling via cpa api: auth=%s err=%v", authID, err)
+		apiErr := setHostAuthDisabled(name, authIndex, true)
+		if apiErr != nil && !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			log.Printf("[traework] cpa disable api failed: auth=%s err=%v", authID, apiErr)
+		}
 		return err
+	}
+	if apiErr := setHostAuthDisabled(name, authIndex, true); apiErr != nil {
+		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			// 盘上标记已就位，路由侧由 failover 判据兜住，不需要再写一次盘。
+			log.Printf("[traework] cpa disable api failed, disk marker already written: auth=%s err=%v", authID, apiErr)
+		}
 	}
 	log.Printf("[traework] low-credit disabled: auth=%s remain=%d below=%d", authID, cr.TotalRemain, below)
 	return nil
@@ -186,7 +231,10 @@ func reenableForLowCredits(authIndex, authID string, sa *traeAuth, cr *traeCredi
 		return err
 	}
 	doc0 := parseFailoverAuthDoc(phys.JSON)
-	if !lowCreditDisableFromAuthJSON(phys.JSON) || doc0.manualDisable || doc0.failoverDisable {
+	// 归属复核与 gradeCreditsForAuth 同口径：三键与停用 note 任一成立即算本机制停的。
+	// 只认三键会让「宿主丢键、只剩 note」的号永远走不到解禁（2026-11-11 缺陷⑳）。
+	ours := lowCreditDisableFromAuthJSON(phys.JSON) || lowCreditDisableFromNote(phys.JSON)
+	if !ours || doc0.manualDisable || doc0.failoverDisable {
 		return nil
 	}
 	var doc map[string]any
@@ -210,16 +258,21 @@ func reenableForLowCredits(authIndex, authID string, sa *traeAuth, cr *traeCredi
 	if name == "" {
 		name = authFileNameFor(sa)
 	}
-	apiErr := setHostAuthDisabled(name, authIndex, false)
-	if apiErr == nil {
-		log.Printf("[traework] low-credit re-enabled via cpa api: auth=%s remain=%d", authID, cr.TotalRemain)
-		return nil
-	}
-	if !errors.Is(apiErr, errCPAManagementNotConfigured) {
-		log.Printf("[traework] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
-	}
+	// 4. 先清盘上标记，再打宿主管理 API。理由同 disableForLowCredits：
+	// API 成功路径若跳过写盘，标记会永远留在陈旧状态，账号再也回不到候选池。
+	// 解禁方向的失败代价更大（号被永久挡在池外），所以更不能省这一步。
 	if err := failoverPersistFn(name, phys.Path, "", raw); err != nil {
+		log.Printf("[traework] low-credit re-enable persist failed, still enabling via cpa api: auth=%s err=%v", authID, err)
+		apiErr := setHostAuthDisabled(name, authIndex, false)
+		if apiErr != nil && !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			log.Printf("[traework] cpa enable api failed: auth=%s err=%v", authID, apiErr)
+		}
 		return err
+	}
+	if apiErr := setHostAuthDisabled(name, authIndex, false); apiErr != nil {
+		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
+			log.Printf("[traework] cpa enable api failed, disk marker already cleared: auth=%s err=%v", authID, apiErr)
+		}
 	}
 	log.Printf("[traework] low-credit re-enabled: auth=%s remain=%d", authID, cr.TotalRemain)
 	return nil

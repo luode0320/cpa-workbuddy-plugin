@@ -1,5 +1,40 @@
 # TraeWork Plugin Changelog
 
+## 0.5.44
+
+### Fix - 积分禁用标记不落盘：14 个余额 100+ 的账号被永久孤悬在候选池外
+
+- 根因（2026-11-11 生产取证）：`disableForLowCredits` 先调宿主管理 API，
+  **API 成功即 `return nil`，三个归属标记与 note 从未落盘**。宿主管理 API 只把
+  `disabled` 翻进自己的真相源；随后宿主重建 auth 文档时又只保留白名单键
+  （`failover_state.go` 文件头已记录该行为），标记永远补不回来。
+  于是这些号变成**无归属孤儿**：
+  - `gradeCreditsForAuth` 第 100 行因 `ours=false` 直接返回，不解禁；
+  - `lifecycle.go` 明确不接管「无标记的禁用」（宿主侧开关可能是人为的）；
+  - `anomaly_purge.go` 只处理 `Session expired` 前缀的 note。
+  三条恢复路径全部绕开，账号永久留在池外。
+- 生产实证：
+  - 磁盘真相（42 个 auth 文件）：27 个 `disabled=false` 且 note 为「积分回升启用」，
+    **14 个 `disabled=true`、note 为空、`low_credit_disable` 键不存在**。
+  - `docker logs --since 6h`（49.3 万行）中 8 条禁用记录全部来自低积分路径，
+    且**没有一条**对应的 `low-credit re-enabled`——解禁分支从未触发。
+  - 这 14 个号的余额是 100~190、`credit_tier=normal`、`cooling_down=false`、
+    `exhausted=false`，即「有钱、可用、但没人给它排队」。
+  - 与 0.5.43 的池子抽干是同一族缺陷的两个阶段：0.5.43 修「一次抽干」，
+    本版修「抽干后无法恢复」。
+- 变更：
+  - `disableForLowCredits` / `reenableForLowCredits` 一律**先落盘、再打宿主 API**。
+    落盘幂等，API 成功与否都不再跳过；写盘失败时仍尝试 API，让路由先挡住消耗。
+  - 新增归属第二判据 `lowCreditDisableFromNote`：note 前缀 `积分不足停用` 即认定
+    为本机制所禁。note 在宿主白名单内、能存活，是标记被丢弃后的唯一线索。
+  - `gradeCreditsForAuth` 的解除守卫 `!disabled || !ours` 收窄为 `!ours`：
+    盘上陈旧 `disabled=false` 不再被当成「已经解禁」，避免宿主真相源仍挡着、
+    盘上却显示已启用的半死状态。
+  - `reenableForLowCredits` 的归属复核与上述同口径，否则 note-only 文档走不到解禁。
+  - 新增 4 个回归用例（`test/traework/low_credit_orphan_marker_test.go`）：
+    禁用必须落盘三键与 note、note-only 文档必须被认领并解禁、
+    「积分回升启用」与 lifecycle 的「耗尽停用」文案不得被误判为归属。
+
 ## 0.5.43
 
 ### Fix - 候选池被积分硬禁用线抽干：41 个账号只剩 1 个转发，首字延迟与错误率同时恶化
