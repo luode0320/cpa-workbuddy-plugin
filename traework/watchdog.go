@@ -213,4 +213,8 @@ func init() {
 	// 外部启用对账：每 2 分钟把「用户已手动启用」同步回插件侧（含盘上陈旧标记），
 	// 否则手动启用的号最长 10 分钟仍被排除。
 	go failoverReconcileLoop()
+	// 旧世代禁用纠正：v0.5.41/42/44 的 watchdog 没有实例守卫，每 10 分钟用
+	// 自己编译期的禁用线 100 重写禁用标记。本循环按「盘上阈值 >> 当前生效线」
+	// 识别这类跨代写入并释放（见 stale_disable_correct.go）。
+	go staleDisableCorrectLoop()
 }

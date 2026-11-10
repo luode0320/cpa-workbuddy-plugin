@@ -1,5 +1,38 @@
 # TraeWork Plugin Changelog
 
+## 0.5.52
+
+### Fix - 旧世代 watchdog 无实例守卫：每 10 分钟按编译期常量 100 禁用健康号
+
+- **终极根因**：进程内同时 mmap 着 **9 代** `.so`
+  （`v0.5.41/42/44/45/46/47/48/50/51`）。`strings` 逐代核对证实：
+  `v0.5.41/42/44` **没有** `"watchdog loop"` 文案，而 `v0.5.45` 起才有，
+  `retireIfSuperseded` 是 0.5.45 才引入的。也就是说**这三代的 watchdog
+  里根本没有实例守卫**，它们会无条件永久运行**。
+- 后果：这三代每 **10 分钟**（`watchdogIntervalDefault`）用自己编译期的
+  禁用线常量 **100** 重写
+  `disabled:true + low_credit_disable_below:100`。生产日志时间戳完全吻合：
+  `04:16:18` → `04:36:18` → `04:46:19`，把 `remain = 12/13/19/27/29/30/37/
+  40/42/43` 的健康号逐个禁掉，可用池被反复削到 **2/51**。
+- 为什么之前所有修复都无效：0.5.49 孤儿自愈、0.5.50 熔断退避、0.5.51
+  refresh runner 守卫，都只能约束**本代**行为；旧代 watchdog 完全在体系外，
+  它写入的禁用标记带 `low_credit_disable`（`ours=true`），会走正常解禁分支，
+  于是形成「本代解禁 → 旧代再禁」的对抗循环，实测 15 分钟内 91 次 disable
+  对 84 次 re-enable。
+- 修复（新增 `stale_disable_correct.go`）：按**阈值指纹**识别跨代写入并释放。
+  盘上 `low_credit_disable_below` 大于当前生效线时，这条禁用不可能是本代写的
+  （本代只写 `effectiveLowCreditDisableBelow()`），据此无条件释放。
+  - 释放条件五条全满足才动手：`disabled` 为真、带 `low_credit_disable`、
+    盘上阈值 > 生效线、当前余额 >= 生效线、无 `manual/failover/exhausted`；
+  - 独立 3 分钟循环（`staleDisableCorrectInterval`），显著小于旧代 10 分钟
+    周期，把「被误禁」的暴露窗口从 10 分钟压到 3 分钟以内；
+  - 带实例守卫，避免逐代叠加扫描压力。
+- 回归：`test/traework/stale_disable_correct_test.go` 四个用例 ——
+  阈值指纹方向、旧代禁用必须释放、本代自有禁用不得释放（含**余额充足**的精确
+  哨兵，确保唯一阻止理由是阈值判据）、manual/failover/exhausted 一律不碰。
+  哨兵验证：放宽阈值判据后 `TestCorrectStaleDisableKeepsOwnDisableWithHighRemain`
+  立即 FAIL。
+
 ## 0.5.51
 
 ### Fix - refresh runner 漏接实例守卫：旧世代按编译期禁用线写盘禁用健康号
