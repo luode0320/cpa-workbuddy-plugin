@@ -1,5 +1,45 @@
 # TraeWork Plugin Changelog
 
+## 0.5.42
+
+### Fix - 账号并发超发是首字延迟的主因：选号改为按真实在跑请求数平摊
+
+- 根因（2026-11-10 生产取证，27,105 条 traework 样本）：上游 Trae 按 entitlement
+  给每个账号分配并行槽位，免费/未知账号默认只有 **2** 个；超过额度的请求**不报错**，
+  而是在账号侧排队，表现为首字延迟升高。插件原先按「会话粘性 + 会话数轮询」选号，
+  对真实并发完全不可见，导致一个会话的并发子请求全压在一个号上。
+- 实测数据（由 `data/token-usage-feed.ndjson` 的 latency 区间反推账号在跑数）：
+  - 账号在跑数 vs 首字延迟单调上升：1 → **4596ms**（n=5111），2-3 → 5974，
+    4-7 → 6299，8-14 → 7027，15+ → **7795ms**（n=1340）。
+  - 全局并发 ≥16 时，单账号在跑数 p50=**13**、p95=20、峰值 **25**；
+    47 个账号里 **42 个**峰值并发超过 2，即 7–12 倍超发。
+  - 活跃会话中位数在每个并发档位都是 **2** → 并发来自一个会话扇出多子请求，
+    而不是会话数增加；这正是按会话选号的盲区。
+  - 纯净对照：并发 0 且输入 <2000 → p50 **1374ms** / p90 2462ms / 慢请求 0.0%。
+- 变更：
+  - 新增 `account_load.go`：`accountLoadAcquire/Release/Of` 记录每个账号当前在跑的
+    请求数，`pickLeastLoaded` / `pickLessLoadedThan` 供调度层按真实负载选号。
+  - 计数挂载点与上游槽位占用时长对齐：`callLLM` 用 defer、`callLLMStream` 在打开前
+    记账并把归还挂到 `hostHTTPStream.Close()`（覆盖整条流的读取期）。
+  - `pickActiveAuth`（credits 模式）改为 `pickLeastLoaded`，废除「轮到谁就谁」；
+    平级保留候选原有高积分优先顺序。
+  - `pickSessionAuth` 新分配改为「在跑数最少优先，绑定会话数次之」，并移除失效的
+    `sessionRR` 计数器。
+  - `pickSessionAuth` 命中粘性后加软上限闸门：绑定账号在跑数 ≥
+    `sessionAccountInflightSoftCap`（2，与上游默认槽位对齐）且池中存在**严格更闲**
+    账号时改绑并写回绑定表；没有更闲候选时保持原绑定，避免在满载号之间反复抖动。
+- 会话粘性收益实测为零：27,105 条样本 / 9,755,865,705 输入 token 中
+  `cache_read_tokens` / `cached_tokens` / `cache_creation_tokens` **全部为 0**
+  （0.000% 非零），上游不给 TraeWork 链路任何 prompt cache 命中，
+  因此粘性只剩余「上游亲和」这一点收益，不应以牺牲并发平摊为代价。
+- 验证：`cgo-shim-build.py traework` build / vet / test 全绿；新增
+  `account_load_test.go`（计数成对增减、幂等释放、并发归零、选号优先空闲、
+  平级保序、跳过禁用/耗尽/空 ID）与 `session_auth_test.go` 两个用例
+  （粘性超限改绑并写回绑定表、全池同等繁忙时保持绑定）。哨兵法确认真实进编译执行。
+- 涉及文件: `account_load.go`（新增）、`account_load_test.go`（新增）、
+  `session_auth.go`、`session_auth_test.go`、`active_auth.go`、`upstream.go`、
+  `host_bridge.go`、`main.go`、`VERSION`。
+
 ## 0.5.41
 
 ### Chore - 新增 stream_direct_forced 开关，支持「直连 vs 宿主桥」延迟对照

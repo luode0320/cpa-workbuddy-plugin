@@ -442,3 +442,73 @@ func TestSchedulerMode_DefaultIsSession(t *testing.T) {
 	}
 }
 
+// TestPickSessionAuth_StickyReassignsWhenBoundAccountSaturated 验证粘性命中后若绑定
+// 账号已在跑数达到软上限、且池中有更闲的可用账号，会把会话改绑到更闲的账号。
+//
+// 这是 2026-11-10 生产问题的直接回归：旧逻辑无条件信任绑定，导致一个会话的并发
+// 子请求全压在一个账号上，账号并发中位数 16、峰值 25，远超上游默认 2 个并行槽位，
+// 首字延迟从 4596ms 涨到 7795ms。
+func TestPickSessionAuth_StickyReassignsWhenBoundAccountSaturated(t *testing.T) {
+	resetSessionRouting(t)
+	clearAccountLoad()
+	t.Cleanup(clearAccountLoad)
+
+	cands := []activeAuthCandidate{{ID: "tr-a"}, {ID: "tr-b"}}
+	pinned := pickSessionAuth("conv-saturated", cands)
+	if pinned == "" {
+		t.Fatal("首次选号不应为空")
+	}
+	// 让绑定账号堆到软上限，模拟同一会话的并发子请求占满上游槽位。
+	releases := make([]func(), 0, sessionAccountInflightSoftCap)
+	for i := 0; i < sessionAccountInflightSoftCap; i++ {
+		releases = append(releases, accountLoadAcquire(pinned))
+	}
+	defer func() {
+		for _, r := range releases {
+			r()
+		}
+	}()
+
+	got := pickSessionAuth("conv-saturated", cands)
+	if got == pinned {
+		t.Fatalf("绑定账号已在跑 %d 个（软上限 %d），应改绑到更闲账号，实际仍为 %q",
+			sessionAccountInflightSoftCap, sessionAccountInflightSoftCap, got)
+	}
+	// 改绑必须写回绑定表，否则下一次请求还会命中旧账号。
+	sessionAuthMu.RLock()
+	b := sessionAuthBindings["conv-saturated"]
+	sessionAuthMu.RUnlock()
+	if b.AuthID != got {
+		t.Fatalf("改绑后绑定表应写入 %q，实际 %q", got, b.AuthID)
+	}
+}
+
+// TestPickSessionAuth_StickyKeepsBindingWhenAllSaturated 验证全池都超过软上限时
+// 保持原绑定：所有号一样忙时改绑没有收益，反而会让会话在两个号之间来回抖。
+func TestPickSessionAuth_StickyKeepsBindingWhenAllSaturated(t *testing.T) {
+	resetSessionRouting(t)
+	clearAccountLoad()
+	t.Cleanup(clearAccountLoad)
+
+	cands := []activeAuthCandidate{{ID: "tr-a"}, {ID: "tr-b"}}
+	pinned := pickSessionAuth("conv-all-busy", cands)
+	if pinned == "" {
+		t.Fatal("首次选号不应为空")
+	}
+	var releases []func()
+	defer func() {
+		for _, r := range releases {
+			r()
+		}
+	}()
+	// 两个账号都堆到同一在跑数：没有「更闲」的候选。
+	for _, id := range []string{"tr-a", "tr-b"} {
+		for i := 0; i < sessionAccountInflightSoftCap+1; i++ {
+			releases = append(releases, accountLoadAcquire(id))
+		}
+	}
+
+	if got := pickSessionAuth("conv-all-busy", cands); got != pinned {
+		t.Fatalf("全池同样繁忙时应保持绑定 %q，实际 %q", pinned, got)
+	}
+}

@@ -335,6 +335,11 @@ type hostHTTPStream struct {
 	// Bridged read-phase degradation state (nil outside bridged mode).
 	req       *http.Request
 	bodyBytes []byte
+
+	// releaseAccountLoad 在流关闭时归还账号在跑请求计数，nil 表示无需归还。
+	// 计数必须在整条流读完才释放：上游的并行槽位占用时长等于响应流生命周期，
+	// 提前释放会让调度层低估负载并继续往同一个号上堆并发。
+	releaseAccountLoad func()
 }
 
 // hostBridgeOpenTimeout bounds how long the async streaming path waits for the
@@ -648,6 +653,12 @@ func (s *hostHTTPStream) degradeToDirect() ([]byte, bool, error) {
 func (s *hostHTTPStream) Close() {
 	if s == nil {
 		return
+	}
+	// 先归还账号在跑计数：Close 是唯一确定的流结束点，在这里释放才能与占用的
+	// 上游槽位时长严格对齐；重复 Close 由 hostHTTPStream 自身的字段置空保证幂等。
+	if s.releaseAccountLoad != nil {
+		s.releaseAccountLoad()
+		s.releaseAccountLoad = nil
 	}
 	if s.liveBody != nil {
 		_ = s.liveBody.Close()

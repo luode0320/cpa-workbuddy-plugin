@@ -49,16 +49,12 @@ type sessionAuthBinding struct {
 }
 
 var (
-	// sessionAuthMu guards sessionAuthBindings and sessionRR.
+	// sessionAuthMu guards sessionAuthBindings.
 	sessionAuthMu sync.RWMutex
 	// sessionAuthBindings maps a session key (see extractSessionKey) to its
 	// pinned account. Entries are created on first pick of a conversation and
 	// removed by the pruner after expiry.
 	sessionAuthBindings = make(map[string]sessionAuthBinding)
-	// sessionRR is a monotonically increasing counter used to spread new
-	// conversations across accounts when every usable account already has
-	// bindings.
-	sessionRR uint64
 )
 
 func init() {
@@ -205,10 +201,25 @@ func pickSessionAuth(sessionKey string, candidates []activeAuthCandidate) string
 	sessionAuthMu.Lock()
 	defer sessionAuthMu.Unlock()
 
-	// Sticky hit: binding fresh AND its account still usable.
+	// Sticky hit: binding fresh AND its account still usable。
+	//
+	// 命中后还要过一次在跑数软上限：粘性只该保证「同一会话优先复用同一个号」，
+	// 不能变成「把同一会话的并发子请求全塞给同一个号」。上游 Trae 每账号并行槽位
+	// 默认只有 2，超出的部分不报错而是在账号侧排队，直接推高首字延迟。实测账号
+	// 并发 1 → 首字 4596ms，15+ → 7795ms，而全局并发 19 时单个号就吃掉约 14 个。
+	// 因此：命中且未超软上限 → 直接复用（保住缓存与上游亲和）；已超上限且池中
+	// 存在更空闲的可用账号 → 改绑到最空闲的号。
 	if b, ok := sessionAuthBindings[sessionKey]; ok {
 		if _, isLive := live[b.AuthID]; isLive {
 			if _, isUsable := usableSet[b.AuthID]; isUsable && now.Before(b.ExpiresAt) {
+				current := accountLoadOf(b.AuthID)
+				if current < sessionAccountInflightSoftCap {
+					return b.AuthID
+				}
+				if alt := pickLessLoadedThan(usable, b.AuthID, current); alt != "" {
+					sessionAuthBindings[sessionKey] = sessionAuthBinding{AuthID: alt, ExpiresAt: now.Add(sessionStickinessTTL)}
+					return alt
+				}
 				return b.AuthID
 			}
 		}
@@ -224,34 +235,38 @@ func pickSessionAuth(sessionKey string, candidates []activeAuthCandidate) string
 		return ""
 	}
 
-	// Fresh assignment: prefer the panel-selected active account first (so the
-	// dashboard selection actually steers new conversations), then accounts
-	// with no live bindings (spreads conversations), then round-robin.
+	// Fresh assignment: 在跑请求数最少优先，绑定会话数次之，平级保留 usable
+	// 已有的高积分优先顺序。
+	//
+	// 改成按真实并发记账而不是按会话数选号，是 2026-11-10 生产取证的直接结论：
+	// 上游 Trae 每个账号的并行槽位默认只有 2，超出部分不报错而是在账号侧排队，
+	// 表现为首字延迟升高。按会话分配的旧逻辑下，一个会话连发多个并发子请求时
+	// 全部压到同一个号，实测账号并发中位数 16、峰值 25，而活跃会话中位数只有 2；
+	// 首字延迟随账号并发单调上升：并发 1 → 4596ms，2-3 → 5974ms，4-7 → 6299ms，
+	// 8-14 → 7027ms，15+ → 7795ms。
 	boundCounts := make(map[string]int, len(usable))
 	for _, b := range sessionAuthBindings {
 		if now.Before(b.ExpiresAt) {
 			boundCounts[b.AuthID]++
 		}
 	}
+	// 面板选中作为初始候选参与竞争：它是「希望走这个号」，不该变成
+	// 「把所有并发都塞给这个号」，所以只在它不比别的号更忙时才保留。
 	next := ""
 	if active := getActiveAuthID(); active != "" {
 		if _, isUsable := usableSet[active]; isUsable {
 			next = active
 		}
 	}
-	if next == "" {
-		for i := 0; i < len(usable); i++ {
-			candID := usable[(int(sessionRR)+i)%len(usable)]
-			if boundCounts[candID] == 0 {
-				next = candID
-				sessionRR++
-				break
-			}
-		}
+	bestLoad, bestBound := -1, -1
+	if next != "" {
+		bestLoad, bestBound = accountLoadOf(next), boundCounts[next]
 	}
-	if next == "" {
-		next = usable[int(sessionRR%uint64(len(usable)))]
-		sessionRR++
+	for _, id := range usable {
+		load, bound := accountLoadOf(id), boundCounts[id]
+		if bestLoad < 0 || load < bestLoad || (load == bestLoad && bound < bestBound) {
+			next, bestLoad, bestBound = id, load, bound
+		}
 	}
 
 	sessionAuthBindings[sessionKey] = sessionAuthBinding{AuthID: next, ExpiresAt: now.Add(sessionStickinessTTL)}
@@ -296,6 +311,5 @@ func evictSessionBindingsForAuth(authID string) int {
 func clearSessionBindings() {
 	sessionAuthMu.Lock()
 	sessionAuthBindings = make(map[string]sessionAuthBinding)
-	sessionRR = 0
 	sessionAuthMu.Unlock()
 }

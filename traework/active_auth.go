@@ -12,7 +12,6 @@ import (
 
 var (
 	activeAuthID string
-	activeAuthRR uint64
 	activeAuthMu sync.RWMutex
 )
 
@@ -26,9 +25,6 @@ func setActiveAuthID(id string) {
 	id = strings.TrimSpace(id)
 	activeAuthMu.Lock()
 	activeAuthID = id
-	if id == "" {
-		activeAuthRR = 0
-	}
 	activeAuthMu.Unlock()
 }
 
@@ -82,9 +78,22 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 	if len(ready) == 0 {
 		return ""
 	}
+	// 从 ready 里挑在跑请求数最少的账号，而不是轮到谁就谁。
+	//
+	// 轮询只保证「请求数均摊」，不保证「同时在跑的数量均摊」：长请求会堆积在同一
+	// 个刚被轮到的账号上，短请求早已结束。上游 Trae 每个账号的并行槽位默认只有 2，
+	// 堆积的部分在账号侧排队并推高首字延迟（2026-11-10 生产实测：账号在跑请求数
+	// 1 → 首字 4596ms，15+ → 7795ms）。ready 已按高积分优先排序，pickLeastLoaded
+	// 平级时保留该顺序，因此这里不会把残血号提到健康号前面。
+	cands := make([]activeAuthCandidate, 0, len(ready))
+	for _, id := range ready {
+		cands = append(cands, activeAuthCandidate{ID: id})
+	}
+	next := pickLeastLoaded(cands)
+	if next == "" {
+		next = ready[0]
+	}
 	activeAuthMu.Lock()
-	next := ready[int(activeAuthRR%uint64(len(ready)))]
-	activeAuthRR++
 	if next != cur {
 		activeAuthID = next
 	}

@@ -355,6 +355,11 @@ func modelKeyFromPayload(payload map[string]any) string {
 // [返回] hostHTTPResponse: 完整缓冲响应；error: 请求构造、传输或 HTTP 状态错误。
 // 最近修改时间：2026-10-19 01:20:00；改动原因：记账带模型维度，限流类失败只冷却该模型。
 func callLLM(a *traeAuth, payload map[string]any, authID string) (*hostHTTPResponse, error) {
+	// 1. 进跑道即记一笔在跑请求，函数返回时归还。非流式请求的槽位占用时长
+	// 就等于这次调用的时长，所以用 defer 与函数生命周期严格对齐。
+	releaseLoad := accountLoadAcquire(authID)
+	defer releaseLoad()
+
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload: %w", err)
@@ -399,14 +404,20 @@ func callLLMStream(a *traeAuth, payload map[string]any, authID, hostCallbackID s
 	req.Header = buildTraeAuthHeaders(a)
 	modelKey := modelKeyFromPayload(payload)
 
-	// 2. 非 2xx 响应读取有限正文后关闭流，沿用现有账号故障分类与脱敏错误结构。
+	// 2. 打开前先记一笔在跑请求：上游的并行槽位从打开动作开始就被占用，
+	// 记账点必须与它对齐，否则调度层看到的负载永远滞后一个请求。
+	releaseLoad := accountLoadAcquire(authID)
+
+	// 3. 非 2xx 响应读取有限正文后关闭流，沿用现有账号故障分类与脱敏错误结构。
 	stream, statusCode, _, err := hostHTTPDoStream(req, hostCallbackID)
 	if err != nil {
+		releaseLoad()
 		noteAccountFailureForModel(authID, modelKey, 0, err.Error())
 		return nil, 0, fmt.Errorf("llm_utils_chat stream transport: %w", err)
 	}
 	if statusCode < 200 || statusCode >= 300 {
 		defer stream.Close()
+		defer releaseLoad()
 		body, readErr := io.ReadAll(io.LimitReader(newHostStreamReader(stream), maxBodyBytes))
 		if readErr != nil {
 			noteAccountFailureForModel(authID, modelKey, statusCode, readErr.Error())
@@ -415,6 +426,9 @@ func callLLMStream(a *traeAuth, payload map[string]any, authID, hostCallbackID s
 		noteAccountFailureForModel(authID, modelKey, statusCode, string(body))
 		return nil, statusCode, &UpstreamError{Status: statusCode, Body: truncateRedacted(string(body), 300)}
 	}
+	// 成功打开的流把归还动作挂到 Close 上：计数覆盖整条流的读取期，
+	// 与上游并行槽位的实际占用时长一致。
+	stream.releaseAccountLoad = releaseLoad
 	return stream, statusCode, nil
 }
 
