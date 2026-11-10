@@ -20,6 +20,8 @@ package main
 import (
 	"log"
 	"strings"
+	"sync"
+	"time"
 )
 
 // noteModelBlockedHit 记录一次 11128 命中，双写账号×模型冷却与账号禁用。
@@ -61,6 +63,121 @@ func noteUpstreamBlockHit(authID, model string, status int, body string) bool {
 		return false
 	}
 	return noteModelBlockedHit(authID, model)
+}
+
+// modelCircuitCrossAuthThreshold 是触发模型级全局熔断的跨账号命中门限。
+//
+// 取值 3 与 2026-10-22 前的历史实现一致：单账号失败可能是个例，跨 3 个不同
+// 账号在同一模型上命中同一类确定性失败，即证明该模型此刻整体不可用。
+const modelCircuitCrossAuthThreshold = 3
+
+// modelCircuitOpenWindow 是模型级全局熔断的开启窗口。
+//
+// 取 60 秒而不是指数阶梯：熔断的作用是止血（让用户在 60 秒内立刻拿到明确
+// 失败，而不是逐个账号各等 15~30 秒），恢复仍由账号×模型冷却到期后重新探测。
+// 窗口过长会让上游已经恢复时用户继续被拒。
+const modelCircuitOpenWindow = 60 * time.Second
+
+// modelCircuitMu guards modelCircuitHits / modelCircuitAuths / modelCircuitUntil.
+var (
+	modelCircuitMu    sync.Mutex
+	modelCircuitHits  = map[string]int{}
+	modelCircuitAuths = map[string]map[string]struct{}{}
+	modelCircuitUntil = map[string]time.Time{}
+)
+
+// noteModelCircuitHit 记录一次确定性模型级失败，并在跨账号命中达门限时开闸。
+//
+// 为什么需要这一层（2026-11-11 生产实证）：content moderation（sensitive
+// content）、11128 等确定性失败与账号健康无关，同一模型在所有账号上必然重演。
+// 只写「账号×模型」冷却时，路由只能跳过被标记的那个组合，请求仍会逐个换号，
+// 每个账号各付一次 15~30 秒的上游思考成本再失败：
+// glm-5.3-flashx 部署后实测单请求 conductor duration p50=29.8s、p90=62.8s、
+// max=153.0s，一个请求轮询 10 个不同账号。跨账号熔断让这类失败在命中第 3 个
+// 账号后直接短路，把 153 秒压到一次失败往返。
+//
+// 与历史实现（2026-10-22 前）的差异：历史熔断只拒绝请求、不改变路由，被拦截
+// 的账号仍会被宿主选中；现在账号×模型冷却已由 classifyUpstreamFailure 正确
+// 写入（本版本修复），两层叠加才有意义——本函数负责止血，冷却负责让具体组合
+// 退出路由。
+//
+// [参数] authID：命中账号标识；model：已归一化的上游模型名。
+// [返回] true 表示该次命中已计入（跨账号去重后仍计数）。
+// 最近修改时间：2026-11-11；改动原因：新增，堵住确定性失败逐个账号扇出。
+func noteModelCircuitHit(authID, model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	authID = strings.TrimSpace(authID)
+	now := time.Now()
+	modelCircuitMu.Lock()
+	defer modelCircuitMu.Unlock()
+	// 已开闸期间不重复计数：窗口内的后续失败不再延长熔断，
+	// 否则持续流量会让熔断永不释放。
+	if until, ok := modelCircuitUntil[model]; ok && now.Before(until) {
+		return false
+	}
+	auths := modelCircuitAuths[model]
+	if auths == nil {
+		auths = map[string]struct{}{}
+		modelCircuitAuths[model] = auths
+	}
+	if _, seen := auths[authID]; seen {
+		return false
+	}
+	auths[authID] = struct{}{}
+	modelCircuitHits[model]++
+	if modelCircuitHits[model] >= modelCircuitCrossAuthThreshold {
+		modelCircuitUntil[model] = now.Add(modelCircuitOpenWindow)
+		log.Printf("[traework] model circuit opened: model=%s cross_auth_hits=%d window=%s",
+			model, modelCircuitHits[model], modelCircuitOpenWindow)
+	}
+	return true
+}
+
+// isModelCircuitOpen 报告该模型是否处于全局熔断窗口内。
+//
+// [参数] model：已归一化的上游模型名。
+// [返回] true 表示应直接短路，不再换号。
+// 最近修改时间：2026-11-11；改动原因：新增，供调度与换号判定使用。
+func isModelCircuitOpen(model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	modelCircuitMu.Lock()
+	defer modelCircuitMu.Unlock()
+	until, ok := modelCircuitUntil[model]
+	if !ok {
+		return false
+	}
+	if time.Now().Before(until) {
+		return true
+	}
+	// 窗口到期：整组清零，让该模型重新获得完整的跨账号额度。
+	delete(modelCircuitUntil, model)
+	delete(modelCircuitHits, model)
+	delete(modelCircuitAuths, model)
+	return false
+}
+
+// resetModelCircuit 在一次成功请求后清空该模型的熔断记账。
+//
+// 一次真实成功即证明该模型已恢复，残留的跨账号命中只会让下一次抖动立即再次开闸。
+//
+// [参数] model：已归一化的上游模型名。
+// 最近修改时间：2026-11-11；改动原因：新增，成功即清账。
+func resetModelCircuit(model string) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	modelCircuitMu.Lock()
+	delete(modelCircuitUntil, model)
+	delete(modelCircuitHits, model)
+	delete(modelCircuitAuths, model)
+	modelCircuitMu.Unlock()
 }
 
 // resetModelBlockedState 在一次成功请求后清理该模型的残留冷却。

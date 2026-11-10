@@ -1,5 +1,35 @@
 # TraeWork Plugin Changelog
 
+## 0.5.47
+
+### Fix - 模型级跨账号熔断，止血「确定性失败逐个账号扇出」的秒级白等
+
+- 背景：0.5.46 把内容审核拦截正确归入 `failureScopeModelRateLimit` 后，
+  失败**被记账了**，但冷却维度是「账号×模型」——路由只能跳过被标记的那一个
+  组合，请求仍会逐个换号，**每个账号各付一次上游思考成本再失败**。
+- 生产实证（2026-11-11 02:55 部署 0.5.46 后 5 分钟）：
+  `glm-5.3-flashx` 单请求 `conductor_execution` `duration`
+  **p50=29.8s、p90=62.8s、max=153.0s**，一个请求轮询 **10 个不同账号**
+  （`auth_hash` 依次 4eb876d6 / f80f4d1e / 29fc1b15 / 88feabec / 1020a84e …）。
+  用户体感就是「token 不多但首字 20s+」，最坏等 153 秒。
+- 修复：新增模型级全局熔断（`model_circuit.go`）：
+  - `noteModelCircuitHit` 按模型累计**跨账号**命中，同账号重复命中不计数
+    （否则单个坏号就能熔断整个模型），门限 `modelCircuitCrossAuthThreshold=3`
+    与 2026-10-22 前的历史实现对齐；
+  - 达门限后在 `modelCircuitOpenWindow=60s` 内开闸，
+    `isModelCircuitOpen` 在 `scheduler.pick` 直接返回 `Handled:false`，
+    让宿主立即失败或换到其它 provider，而不是逐个账号空转；
+  - 窗口内不重复计数、不延长熔断；窗口到期整组清零；
+  - `resetModelCircuit` 在任一真实成功后清账（挂在原有
+    `resetModelBlockedState` 同一处），避免一次成功后的抖动立即再次开闸。
+- 接线：`recordAccountFailureForModel` 在 `classifyUpstreamFailure` 判定为
+  `model_rate_limit` / `account_model` 时调用 `noteModelCircuitHit`，
+  与冷却写入同源判定，新增判据不需要改第二个地方。
+- 回归：新增 `test/traework/model_circuit_global_test.go`
+  （`TestModelCircuitOpensAfterCrossAuthHits` 锁定门限去重与不跨模型泄漏、
+  `TestContentModerationFeedsModelCircuit` 锁定「分类→熔断」接线）。
+  哨兵验证：注释掉接线后 `TestContentModerationFeedsModelCircuit` 立即 FAIL。
+
 ## 0.5.46
 
 ### Fix - 内容审核拦截未进入失败分类，导致 100% 失败模型被无限重派（首字延迟主因）

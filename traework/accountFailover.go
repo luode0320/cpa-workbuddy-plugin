@@ -307,7 +307,14 @@ func recordAccountFailureForModel(authID, model string, status int, body string)
 	if !failoverActive() {
 		return false
 	}
-	return recordFailureScopedWithCause(authID, model, classifyUpstreamFailure(status, body), status, body)
+	scope := classifyUpstreamFailure(status, body)
+	// 模型级确定性失败额外记一次跨账号命中：只写「账号×模型」冷却时，路由只能
+	// 跳过被标记的组合，请求仍会逐个换号、每个账号各付一次上游耗时再失败。
+	// 跨账号熔断在命中第 3 个账号后直接短路（见 model_circuit.go）。
+	if scope == failureScopeModelRateLimit || scope == failureScopeAuthModel {
+		noteModelCircuitHit(authID, model)
+	}
+	return recordFailureScopedWithCause(authID, model, scope, status, body)
 }
 
 // recordFailureScoped 按给定维度记账，是失败处理的唯一落点：先写内存阶梯冷却，

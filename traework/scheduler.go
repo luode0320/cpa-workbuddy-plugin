@@ -96,6 +96,12 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	// 否则一次限流就会把该账号从其它模型上一并摘掉。调度请求的 Model 是
 	// 客户端模型名，需与记账侧一样归一化后再比对。
 	upstreamModel := circuitModel(stripProviderPrefix(req.Model))
+	// 模型级全局熔断：该模型已跨多个账号命中确定性失败，此时逐个换号只会让
+	// 用户在每个账号上各等一次上游耗时（生产实测单请求 153 秒、轮询 10 个账号）。
+	// 直接交还宿主（Handled: false），让宿主立即失败或换到其它 provider。
+	if isModelCircuitOpen(upstreamModel) {
+		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
+	}
 	// 轮换冷却在循环外取一次时钟：同一次调度里所有候选必须用同一个「现在」，
 	// 否则逐个取时间会让先判的候选与后判的候选处在不同时刻，短窗口判定抖动。
 	rotationNow := time.Now()

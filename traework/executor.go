@@ -629,8 +629,9 @@ func runTraeAsyncStream(initialAuth *traeAuth, initialAuthID string, ctx traeAsy
 			return
 		}
 		resetAccountFailover(curAuthID)
-		// 一次真实成功即证明该模型已恢复，清掉该模型上残留的冷却。
+		// 一次真实成功即证明该模型已恢复，清掉该模型上残留的冷却与跨账号熔断。
 		resetModelBlockedState(circuitKeyModel)
+		resetModelCircuit(circuitKeyModel)
 		// 轮换打点：异步流成功路径。漏接这里会让长时间流式会话永远不触发轮换。
 		noteRotationUsage(curAuthID)
 		attemptTTFT := attemptTTFTNS(attemptStarted, ctx.Started, result.FirstOutputAt)
