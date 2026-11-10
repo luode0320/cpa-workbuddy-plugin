@@ -33,14 +33,20 @@ import (
 const (
 	// staleDisableCorrectInterval 是纠正循环周期。
 	//
-	// 必须显著小于旧代的 10 分钟 watchdog 周期：旧代刚写完就尽快纠正回去，
-	// 把账号「被禁用」的暴露窗口从最长 10 分钟压到 3 分钟以内。
-	// 取 3 分钟而不是更短，是为了避免与刷新队列抢上游积分 API 配额。
-	staleDisableCorrectInterval = 3 * time.Minute
+	// 必须显著小于旧代的 10 分钟 watchdog 周期，否则会出现「旧代禁完、新版还
+	// 没到下一轮」的空窗：2026-11-11 实测 05:17:47 纠正释放 23 个号后，
+	// 05:20:52 旧代一次 watchdog tick 又把整池打回 0/51。
+	//
+	// 取 45 秒：旧代一次 tick 的窗口是 10 分钟，45 秒意味着最坏暴露 45 秒、
+	// 平均 22 秒，账号池不再出现「整池消失」的可观测状态。
+	// 本循环只做本地文件读写（读 auth JSON + 按阈值比对），不打上游、不抢积分
+	// API 配额；命中纠正时才走一次宿主写入，所以高频是安全的。
+	staleDisableCorrectInterval = 45 * time.Second
 
 	// staleDisableCorrectFirstDelay 是首轮延迟：等宿主把 auth 列表接好，
-	// 且错开其它插件的启动抖动。
-	staleDisableCorrectFirstDelay = 45 * time.Second
+	// 且错开其它插件的启动抖动。原先 45 秒太保守——旧代可能就是在这段盲区里
+	// 完成了一次全量禁用，因此压到 10 秒，让纠正尽早开始。
+	staleDisableCorrectFirstDelay = 10 * time.Second
 )
 
 // staleDisableBelowRatio 判定「盘上阈值是否来自旧世代」的宽松倍数。
@@ -164,6 +170,12 @@ func correctAllStaleDisables() int {
 	for _, f := range files {
 		authIndex := strings.TrimSpace(f.AuthIndex)
 		if authIndex == "" {
+			continue
+		}
+		// 前置过滤：宿主已在列表里告诉我们 disabled 状态，未被禁用的账号不必
+		// 再读一次物理文件。45 秒周期下这能把绝大多数轮次的开销压到「一次
+		// host.auth.list RPC」——健康态时几乎没有额外磁盘 IO。
+		if !f.Disabled {
 			continue
 		}
 		if correctStaleDisable(authIndex, f.ID) {

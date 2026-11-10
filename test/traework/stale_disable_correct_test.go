@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 // 旧世代禁用纠正（2026-11-11 生产实证）。
@@ -123,6 +124,27 @@ func TestCorrectStaleDisableKeepsOwnDisableWithHighRemain(t *testing.T) {
 	}
 	if disabled, _ := (*state)["disabled"].(bool); !disabled {
 		t.Fatal("必须保持禁用")
+	}
+}
+
+// TestStaleDisableCorrectIntervalBeatsOldGeneration 锁定纠正周期必须远小于旧代周期。
+//
+// 旧代 watchdog 周期是 watchdogIntervalDefault = 10 分钟。纠正周期一旦接近它，
+// 就会出现「旧代禁完、新版还没到下一轮」的空窗——2026-11-11 实测 05:17:47
+// 纠正释放 23 个号后，05:20:52 旧代一次 tick 又把整池打回 0/51。
+// 因此纠正周期必须 <= 1 分钟，且首轮延迟必须 <= 15 秒（不能留启动盲区）。
+func TestStaleDisableCorrectIntervalBeatsOldGeneration(t *testing.T) {
+	if staleDisableCorrectInterval > time.Minute {
+		t.Fatalf("纠正周期 %v 必须 <= 1 分钟，否则旧代禁用后账号池会长时间为空",
+			staleDisableCorrectInterval)
+	}
+	if staleDisableCorrectFirstDelay > 15*time.Second {
+		t.Fatalf("首轮延迟 %v 必须 <= 15 秒，否则启动盲区内旧代可完成一次全量禁用",
+			staleDisableCorrectFirstDelay)
+	}
+	if staleDisableCorrectInterval >= watchdogIntervalDefault {
+		t.Fatalf("纠正周期 %v 必须显著小于旧代 watchdog 周期 %v",
+			staleDisableCorrectInterval, watchdogIntervalDefault)
 	}
 }
 

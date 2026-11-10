@@ -1,5 +1,28 @@
 # TraeWork Plugin Changelog
 
+## 0.5.53
+
+### Fix - 纠正周期 3 分钟压到 45 秒，消除「旧代禁完、新版还没到下一轮」的空窗
+
+- 0.5.52 的纠正循环实测完全有效：`05:17:47` 一次
+  `stale-disable sweep released 23 account(s)`，把
+  `stored_below=100 / current_below=10` 的号全部释放，
+  账号池从 `2/51` 回到 `23/51`。
+- 但 3 分钟周期不足以对抗旧代的 10 分钟节奏：`05:17:47` 释放后，
+  `05:20:52` 旧代一次 watchdog tick 又把整池禁回 **0/51**。
+  净效果是 `disabled: 69` 对 `re-enabled: 69` 的持续拉锯。
+- 修复：
+  - `staleDisableCorrectInterval` 从 3 分钟压到 **45 秒**——最坏暴露窗口
+    从 3 分钟降到 45 秒、平均 22 秒，账号池不再出现「整池消失」的可观测状态；
+  - `staleDisableCorrectFirstDelay` 从 45 秒压到 **10 秒**——原先的启动盲区里
+    旧代足够完成一次全量禁用；
+  - 新增**前置过滤**：`hostAuthListAll` 的结果里已带 `Disabled`，未禁用的账号
+    直接跳过，不再读物理文件。健康态下每轮开销压到「一次 `host.auth.list`
+    RPC」，45 秒高频因此是安全的——本循环只做本地读写，不打上游、不抢积分配额。
+- 回归：新增 `TestStaleDisableCorrectIntervalBeatsOldGeneration`，机械锁定
+  「周期 <= 1 分钟、首轮 <= 15 秒、且严格小于 `watchdogIntervalDefault`」，
+  任何把周期调回分钟级的改动都会立即失败。
+
 ## 0.5.52
 
 ### Fix - 旧世代 watchdog 无实例守卫：每 10 分钟按编译期常量 100 禁用健康号
