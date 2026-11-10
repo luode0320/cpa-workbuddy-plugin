@@ -1,5 +1,33 @@
 # TraeWork Plugin Changelog
 
+## 0.5.54
+
+### Fix - 纠正循环漏掉无标记孤儿：5 个余额充足的账号（含 remain=681）长期不可用
+
+- 根因：`correctStaleDisable` 的条件 2 要求盘上必须有 `low_credit_disable`
+  标记（`stale_disable_correct.go:105`），否则直接 return。
+  但宿主重建 auth 文档时会把 note 与**全部**标记一起抹掉
+  （`host.auth.save` 只保留白名单键），盘上只剩 `disabled:true`。
+  这类「无标记孤儿」在 `gradeCreditsForAuth` 里有兜底，
+  可那条路径只在「积分刷新恰好遍历到它」时才跑；纠正循环不覆盖就等于永不释放。
+- 生产实证（2026-11-11 06:16）：51 个账号里 28 个禁用，签名分布为
+  - 7 个 `low_credit_disable` + `below=10`（0.5.53 按正确阈值禁的，真耗尽）
+  - 10 个 `low_credit_disable` + `below=100`（旧世代写的，已被纠正循环覆盖）
+  - **11 个无任何标记的孤儿**，其中 **5 个余额充足却仍禁用**：
+    `remain = 46 / 65 / 79 / 681`，`1976299962238316` 是 remain=681 的活跃账号。
+- 修复：把判据拆成两型——
+  - **2a 有标记型**：仍要求 `stored_below > current`，阈值指纹作为旧世代证据；
+  - **2b 孤儿型**：没有阈值可依，改用「`manual` / `failover` / `exhausted`
+    三者皆无」本身作为无主证据，余额达线即释放。
+- 安全边界不变：`remain < current` 的孤儿（真耗尽）一律不动；
+  `manual` / `failover` / `exhausted` 仍然硬排除。
+- 回归：新增 `TestCorrectStaleDisableReleasesUnmarkedOrphan`
+  （无标记孤儿 + remain=681 必须释放）与
+  `TestCorrectStaleDisableKeepsZeroRemainOrphan`（remain=0 必须保持禁用）；
+  原 `TestCorrectStaleDisableRespectsOtherOwners` 移除「无本机制标记」这一条
+  ——那正是本次要修的缺陷行为。
+  哨兵验证：加回 `if !marked { return false }` 后前者立即 FAIL。
+
 ## 0.5.53
 
 ### Fix - 纠正周期 3 分钟压到 45 秒，消除「旧代禁完、新版还没到下一轮」的空窗

@@ -101,11 +101,28 @@ func correctStaleDisable(authIndex, authID string) bool {
 			return false
 		}
 	}
-	// 条件 2：必须是本机制禁的（否则无从判断阈值归属）。
-	if v, _ := doc[creditDisableKey].(bool); !v {
-		return false
+	// 条件 2：把两种「本机制该管」的禁用都收进来。
+	//
+	// 2a. 带 creditDisableKey 且盘上阈值高于当前线 —— 旧世代按自己编译期常量
+	//     （v0.5.41 = 100）写的，阈值指纹本身就是证据。
+	// 2b. 不带任何归属标记的孤儿 —— 宿主重建 auth 文档时把 note 与全部标记一起
+	//     抹掉（host.auth.save 只保留白名单键），盘上只剩 disabled:true。
+	//     这类号在 gradeCreditsForAuth 里有孤儿兜底，但那条路径只在「积分刷新
+	//     恰好遍历到它」时才跑；纠正循环若不覆盖，它们会一直停在禁用态。
+	//
+	// 2026-11-11 生产实证：11 个无标记孤儿里有 5 个余额充足
+	// （remain=46 / 65 / 79 / 681），却因本函数在第 2 条件就 return 而
+	// 长期不可用，其中 1976299962238316 是 remain=681 的活跃账号。
+	marked := false
+	if v, _ := doc[creditDisableKey].(bool); v {
+		marked = true
 	}
-	// 条件 3：盘上阈值必须明显高于当前生效线。
+	// 条件 3：阈值指纹。
+	//
+	// 2a 型（有标记）必须满足 stored > current，证明这条禁用不是本代写的；
+	// 2b 型（孤儿，无标记）没有阈值可依，改用「没有任何归属标记」本身作为
+	// 无主证据——manual / failover / exhausted 已在条件 5 排除，剩下的
+	// disabled:true 不可能由任何有主的机制产生。
 	stored := int64(0)
 	switch v := doc[creditDisableBelowKey].(type) {
 	case float64:
@@ -115,8 +132,10 @@ func correctStaleDisable(authIndex, authID string) bool {
 	case int:
 		stored = int64(v)
 	}
-	if !staleDisableBelowRatio(stored, current) {
-		return false
+	if marked {
+		if !staleDisableBelowRatio(stored, current) {
+			return false
+		}
 	}
 	// 条件 4：当前余额必须已经不低于生效线。
 	//

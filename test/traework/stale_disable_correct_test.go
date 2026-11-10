@@ -182,6 +182,61 @@ func TestCorrectStaleDisableFallsBackToSidecar(t *testing.T) {
 	}
 }
 
+// TestCorrectStaleDisableReleasesUnmarkedOrphan 锁定「无标记孤儿也必须被释放」。
+//
+// 生产实证（2026-11-11）：11 个无标记孤儿里有 5 个余额充足
+// （remain = 46 / 65 / 79 / 681），却因 correctStaleDisable 在
+// 「必须有 creditDisableKey」这一条上直接 return 而长期不可用，
+// 其中 1976299962238316 是 remain=681 的活跃账号。
+//
+// 孤儿没有归属标记，是因为宿主重建 auth 文档时把 note 与全部标记一起抹掉
+// （host.auth.save 只保留白名单键）。这类号的「无主」本身就是可释放证据。
+func TestCorrectStaleDisableReleasesUnmarkedOrphan(t *testing.T) {
+	resetFailover(t)
+	restoreBelow := setLowCreditDisableBelow(10)
+	defer restoreBelow()
+	restoreMin := setMinRoutableCredits(20)
+	defer restoreMin()
+
+	const authID = "acc-orphan-release"
+	state := fakeHostAuth(t, "idx-orphan-release", authID, map[string]any{
+		"disabled": true, // 无任何标记、无 below、无 note
+		"uid":      authID,
+	})
+	recordCreditSnapshot(authID, &traeCredits{TotalRemain: 681})
+
+	if !correctStaleDisable("idx-orphan-release", authID) {
+		t.Fatalf("无标记孤儿在余额充足时必须被释放；state=%v", *state)
+	}
+	if disabled, _ := (*state)["disabled"].(bool); disabled {
+		t.Fatal("释放后必须 disabled=false")
+	}
+}
+
+// TestCorrectStaleDisableKeepsZeroRemainOrphan 反向守卫：
+// 余额为 0 的孤儿是真耗尽，不得被释放。
+func TestCorrectStaleDisableKeepsZeroRemainOrphan(t *testing.T) {
+	resetFailover(t)
+	restoreBelow := setLowCreditDisableBelow(10)
+	defer restoreBelow()
+	restoreMin := setMinRoutableCredits(20)
+	defer restoreMin()
+
+	const authID = "acc-orphan-zero"
+	state := fakeHostAuth(t, "idx-orphan-zero", authID, map[string]any{
+		"disabled": true,
+		"uid":      authID,
+	})
+	recordCreditSnapshot(authID, &traeCredits{TotalRemain: 0})
+
+	if correctStaleDisable("idx-orphan-zero", authID) {
+		t.Fatalf("remain=0 的孤儿是真耗尽，不得释放；state=%v", *state)
+	}
+	if disabled, _ := (*state)["disabled"].(bool); !disabled {
+		t.Fatal("必须保持禁用")
+	}
+}
+
 // TestCorrectStaleDisableRespectsOtherOwners 反向守卫：
 // manual / failover / exhausted 三类归属一律不能被纠正循环抢走。
 func TestCorrectStaleDisableRespectsOtherOwners(t *testing.T) {
@@ -192,7 +247,6 @@ func TestCorrectStaleDisableRespectsOtherOwners(t *testing.T) {
 		{"手动停用", map[string]any{"disabled": true, creditDisableKey: true, creditDisableBelowKey: float64(100), "manual_disable": true}},
 		{"故障停用", map[string]any{"disabled": true, creditDisableKey: true, creditDisableBelowKey: float64(100), "failover_disable": true}},
 		{"额度耗尽", map[string]any{"disabled": true, creditDisableKey: true, creditDisableBelowKey: float64(100), "exhausted_disable": true}},
-		{"无本机制标记", map[string]any{"disabled": true, creditDisableBelowKey: float64(100)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
