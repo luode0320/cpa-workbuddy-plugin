@@ -26,12 +26,17 @@
     盘上阈值 > 生效线、当前余额 >= 生效线、无 `manual/failover/exhausted`；
   - 独立 3 分钟循环（`staleDisableCorrectInterval`），显著小于旧代 10 分钟
     周期，把「被误禁」的暴露窗口从 10 分钟压到 3 分钟以内；
-  - 带实例守卫，避免逐代叠加扫描压力。
-- 回归：`test/traework/stale_disable_correct_test.go` 四个用例 ——
+  - 带实例守卫，避免逐代叠加扫描压力；
+  - 余额读取**先内存后回落 sidecar**（`traework-credits.json`）：
+    `accountCache` 是每个 `.so` 实例独立的内存副本，旧代写入的禁用标记在新代
+    缓存里可能没有条目，只读内存会让纠正循环对「刚被旧代禁掉、新代还没刷新过」
+    的账号直接放弃——而那恰是最需要纠正的时刻。
+- 回归：`test/traework/stale_disable_correct_test.go` 五个用例 ——
   阈值指纹方向、旧代禁用必须释放、本代自有禁用不得释放（含**余额充足**的精确
   哨兵，确保唯一阻止理由是阈值判据）、manual/failover/exhausted 一律不碰。
   哨兵验证：放宽阈值判据后 `TestCorrectStaleDisableKeepsOwnDisableWithHighRemain`
-  立即 FAIL。
+  立即 FAIL；整体短路函数后 `TestCorrectStaleDisableReleasesOldGeneration` 与
+  `TestCorrectStaleDisableFallsBackToSidecar` 双双 FAIL。
 
 ## 0.5.51
 

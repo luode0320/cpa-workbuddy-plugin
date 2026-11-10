@@ -112,13 +112,33 @@ func correctStaleDisable(authIndex, authID string) bool {
 	if !staleDisableBelowRatio(stored, current) {
 		return false
 	}
-	// 条件 4：当前余额必须已经不低于生效线。读缓存快照，不在这里打上游。
-	cr, ok := cachedCredits(authID)
-	if !ok || cr == nil {
+	// 条件 4：当前余额必须已经不低于生效线。
+	//
+	// 先读进程内缓存，再回落 sidecar（traework-credits.json）。回落是必须的：
+	// cache.go 的 accountCache 是**每个 .so 实例独立的内存副本**，旧代写入的
+	// 禁用标记在新代的缓存里可能压根没有对应条目——只读内存会让纠正循环对
+	// 「刚被旧代禁掉、新代还没刷新过」的账号直接放弃，而那正是需要纠正的时刻。
+	// sidecar 是跨实例共享的同一份磁盘文件，且每轮刷新结束都会整份重写。
+	var remain int64
+	var cr *traeCredits
+	if cached, ok := cachedCredits(authID); ok && cached != nil {
+		remain = cached.TotalRemain
+		cr = cached
+	} else if entry, ok := creditSnapshotGet(authID); ok {
+		remain = entry.Remain
+		if entry.Credits != nil {
+			cr = entry.Credits
+		}
+	} else {
+		// 两处都没数据：无从判断余额，宁可不动作也不误放。
 		return false
 	}
-	if cr.TotalRemain < current {
+	if remain < current {
 		return false
+	}
+	if cr == nil {
+		// 解禁路径需要积分对象来刷新 note；用已知余量构造一个等价快照。
+		cr = &traeCredits{TotalRemain: remain}
 	}
 	// 全部成立：按当前生效线重新判档后用正常解禁路径释放。
 	if err := reenableForLowCredits(authIndex, authID, nil, cr); err != nil {

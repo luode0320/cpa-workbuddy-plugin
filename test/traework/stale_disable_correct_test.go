@@ -126,6 +126,40 @@ func TestCorrectStaleDisableKeepsOwnDisableWithHighRemain(t *testing.T) {
 	}
 }
 
+// TestCorrectStaleDisableFallsBackToSidecar 锁定积分读不到内存缓存时的 sidecar 回落。
+//
+// 为什么必须有这条回落：cache.go 的 accountCache 是每个 .so 实例独立的内存副本，
+// 旧代写入的禁用标记在新代的缓存里可能没有对应条目。只读内存会让纠正循环对
+// 「刚被旧代禁掉、新代还没刷新过」的账号直接放弃——而那恰恰是最需要纠正的时刻。
+// sidecar（traework-credits.json 的内存镜像）是跨实例共享的来源。
+func TestCorrectStaleDisableFallsBackToSidecar(t *testing.T) {
+	resetFailover(t)
+	restoreBelow := setLowCreditDisableBelow(10)
+	defer restoreBelow()
+	restoreMin := setMinRoutableCredits(20)
+	defer restoreMin()
+
+	const authID = "acc-sidecar"
+	state := fakeHostAuth(t, "idx-sidecar", authID, map[string]any{
+		"disabled":            true,
+		creditDisableKey:      true,
+		creditDisableBelowKey: float64(100), // 旧代写的阈值
+		"uid":                 authID,
+	})
+	// 只写 sidecar 快照，模拟「新代进程内 accountCache 尚无该账号」的形态。
+	recordCreditSnapshot(authID, &traeCredits{TotalRemain: 55})
+	if _, ok := creditSnapshotGet(authID); !ok {
+		t.Fatal("前置条件不成立：sidecar 必须有快照")
+	}
+
+	if !correctStaleDisable("idx-sidecar", authID) {
+		t.Fatalf("必须通过 sidecar 回落读到余额并释放；state=%v", *state)
+	}
+	if disabled, _ := (*state)["disabled"].(bool); disabled {
+		t.Fatal("纠正后必须 disabled=false")
+	}
+}
+
 // TestCorrectStaleDisableRespectsOtherOwners 反向守卫：
 // manual / failover / exhausted 三类归属一律不能被纠正循环抢走。
 func TestCorrectStaleDisableRespectsOtherOwners(t *testing.T) {
