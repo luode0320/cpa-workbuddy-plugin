@@ -1,5 +1,25 @@
 # TraeWork Plugin Changelog
 
+## 0.5.40
+
+### Perf - 连接池容量按账号池规模扩容，消除高并发下的反复建连开销
+
+- 背景: 2026-11-10 用户明确「首字延迟高是目前最主要要注意的问题」。
+- 实证:
+  - 生产 traework 有 **28 个可用账号**，每个账号在同一上游 host 上独立承流；
+  - 同分钟并发与慢请求占比呈正相关：并发 **1-5 → 9.9%**、**6-15 → 10.0%**、
+    **16-30 → 26.5%**、30+ → 18.8%；
+  - 原配置 `MaxIdleConnsPerHost=5`、`MaxIdleConns=20`，28 个并发请求会频繁
+    触发新建连接（TCP 握手 + TLS 握手各一次），这部分开销直接叠加到 TTFT。
+- 修复: `MaxIdleConns` **20 → 200**、`MaxIdleConnsPerHost` **5 → 64**，
+  按账号池规模（28）留足余量，让复用连接覆盖全部并发。shared 与 stream
+  两个 client 同步调整。
+- 预期: 高并发窗口（16-30）的慢请求占比从 26.5% 回落，TTFT p90 改善。
+- 验证: `cgo-shim-build.py traework` build / vet / test 全绿；新增
+  `conn_pool_test.go` 断言 `MaxIdleConnsPerHost >= 28`、`MaxIdleConns >= 28`；
+  变异改回 5/20 后该测试失败。
+- 涉及文件: `host_bridge.go`、`conn_pool_test.go`（新增）。
+
 ## 0.5.39
 
 ### Chore - 轮换诊断日志改为每账号每 30 秒一条，暴露真实 served 值
