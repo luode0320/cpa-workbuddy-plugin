@@ -29,6 +29,13 @@ var guardedLoops = []struct {
 	{"authguard.go", "auth flag guard loop"},
 	{"failover_disable.go", "failover reconcile loop"},
 	{"failover_disable.go", "failover probe loop"},
+	// refresh runner 是事件驱动的 worker（init 里 go globalRefresh.run()），
+	// 不是定时循环，历史上被两处覆盖清单同时漏掉。它却是积分分级的唯一上游
+	// （doFetchOne → gradeCreditsForAuth），漏接的后果比任何定时循环都严重：
+	// 旧世代用自己编译期的禁用线写盘禁用。2026-11-11 生产实证：进程内 8 代
+	// .so 并存，v0.5.41（禁用线 100）在 04:16:18 一次禁掉 12 个 remain 19~92
+	// 的健康号。
+	{"refresh_runner.go", "refresh runner"},
 }
 
 // TestEveryLoopHasInstanceGuard 静态锁定每个常驻循环都调用了 retireIfSuperseded。
@@ -51,6 +58,40 @@ func TestEveryLoopHasInstanceGuard(t *testing.T) {
 	}
 }
 
+// TestDoFetchOneRejectsSupersededInstance 锁定积分分级入口的实例守卫。
+//
+// doFetchOne 是 gradeCreditsForAuth 的唯一上游。旧世代实例的 refresh worker
+// 即使主循环没被拦住，只要 doFetchOne 早退，就不会用旧编译期禁用线写盘禁用。
+// 这是比「主循环闸门」更硬的一道防线：它挡在真正产生副作用的那一行之前。
+//
+// [参数] t：测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-11；改动原因：新增，锁定跨代写盘禁用的最后防线。
+func TestDoFetchOneRejectsSupersededInstance(t *testing.T) {
+	src, err := os.ReadFile(readPluginSource("refresh_runner.go"))
+	if err != nil {
+		t.Skipf("无法定位 refresh_runner.go（shim 环境）: %v", err)
+	}
+	body := string(src)
+	idx := strings.Index(body, "func doFetchOne(")
+	if idx < 0 {
+		t.Fatal("refresh_runner.go 必须保留 doFetchOne")
+	}
+	// 只检查函数体开头到 gradeCreditsForAuth 之间的区间。
+	rest := body[idx:]
+	if end := strings.Index(rest, "\nfunc "); end > 0 {
+		rest = rest[:end]
+	}
+	if !strings.Contains(rest, "pluginInstanceSuperseded()") {
+		t.Fatal("doFetchOne 必须调用 pluginInstanceSuperseded()：否则旧世代实例仍会用自己编译期的禁用线写盘禁用账号")
+	}
+	guardAt := strings.Index(rest, "pluginInstanceSuperseded()")
+	gradeAt := strings.Index(rest, "gradeCreditsForAuth(")
+	if gradeAt >= 0 && guardAt > gradeAt {
+		t.Fatal("实例守卫必须在 gradeCreditsForAuth 之前执行")
+	}
+}
+
 // TestInstanceGuardCoversEveryGoroutineLoop 反向覆盖：init 里起的每个 go xxxLoop()
 // 都必须出现在 guardedLoops 里。新增循环却不加守卫会在这一步失败。
 // [参数] t：测试上下文。
@@ -60,6 +101,9 @@ func TestInstanceGuardCoversEveryGoroutineLoop(t *testing.T) {
 	files := []string{
 		"watchdog.go", "slow_account.go", "keepalive.go", "checkin.go",
 		"checkin_retry.go", "authguard.go", "failover_disable.go",
+		// 事件驱动 worker 同样必须被覆盖：refresh runner 的 go globalRefresh.run()
+		// 在 init 里启动，与定时循环一样会跨代残留。
+		"refresh_runner.go",
 	}
 	guarded := make(map[string]struct{}, len(guardedLoops))
 	for _, tc := range guardedLoops {

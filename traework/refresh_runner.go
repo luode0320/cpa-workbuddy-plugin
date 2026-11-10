@@ -229,6 +229,11 @@ func (r *refreshRunner) drainBatch(gen int) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
+			// 实例守卫（防线 2）：派发前再判一次，让已被取代的世代尽快停止
+			// 派发新任务，而不是靠 doFetchOne 里逐次早退。
+			if retireIfSuperseded("refresh runner") {
+				return
+			}
 			err := r.fetchFn(authIndex, authID)
 
 			r.mu.Lock()
@@ -306,6 +311,17 @@ func shouldActivePingForCredits(cr *traeCredits) bool {
 // credits source (accountCredits → cacheCredits). It reports an error only
 // when the account's credits could not be read — the panel's core datum.
 func doFetchOne(authIndex, authID string) error {
+	// 实例守卫（防线 1）：刷新队列是事件驱动的，不经过任何常驻循环闸门，
+	// 因此热重载后旧世代的 worker 仍会执行本函数，并用**它自己编译期的**
+	// 禁用线常量调用 gradeCreditsForAuth 写盘禁用。
+	//
+	// 2026-11-11 生产实证：进程内同时 mmap 着 v0.5.41/42/44/45/46/47/48/50
+	// 共 8 代 .so，v0.5.41 的编译期禁用线是 100，于是 04:16:18 一次性把
+	// remain=19/37/65/66/67/69/71/75/81/85/87/91/92 的 12 个健康号全禁掉，
+	// 可用池从 10 掉到 8。必须在这里拦住：这是积分分级的唯一上游。
+	if pluginInstanceSuperseded() {
+		return nil
+	}
 	sa, err := hostAuthGet(authIndex)
 	if err != nil {
 		return err

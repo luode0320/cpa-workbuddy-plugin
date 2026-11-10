@@ -1,5 +1,34 @@
 # TraeWork Plugin Changelog
 
+## 0.5.51
+
+### Fix - refresh runner 漏接实例守卫：旧世代按编译期禁用线写盘禁用健康号
+
+- **本轮最关键的发现**：生产进程内同时 mmap 着 **8 代** `traework-provider`
+  `.so`（`v0.5.41 / 42 / 44 / 45 / 46 / 47 / 48 / 50`）。`main.go:141` 的
+  `cliproxyPluginShutdown` 是有意空实现，每代实例的 goroutine 都活到进程结束。
+- 缺口：`refresh_runner.go` 的 `init() { go globalRefresh.run() }` 是**事件驱动的
+  常驻 worker**，但两处覆盖清单（`guardedLoops` 与
+  `TestInstanceGuardCoversEveryGoroutineLoop` 的 files 列表）**同时漏掉了它**。
+  而它正是 `gradeCreditsForAuth` 的唯一上游（`doFetchOne` → 分级）。
+- 后果（2026-11-11 生产实证）：`v0.5.41` 的编译期禁用线是 **100**，
+  于是 `04:16:18` 一次性把 `remain = 19/37/65/66/67/69/71/75/81/85/87/91/92`
+  的 **12 个健康号**全部写盘禁用，可用池从 10 掉到 **8**。
+  日志顺序可证是插件自己写的：`low-credit disabled` 先于宿主
+  `auth file changed (CREATE)`。配置侧已排除——`config.yaml` 与
+  `config_store` 里**都没有** `low_credit_disable_below` / `min_routable_credits`。
+- 修复（双重防线）：
+  - **防线 1**：`doFetchOne` 入口先判 `pluginInstanceSuperseded()`，已被取代
+    就返回 —— 挡在真正产生副作用的那一行之前，是比主循环闸门更硬的一道；
+  - **防线 2**：`drainBatch` 派发任务前调 `retireIfSuperseded("refresh runner")`，
+    让旧世代尽快停止派发新任务，而不是靠 `doFetchOne` 逐次早退。
+- 回归：`guardedLoops` 补入 `{"refresh_runner.go", "refresh runner"}`，
+  `TestInstanceGuardCoversEveryGoroutineLoop` 的 files 列表补入
+  `refresh_runner.go`；新增 `TestDoFetchOneRejectsSupersededInstance`
+  锁定「守卫必须存在且早于 gradeCreditsForAuth」。
+  哨兵验证：同时移除两处后 `TestEveryLoopHasInstanceGuard` 与
+  `TestDoFetchOneRejectsSupersededInstance` 均 FAIL。
+
 ## 0.5.50
 
 ### Fix - 熔断窗口指数退避：持续不可用的模型不再每分钟被重试一轮
