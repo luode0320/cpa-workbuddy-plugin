@@ -35,6 +35,15 @@
 ## 活动会话进展摘要
 
 
+- 会话（2026-11-10 21:20-21:50，接续上条）：**决定性发现——生产流量走宿主桥，插件连接池不参与**：
+  - **核心洞察**：0.5.40 把连接池扩到 `MaxIdleConns=200 / PerHost=64` 后 TTFT 未见改善。追查调用链发现生产流式请求走 `hostHTTPDoStream` → **宿主 `host.stream.do` RPC**，完全绕过插件的 `streamHTTPClient`。近 15 分钟日志中 `stream bridge / direct fallback / bridge unavailable` 降级关键字 **0 次**，确认生产 **100% 走宿主桥**。
+  - **结论**：插件的连接池配置对生产流量**无效**。连接池在宿主进程内，插件无权配置；宿主 `config.yaml` 也无相关可调项。这解释了 0.5.40 扩容后无改善。
+  - **宿主桥固有开销**：`bridgedRead` 每读一个分片都要分配 channel + 启动 goroutine + 创建 timer + 一次 cgo RPC。2946 分片的流 = 2946 次这套开销。**但这是流式读取阶段（首字之后），不直接影响 TTFT**。
+  - **新增对照开关（0.5.41）**：`stream_direct_forced`（默认 false）—— true 时走插件直连，用插件自己的连接池。运维可做 A/B 对照定位延迟来源。`stream_direct_test.go` 锁定默认值必须为 false（防止误改生产路径）。
+  - **累计排除 12 类假设**（新增：宿主桥开销）。唯一剩下的解释是**上游 Trae 的 prefill 时间**，三层证据：① 时段分层（深夜 1.6% vs 晚间 18.1%，workbuddy 全时段 0%）② 同账号 7 秒内 TTFT 跳变 44.8 倍 ③ prefill 占 59.3%。
+  - **部署验收**：0.5.41 `hot reloaded 0.5.40→0.5.41`（21:42:32），sha256 `712fd0c0…`。
+  - **文档**：诊断文档扩至 20 节（42,447 字节）。
+
 - 会话（2026-11-10 20:43-21:20，接续上条）：**用户明确「首字延迟高是主要问题」→ 验证连接池与 DNS 两个新假设**：
   - **假设 A：连接池容量不足**。实证（近 6h，228 条）：同分钟并发 **1-5 → 慢20s% 9.9%**、6-15 → 10.0%、**16-30 → 26.5%**、30+ → 18.8%，呈正相关。原配置 `MaxIdleConns=20 / MaxIdleConnsPerHost=5`，生产 28 个账号并发时会频繁新建连接（TCP+TLS 握手各一次）。
   - **修复（0.5.40）**：`MaxIdleConns` 20→**200**、`MaxIdleConnsPerHost` 5→**64**（shared 与 stream 两个 client 同步）。新增 `conn_pool_test.go` 断言 ≥28；变异改回 5/20 后测试失败。
@@ -45,6 +54,16 @@
   - **插件侧可干预点已全部落地并验证**：首字闸门 1.2s（实测占 TTFT 2.3%）、伪完成阈值（失败率 26.5%→0%）、done 终止识别（1m26s→4.7s）、内容审核终局、积分耗尽不探活、轮换 serve 5 分钟（已触发）、连接池扩容。
   - **部署验收**：0.5.40 `hot reloaded 0.5.39→0.5.40`（21:13:31），sha256 `b08f55e6…`。
   - **文档**：诊断文档扩至 19 节（39,215 字节），含 11 类假设排除表与连接池/DNS 实证数据。
+
+- 会话（2026-11-10 20:36-21:30）：**DSH 客户端 `@` 文件引用段触发 11128 根因定位与修复（workbuddy 0.21.23）**：
+  - **问题**：DSH（DeepSeek-Harness）客户端接入 CN 账号池后每轮第一条消息稳定 `400 code 11128`，既有品牌词改写覆盖不到。
+  - **真机消融（真实 CN 账号直连上游，唯一变量是消息体）**：system 含 `FILE_REFERENCE_PROMPT` → 400；**assistant 含同一段 → 400**；**user 含同一段 → 200**；仅把锚点 `Tokens prefixed with @` 换成 `(at)` → 200（整段全换等效）；拆词 `with→by` → 200；身份句连字符化 → 200、前置一行文字 → 200（位置锚定）。
+  - **社区结论校正**：讨论帖 v0.1.5 的 `You are a coding agent powered by ...` 与 Web GUI 句式，在当前上游复测（开头/中段/尾部/单句）**全部 200**，故不引入改写。
+  - **修复**：`keyword_neutralize.go` 新增 `dshFileReferenceAnchorRe` 与 `scannedFingerprintRoles`（system/developer/assistant），`neutralizeForRole` 按角色分派；user/tool 一字不动；品牌词与 Claude Code 模板规则维持全角色（不回退）。新增开关 `dsh_fingerprint_neutralize`（默认开）。
+  - **验证**：cgo-shim build/vet/test 全绿；新增 `dsh_fingerprint_test.go` 8 组用例；CI Release success（5 平台，缺 darwin_arm64）；生产 `install` 热重载（`superseded by newer instance`），落盘 sha256 `af527430…` 与 zip 一致。
+  - **生产行为验收（决定性）**：同样的 body，直连上游 400/11128，经生产 `/v1/chat/completions` **200**（system 含 @ 段、assistant 含 @ 段、零宽身份句三组全过），验收窗口 11128 计数 0。
+  - **发布踩坑复现**：registry 提交后宿主侧 CDN 边缘滞后，连续 2 次 `direct plugin version "0.21.23" not found`，第 3 次（约 3 分钟）成功 —— 与 0.5.31 的 6 次重试同源，勿误判为未发布。
+  - **文档**：`doc/4-bugs/2026-11-10_213000_DSH客户端@文件引用段触发11128根因与修复.md`。
 
 - 会话（2026-11-10 01:00-01:50，接续上条）：**轮换失效最终定位（三层根因）与修复（0.5.38/0.5.39）**：
   - **问题演进**：0.5.36 serve 60→10 分钟仍无让位；0.5.37 加 `rotation approaching`（serve 80% 打点）**一条都没出现**；0.5.38 serve 10→5 分钟仍无日志；**0.5.39 把诊断日志改为每 30 秒输出 `served` 真值后定位成功**。
