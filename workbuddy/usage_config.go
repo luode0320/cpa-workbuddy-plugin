@@ -100,6 +100,10 @@ func configure(raw []byte) {
 	nextSlowMinTTFTMs := defaultSlowMinTTFTMs
 	nextSlowMinPoolSize := defaultSlowMinPoolSize
 
+	// dsh_fingerprint_neutralize: DSH 客户端指纹中和。默认开启；关闭后只保留
+	// 品牌词改写，用于上游撤销该风控规则后的快速回退（见 keyword_neutralize.go）。
+	nextDSHFingerprintNeutralize := dshFingerprintNeutralizeOn()
+
 	// retry_on_4xx: per-request account-failover budget. Applied ONLY when
 	// the key is present in config_yaml: a valid value is clamped to
 	// [0, 10] and applied; an unparseable value resets to the default 10.
@@ -226,6 +230,11 @@ func configure(raw []byte) {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_account_enabled:"))
 					v = strings.Trim(v, "\"'")
 					nextSlowAccountEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "dsh_fingerprint_neutralize:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "dsh_fingerprint_neutralize:"))
+					v = strings.Trim(v, "\"'")
+					nextDSHFingerprintNeutralize = v == "true" || v == "1" || v == "yes" || v == "on"
 				}
 				if strings.HasPrefix(line, "slow_ttft_ratio_x10:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "slow_ttft_ratio_x10:"))
@@ -375,6 +384,14 @@ func configure(raw []byte) {
 	slowMinTTFTMs = nextSlowMinTTFTMs
 	slowMinPoolSize = nextSlowMinPoolSize
 	slowConfigMu.Unlock()
+
+	// DSH 指纹中和开关写回。只在真正变化时留痕：这条日志是排查
+	// 「规则是否被配置误关」的第一现场，但重载频繁，不能每次都打。
+	prevDSHNeutralize := dshFingerprintNeutralizeOn()
+	setDSHFingerprintNeutralize(nextDSHFingerprintNeutralize)
+	if prevDSHNeutralize != nextDSHFingerprintNeutralize {
+		log.Printf("[workbuddy] dsh fingerprint neutralize: enabled=%v", nextDSHFingerprintNeutralize)
+	}
 
 	// 配置变更留痕：慢速判定参数直接决定「哪些号被判慢」，线上误判的第一
 	// 排查动作就是核对参数；没有这条日志时只能靠外部接口反推，且无法知道

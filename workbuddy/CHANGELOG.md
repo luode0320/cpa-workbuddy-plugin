@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.21.23
+
+### Fix - DSH 客户端 @ 文件引用段触发 11128，账号模式整轮不可用
+
+- 背景: DeepSeek-Harness（DSH）客户端接入本插件的 CN 账号池后，每轮第一条消息稳定
+  返回 `400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}`。
+  既有品牌词改写只处理 `DeepSeek-Harness` 词形，无法覆盖 DSH 内核注入的
+  `@deepseek-ai/dsh-file-reference` 说明段（`Tokens prefixed with @ are paths ...`）。
+- 一手证据（2026-11-10 真实 CN 账号直连上游消融，同一 token/请求头，唯一变量是消息体）：
+  system 含该段 → 400/11128；assistant 含该段 → 400/11128；**user 含该段 → 200**；
+  仅把锚点 `Tokens prefixed with @` 换成 `(at)` → 200；整段 @ 全换 → 200；
+  `You are a coding agent powered by ...` → 200；Web GUI 句式 → 200（后两者当前上游
+  不拦，故不引入改写，避免无证据地改变模型自我认知）；身份句连字符化 → 200、
+  挪到 system 中段 → 200（确认位置锚定）。
+- 修复: `keyword_neutralize.go` 新增 DSH 文件引用段锚点规则，按角色分派 ——
+  `system` / `developer` / `assistant` 三类（上游实测扫描面）执行锚点改写，
+  `user` / `tool` 一字不动；品牌词与 Claude Code 模板规则保持对所有角色生效，
+  不回退既有能力。
+- 可观测/回退: 新增配置项 `dsh_fingerprint_neutralize`（默认开启），关闭后行为回到
+  0.21.22；配置变化时打印 `dsh fingerprint neutralize: enabled=`，便于排查误关。
+- 验证: `cgo-shim-build.py workbuddy` build / vet / test 全绿；新增
+  `dsh_fingerprint_test.go` 八组用例（锚点最小介入与尾部保留、幂等、大小写与空白容错、
+  裸 @/邮箱/装饰器/here-string 不误伤、角色边界、品牌规则跨角色不回退、开关回退、
+  端到端 system+assistant 改而 user 不改、多模态 text part）；变异（函数直返原串）
+  等价于开关关闭用例，已被 `TestNeutralizeForRole_SwitchOff` 捕获。
+- 涉及文件: `keyword_neutralize.go`、`payload.go`、`usage_config.go`、`main.go`、
+  `dsh_fingerprint_test.go`（新增）。
+
 ## 0.21.22
 
 ### Fix - 账号级永久封禁（11140）不再进入探活候选

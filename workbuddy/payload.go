@@ -369,10 +369,15 @@ func ensureSystemMessage(payload []byte, sa *storedAuth) []byte {
 // rewriteContentField sanitizes blocked templates in one message's content,
 // handling both plain-string and OpenAI multimodal (array of parts) shapes.
 // Returns true if the message was modified.
+//
+// 改写按消息角色分派（见 neutralizeForRole）：品牌词规则对所有角色生效，
+// DSH 文件引用段指纹只作用于 system / developer / assistant —— 上游实测只扫
+// 这三类，改 user / tool 只会破坏用户自己的内容。
 func rewriteContentField(msg map[string]any) bool {
+	role, _ := msg["role"].(string)
 	switch c := msg["content"].(type) {
 	case string:
-		if r := sanitizeBlockedTemplates(c); r != c {
+		if r := neutralizeForRole(c, role); r != c {
 			msg["content"] = r
 			return true
 		}
@@ -384,7 +389,7 @@ func rewriteContentField(msg map[string]any) bool {
 				continue
 			}
 			if t, ok := part["text"].(string); ok {
-				if r := sanitizeBlockedTemplates(t); r != t {
+				if r := neutralizeForRole(t, role); r != t {
 					part["text"] = r
 					modified = true
 				}
