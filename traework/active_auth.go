@@ -62,15 +62,25 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 		byID[c.ID] = c
 	}
 
+	// 面板选择只作为「平级优先」，不再是无条件直通。
+	//
+	// 原实现在这里直接 return cur，下面按在跑请求数平摊的 pickLeastLoaded 永远
+	// 走不到，等于面板粘性盖过了负载均衡：只要面板指着某个号，并发就一直堆在它
+	// 身上。上游 Trae 每个账号并行槽位默认只有 2，堆积部分在账号侧排队，实测把
+	// 首字延迟从 4596ms（并发 1）推到 7795ms（并发 15+）。改成把 cur 排在候选
+	// 首位：负载与其它可用号持平时照样选它（面板选择仍然生效），一旦它堆得更
+	// 多就让位给更空闲的号。
 	cur := getActiveAuthID()
+	var ready []string
 	if cur != "" {
 		if c, ok := byID[cur]; ok && !c.Disabled && !c.Exhausted && accountRoutable(cur) {
-			return cur
+			ready = append(ready, cur)
 		}
 	}
-
-	var ready []string
 	for _, c := range candidates {
+		if c.ID == cur {
+			continue
+		}
 		if !c.Disabled && !c.Exhausted && accountRoutable(c.ID) {
 			ready = append(ready, c.ID)
 		}

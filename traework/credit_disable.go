@@ -13,7 +13,9 @@
 // 再加探活，一次上游抖动就会让本可恢复的号继续被挡在路由外，而积分回升这个
 // 事实已经足以支撑「重新给它排队」——它仍然是排序靠后的保活档。
 //
-// 默认禁用线为 0（关闭）：未配置时本文件整体不动作，行为与 0.3.0 完全一致。
+// 默认禁用线为 10：只停用「余量已不足以承载一次请求」的号，禁用线低于保活线
+// （min_routable_credits，默认 20），从而保留「正常 / 保活降级 / 停用」三档完整语义。
+// 把禁用线设 0 关闭本机制时，只停止新增禁用；本机制历史禁的号仍会在积分刷新时解禁。
 //
 // 最近修改时间：2026-10-25；改动原因：新增，积分三档分级中的硬禁用落点。
 package main
@@ -68,11 +70,6 @@ func gradeCreditsForAuth(authIndex, authID string, sa *traeAuth, cr *traeCredits
 	disableBelow := loadedLowCreditDisableBelow()
 	tier := creditTierFor(cr.TotalRemain, disableBelow, loadedMinRoutableCredits())
 
-	// 1. 禁用线关闭时，本机制整体不动作（0 = kill switch，与 0.3.0 一致）。
-	if disableBelow <= 0 {
-		return tier
-	}
-
 	phys, errPhys := failoverGetPhysicalFn(strings.TrimSpace(authIndex))
 	if errPhys != nil || phys == nil || len(phys.JSON) == 0 {
 		// 读不到物理文档时只回档位、不写盘：没有真相就无从判断该不该动它。
@@ -83,8 +80,12 @@ func gradeCreditsForAuth(authIndex, authID string, sa *traeAuth, cr *traeCredits
 	failover := parseFailoverAuthDoc(phys.JSON).failoverDisable
 	ours := lowCreditDisableFromAuthJSON(phys.JSON)
 
-	// 2. 低于禁用线：仅在无人认领时写盘。
-	if tier == creditTierDisabled {
+	// 2. 低于禁用线且线处于开启状态：仅在无人认领时写盘。
+	//
+	// disableBelow <= 0 是 kill switch（关闭本机制），此时只跳过「新增禁用」，
+	// 绝不能连解禁一起跳过：否则关掉开关后，历史被本机制禁掉的账号再也不会自动
+	// 解禁，开关变成单向阀，账号永久留在池外。
+	if disableBelow > 0 && tier == creditTierDisabled {
 		if disabled {
 			// 已被禁用：谁的禁用谁负责。manual / failover / exhausted 的号不归本机制管。
 			return tier
@@ -95,7 +96,7 @@ func gradeCreditsForAuth(authIndex, authID string, sa *traeAuth, cr *traeCredits
 		return tier
 	}
 
-	// 3. 积分回到禁用线以上：只有本机制禁的号才考虑解禁。
+	// 3. 积分回到禁用线以上（或禁用线已关闭）：只有本机制禁的号才考虑解禁。
 	if !disabled || !ours || manual || failover {
 		return tier
 	}

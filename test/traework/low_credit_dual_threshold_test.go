@@ -45,7 +45,7 @@ func TestCreditTierFor_Boundaries(t *testing.T) {
 // TestLowCreditDisableBelowZeroKeepsLegacyBehavior 锁定 kill switch：
 //
 // 显式配置 0 时，remain=50 的账号必须仍然可路由、可被调度选中，且不得被写盘
-// 禁用——行为与 0.3.0 完全一致。默认值已改为 100，所以这里必须显式设为 0，
+// 禁用——行为与 0.3.0 完全一致。默认值是 10（开启），所以这里必须显式设为 0，
 // 不能再用 defaultLowCreditDisableBelow。
 func TestLowCreditDisableBelowZeroKeepsLegacyBehavior(t *testing.T) {
 	resetActiveAuth(t)
@@ -89,43 +89,103 @@ func TestLowCreditDisableBelowZeroKeepsLegacyBehavior(t *testing.T) {
 	}
 }
 
-// TestLowCreditDisableDefaultIs100 锁定 2026-11-09 的默认值裁定：
-// 99 停用、100 正常，且默认配置下真实走完「写盘停用 → 余额回升解禁」闭环。
-func TestLowCreditDisableDefaultIs100(t *testing.T) {
-	if defaultLowCreditDisableBelow != 100 {
-		t.Fatalf("禁用线默认值 = %d, want 100", defaultLowCreditDisableBelow)
+// TestLowCreditDisableDefaultIs10 锁定 2026-11-10 的默认值裁定：
+// 9 停用、10 转保活降级、未知余量不降级，且默认配置下真实走完
+// 「写盘停用 → 余额回升解禁」闭环。
+//
+// 默认值从 100 降回 10 的依据是生产取证：Trae 单账号总积分 2800 点，正常消耗后
+// 余量长期落在 20-99 区间，100 点的线把健康账号逐个写盘停用，41 个账号的池子被
+// 压到 1 个，剩下的还是 remain=0 的耗尽号。禁用线必须低于保活线（20），三档分级
+// 才有「正常 / 保活降级 / 停用」的完整语义。
+func TestLowCreditDisableDefaultIs10(t *testing.T) {
+	if defaultLowCreditDisableBelow != 10 {
+		t.Fatalf("禁用线默认值 = %d, want 10", defaultLowCreditDisableBelow)
 	}
-	// 边界：99 判停用、100 判正常、未知余量不降级。
-	if got := creditTierFor(99, defaultLowCreditDisableBelow, defaultMinRoutableCredits); got != creditTierDisabled {
-		t.Fatalf("remain=99 应判停用，got %s", got)
+	if defaultLowCreditDisableBelow >= defaultMinRoutableCredits {
+		t.Fatalf("禁用线 %d 必须低于保活线 %d，否则保活档不会出现",
+			defaultLowCreditDisableBelow, defaultMinRoutableCredits)
 	}
-	if got := creditTierFor(100, defaultLowCreditDisableBelow, defaultMinRoutableCredits); got != creditTierNormal {
-		t.Fatalf("remain=100 应判正常，got %s", got)
+	// 边界：9 判停用、10 落保活档、30 正常、未知余量不降级。
+	if got := creditTierFor(9, defaultLowCreditDisableBelow, defaultMinRoutableCredits); got != creditTierDisabled {
+		t.Fatalf("remain=9 应判停用，got %s", got)
+	}
+	if got := creditTierFor(10, defaultLowCreditDisableBelow, defaultMinRoutableCredits); got != creditTierPreserve {
+		t.Fatalf("remain=10 应判保活降级，got %s", got)
+	}
+	if got := creditTierFor(30, defaultLowCreditDisableBelow, defaultMinRoutableCredits); got != creditTierNormal {
+		t.Fatalf("remain=30 应判正常，got %s", got)
 	}
 	if got := creditTierFor(-1, defaultLowCreditDisableBelow, defaultMinRoutableCredits); got != creditTierNormal {
 		t.Fatalf("未知余量不得降级，got %s", got)
 	}
 
-	// 真实链路：默认配置下 99 必须写盘停用，回升到 100 必须自动解禁。
+	// 真实链路：默认配置下 9 必须写盘停用，回升到 10 必须自动解禁。
 	resetFailover(t)
 	h := newFailoverFakeHost(t)
 	h.addAccount("tier-default", "idx-default", nil)
 	restoreBelow := setLowCreditDisableBelow(defaultLowCreditDisableBelow)
 	defer restoreBelow()
 
-	gradeCreditsForAuth("idx-default", "tier-default", nil, &traeCredits{TotalRemain: 99})
+	gradeCreditsForAuth("idx-default", "tier-default", nil, &traeCredits{TotalRemain: 9})
 	doc := h.docOf("idx-default")
 	if doc["disabled"] != true || doc[creditDisableKey] != true {
-		t.Fatalf("remain=99 必须写盘停用并带本机制标记: %v", doc)
+		t.Fatalf("remain=9 必须写盘停用并带本机制标记: %v", doc)
 	}
 
-	gradeCreditsForAuth("idx-default", "tier-default", nil, &traeCredits{TotalRemain: 100})
+	gradeCreditsForAuth("idx-default", "tier-default", nil, &traeCredits{TotalRemain: 10})
 	doc = h.docOf("idx-default")
 	if doc["disabled"] == true {
-		t.Fatalf("remain=100 必须自动解禁: %v", doc)
+		t.Fatalf("remain=10 必须自动解禁: %v", doc)
 	}
 	if _, ok := doc[creditDisableKey]; ok {
 		t.Fatalf("解禁后不得残留本机制标记: %v", doc)
+	}
+}
+
+// TestKillSwitchReleasesOwnMarkers 锁定 kill switch 是双向开关，不是单向阀。
+//
+// 关闭本机制（low_credit_disable_below <= 0）只应停止「新增禁用」，本机制历史上
+// 禁掉的号必须照常解禁。原实现在 gradeCreditsForAuth 里对 disableBelow <= 0 提前
+// return，解禁分支永远走不到：运维把开关关掉想救回被误禁的号，结果那些号仍然
+// 永久留在池外，池子只能越来越小。
+func TestKillSwitchReleasesOwnMarkers(t *testing.T) {
+	resetFailover(t)
+	h := newFailoverFakeHost(t)
+	h.addAccount("tier-kill", "idx-kill", map[string]any{
+		"disabled":         true,
+		creditDisableKey:   true,
+		creditDisableAtKey: "2026-11-10T00:00:00Z",
+	})
+	// 关闭开关，同时给一个远高于任何禁用线的余量。
+	restoreBelow := setLowCreditDisableBelow(0)
+	defer restoreBelow()
+
+	gradeCreditsForAuth("idx-kill", "tier-kill", nil, &traeCredits{TotalRemain: 500})
+
+	doc := h.docOf("idx-kill")
+	if doc["disabled"] == true {
+		t.Fatalf("关闭开关后本机制禁的号必须解禁: %v", doc)
+	}
+	if _, ok := doc[creditDisableKey]; ok {
+		t.Fatalf("解禁后不得残留本机制标记: %v", doc)
+	}
+}
+
+// TestKillSwitchDoesNotAddNewDisables 锁定关闭开关时不新增任何禁用写盘。
+func TestKillSwitchDoesNotAddNewDisables(t *testing.T) {
+	resetFailover(t)
+	h := newFailoverFakeHost(t)
+	h.addAccount("tier-kill2", "idx-kill2", nil)
+	restoreBelow := setLowCreditDisableBelow(0)
+	defer restoreBelow()
+
+	gradeCreditsForAuth("idx-kill2", "tier-kill2", nil, &traeCredits{TotalRemain: 1})
+
+	if got := h.writeCount(); got != 0 {
+		t.Fatalf("关闭开关时不得新增禁用写盘，写盘次数 = %d", got)
+	}
+	if h.docOf("idx-kill2")["disabled"] == true {
+		t.Fatal("关闭开关时 remain=1 的号不得被停用")
 	}
 }
 

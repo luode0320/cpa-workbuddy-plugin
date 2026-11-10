@@ -1,5 +1,47 @@
 # TraeWork Plugin Changelog
 
+## 0.5.43
+
+### Fix - 候选池被积分硬禁用线抽干：41 个账号只剩 1 个转发，首字延迟与错误率同时恶化
+
+- 根因（2026-11-10 生产取证）：候选池被自己的积分硬禁用线抽空，随后
+  `Handled:false` 把流量交给宿主内置调度器，而宿主完全不看插件的积分视图，
+  最终把请求打到唯一「幸存」的耗尽号上。
+- 证据链：
+  - `/accounts` 41 行 **全部** `disabled=True`；其中 **13 行** `remain>0` 却同时
+    `low_credits=True`/`low_credit_disable=True`/`credit_tier=disabled`，余量分别是
+    90/87/84/83/79/55/48/42/33/33/24/4/2 —— **每一个都 < 100**，全部踩在禁用线上。
+  - 幸存账号 `3278120156406128`：`remain=0`、`exhausted=True`、`fail_count=5`。
+  - 按 `auth_index` 统计账号集中度：5m n=31 → **1 个**账号（100%），10m n=117 →
+    **1 个**，30m n=321 → 5 个（首位占 67.0%），2h n=2042 → 10 个。
+  - `docker logs` 15m 窗口内**每一条** `exec stream async` 都是同一个
+    `auth_hash=ea2d8adc`，并伴随
+    `upstream execution failed: ... err=upstream 200: Your requests have exceeded the quota.`
+  - 末次流量样本 `status_code=504`、`latency_ms=131136`、`ttft_ns=0` —— 用户报告的
+    「生成 100s 以上」就是这个形态。
+- 说明：0.5.42 按真实在跑请求数平摊在**有可用账号的那些分钟**确实有效
+  （5m 首字 p50 6956ms vs 部署前 10375ms，>20s 占比 3.1% vs 27.3%），
+  但池子被抽干后它无从发挥。本版先修池子，两者叠加才完整。
+- 变更：
+  - `defaultLowCreditDisableBelow` **100 → 10**。Trae 单账号总积分 2800 点，正常
+    消耗后余量长期落在 20-99 区间，100 点的线等于把健康号当耗尽号处理。禁用线
+    必须低于保活线（`min_routable_credits` 默认 20），三档分级才有
+    「正常 / 保活降级 / 停用」的完整语义；禁用线高于保活线时保活档永远不会出现。
+  - 修正 kill switch 单向阀：`gradeCreditsForAuth` 原来在 `disableBelow <= 0` 处
+    提前 return，解禁分支永远走不到。运维把开关关掉想救回被误禁的号，结果那些号
+    仍然永久留在池外。现在关闭开关只停止**新增**禁用，本机制历史禁的号照常解禁。
+  - `pickActiveAuth` 不再让面板粘性盖过负载平摊：原实现在面板号可用时直接
+    return，`pickLeastLoaded` 成为死代码。改为把面板号排在候选首位——
+    同等负载时照样选它（面板选择仍生效），一旦它堆得更多就让位给更空闲的号。
+  - 会话键剔除低熵标识：生产全量请求都带 `X-Session-ID: 1`，原实现照收，把所有
+    客户端折叠成同一个会话，1 小时粘性窗口内选号退化成钉死单一账号（feed 里
+    30m 的 `session_key` 只有 `header:1` 一个值）。新增 `lowEntropySessionID`：
+    长度 < 4 或全为同一字符的标识判为无效，跳过并继续沿优先级链匹配。
+- 测试：新增 `test/traework/scheduler_load_balance_test.go`（面板让位、面板保持、
+  健康度过滤、低熵判定 10 例、弱头回退与跳过、`pickLeastLoaded` 平级保序）与
+  `TestKillSwitchReleasesOwnMarkers` / `TestKillSwitchDoesNotAddNewDisables`；
+  `TestLowCreditDisableDefaultIs100` 按新口径重写为 `TestLowCreditDisableDefaultIs10`。
+
 ## 0.5.42
 
 ### Fix - 账号并发超发是首字延迟的主因：选号改为按真实在跑请求数平摊

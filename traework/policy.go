@@ -22,19 +22,24 @@ const httpStatusBadRequest = 400
 // 剩余额度低于该阈值的账号不再承载新请求，防止推理中途断开。
 const defaultMinRoutableCredits int64 = 20
 
-// defaultLowCreditDisableBelow 是积分硬禁用线的默认值：100 点。
+// defaultLowCreditDisableBelow 是积分硬禁用线的默认值：10 点。
 //
-// 2026-11-09 用户裁定从 0（关闭）改为 100：Trae 账号积分低于 100 时已难以承载
-// 一次完整请求，继续留在池里只会把请求打到半途断流或额度错误的号上。低于该线
-// 即写盘停用，由 10 分钟积分刷新在余额回升到线上后自动解禁。
+// 2026-11-10 生产取证后从 100 降回 10：100 点对小账号池是毁灭性的。Trae 单账号
+// 总积分 2800 点，正常消耗后余量长期落在 20-99 区间；100 点的线把剩下的健康账号
+// 逐个写盘停用，实测把 41 个账号的池子压到 1 个，其中一个 remain=0 已耗尽的号
+// 仍被宿主内置调度器兜底选中，上游回「exceeded the quota」，同时单号排队把首字
+// 延迟推到 10s 以上。禁用线必须低于保活线（min_routable_credits，默认 20），
+// 三档分级才有「正常 / 保活降级 / 停用」的完整语义；禁用线高于保活线时保活档
+// 永远不会出现，等于把「降级排序」这一档整个抹掉。
 //
 // 停用与恢复必须成对：禁用只写本机制自己的 low_credit_disable 标记，
 // manual_disable / failover_disable / exhausted_disable 一律不接管；禁用后的账号
 // 仍参与全量积分刷新（hostAuthList 不按 disabled 过滤），因此不存在「禁了之后
 // 再也刷不到积分、永远解不了」的死锁。
 //
-// 设 0 仍表示关闭（kill switch），行为回到 0.3.0。
-const defaultLowCreditDisableBelow int64 = 100
+// 设 0 仍表示关闭（kill switch），行为回到 0.3.0；关闭后历史禁用账号会在下一轮
+// 积分刷新时自动解禁。
+const defaultLowCreditDisableBelow int64 = 10
 
 var (
 	minRoutableCredits   int64 = defaultMinRoutableCredits

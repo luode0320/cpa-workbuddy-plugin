@@ -99,6 +99,40 @@ func sessionHeaderValue(headers map[string][]string, name string) string {
 	return ""
 }
 
+// minSessionEntropyChars 是会话键参与路由所需的最小信息量。
+//
+// 只有 1 个字符的会话标识没有身份意义，却会被当成「同一个会话」：生产实测
+// 全量流量都带着 X-Session-ID: 1，于是所有客户端在 1 小时粘性窗口里被折叠成
+// 同一个会话，选号退化成「钉死在一个账号上」，按负载平摊完全失效。
+// [参数] 无。
+// [返回] 最小字符数。
+// 最近修改时间：2026-11-10；改动原因：新增，见 parseSessionKeyEntropy 的取证说明。
+const minSessionEntropyChars = 4
+
+// lowEntropySessionID 判定会话标识的信息量是否不足以支撑会话粘性。
+//
+// 判据只有两条，都来自「这个值不可能是真实的会话身份」：
+//  1. 长度小于 minSessionEntropyChars（"1"、"0"、"s1"）；
+//  2. 全是同一个字符（"aaaa"、"0000"）。
+//
+// 纯数字的合法会话 id（如 "123456"）刻意放行：长度本身已经足够区分，误杀会把
+// 正常粘性一起关掉。
+// [参数] id：已归一化的会话标识。
+// [返回] true 表示该标识信息量过低，应剔除后回退到后续信号。
+// 最近修改时间：2026-11-10；改动原因：新增，避免单一弱标识把全量流量折成一个会话。
+func lowEntropySessionID(id string) bool {
+	if len(id) < minSessionEntropyChars {
+		return true
+	}
+	first := id[0]
+	for i := 1; i < len(id); i++ {
+		if id[i] != first {
+			return false
+		}
+	}
+	return true
+}
+
 // extractSessionKeyFromSources derives a stable conversation key from raw
 // headers + metadata. Both scheduler.SchedulerOptions and
 // executor.ExecutorRequest expose these as flat (headers, metadata) fields,
@@ -120,13 +154,18 @@ func extractSessionKeyFromSources(headers map[string][]string, metadata map[stri
 			return "execution:" + id
 		}
 	}
+	// 弱标识必须剔除而不是采信：生产全量请求都带 X-Session-ID: 1，若照收就会把
+	// 所有客户端折叠成同一个会话，1 小时粘性窗口内选号退化成钉死单一账号。
+	// 剔除后继续沿优先级链往下找，实在没有强信号就返回 ""，由调度层按负载平摊。
 	for _, header := range []string{
 		"X-Claude-Code-Session-Id", "Session-Id", "Session_id",
 		"X-Session-ID", "X-Session-Affinity", "X-Client-Request-Id",
 	} {
-		if sid := sessionHeaderValue(headers, header); sid != "" {
-			return headerSessionPrefix(header) + sid
+		sid := sessionHeaderValue(headers, header)
+		if sid == "" || lowEntropySessionID(sid) {
+			continue
 		}
+		return headerSessionPrefix(header) + sid
 	}
 	if v, ok := metadata[derivedSessionIDMetadataKey].(string); ok {
 		if id := normalizeSessionID(v); id != "" {
