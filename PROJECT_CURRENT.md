@@ -68,6 +68,9 @@
   - **新增端到端用例** `workbuddy/content_filter_end_to_end_test.go`（提交 `d8d9eab`）：用生产真实分片形态串起「判据 → 分类 → 冷却落盘」三段 + 3 条反例守卫。**踩坑**：首版直接调用 `recordSSEErrorFailureForModel` 而无守卫，反例立即被记成冷却 —— 那是**测试不忠实**（生产五处调用点全部由 `if isContentModerationFailure(...)` / `if sseErr != ""` / 错误分支包裹），已改为按生产的「先判据、后记账」顺序。
   - **定时观察**：`schedule-bad2541a`，2 小时间隔 × 6 次，判定标准为「出现 content_filter 日志 / sidecar mtime 推进到部署之后 ⇒ 新分支已触发；仍为 0 且无审核流量 ⇒ 报告无样本，不编造结论」。
   - **旁证观察（独立缺陷，不在本轮范围）**：生产磁盘 89%（26G/29G，剩 3.4G），`/apps/mysql8.1/data` 占 12G（`xiaoshuo` 库 8.5G）；大写模型名导致 11102 换号遍历 20 个账号失败 —— 两者均需另立条目跟进。
+  - **追加观察（03:12-04:48）**：仍无审核样本（`content_filter` 命中 0）。04:14 出现 1 次失败禁用 `workbuddy-7ee5e596`/`GLM-5.3-Flash`，经日志追踪其 `content_filter` 命中 **0** 次、全部失败为 11102，且该号 `credits.total_remain=0`/`exhausted=True` ⇒ **与本轮改动无关**。04:39 容器优雅重启（`RestartCount=1`、`ExitCode=0`、`OOMKilled=false`，非本轮操作），重启后加载 **0.21.24**，部署成果保留。
+  - **失败量归因（定时复核 1/6 量化）**：60m 内 workbuddy 请求 1196 条、`failed=true` **1014（84.8%）**，同期 `11102` **1007** 条；`failed=true` 中大写模型名占 99.8%，`failed=false` **全部小写**且零失败 ⇒ 高失败量是大写模型名问题，与 `content_filter` 分支日志域互斥。
+  - **大写模型名溯源进展**：已排除 new-api `channels.models`/`abilities` 全小写、`model_mapping` 空、`routing.force-model-prefix=false`、`oauth-model-alias` 未配置；但 `/v1/models` 对客户端可见 50 个模型**确实含大写名**（`Auto`/`Kimi-K3.1-Pro`/`GLM-5.3`，来自 workbuddy 动态发现上报的真实上游 ID）⇒ 改写发生在 **new-api 出站到 CPA 之间**，组件尚未定位。
 
 - 会话（2026-11-11 22:26-22:57）：**qoderwork 导入弹窗改为只认凭据 JSON，删除 PAT 全部逻辑（0.13.16，未发布）**：
   - **用户诉求**：生产面板截图红框指出导入弹窗仍要 `pt-` PAT，「改成只要选择或者输入 JSON 就导入就可以了，不需要 PAT 的这些逻辑」。
