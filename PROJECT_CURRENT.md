@@ -46,6 +46,17 @@
   - **文档**：`doc/4-bugs/2026-11-12_010000_会话压缩阶段异常根因诊断.md`（10 证据 / 6 项裁决 / 3 Mermaid，含 01:00→01:20 纠错记录）、`doc/3-实施/2026-11-12_013000_workbuddy内容审核归入失败分类实施总览.md`。
   - **待办**：生产发布 + 真机验收（观察 content_filter 冷却记录与模型熔断开闸）。
 
+- 会话（2026-11-12 01:56-02:20）：**workbuddy 0.21.24 发布上线 + 生产观察**：
+  - **发布链**：CI run `43071825610` Release success（4 平台：darwin_amd64/linux_amd64/linux_arm64/windows_amd64；`darwin_arm64` 被取消、`windows_arm64` 构建失败，按 `--allow-missing` 剔除槽位）→ 资产 sha256 自校验 `ALL CHECKSUMS OK` → registry `d3356c8` → 生产 `plugin-store install` `status=installed, restart_required:false` → `hot reloaded active_version=0.21.24 retired_version=0.21.23`，**容器未重启**（Up 4 hours）。
+  - **一致性**：生产落盘 `.so` sha256 `e7ac1632bf6665aa…`（8,454,624 B）与本地 zip 内 `.so` **逐字节一致**；`strings` 确认新判据已入二进制（`"content_filter"` / `"content filter"` / `sensitive content` / `max_output_tokens` / `finish_reason: content_filter`）。
+  - **观察结论：新分支尚未触发，当前无审核样本**（`content_filter` 命中计数 0，`docker logs` 与容器内 feed 双向确认）。窗口内失败全是 `11102 model service info not found`（HTTP 400，源于**大写模型名** `DeepSeek-V4-Pro`/`GLM-5.3-Flash` 上游不存在）；同窗口小写别名 `deepseek-v4-pro` **217 次全部成功**。`11102` 走 400 → `failureScopeNone`，与本轮改动无交集。
+  - **误伤检查全通过**：部署后 workbuddy **0 个账号被失败禁用**；账号池 20 个、**16 个仍可路由**；4 个 disabled 全部是 credits 耗尽/低积分（`exhausted`/`low_credits`），无一为失败禁用。
+  - **旧实例干净退出**：`failover reconcile loop stopped` + `probe loop stopped: superseded by newer instance`，无僵尸巡检（对照 2026-11-08 coze 事故）。
+  - **观测口径修正（自身错误）**：首轮误判「feed 停止写入」——查的是宿主机路径 `/usr/local/src/cli-proxy-api/data/token-usage-feed.ndjson`（**过期副本**，mtime 停在 11-11 21:40），真实写入在**容器内** `/CLIProxyAPI/data/token-usage-feed.ndjson`（mtime 02:13，2725 行持续增长）。**feed 必须在容器内查**；sidecar 与 feed 是两条独立路径，记账观测不受影响。
+  - **新增端到端用例** `workbuddy/content_filter_end_to_end_test.go`（提交 `d8d9eab`）：用生产真实分片形态串起「判据 → 分类 → 冷却落盘」三段 + 3 条反例守卫。**踩坑**：首版直接调用 `recordSSEErrorFailureForModel` 而无守卫，反例立即被记成冷却 —— 那是**测试不忠实**（生产五处调用点全部由 `if isContentModerationFailure(...)` / `if sseErr != ""` / 错误分支包裹），已改为按生产的「先判据、后记账」顺序。
+  - **定时观察**：`schedule-bad2541a`，2 小时间隔 × 6 次，判定标准为「出现 content_filter 日志 / sidecar mtime 推进到部署之后 ⇒ 新分支已触发；仍为 0 且无审核流量 ⇒ 报告无样本，不编造结论」。
+  - **旁证观察（独立缺陷，不在本轮范围）**：生产磁盘 89%（26G/29G，剩 3.4G），`/apps/mysql8.1/data` 占 12G（`xiaoshuo` 库 8.5G）；大写模型名导致 11102 换号遍历 20 个账号失败 —— 两者均需另立条目跟进。
+
 - 会话（2026-11-11 22:26-22:57）：**qoderwork 导入弹窗改为只认凭据 JSON，删除 PAT 全部逻辑（0.13.16，未发布）**：
   - **用户诉求**：生产面板截图红框指出导入弹窗仍要 `pt-` PAT，「改成只要选择或者输入 JSON 就导入就可以了，不需要 PAT 的这些逻辑」。
   - **前端收敛**：弹窗从「`#importPAT` 单条输入 + 批量区块 + 底部单 PAT 按钮」三层压成「选文件行 + 一个大文本框 + 唯一按钮『导入并保存』」。删 `importAuth` / `runBatchImport` / `parseBatchInput` / `describeBatchItems` / `isPATToken` / `credentialPATToken` / `PAT_RE` / `BATCH_GAP_MS` / `.import-batch` 样式；新增 `parseImportInput` / `describeImportItems` / `runImport`，全部输入统一走 `POST /import-cred` 离线回灌。
