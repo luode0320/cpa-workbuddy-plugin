@@ -1,5 +1,39 @@
 # TraeWork Plugin Changelog
 
+## 0.5.56
+
+### Fix - 导出备份回灌有 11 条稳定失败，且报错指向与原因无关的 storage.json
+
+- 现象：面板「导入凭证」选 `traework-credentials-YYYY-MM-DD.json` 整库回灌，
+  51 条里 40 成功 / 11 失败，失败项统一报
+  `invalid trae credential: no iCubeAuthInfo://icube.cloudide key in storage.json`。
+  该提示会让人去找 storage.json，但输入本身就是导出备份，与 storage.json 无关。
+- 根因（三层叠加）：
+  1. **宿主强制 HTML 转义**：`ServeManagementHTTP` 写出前对 JSON body 递归
+     `html.EscapeString`，导出时内层 `credential` 字符串的 `"` 全部变成 `&#34;`，
+     不再是合法 JSON。40 条成功组的凭据是平铺 `token`/`refreshToken`
+     （JWT 内不含 `"` 与 `&`，天然免疫），11 条失败组恰好都带内层 `credential` 字符串。
+  2. **形状差异未被归一化**：这 11 条里 10 条内层是云 API 响应包装
+     `{ResponseMetadata, Result:{Token, RefreshToken}}`，1 条是第三方导出账号对象
+     `{name, token, refreshToken, ...}`；且备份条目实测是**两层嵌套**
+     （外层 credential 对象里再带一个被转义的 credential 字符串），
+     只展开一层会把残留字符串当成 `CredentialRaw` 再次解密并失败。
+  3. **错误被覆盖**：shape-1 解析失败后代码回落到「整体当 storage.json」，
+     把真实错误 `parse plaintext credential` 替换成缺 icube 键的提示。
+- 修复：
+  - `import.go` 新增 `normalizeExportEntry` 逐层展开 `credential`（上限 4 层）：
+    字符串先做 HTML 实体还原再解析、识别云 API 响应包装取 `Result` 层、
+    展平回顶层时**外层字段优先**（keepalive 刷新过的 token 比导出快照新）；
+    tc blob 形状保持原样，仍走原解密路径。
+  - 备份条目解析失败时保留真实错误，不再被 storage.json 分支覆盖。
+  - `panel.html` 的 `expandCredentials` 对导出条目改为整条下发：前端自行拆包
+    会丢掉外层字段，后端将看不到 `credential`，必然落到误导分支。
+- 回归：新增 7 个用例，其中 `import_real_export_test.go` 直接吃本机真实导出文件
+  （51 条全部解析成功、去重后 51 个 uid）；另有 HTML 实体、响应包装、
+  两层嵌套、外层 token 优先、错误不被覆盖、tc blob 不误伤、
+  落盘 `traework-<uid>.json` 后宿主重载可回读七项。
+  修复前实测 40/51，修复后 51/51。
+
 ## 0.5.55
 
 ### Fix - 首字闸门在上游空闲期间无法放行，实测多压 19.8 秒

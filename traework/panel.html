@@ -1265,8 +1265,11 @@ async function importOne(text, name){
   }
 }
 /* 批量导入展开：把 storage.json 整文件 / 导出包装 / 裸数组 / 单条凭据
-   归一化成单条凭据对象，交给逐条 /import 管线处理。
-   storage.json 的 iCubeAuthInfo://icube.cloudide 值会被提取成 {credential: val}。 */
+   归一化成单条条目，交给逐条 /import 管线处理。
+   storage.json 的 iCubeAuthInfo://icube.cloudide 值会被提取成 {credential: val}。
+   导出备份条目一律整条下发，内层 credential 的对象/字符串/云 API 响应包装
+   统一由后端 normalizeExportEntry 归一化：前端若自行拆包，包装形状会丢掉
+   外层字段并让后端看不到 credential，只能落到 storage.json 分支报缺 icube 键。 */
 function expandCredentials(text){
   let obj;
   try{obj=JSON.parse(text)}catch(_){return null}
@@ -1276,11 +1279,8 @@ function expandCredentials(text){
   if(Array.isArray(obj)){
     obj.forEach(push);
   }else if(Array.isArray(obj.accounts)){
-    // 导出包装：每条含 .credential 的原始凭据
-    obj.accounts.forEach(a=>{
-      if(a&&a.credential&&typeof a.credential==="object") out.push(a.credential);
-      else push(a);
-    });
+    // 导出包装：整条下发，由后端展平内层 credential
+    obj.accounts.forEach(push);
   }else if(typeof obj["iCubeAuthInfo://icube.cloudide"]==="string"){
     // storage.json 整文件 → 提取 icube 凭据值
     const val=obj["iCubeAuthInfo://icube.cloudide"];
