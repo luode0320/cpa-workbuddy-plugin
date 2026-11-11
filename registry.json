@@ -199,28 +199,28 @@
             "goos": "darwin",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.56/traework-provider_0.5.56_darwin_amd64.zip",
-            "sha256": "7a4f9bb1e937717513657fa926d3a83590c1971d7ac7c6882b160ce26107b354",
+            "sha256": "d51a066e48a3307c0c0738bac1bd69007a1e7fc932bb756a3389979aabf2f2e5",
             "size": 3270510
           },
           {
             "goos": "linux",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.56/traework-provider_0.5.56_linux_amd64.zip",
-            "sha256": "e1423a4c82c049a17c77e068c4d085c9fe501d1bf61b0fb0013ec3379c8b1bb7",
+            "sha256": "034a27d2ab03f3fe678752b6ff5d037615933a386d0822c82bd7d90c3ff32dda",
             "size": 3447131
           },
           {
             "goos": "linux",
             "goarch": "arm64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.56/traework-provider_0.5.56_linux_arm64.zip",
-            "sha256": "f152da23682866a00580ec7a3623336970cb95a9a6f5b33a48ebcac99fdca164",
+            "sha256": "daafb90fc4ce798749eb74982e1bdf2f10fa982a2eda888a5b1d8b21d26a7087",
             "size": 3137827
           },
           {
             "goos": "windows",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.56/traework-provider_0.5.56_windows_amd64.zip",
-            "sha256": "67475f301ab3aa02ba3c925e5a1dd39952788b0a1981a703bbd62bf74089f890",
+            "sha256": "3c599d1c5352de83a4efde6e2a9a75be545dabab52cdd045b1ac20b367115214",
             "size": 3355890
           }
         ]
