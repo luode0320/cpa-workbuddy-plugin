@@ -25,6 +25,94 @@ func decodeOK(t *testing.T, raw []byte, out any) {
 	}
 }
 
+func TestRouteGroupClaimsRealModelNames(t *testing.T) {
+	// Requesting a group's target model by its real name enters the group without the client
+	// having to know the group codename.
+	for _, name := range []string{"glm-5.3-uncensored", "deepseek-v4.1-flash-uncensored", "abliterated"} {
+		var resp modelRouteResponse
+		raw, _ := routeGroup([]byte(`{"RequestedModel":"`+name+`"}`), groupConfig())
+		decodeOK(t, raw, &resp)
+		if !resp.Handled || resp.TargetKind != "self" {
+			t.Fatalf("real model %q route = %+v, want handled", name, resp)
+		}
+	}
+	// A model that no group lists stays untouched.
+	var resp modelRouteResponse
+	raw, _ := routeGroup([]byte(`{"RequestedModel":"claude-sonnet-5-5"}`), groupConfig())
+	decodeOK(t, raw, &resp)
+	if resp.Handled {
+		t.Fatalf("unlisted model route handled: %+v", resp)
+	}
+}
+
+func TestResolveTargetGroupRotatesToRequestedModel(t *testing.T) {
+	cfg := groupConfig()
+	group, ok := resolveTargetGroup(cfg, "deepseek-v4.1-flash-uncensored", "")
+	if !ok {
+		t.Fatal("resolveTargetGroup() not handled for a listed real model")
+	}
+	want := []string{"deepseek-v4.1-flash-uncensored", "abliterated", "glm-5.3-uncensored"}
+	if strings.Join(group.Models, ",") != strings.Join(want, ",") {
+		t.Fatalf("rotated models = %v, want %v", group.Models, want)
+	}
+	// The configured order is not mutated by rotation.
+	if strings.Join(cfg.Groups[0].Models, ",") != "glm-5.3-uncensored,deepseek-v4.1-flash-uncensored,abliterated" {
+		t.Fatalf("config mutated: %v", cfg.Groups[0].Models)
+	}
+	// Requesting the first model keeps the configured order.
+	group, _ = resolveTargetGroup(cfg, "glm-5.3-uncensored", "")
+	if strings.Join(group.Models, ",") != "glm-5.3-uncensored,deepseek-v4.1-flash-uncensored,abliterated" {
+		t.Fatalf("first-model order = %v", group.Models)
+	}
+}
+
+func TestRotateModels(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    []string
+		first string
+		want  string
+	}{
+		{"absent", []string{"a", "b"}, "z", "a,b"},
+		{"first", []string{"a", "b", "c"}, "a", "a,b,c"},
+		{"middle", []string{"a", "b", "c"}, "b", "b,c,a"},
+		{"last", []string{"a", "b", "c"}, "c", "c,a,b"},
+		{"single", []string{"a"}, "a", "a"},
+		{"trim", []string{" a ", "b"}, "a", " a ,b"},
+	}
+	for _, tc := range cases {
+		if got := strings.Join(rotateModels(tc.in, tc.first), ","); got != tc.want {
+			t.Errorf("%s: rotateModels = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestProductionStyleGroupEntersByMemberModel(t *testing.T) {
+	// Mirrors the production config: one group whose id ("1") is not a model name, holding real
+	// model IDs. Before member-name entry existed, every request for these models bypassed the
+	// plugin entirely and the group was never exercised.
+	cfg := balanceConfig()
+	cfg.Groups = []modelGroup{{
+		ID:       "1",
+		Name:     "1",
+		Strategy: groupStrategyOrder,
+		Models:   []string{"DeepSeek-Flash", "DeepSeek-V4-Pro", "Doubao-Seed-2.1-Pro", "GLM-5.3"},
+	}}
+	for _, model := range cfg.Groups[0].Models {
+		if _, ok := resolveTargetGroup(cfg, model, ""); !ok {
+			t.Fatalf("member model %q did not enter the group", model)
+		}
+	}
+	group, ok := resolveTargetGroup(cfg, "Doubao-Seed-2.1-Pro", "")
+	if !ok || strings.Join(group.Models, ",") != "Doubao-Seed-2.1-Pro,GLM-5.3,DeepSeek-Flash,DeepSeek-V4-Pro" {
+		t.Fatalf("entry order = %v ok=%v", group.Models, ok)
+	}
+	// Unlisted models still fall through to their real provider.
+	if _, ok := resolveTargetGroup(cfg, "some-other-model", ""); ok {
+		t.Fatal("unlisted model should not be claimed")
+	}
+}
+
 func TestRouteGroupOnlyClaimsGroupIDs(t *testing.T) {
 	var resp modelRouteResponse
 	raw, _ := routeGroup([]byte(`{"RequestedModel":"uncensored-models"}`), groupConfig())

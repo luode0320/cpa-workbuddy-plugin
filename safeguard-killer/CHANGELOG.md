@@ -2,6 +2,18 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.5
+
+### Feat - 用成员模型的真实名称直接进入智能分组，无需客户端改配置
+
+- 背景: 用户配置了一个分组 `id: "1"`、成员是 11 个真实模型名（`DeepSeek-V4-Pro` / `GLM-5.3` / `Doubao-Seed-2.1-Pro` 等），但面板「最近决策」恒为 0 —— 客户端请求的是真实模型名，而旧实现只把分组的 `id`（`"1"`）当作入口，成员名一律不认领。结果是该分组从未被执行器接管，`fallback_on_refusal`（拒答自动换模型）这条最关键的破甲能力一次都没跑过，只有全请求级的四个开关在工作。
+- 改动: `groups.go` 新增 `pluginConfig.groupServing`（按成员模型名反查所属分组）与 `rotateModels`（把链路旋转到被请求的模型开头、其余按配置顺序环绕）；`resolveTargetGroup` 在 `id` 未命中后增加成员名命中分支，命中即返回旋转后的成员链。
+- 语义: 请求某个成员模型时，先按客户端要求的那个模型执行（保持客户端预期与 prompt 缓存），只有它拒答/失败/配额耗尽才滚到分组里的下一个。分组 `id` 入口与 Claude Code `claude-opus-4-8` 兜底入口的行为保持不变。
+- 不引入递归: 分组内部经 `host.model.execute` 下发成员真实模型名，宿主 `modelExecutionRequestFromPlugin` 会把发起插件 id 同时写入 `SkipRouterPluginID`，`applyModelRouter` 据此跳过该插件自身（宿主侧有 `was re-entered despite SkipRouterPluginID` 断言守护），因此不会二次接管。
+- 面板: 「智能分组」说明文案补充「也可以用成员模型的真实名称直接进入」。
+- 验证: `python scripts/cgo-shim-build.py safeguard-killer` 的 build / vet / test 全绿；新增 `TestRouteGroupClaimsRealModelNames`、`TestResolveTargetGroupRotatesToRequestedModel`、`TestRotateModels`、`TestProductionStyleGroupEntersByMemberModel`（按生产配置同形数据构造）；哨兵测试 `TestSentinelGroupsZ` 确认新测试真实进入编译链路后删除；两组变异（禁用 `groupServing` 命中、`rotateModels` 恒返回原序）各被 3 条用例捕获，还原后复跑全绿。
+- 涉及文件: `safeguard-killer/groups.go`、`safeguard-killer/groups_test.go`、`safeguard-killer/ui.go`、`safeguard-killer/VERSION`、`safeguard-killer/main.go`、`safeguard-killer/CHANGELOG.md`。
+
 ## 0.1.4
 
 ### Fix - 宿主缺少 host.auth.models 回调时降级运行，不再整体失效并输出红色致命横幅

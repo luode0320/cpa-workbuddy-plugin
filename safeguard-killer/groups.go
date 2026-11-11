@@ -133,14 +133,64 @@ func routeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 	return okEnvelope(modelRouteResponse{Handled: true, TargetKind: "self", Reason: "model group"})
 }
 
+// groupServing returns the first group that lists modelID as one of its target models.
+func (cfg pluginConfig) groupServing(modelID string) (modelGroup, bool) {
+	trimmed := strings.TrimSpace(modelID)
+	if trimmed == "" {
+		return modelGroup{}, false
+	}
+	for _, group := range cfg.Groups {
+		for _, model := range group.Models {
+			if strings.TrimSpace(model) == trimmed {
+				return group, true
+			}
+		}
+	}
+	return modelGroup{}, false
+}
+
+// rotateModels returns models reordered to start at first, wrapping around. A first value that is
+// not in models leaves the order untouched.
+func rotateModels(models []string, first string) []string {
+	if len(models) <= 1 {
+		return models
+	}
+	start := -1
+	for i, model := range models {
+		if strings.TrimSpace(model) == first {
+			start = i
+			break
+		}
+	}
+	if start <= 0 {
+		return models
+	}
+	out := make([]string, 0, len(models))
+	out = append(out, models[start:]...)
+	out = append(out, models[:start]...)
+	return out
+}
+
 // resolveTargetGroup finds the configured group for a requested model ID, or maps Claude Code's
-// hardcoded refusal-fallback model ("claude-opus-4-8") to the session's active group (or the
-// first configured group, excluding claude-* models since Claude just refused).
+// hardcoded refusal-fallback model ("claude-opus-4-8") to the session's active group.
+//
+// A group can also be entered by requesting one of its real model IDs, so a client keeps sending
+// its normal model name instead of a virtual group codename. In that case the chain is rotated to
+// start at the requested model and wrap around, which keeps the client on the model it asked for
+// until it actually refuses.
 func resolveTargetGroup(cfg pluginConfig, requestedModel, session string) (modelGroup, bool) {
 	if group, ok := cfg.group(requestedModel); ok {
+		group.Models = rotateModels(group.Models, requestedModel)
 		return group, true
 	}
-	if !cfg.Features.FallbackOnRefusal || len(cfg.Groups) == 0 {
+	if len(cfg.Groups) == 0 {
+		return modelGroup{}, false
+	}
+	if group, ok := cfg.groupServing(requestedModel); ok {
+		group.Models = rotateModels(group.Models, requestedModel)
+		return group, true
+	}
+	if !cfg.Features.FallbackOnRefusal {
 		return modelGroup{}, false
 	}
 	lower := strings.ToLower(strings.TrimSpace(requestedModel))

@@ -574,7 +574,7 @@ const uiHTML = `<!doctype html>
         <h2 class="card-title">智能分组</h2>
         <button class="btn sm" data-action="add-group" id="addGroupBtn">新增分组</button>
       </div>
-      <p class="card-desc">智能分组对外暴露一个虚拟模型 ID，在多个模型之间自动绕开安全护栏拒答、内容过滤、授权范围说教与配额耗尽。某个模型不拒答之后，会话会在服务端 prompt 缓存仍热的 5 分钟内固定使用它；超过 5 分钟后重置，重新从分组头部开始尝试（也可以纯粹用于多供应商便利或配额分摊）。</p>
+      <p class="card-desc">智能分组对外暴露一个虚拟模型 ID，同时也可以用成员模型的真实名称直接进入：客户端请求任一成员模型时，请求会自动接管并从这个模型开始尝试，被拒答再往分组里的下一个模型滚动，客户端无需改配置。成员模型在多个模型之间自动绕开安全护栏拒答、内容过滤、授权范围说教与配额耗尽。某个模型不拒答之后，会话会在服务端 prompt 缓存仍热的 5 分钟内固定使用它；超过 5 分钟后重置，重新从分组头部开始尝试（也可以纯粹用于多供应商便利或配额分摊）。</p>
       <div class="groups" id="groupsEditor"></div>
       <datalist id="modelList"></datalist>
     </section>
