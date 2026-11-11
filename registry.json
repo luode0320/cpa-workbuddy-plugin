@@ -83,28 +83,28 @@
             "goos": "darwin",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.16/qoderwork-provider_0.13.16_darwin_amd64.zip",
-            "sha256": "8226f083b51483e7f62eb06356113e7bfce3cbe92ebb024c4799953e533251bb",
+            "sha256": "e86cddcca947ebb5dd5ec0ac5225b07965d340ca8cd9d10a0cc8cd2750af7a5c",
             "size": 3192634
           },
           {
             "goos": "linux",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.16/qoderwork-provider_0.13.16_linux_amd64.zip",
-            "sha256": "03da70e50b5d8a624d9111e7a5a4e7e675e948a3b8018fc07dde04e5f7846135",
+            "sha256": "6c3111a55a6e399784210a8aa7a64fb3f17bfa0d8af98c7dcac4d5354ee012a0",
             "size": 3350140
           },
           {
             "goos": "linux",
             "goarch": "arm64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.16/qoderwork-provider_0.13.16_linux_arm64.zip",
-            "sha256": "d6259eadb2a5cce939ade4287dbdc81a7f022928b3d5b3e65a24f6b6f3d9f789",
+            "sha256": "2e9fa3a8fa717b5d9673a3e35ad9ad4d174f9b1848a7d837b8523f48c95cb051",
             "size": 3048065
           },
           {
             "goos": "windows",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/qoderwork-provider-v0.13.16/qoderwork-provider_0.13.16_windows_amd64.zip",
-            "sha256": "3e3609a4a7fc4abc55bcbba268a4616d88868ad632c55368d4e3eaa2d6f81899",
+            "sha256": "62c3522172b1de29598d52a72437a54ddf4e1909836e530de2c00030b2b0ba40",
             "size": 3276619
           }
         ]
