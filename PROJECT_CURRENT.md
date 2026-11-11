@@ -42,7 +42,7 @@
   - **保留**：嵌套/平铺凭据、凭据数组、`{accounts:[{credential}]}` 导出包装、JSONL、多文件多选；逐条串行、单项失败不中断、失败明细常驻、部分成功后收敛为仅失败项、批内去重。auth 文件 `personalToken` 字段与 `jrt-` 刷新兜底链路未动。
   - **验证**：解析层 16 条 + E2E 26 条断言全绿；**5 组变异 4 KILLED + 1 等价变异（记明原因）**；`cgo-shim-build.py qoderwork` build/vet/test 全绿；无头 Chrome 本地渲染截图确认弹窗结构符合预期。
   - **文档**：`doc/5-tests/2026-11-11_225600_...验证.md`、`doc/6-review/2026-11-11_225600_..._6-review.md`（STYLE: PASS）、需求主文档追加第 6 节「口径收敛」。
-  - **未做**：未提交 git、未发布、未部署生产；`registry.json` 仍是 0.13.15。
+  - **发布（2026-11-12 00:10 完成）**：提交 `f3d50db`（代码 16 文件）+ `0f32552` / `4b01f7c`（registry）。生产 `plugin-store install` 热重载 `active_version=0.13.16 retired_version=0.13.15`，落盘 `.so` sha256 `edfb78d5…`，面板与本地 `panel.html` 逐字节一致（`80305b3f…`，87257 字节）；`POST /import` 生产实测 404、`POST /import-cred` 200 且返回结构化校验错误；真实入口 `deepseek-v4-pro` 流式 94 chunks / `[DONE]` / `finish_reason=stop` / usage 115 tokens。**平台缺件**：`darwin_arm64` 与 `windows_arm64` 未发布——CI 侧 `snap install zig` 连续 5 次 `unable to contact snap store`（GitHub 基础设施故障，与本轮代码无关），按 `--allow-missing` 发 4 平台。
 
 - 会话（2026-11-10 21:20-21:50，接续上条）：**决定性发现——生产流量走宿主桥，插件连接池不参与**：
   - **核心洞察**：0.5.40 把连接池扩到 `MaxIdleConns=200 / PerHost=64` 后 TTFT 未见改善。追查调用链发现生产流式请求走 `hostHTTPDoStream` → **宿主 `host.stream.do` RPC**，完全绕过插件的 `streamHTTPClient`。近 15 分钟日志中 `stream bridge / direct fallback / bridge unavailable` 降级关键字 **0 次**，确认生产 **100% 走宿主桥**。
