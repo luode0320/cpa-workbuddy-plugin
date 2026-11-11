@@ -35,6 +35,17 @@
 ## 活动会话进展摘要
 
 
+- 会话（2026-11-12 00:52-01:45）：**会话压缩阶段异常归因 → content_filter 归入失败分类（workbuddy 0.21.24，未发布）**：
+  - **用户提问演进**：先报「session-3304f06f 到压缩就出问题」→ 追问「所以还是超时的问题是吗？」→ 裁定按 traework 0.5.48 的做法把 content_filter 归入失败分类。
+  - **归因（含自我纠错）**：初版判定「压缩来得太晚导致超时」**被数据推翻**——该会话 `inputTokens>75 万` 有 **108 次**、`>60 万` **313 次**绝大多数成功；turn 22 step 51-63 连续 13 步在 **795,749~800,068** 输入下全部成功；`idle timeout` 全程仅 **3 次**且每次被 `llm/retry` 当场救回，其中一次发生在 input 仅 **655** 的请求上，与规模无关。
+  - **真实主因（C6）**：`Response incomplete: content_filter` **42 次**，占全部 `finish=error` 的 **84%**（42/50），覆盖 **31/37** 个 turn，时间跨度 2026-11-10 23:24 → 11-12 00:55。**42/42 已产出正文**（14 次含 tool-call）——活干完了，末帧被判违规。文案来自上游 `incomplete_details.reason`（`pi-ai/.../openai-responses-shared.js:687-702`）。
+  - **压缩本身 3/3 全部成功闭合**（seq 160/173/4326，无 `error` 字段），与失败无因果；`shadowedRange` 倒序是 surface 端点 seq 的合法语义，非缺陷。
+  - **实现（4 文件 + 1 新测试）**：① `policy.go` 新增 `isContentModerationFailure`（三层形态 + 精确排除长度截断 + **防误判正常正文**）；② `failure_class.go` 新增**第 0.5 步**归 `failureScopeModelRateLimit`，排在账号级 4xx 之前（traework 0.5.46 未生效的根因）；③ `stream.go` 流式 emit 前记账 + `contentEmitted=true` 禁换号，非流式出口补记；④ `accountFailover.go` 修掉 scope 写死 `AuthModel`（会写盘禁用健康号）。
+  - **验证**：`cgo-shim-build.py workbuddy` build/vet/test 全绿；**3 组变异全部 KILLED**——分类改回 None、scope 写死 AuthModel（需桩化 `failoverResolveIndexFn`，否则假通过）、判据放宽为无条件认词（3 条防误判用例 FAIL）。
+  - **两个实测陷阱**：① `content_filter` 是 `finish_reason` **正常终止分片**，`sseErrorFrame` 捕获不到，只改分类函数完全无效；② 判据在每个流式分片上运行，正文即用户内容，自由子串会误伤（本仓库正是中文小说场景）。
+  - **文档**：`doc/4-bugs/2026-11-12_010000_会话压缩阶段异常根因诊断.md`（10 证据 / 6 项裁决 / 3 Mermaid，含 01:00→01:20 纠错记录）、`doc/3-实施/2026-11-12_013000_workbuddy内容审核归入失败分类实施总览.md`。
+  - **待办**：生产发布 + 真机验收（观察 content_filter 冷却记录与模型熔断开闸）。
+
 - 会话（2026-11-11 22:26-22:57）：**qoderwork 导入弹窗改为只认凭据 JSON，删除 PAT 全部逻辑（0.13.16，未发布）**：
   - **用户诉求**：生产面板截图红框指出导入弹窗仍要 `pt-` PAT，「改成只要选择或者输入 JSON 就导入就可以了，不需要 PAT 的这些逻辑」。
   - **前端收敛**：弹窗从「`#importPAT` 单条输入 + 批量区块 + 底部单 PAT 按钮」三层压成「选文件行 + 一个大文本框 + 唯一按钮『导入并保存』」。删 `importAuth` / `runBatchImport` / `parseBatchInput` / `describeBatchItems` / `isPATToken` / `credentialPATToken` / `PAT_RE` / `BATCH_GAP_MS` / `.import-batch` 样式；新增 `parseImportInput` / `describeImportItems` / `runImport`，全部输入统一走 `POST /import-cred` 离线回灌。
