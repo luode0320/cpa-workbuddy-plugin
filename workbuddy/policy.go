@@ -182,6 +182,77 @@ func isCreditsLowOrExhausted(cr *creditsSummary) bool {
 	return !isCreditsRoutable(cr)
 }
 
+// contentModerationValueMarkers 是审核判定的**字段值位置**标记，全部按小写比对。
+//
+// 只认带引号的字段值形态（如 `"content_filter"`），不做自由子串匹配：
+// 本判据运行在每个流式分片上，而 `delta.content` 里就是用户正文——自由子串会
+// 把正文中出现 "content error" / "sensitive content" 字样的**正常回答**
+// 误判成审核失败，进而给健康账号记冷却（本仓库正是中文小说正文场景，
+// 正文出现这些词的语义完全中性）。
+//
+// 覆盖三层书写形态：
+//  1. 宿主直出：`"finish_reason":"content_filter"` —— 宿主转译层
+//     （CLIProxyAPI/openai_openai-responses_response.go:78）把审核终止映射成该值；
+//  2. OpenAI 语义帧：`"incomplete_details":{"reason":"content_filter"}`；
+//  3. 错误帧：`{"error":{...}}` 且正文含审核文案（由调用点额外判定）。
+var contentModerationValueMarkers = []string{
+	`"content_filter"`,
+	`"content filter"`,
+}
+
+// isContentModerationFailure 判定一次失败是否为上游内容审核拦截。
+//
+// 形态取证（2026-11-12，生产会话 session-3304f06f）：42 次审核失败在客户端侧统一
+// 呈现为 `Response incomplete: content_filter`，workbuddy 收到的是宿主下发的
+// `finish_reason=content_filter` 终止分片 —— 它是**正常终止**而非错误帧，
+// 因此 sseErrorFrame 捕获不到，必须由本判据在分片层面识别。
+//
+// 精度要求（关键）：本判据在每个流式分片上执行，必须**零误判正常正文**。
+// 因此审核文案（sensitive content 等）只在同时存在 `"error"` 包裹时才算命中——
+// 正文里出现同名词组属于正常内容，不能据此罚号。
+//
+// [参数] body：分片原文或错误文本。
+// [返回] 命中内容审核语义时返回 true。
+// 最近修改时间：2026-11-12；改动原因：新增，内容审核未进入失败分类导致 100% 被审模型无法退出路由。
+func isContentModerationFailure(body string) bool {
+	if strings.TrimSpace(body) == "" {
+		return false
+	}
+	lower := strings.ToLower(body)
+	// 1. 长度类截断必须排除：与审核共用 incomplete_details / finish 语义，
+	//    按 finish_reason 与 reason 双口径精确排除，避免把长度截断记成审核。
+	if strings.Contains(lower, "max_output_tokens") ||
+		strings.Contains(lower, "max_tokens") ||
+		strings.Contains(lower, `"finish_reason":"length"`) ||
+		strings.Contains(lower, `"finish_reason": "length"`) ||
+		strings.Contains(lower, `"reason":"length"`) ||
+		strings.Contains(lower, `"reason": "length"`) {
+		return false
+	}
+	// 2. 字段值位置命中：finish_reason / incomplete_details.reason 取审核值。
+	for _, marker := range contentModerationValueMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	// 3. 错误文本形态：审核文案出现在**错误上下文**中才成立。
+	//
+	//    上一层的字段值命中已覆盖"分片里带 content_filter 值"的正常路径；
+	//    本层处理 sseErrorFrame 产出的裸错误文本（"upstream 200: sensitive
+	//    content error finish reason: sensitive"）—— 那是错误帧抽取结果，
+	//    本身就是错误上下文。
+	//
+	//    区分依据是错误语境标记而非词本身：正常分片是
+	//    `{"choices":[{"delta":{"content":"..."}}]}`，不含 "upstream N:" 前缀
+	//    也不含 reason/finish 等错误措辞；正文里的同名词组因此不会被误判。
+	if strings.Contains(lower, "sensitive content") || strings.Contains(lower, "content error") {
+		return strings.Contains(lower, "upstream ") ||
+			strings.Contains(lower, "finish reason") ||
+			strings.Contains(lower, `"error"`)
+	}
+	return false
+}
+
 // isHardCreditError reports business "out of credits" style failures.
 // 402 is treated as payment/credit. Pure 429 is not hard unless body has credit markers.
 func isHardCreditError(status int, body string) bool {

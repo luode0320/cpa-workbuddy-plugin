@@ -104,6 +104,22 @@ func classifyUpstreamFailure(status int, body string) failureScope {
 	if isChannelBlockError(status, body) {
 		return failureScopeUpstreamBusy
 	}
+	// 0.5 内容审核拦截必须排在账号级 4xx 之前。
+	//
+	//     上游把「输出被安全策略判定违规」以 200 + finish_reason=content_filter
+	//     （宿主转译后为 response.incomplete_details.reason）下发，属正常终止分片
+	//     而非错误帧；但若上游改用 403/4xx 承载同一结论，落在第 1 步之后会被
+	//     isAccountLevel4xxExcludingRateLimit 无条件吞成 failureScopeAccount，
+	//     审核分支永远走不到——这正是 traework 0.5.46 修复在生产上未生效的根因。
+	//
+	//     落 model_rate_limit 而非 account：审核与账号健康无关，禁号会把整池
+	//     逐个摘掉；但必须记冷却，否则 100% 被审的模型没有任何机制退出路由。
+	//
+	//     2026-11-12 生产实证（会话 session-3304f06f）：42 次 content_filter，
+	//     占 finish=error 的 84%，覆盖 31/37 个 turn。
+	if isContentModerationFailure(body) {
+		return failureScopeModelRateLimit
+	}
 	// 1. 硬额度与凭据/端点问题属账号级：换模型也不可用。
 	//    硬额度优先，避免 429 + 额度标记被误判成限流。
 	if isHardCreditError(status, body) || isAccountLevel4xxExcludingRateLimit(status) {

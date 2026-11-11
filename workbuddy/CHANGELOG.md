@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.21.24
+
+### Fix - 内容审核拦截未进入失败分类，100% 被审模型无法退出路由
+
+- 背景: 上游把「输出被安全策略判定违规」以 `finish_reason=content_filter` 终止流
+  （宿主转译后客户端呈现为 `Response incomplete: content_filter`）。该分片是
+  **正常终止**而非错误帧，`sseErrorFrame` 捕获不到，旧实现因此既不记账也不冷却——
+  模型 100% 被审时，插件没有任何机制让它退出路由，用户每一轮都白等一次完整生成。
+- 生产实证（2026-11-12，会话 `session-3304f06f`）: 42 次 `content_filter`，
+  占全部 `finish=error` 的 **84%**（42/50），覆盖 **31/37** 个 turn，
+  时间跨度 2026-11-10 23:24 → 2026-11-12 00:55。**42/42 已产出正文**
+  （14 次还产出了 tool-call）——活干完了，最后一帧被判违规。
+- 判据（`policy.go` 新增 `isContentModerationFailure`）: 覆盖三层书写形态
+  （宿主直出的 `finish_reason` 值、`incomplete_details.reason`、错误帧内的
+  `sensitive content` 文案），并**精确排除**长度截断（`max_output_tokens` /
+  `finish_reason=length`），避免把长度截断记成审核。
+- 精度要求: 判据运行在**每一个流式分片**上，正文即用户内容。因此审核文案只在
+  具备错误语境标记（`upstream N:` / `finish reason` / `"error"`）时才成立——
+  正文里出现同名词组不会被误判成审核（本仓库正是中文小说正文场景）。
+  变异验证: 放宽为无条件认词，3 条防误判用例立即 FAIL。
+- 分类落点（`failure_class.go`）: 新增**第 0.5 步**，排在账号级 4xx **之前**，
+  归 `failureScopeModelRateLimit`。若放在账号级分支之后，上游改用 403 承载审核
+  结论时会被 `isAccountLevel4xxExcludingRateLimit` 无条件吞成 `failureScopeAccount`
+  ——这正是 traework 0.5.46 修复在生产上未生效的根因（同源缺陷）。
+- 落 model_rate_limit 而非 account 的理由: 审核与账号健康无关，`disablesAccount()`
+  为 true 会把整池健康号逐个摘掉；但 `recordsCooldown()` 必须为 true，否则
+  100% 被审的模型无法退出路由。
+- 流式记账（`stream.go`）: 在 emit 前识别审核终止分片并 `noteSSEErrorFailure`，
+  同时置 `contentEmitted = true`——审核发生在正文产出之后，换号重试会产生两份
+  语义冲突的回答（与 `streamReadErrorLeakedMarker` 同一取舍）。分片照常 emit，
+  客户端仍拿到终止信号。非流式路径（`doExecuteOnce`）出口同步补记一次。
+- 记账维度修正（`accountFailover.go`）: `recordSSEErrorFailureForModel` 原先把
+  scope **写死**为 `failureScopeAuthModel`，会让审核失败写盘禁用账号。改为走
+  `classifyUpstreamFailure` 统一判据；渠道满载仍显式返回不记账（罚号只会放大拥堵）。
+  变异验证: 把 scope 改回写死 `AuthModel`，`TestRecordSSEErrorFailureKeepsAccountEnabled`
+  立即 FAIL（需桩化 `failoverResolveIndexFn`，否则 `disableAccountForFailover`
+  在 auth_index 解析为空时直接返回 false，断言会假通过）。
+- 测试: 新增 `content_moderation_test.go`（6 个测试函数、21 条用例），覆盖判据边界、
+  分类落点、流式识别前提、聚合不丢正文、记账不禁号、拥堵不记账。
+- 验证: `python scripts/cgo-shim-build.py workbuddy` build/vet/test 全绿；
+  3 组变异（分类改回 None、scope 写死 AuthModel、判据放宽为无条件认词）全部 KILLED。
+
 ## 0.21.23
 
 ### Fix - DSH 客户端 @ 文件引用段触发 11128，账号模式整轮不可用

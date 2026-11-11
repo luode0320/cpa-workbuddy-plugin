@@ -328,7 +328,23 @@ func recordSSEErrorFailureForModel(authID, model, body string) bool {
 	if !failoverActive() {
 		return false
 	}
-	scope := failureScopeAuthModel
+	// 分类必须走统一判据，不能写死 failureScopeAuthModel：
+	// 内容审核拦截（content_filter）落 model_rate_limit，一旦被当成 AuthModel
+	// 就会写盘禁用账号，把与审核无关的健康号逐个摘掉（整池清零事故同形）。
+	// 2026-11-12 新增：finish_reason=content_filter 终止分片经此记账。
+	//
+	// [参数] body 在 SSE 路径上是分片/错误帧原文，status 固定 200（响应本身是 200）。
+	scope := classifyUpstreamFailure(http.StatusOK, body)
+	// 渠道满载明确不记账：换任何账号都撞同一堵墙，罚号只会缩小可用池
+	// 并放大拥堵。该语义由 failureScopeUpstreamBusy 承载，不得回退成 AuthModel。
+	if scope == failureScopeUpstreamBusy {
+		return false
+	}
+	// 统一判据未命中（None）但调用方已确认「这是一次值得记账的业务失败」：
+	// 保持历史 AuthModel 语义，避免改变既有 SSE 记账覆盖面。
+	if scope == failureScopeNone {
+		scope = failureScopeAuthModel
+	}
 	if isHardCreditError(http.StatusOK, body) {
 		scope = failureScopeAccount
 	}

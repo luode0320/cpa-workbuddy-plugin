@@ -281,6 +281,16 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			if streamChunkHasContent(content) {
 				contentEmitted = true
 			}
+			// 内容审核终止分片：finish_reason=content_filter 是正常终止，不是错误帧，
+			// sseErrorFrame 捕获不到，必须在此显式记一次模型维度冷却，让持续被审的
+			// 模型能退出路由。分片照常 emit（客户端需要终止信号）；同时把
+			// contentEmitted 置 true —— 审核发生在正文产出之后，重试会产生两份
+			// 语义冲突的回答（与 streamReadErrorLeakedMarker 同一取舍）。
+			// 最近修改时间：2026-11-12；改动原因：content_filter 未进入失败分类。
+			if isContentModerationFailure(content) {
+				noteSSEErrorFailure(curAuthID, upstreamModel, content)
+				contentEmitted = true
+			}
 			if sseFramed {
 				cleaned = "data: " + cleaned
 			}
@@ -621,6 +631,13 @@ func doExecuteOnce(body []byte, sa *storedAuth, requestedModel, upstreamModel, h
 	completion, err := aggregateCompletion(reader, requestedModel, statusCode, &firstByteAt)
 	if err != nil {
 		return nil, 0, err
+	}
+	// 非流式路径的审核终止：finish_reason=content_filter 是正常终止分片，
+	// 不带错误，聚合完成后在此补记一次模型维度冷却，让持续被审的模型能退出路由。
+	// 不返回错误：正文已完整折叠，返回错误会让宿主丢弃整份结果。
+	// 最近修改时间：2026-11-12；改动原因：content_filter 未进入失败分类。
+	if sa != nil && isContentModerationFailure(string(completion)) {
+		noteSSEErrorFailure(sa.Account.UID, upstreamModel, "finish_reason: content_filter")
 	}
 	return completion, ttftSince(attemptStarted, firstByteAt), nil
 }
