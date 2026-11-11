@@ -35,6 +35,15 @@
 ## 活动会话进展摘要
 
 
+- 会话（2026-11-11 22:26-22:57）：**qoderwork 导入弹窗改为只认凭据 JSON，删除 PAT 全部逻辑（0.13.16，未发布）**：
+  - **用户诉求**：生产面板截图红框指出导入弹窗仍要 `pt-` PAT，「改成只要选择或者输入 JSON 就导入就可以了，不需要 PAT 的这些逻辑」。
+  - **前端收敛**：弹窗从「`#importPAT` 单条输入 + 批量区块 + 底部单 PAT 按钮」三层压成「选文件行 + 一个大文本框 + 唯一按钮『导入并保存』」。删 `importAuth` / `runBatchImport` / `parseBatchInput` / `describeBatchItems` / `isPATToken` / `credentialPATToken` / `PAT_RE` / `BATCH_GAP_MS` / `.import-batch` 样式；新增 `parseImportInput` / `describeImportItems` / `runImport`，全部输入统一走 `POST /import-cred` 离线回灌。
+  - **后端同步**：删 `handleImportPAT`（67 行）、`POST /import` 路由注册与 `mutatingManagementPath` 条目；`failover_disable_test.go` 白名单审计同步删除 `handleImportPAT` 条目。
+  - **保留**：嵌套/平铺凭据、凭据数组、`{accounts:[{credential}]}` 导出包装、JSONL、多文件多选；逐条串行、单项失败不中断、失败明细常驻、部分成功后收敛为仅失败项、批内去重。auth 文件 `personalToken` 字段与 `jrt-` 刷新兜底链路未动。
+  - **验证**：解析层 16 条 + E2E 26 条断言全绿；**5 组变异 4 KILLED + 1 等价变异（记明原因）**；`cgo-shim-build.py qoderwork` build/vet/test 全绿；无头 Chrome 本地渲染截图确认弹窗结构符合预期。
+  - **文档**：`doc/5-tests/2026-11-11_225600_...验证.md`、`doc/6-review/2026-11-11_225600_..._6-review.md`（STYLE: PASS）、需求主文档追加第 6 节「口径收敛」。
+  - **未做**：未提交 git、未发布、未部署生产；`registry.json` 仍是 0.13.15。
+
 - 会话（2026-11-10 21:20-21:50，接续上条）：**决定性发现——生产流量走宿主桥，插件连接池不参与**：
   - **核心洞察**：0.5.40 把连接池扩到 `MaxIdleConns=200 / PerHost=64` 后 TTFT 未见改善。追查调用链发现生产流式请求走 `hostHTTPDoStream` → **宿主 `host.stream.do` RPC**，完全绕过插件的 `streamHTTPClient`。近 15 分钟日志中 `stream bridge / direct fallback / bridge unavailable` 降级关键字 **0 次**，确认生产 **100% 走宿主桥**。
   - **结论**：插件的连接池配置对生产流量**无效**。连接池在宿主进程内，插件无权配置；宿主 `config.yaml` 也无相关可调项。这解释了 0.5.40 扩容后无改善。

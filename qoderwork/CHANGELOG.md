@@ -1,5 +1,31 @@
 # QoderWork Plugin Changelog
 
+## 0.13.16
+
+### Change - 导入弹窗改为「只认凭据 JSON」，移除 PAT 单条与 PAT 批量逻辑
+
+- 背景: 用户在生产面板指出导入弹窗仍要求粘贴 `pt-` PAT 才能单条导入，与
+  「改成只要选择或输入 JSON 就导入就可以了，不需要 PAT 的这些逻辑」不符；
+  弹窗被切成「单条 PAT 输入框 + 批量混排文本框 + 底部单 PAT 按钮」三层，
+  同一件事有三个入口，PAT 与凭据混排解析还把判定顺序做成了隐性风险。
+- 变更: 弹窗收敛为单一表单——上方「选择 JSON 文件（可多选）」、中间一个大
+  文本框、底部唯一按钮「导入并保存」。全部输入统一走 `POST /import-cred`
+  离线回灌（结构由 `parseStored` 校验后原样落盘），不再有任何上游换 token。
+- 移除: `#importPAT` 单条输入框、`importAuth()`、`api("/import")` 调用、
+  `parseBatchInput` / `describeBatchItems` / `isPATToken` / `credentialPATToken`
+  / `PAT_RE` / `BATCH_GAP_MS`、`{pats:[]}`/`{tokens:[]}` 容器识别、
+  `personalToken` 走 PAT 的分流分支；后端同步删除 `POST /import`
+  （`handleImportPAT`）、其路由注册与 `mutatingManagementPath` 条目。
+- 保留: 嵌套/平铺凭据、凭据数组、`{accounts:[{credential}]}` 导出包装、JSONL
+  五种 JSON 形态全部识别；逐条串行、单项失败不中断、失败明细常驻、部分成功
+  后输入框收敛为仅失败项、批内去重。
+- 验证: `node test/qoderwork/panel_batch_import.mjs`（16 条）与
+  `panel_batch_import_e2e.mjs`（26 条断言）全绿，新增「PAT 入口已彻底移除」
+  「只贴 PAT 文本不打任何端点」「零 /import 请求」三条防回归断言；
+  `cgo-shim-build.py qoderwork` build / vet / test 全绿。
+- 涉及文件: `panel.html`、`management.go`、`credits_handler.go`、
+  `failover_disable_test.go`、`README.md`、`test/qoderwork/panel_batch_import*.mjs`。
+
 ## 0.13.15
 
 ### Fix - 上游 HTTP 客户端补分阶段超时并禁用 h2

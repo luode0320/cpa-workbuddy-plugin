@@ -979,8 +979,7 @@ func TestWhitelistRebuildSitesCarryFailoverMarkers(t *testing.T) {
 	// 允许不搬运的落点：恢复启用（只对 exhausted_disable 可达，与本机制天然互斥，
 	// 号重新可用后不该再被探活认领）。
 	allowed := map[string]string{
-		"reenableAuth":    "恢复启用，本就应清除禁用标记",
-		"handleImportPAT": "导入新凭据，盘上无既有文档",
+		"reenableAuth": "恢复启用，本就应清除禁用标记",
 	}
 
 	carryMarker := "putFailoverMarkersIntoExtra"

@@ -128,8 +128,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Manually check in one account (auth_index) or all."},
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one (auth_index query) or all accounts."},
-			{Method: http.MethodPost, Path: base + "/import", Description: "Import a QoderWork PAT (pt-...) by exchanging it for a jobToken pair and persisting."},
-			{Method: http.MethodPost, Path: base + "/import-cred", Description: "Restore one credential JSON previously exported by /export (structural check only, no upstream exchange)."},
+			{Method: http.MethodPost, Path: base + "/import-cred", Description: "Import one credential JSON (nested/flat/array elements) previously exported by /export; structural check only, no upstream exchange."},
 			{Method: http.MethodGet, Path: base + "/export", Description: "Export all QoderWork credentials as a single JSON backup document (raw physical files, re-importable via /import-cred)."},
 			{Method: http.MethodGet, Path: base + "/export/zip", Description: "Export each credential as its own JSON file inside one zip archive (per-account backup/migration)."},
 			{Method: http.MethodPost, Path: base + "/select", Description: "Select the active account card used for chat routing (body: {auth_index})."},
@@ -183,8 +182,6 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinConfig(req)))
 	case req.Method == http.MethodGet && path == base+"/credits":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCreditsQuery(req)))
-	case req.Method == http.MethodPost && path == base+"/import":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportPAT(req)))
 	case req.Method == http.MethodPost && path == base+"/import-cred":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportCred(req)))
 	case req.Method == http.MethodGet && path == base+"/export":
@@ -309,7 +306,6 @@ func mutatingManagementPath(path string) bool {
 	case base + "/refresh",
 		base + "/checkin",
 		base + "/checkin/config",
-		base + "/import",
 		base + "/import-cred",
 		base + "/export",
 		base + "/export/zip",

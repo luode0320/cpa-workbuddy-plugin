@@ -15,68 +15,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// handleImportPAT accepts a raw PAT string (pt-...), exchanges it for a
-// jobToken pair, fetches userinfo, and persists via host.auth.save.
-// This is the primary onboarding path for QoderWork — PATs are created on
-// qoder.com.cn by the user and pasted into the panel.
-func handleImportPAT(req pluginapi.ManagementRequest) map[string]any {
-	var body struct {
-		PAT string `json:"pat"`
-	}
-	_ = json.Unmarshal(req.Body, &body)
-	pat := strings.TrimSpace(body.PAT)
-	if pat == "" {
-		return map[string]any{"success": false, "error": "missing pat field"}
-	}
-	if !strings.HasPrefix(pat, "pt-") {
-		return map[string]any{"success": false, "error": "PAT must start with pt-"}
-	}
-	tok, err := exchangePATForJobToken(pat)
-	if err != nil {
-		return map[string]any{"success": false, "error": "jobToken exchange: " + err.Error()}
-	}
-	ui, _ := fetchUserInfo(tok.Token) // best-effort
-	sa := buildStoredAuthFromJobToken(pat, tok, ui)
-
-	fileJSON, err := buildAuthFileJSON(sa, false, displayNote(sa, nil, false), nil)
-	if err != nil {
-		return map[string]any{"success": false, "error": err.Error()}
-	}
-	auth := toAuthData(sa)
-	saveReq := pluginapi.HostAuthSaveRequest{
-		Name: auth.FileName,
-		JSON: fileJSON,
-	}
-	saveBody, _ := json.Marshal(saveReq)
-	rawResp, err := hostCall(pluginabi.MethodHostAuthSave, saveBody)
-	if err != nil {
-		return map[string]any{"success": false, "error": "host.auth.save: " + err.Error()}
-	}
-	var env envelope
-	if err := json.Unmarshal(rawResp, &env); err != nil || !env.OK {
-		msg := "host.auth.save failed"
-		if env.Error != nil && env.Error.Message != "" {
-			msg = env.Error.Message
-		}
-		return map[string]any{"success": false, "error": msg}
-	}
-	var saveResp pluginapi.HostAuthSaveResponse
-	_ = json.Unmarshal(env.Result, &saveResp)
-	return map[string]any{
-		"success":  true,
-		"name":     saveResp.Name,
-		"path":     saveResp.Path,
-		"uid":      sa.Account.UID,
-		"nickname": sa.Account.Nickname,
-		"file":     auth.FileName,
-	}
-}
-
-// handleImportCred restores one credential JSON previously produced by
-// GET /export (the panel splits a wrapper file into per-account credentials
-// and posts each one here). Unlike handleImportPAT this performs no upstream
-// exchange — the payload is persisted as-is after a parseStored structural
-// check, so a backup taken on another machine can be restored offline.
+// handleImportCred imports one credential JSON as-is (the panel splits a
+// wrapper file / array / JSONL into per-account credentials and posts each one
+// here). The payload is persisted after a parseStored structural check, so a
+// backup taken on another machine can be restored offline — no upstream
+// exchange happens on this path.
 // The credential is the raw physical auth file (nested form), so saving it
 // verbatim preserves fields a rebuild could drop.
 func handleImportCred(req pluginapi.ManagementRequest) map[string]any {

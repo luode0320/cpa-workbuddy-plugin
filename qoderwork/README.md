@@ -1,12 +1,12 @@
 # QoderWork CPA 插件
 
-[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 的 QoderWork（qoder.com.cn，CN 区）Provider 插件：多账号 OAuth/PAT 双登录、动态模型、COSY 签名推理、每日签到、积分面板、token 自动保活。
+[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 的 QoderWork（qoder.com.cn，CN 区）Provider 插件：多账号 OAuth 登录与凭据 JSON 导入、动态模型、COSY 签名推理、每日签到、积分面板、token 自动保活。
 
 ## 功能
 
 | 能力 | 说明 |
 |---|---|
-| **双登录方式** | ① OAuth 设备授权（PKCE，浏览器授权，dt- 30 天 + drt- 1 年自动旋转）② PAT 导入（pt-，长期有效兜底）——两家族可共存于同一 auth 文件 |
+| **双登录方式** | ① OAuth 设备授权（PKCE，浏览器授权，dt- 30 天 + drt- 1 年自动旋转）② 凭据 JSON 导入（离线回灌完整 auth 文件）——两家族可共存于同一 auth 文件 |
 | **登录自动领包** | OAuth 登录成功后自动判断并领取一次性 Pro 升级包（eligibility → claim） |
 | **COSY 推理** | RSA 包 AES 会话密钥 + MD5 请求签名，对接 gateway.qoder.com.cn SSE 流式 |
 | **动态模型** | COSY 拉取 `/algo/api/v2/model/list`（chat scene），10 静态模型兜底 |
@@ -70,20 +70,21 @@ oauth-model-alias:
 2. 浏览器打开授权链接 → 登录 qoder.com.cn（阿里云 SSO）→ 点 Continue 授权
 3. 插件自动轮询拿 token 落盘（dt-/drt-），并自动领取 Pro 升级包（若 eligible）
 
-### 方式二：PAT 导入
+### 方式二：凭据导入（JSON，支持批量）
 
-1. qoder.com.cn → 设置 → Personal Access Token → 创建（pt- 开头）
-2. 插件面板（`/v0/resource/plugins/qoderwork/panel`）→ 右上角「导入 QoderWork 凭证」→ 粘贴 PAT → 导入
-3. 插件自动换 jobToken（jt-/jrt-）落盘
+1. 面板（`/v0/resource/plugins/qoderwork/panel`）→ 右上角「导入 QoderWork 凭证」
+2. 粘贴或选择凭据 JSON，逐条串行离线回灌，落盘为 `qoderwork-<uid>.json`
 
-### 方式三：批量导入（多文件 / 混排 JSON）
+支持的输入形态（同一份输入里混排也认）：
 
-同一弹窗的「批量导入」区块支持一次铺多个账号：
-
+- **单条凭据**：嵌套 `{"auth":{...},"account":{...}}` 或平铺 `{"accessToken":...,"uid":...}`
+- **凭据数组**：`[{...},{...}]`
+- **导出备份**：`{"accounts":[{"credential":{...}}]}`（即面板「导出备份」产物）
+- **JSONL**：每行一个 JSON 对象
 - **多文件**：一次选择多个 `.json` / `.jsonl` / `.txt`（单文件 ≤ 2MB），选中即展开为逐条待导入项
-- **统一文本**：可混排 PAT 列表（每行一个 `pt-`，一行内逗号/空格分隔多个）、单个凭据、凭据数组、导出备份文件、`{pats:[]}` 容器、JSONL
-- **分流规则**：PAT 走 `POST /import`（上游换 token）；完整凭据走 `POST /import-cred`（离线回灌，不换 token）
-- **容错**：逐条串行、单项失败不中断，失败明细常驻弹窗可原地重试，已成功项不重复写入
+
+统一走 `POST /import-cred`（离线回灌，不打上游换 token）；逐条串行、单项失败不中断，
+失败明细常驻弹窗可原地重试，已成功项不会重复写入。
 
 ### 面板
 
@@ -91,7 +92,7 @@ oauth-model-alias:
 
 - 账号卡片：积分余额 / 计划 / 签到按钮（签到后返回最新积分）
 - 「全部签到」批量签到；自动签到开关（00/04/08/12/16/20）
-- 「导入 QoderWork 凭证」：单 PAT 快速导入 + 批量导入（见方式三）
+- 「导入 QoderWork 凭证」：粘贴或选择凭据 JSON 一键导入（见方式二）
 - 签到按钮显示「未下发」= 上游按账号下发了活动框架但没有 `CLAIM_BENEFIT` 条目（部分账号本来就没有签到活动），不是插件失败；「不可签」= 该账号不参与活动
 - 签到排查看日志：`docker logs cli-proxy-api | grep '\[qoderwork\] checkin'`，可见 `ok credit=+N` / `skip reason=already` / `skip reason=no_campaign` / 失败原因
 - 上游 campaigns **不提供连续签到天数**，面板不再显示「连续 N 天」（此前为编造值）

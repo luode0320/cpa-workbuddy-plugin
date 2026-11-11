@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 /**
- * qoderwork 面板「批量导入」端到端回归（Node vm + DOM 桩，真实执行面板内联 JS）。
+ * qoderwork 面板「凭据导入」端到端回归（Node vm + DOM 桩，真实执行面板内联 JS）。
  *
  * 纯解析函数已由 panel_batch_import.mjs 锁死，这里只回答一个问题：
- * 点一次「批量导入」后，PAT 是否真的走 /import、凭据是否真的走 /import-cred、
- * 单项失败是否不拖垮其余项。这三条链路断了，前端解析再对也导不进账号。
+ * 点一次「导入并保存」后，凭据是否真的逐条走 /import-cred、单项失败是否
+ * 不拖垮其余项、是否还会误打 PAT 端点 /import。这三条链路断了，前端解析
+ * 再对也导不进账号。
+ *
+ * 2026-11-11 起导入只认凭据 JSON（PAT 入口已移除），因此这里额外断言
+ * 全程「零 /import 请求」，防止 PAT 逻辑悄悄回来。
  *
  * 用法：node test/qoderwork/panel_batch_import_e2e.mjs [panel-html-path]
  *   （可选指定面板路径，用于对变异副本做反证验证）
@@ -19,9 +23,10 @@ const panelPath = process.argv[2]
   : path.join(process.cwd(), "qoderwork", "panel.html");
 const html = fs.readFileSync(panelPath, "utf8");
 const SS_KEY = "qoderwork-mgmt-key";
-const PAT1 = "pt-aaaaaaaaaaaa1111";
-const PAT2 = "pt-bbbbbbbbbbbb2222";
-const PAT3 = "pt-cccccccccccc3333";
+const CRED1 = { auth: { accessToken: "jt-1" }, account: { uid: "u1" } };
+const CRED2 = { auth: { accessToken: "jt-2" }, account: { uid: "u2" } };
+const CRED3 = { auth: { accessToken: "jt-3" }, account: { uid: "u3" } };
+const PAT_TEXT = "pt-aaaaaaaaaaaa1111";
 
 function loadPanelContext(opts) {
   const options = opts || {};
@@ -78,23 +83,21 @@ function loadPanelContext(opts) {
     documentElement: mkEl("html"),
   };
 
-  let patCall = 0;
+  let credCall = 0;
   const fetchStub = async (url, init) => {
     const u = String(url);
     const body = String((init && init.body) || "");
     fetches.push({ url: u, body });
     let payload = {};
     if (u.indexOf("/import-cred") >= 0) {
-      payload = { success: true, uid: "u-cred", file: "qoderwork-u-cred.json" };
-    } else if (u.indexOf("/import") >= 0) {
-      patCall++;
+      credCall++;
       // 异常路径与业务失败路径都要覆盖：前者走 catch，后者走 success:false 分支，
-      // 两条都必须被记进失败明细，否则批量导入会静默丢账号。
-      if (options.throwPATAt && patCall === options.throwPATAt) throw new Error("network down");
-      const bad = options.failPATAt && patCall === options.failPATAt;
+      // 两条都必须被记进失败明细，否则导入会静默丢账号。
+      if (options.throwCredAt && credCall === options.throwCredAt) throw new Error("network down");
+      const bad = options.failCredAt && credCall === options.failCredAt;
       payload = bad
-        ? { success: false, error: "PAT 已失效（上游 401）" }
-        : { success: true, nickname: "nick" + patCall, uid: "u-pat" + patCall };
+        ? { success: false, error: "credential has empty uid" }
+        : { success: true, nickname: "nick" + credCall, uid: "u-cred" + credCall };
     } else if (u.indexOf("/accounts") >= 0) {
       payload = { accounts: [], active_auth: "", server_time: "2026-11-07 01:00:00" };
     }
@@ -150,79 +153,87 @@ function check(label, cond, detail) {
   }
 }
 
-const importCalls = (fs) => fs.filter((f) => /\/import$/.test(f.url) || /\/import\?/.test(f.url));
-const credCalls = (fs) => fs.filter((f) => f.url.indexOf("/import-cred") >= 0);
+function patCalls(fs) {
+  return fs.filter((f) => /\/import$/.test(f.url) || /\/import\?/.test(f.url));
+}
+function credCalls(fs) {
+  return fs.filter((f) => f.url.indexOf("/import-cred") >= 0);
+}
 
 (async () => {
   console.log("[回归] 面板 = " + panelPath);
-  console.log("场景1 多行 PAT → 逐条走 /import：");
+  console.log("场景1 凭据 JSON 数组 → 逐条走 /import-cred：");
   const s1 = loadPanelContext();
-  s1.els("importBatchText").value = PAT1 + "\n" + PAT2;
+  s1.els("importBatchText").value = JSON.stringify([CRED1, CRED2]);
   const btn1 = s1.els("batchImportBtn");
-  await s1.ctx.runBatchImport(btn1);
-  const p1 = importCalls(s1.fetches);
-  check("发起 2 次 /import", p1.length === 2, "实际 " + p1.length);
-  check("第 1 次携带 PAT1", p1.length === 2 && p1[0].body.indexOf('"pat":"' + PAT1 + '"') >= 0, p1[0] && p1[0].body);
-  check("第 2 次携带 PAT2", p1.length === 2 && p1[1].body.indexOf('"pat":"' + PAT2 + '"') >= 0, p1[1] && p1[1].body);
-  check("未误走 /import-cred", credCalls(s1.fetches).length === 0, "出现了 /import-cred 请求");
+  await s1.ctx.runImport(btn1);
+  const c1 = credCalls(s1.fetches);
+  check("发起 2 次 /import-cred", c1.length === 2, "实际 " + c1.length);
+  check("第 1 条携带 u1", c1.length === 2 && c1[0].body.indexOf('"uid":"u1"') >= 0, c1[0] && c1[0].body);
+  check("第 2 条携带 u2", c1.length === 2 && c1[1].body.indexOf('"uid":"u2"') >= 0, c1[1] && c1[1].body);
+  check("未打 PAT 端点 /import", patCalls(s1.fetches).length === 0, "出现了 /import 请求");
   check("全部成功后关闭弹窗", !s1.els("importModal").classList._has("show"), "弹窗仍打开");
   check("全部成功后清空输入", s1.els("importBatchText").value === "", "输入未清空");
   check("按钮已复位可再次点击", btn1.disabled === false, "按钮仍禁用");
 
-  console.log("场景2 凭据 JSON 数组 → 逐条走 /import-cred：");
+  console.log("场景2 导出备份包装 → 展开为逐条凭据：");
   const s2 = loadPanelContext();
-  const creds = [
-    { auth: { accessToken: "jt-1" }, account: { uid: "u1" } },
-    { auth: { accessToken: "jt-2" }, account: { uid: "u2" } },
-  ];
-  s2.els("importBatchText").value = JSON.stringify(creds);
-  await s2.ctx.runBatchImport(s2.els("batchImportBtn"));
-  const c2 = credCalls(s2.fetches);
-  check("发起 2 次 /import-cred", c2.length === 2, "实际 " + c2.length);
-  check("第 1 条凭据内容正确", c2.length === 2 && c2[0].body.indexOf('"uid":"u1"') >= 0, c2[0] && c2[0].body);
-  check("未误走 /import", importCalls(s2.fetches).length === 0, "出现了 /import 请求");
+  s2.els("importBatchText").value = JSON.stringify({
+    version: 1,
+    plugin: "qoderwork-provider",
+    accounts: [{ credential: CRED1 }, { credential: CRED2 }],
+  });
+  await s2.ctx.runImport(s2.els("batchImportBtn"));
+  check("发起 2 次 /import-cred", credCalls(s2.fetches).length === 2, "实际 " + credCalls(s2.fetches).length);
+  check("未打 PAT 端点 /import", patCalls(s2.fetches).length === 0, "出现了 /import 请求");
 
-  console.log("场景3 混排（PAT + 凭据）→ 各走各的端点：");
+  console.log("场景3 JSONL → 每行一条：");
   const s3 = loadPanelContext();
-  s3.els("importBatchText").value =
-    PAT1 + "\n" + JSON.stringify({ auth: { accessToken: "jt-3" }, account: { uid: "u3" } });
-  await s3.ctx.runBatchImport(s3.els("batchImportBtn"));
-  check("1 次 /import", importCalls(s3.fetches).length === 1, "实际 " + importCalls(s3.fetches).length);
-  check("1 次 /import-cred", credCalls(s3.fetches).length === 1, "实际 " + credCalls(s3.fetches).length);
+  s3.els("importBatchText").value = JSON.stringify(CRED1) + "\n" + JSON.stringify(CRED2);
+  await s3.ctx.runImport(s3.els("batchImportBtn"));
+  check("发起 2 次 /import-cred", credCalls(s3.fetches).length === 2, "实际 " + credCalls(s3.fetches).length);
+  check("未打 PAT 端点 /import", patCalls(s3.fetches).length === 0, "出现了 /import 请求");
 
   console.log("场景4 单项失败不拖垮其余项，失败明细可见：");
-  const s4 = loadPanelContext({ failPATAt: 2, throwPATAt: 3 });
-  s4.els("importBatchText").value = PAT1 + "\n" + PAT2 + "\n" + PAT3;
+  const s4 = loadPanelContext({ failCredAt: 2, throwCredAt: 3 });
+  s4.els("importBatchText").value = JSON.stringify([CRED1, CRED2, CRED3]);
   s4.els("importModal").classList.add("show");
-  await s4.ctx.runBatchImport(s4.els("batchImportBtn"));
-  const p4 = importCalls(s4.fetches);
-  check("仍尝试了全部 3 项", p4.length === 3, "实际 " + p4.length);
+  await s4.ctx.runImport(s4.els("batchImportBtn"));
+  check("仍尝试了全部 3 项", credCalls(s4.fetches).length === 3, "实际 " + credCalls(s4.fetches).length);
   const resultHTML = s4.els("batchResult").innerHTML;
   check("结果面板已展示", s4.els("batchResult").classList._has("show"), "结果面板未显示");
-  check("业务失败原因可见", resultHTML.indexOf("PAT 已失效") >= 0, resultHTML.slice(0, 200));
+  check("业务失败原因可见", resultHTML.indexOf("credential has empty uid") >= 0, resultHTML.slice(0, 200));
   check("请求异常也被记为失败", resultHTML.indexOf("network down") >= 0, resultHTML.slice(0, 200));
   check("有失败时保留弹窗便于重试", s4.els("importModal").classList._has("show"), "弹窗被关闭");
   check("进度提示已清空", s4.els("batchProgress").textContent === "", "进度残留");
-  // 部分成功后输入框收敛为仅失败项，重试不会重复导入已成功的 PAT1
+  // 部分成功后输入框收敛为仅失败项，重试不会重复导入已成功的 u1
   const retryText = s4.els("importBatchText").value;
-  check("重试文本只剩失败项", !retryText.includes(PAT1), "重试文本仍含已成功的 PAT1：" + retryText);
-  check("重试文本保留业务失败项", retryText.includes(PAT2), "缺 PAT2：" + retryText);
-  check("重试文本保留异常项", retryText.includes(PAT3), "缺 PAT3：" + retryText);
+  check("重试文本只剩失败项", !retryText.includes('"u1"'), "重试文本仍含已成功的 u1：" + retryText);
+  check("重试文本保留业务失败项", retryText.includes('"u2"'), "缺 u2：" + retryText);
+  check("重试文本保留异常项", retryText.includes('"u3"'), "缺 u3：" + retryText);
 
   console.log("场景5 无输入时拒绝执行并提示：");
   const s5 = loadPanelContext();
-  await s5.ctx.runBatchImport(s5.els("batchImportBtn"));
+  await s5.ctx.runImport(s5.els("batchImportBtn"));
   check("未发起任何导入请求",
-    importCalls(s5.fetches).length === 0 && credCalls(s5.fetches).length === 0,
+    patCalls(s5.fetches).length === 0 && credCalls(s5.fetches).length === 0,
     "空输入仍发了请求");
 
-  console.log("场景6 批内重复项去重，不重复打上游：");
+  console.log("场景6 只贴 PAT 文本 → 判为无法识别，不打任何端点：");
   const s6 = loadPanelContext();
-  s6.els("importBatchText").value = PAT1 + "\n" + PAT1 + "\n" + PAT2;
-  await s6.ctx.runBatchImport(s6.els("batchImportBtn"));
-  const p6 = importCalls(s6.fetches);
-  check("重复 PAT 只导 1 次（总计 2 次）", p6.length === 2, "实际 " + p6.length);
-  check("去重后第二项是 PAT2", p6.length === 2 && p6[1].body.indexOf(PAT2) >= 0, p6[1] && p6[1].body);
+  s6.els("importBatchText").value = PAT_TEXT;
+  await s6.ctx.runImport(s6.els("batchImportBtn"));
+  check("未发起 /import 请求", patCalls(s6.fetches).length === 0, "仍打了 PAT 端点");
+  check("未发起 /import-cred 请求", credCalls(s6.fetches).length === 0, "把 PAT 误当凭据提交");
+  check("失败明细给出无法识别", s6.els("batchResult").innerHTML.length === 0, "不应写结果面板");
+
+  console.log("场景7 批内重复项去重：");
+  const s7 = loadPanelContext();
+  s7.els("importBatchText").value = JSON.stringify([CRED1, CRED1, CRED2]);
+  await s7.ctx.runImport(s7.els("batchImportBtn"));
+  const c7 = credCalls(s7.fetches);
+  check("重复凭据只导 1 次（总计 2 次）", c7.length === 2, "实际 " + c7.length);
+  check("去重后第二项是 u2", c7.length === 2 && c7[1].body.indexOf('"uid":"u2"') >= 0, c7[1] && c7[1].body);
 
   if (failures.length) {
     console.log("\n" + failures.length + " 项失败");
