@@ -89,3 +89,22 @@ Safeguard Killer 的前身是 `Quota Smart Router`（配额智能路由），改
 `refusal.go` 的 `emitExhaustedNoticeStream` 与 `buildExhaustedNonStreamBody` 只认 `claude` 与「其它（chat）」两种格式，而 responses 请求经 `effectiveFormat` 得到的是 `"openai-response"`，会落进 chat 分支。下游 `responsesSSEFramer` 只认 `response.completed` / `response.incomplete` 等终止事件，chat 帧不含终止事件即报 `upstream stream closed before a terminal event`（502），客户端侧表现为 `TRANSPORT` 重试。
 
 该缺口在本次瘦身之前就存在，与配额链无关，单独留作后续修复项。
+
+## 7. 发布与生产验收（0.1.7）
+
+| 环节 | 证据 |
+| --- | --- |
+| 代码提交 | `d4c2146`（15 文件 +132/−3096），push 成功 |
+| 文档提交 | `13c57f5`（实施总览 + `PROJECT_CURRENT.md` + `PROJECT_HISTORY.md`） |
+| CI | dispatch 产生 run 1627 / 1628（均 `head_sha=d4c2146`）。**run 1627 的 Release 是 skipped**（无 build-cross 产物）；run 1628 的 `darwin/arm64` 被 cancelled 但 `windows/amd64` 最终 success，**Release job success**，产出 tag `safeguard-killer-v0.1.7` |
+| Release 资产 | 6 个：5 平台 zip + `checksums.txt`（新增 `windows_arm64` 槽位，此前 0.1.6 缺） |
+| 资产校验 | `download-release-assets.py 0.1.7 safeguard-killer` → `ALL CHECKSUMS OK`；`safeguard-killer.so` 26,742,816 B、sha256 `bd945859d4497c585ba20cbedb3b5aab6cbc7d9bc8a579f4dc4775c3337f4f94` |
+| 产物内容核验 | `.so` 内字符串：`0.1.7` 命中 2、`hasTruncatedOrReasoningOutput` 1、`reasoning_content` 11、`empty response (no text or tool calls)` 1；**`scheduler.pick` / `host.auth.list` / `orderByQuotaWeightedRandom` / `skipReason` / `min_remaining` / `groupStrategyQuota` 全部 0 命中** —— 删除项确实不在二进制里 |
+| registry | `publish-assets.py safeguard-killer 0.1.7 --allow-missing` → `updated safeguard-killer -> 0.1.7: 5 artifacts`；`validate-registry.py` OK（12 plugin / schema v2）；另手改描述删去 `quota-aware credential balancing` 与 `Requires management_key`，tags 去掉 `Scheduler` / `Quota`；提交 `16cc5db` |
+| 生产热重载 | `POST /v0/management/plugin-store/safeguard-killer/install?version=0.1.7&source=source-636fa01121af` → 200 `restart_required:false`；日志 `plugin hot reloaded active_version=0.1.7 retired_version=0.1.6` |
+| 落盘一致性 | `/usr/local/src/cli-proxy-api/plugins/linux/amd64/safeguard-killer-v0.1.7.so` 26,742,816 B、sha256 `bd945859d4497c585ba20cbedb3b5aab6cbc7d9bc8a579f4dc4775c3337f4f94` — 与本地 release zip 内 `.so` **逐字节一致** |
+| 状态接口 | `GET /v0/management/plugins/safeguard-killer/state` → `version=0.1.7`；`config` 只剩 `features` / `groups` / `idle_minutes` / `stream_prefetch_bytes` 四键（`min_remaining`、`management_key` 已消失）；9 个破甲 feature 齐全；`models` 由分组推导为 `["1","deepseek-v4-pro"]` |
+| 真机验收（破甲仍工作） | `deepseek-v4-pro` + `max_tokens=300` → 200、`served=deepseek-v4-pro`、`finish=stop`、正文「你好呀，见到你真好！」、`sk_switch=False`；`DeepSeek-V4-Pro`（大写）→ 200、`served=deepseek-v4-pro`、`finish=stop`；流式 14 帧、`finish=stop`、content 21 字符 |
+| 真机验收（0.1.6 截断放行未被误删） | `hy4free` + 300 → 200、`served=hy4-free`、`finish=length`、`content_len=0`、`reasoning_len=505`、**`sk_switch=False`**（不判空响应、不换模型） |
+| 真机验收（分组链仍工作） | `state.decisions` 新增 2 条 `kind=group`、`model=1`、`reason=served by deepseek-v4-pro`、`attempts=[{result:served}]` |
+| 健康快照 | 面板 `/v0/resource/plugins/safeguard-killer/ui` 200（50,219 B）、`/state` 200；`panic|fatal|unknown_method|not_supported` 近 10 分钟 **0 命中**（证明删掉 `scheduler.pick` 后宿主没有调用它）；容器 `running`、`RestartCount=2`、`StartedAt=2026-11-11T22:52:32Z` **未重启**；磁盘 `/dev/vda1 29G 23G 6.7G 78%` |
