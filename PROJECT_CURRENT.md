@@ -35,6 +35,18 @@
 ## 活动会话进展摘要
 
 
+- 会话（2026-11-12 22:05-22:52）：**workbuddy 0.21.26：导入原生兼容第三方 `auth_raw`/`profile_raw` 记录（已发布 + 生产验收通过）**：
+  - **用户诉求**：先报「work10.json 导入到 wokrbuddy 失败了」，裁定「改成可导入的给我们手动导入就可以了」拿到转换产物后，进一步要求「把 wokrbuddy 的导入兼容一下这种格式的 json，下次我们就不用手动转换手动导入了」。
+  - **根因（非插件 bug）**：第三方导出文件是**顶层数组 + `auth_raw`/`profile_raw` 嵌套 + `access_token` 蛇形命名**，而 `workbuddy/main.go:510 parseStored` 只认「顶层有 `auth` 键的嵌套形态」与「扁平 `accessToken`」，两者都不匹配 ⇒ 逐条 `parse_error: missing accessToken`。`panel.html:1639 expandCredentials` 会把顶层数组展开成 10 条，但每条仍无 `accessToken`。
+  - **实现（6 文件 +267/−6）**：① 新建 `workbuddy/auth_thirdparty.go`——`thirdPartyRecord`、`isThirdPartyStored(probe)`（认 `auth_raw`/`profile_raw`/`access_token` 任一键）、`parseThirdPartyStored(raw)`、`epochsToSeconds(v)`（`>1e11` 判毫秒则 `/1000`）；② `main.go:510 parseStored` 改为**三分支分发**（嵌套 `auth` / 第三方 `isThirdPartyStored` / 扁平 `accessToken`），末尾统一校验 accessToken；③ `panel.html:266` 导入提示补第三方形态；④ `VERSION` + `main.go:359 var version` = **0.21.26**、`CHANGELOG.md` 加 0.21.26 节；⑤ 新增 `test/workbuddy/auth_thirdparty_test.go`（5 用例：第三方记录 / 令牌回落 / 嵌套与扁平不受影响 / 缺令牌报错 / 毫秒换算）。
+  - **为什么不改 panel 的展开逻辑**：`expandCredentials` 三条既有分支已足够；转换收敛在 `parseStored` 一处，导入、`handleParseAuth` 认领、`handleExecExecute`、导出回读等 10 个调用点全部自动受益。
+  - **验证**：`cgo-shim-build.py workbuddy` build/vet/test 全绿（34.078s）；真实数据探针把 `work10.json` 10 条逐条过 `parseStored` 输出 `verified 10/10 credentials`（uid/昵称/`expiresAt=1796910717` 秒级/`domain=www.workbuddy.cn`/`atLen=1539`/`rtLen=1540` 全对）；gofmt 干净；panel 两段脚本 `node --check` exit=0；四个文件 `bom=False`。
+  - **发布链**：`fabbed3`（代码 6 文件）→ CI run **43238620141**（`allow_partial=true`）`Release` job success、13 个 Test job 全绿（`windows-arm64` 失败 + `darwin/arm64` cancelled 为踩坑 44 已知形态）→ 4 assets `ALL CHECKSUMS OK` → `publish-assets.py --allow-missing` → registry `adf788c`（4 artifacts）。
+  - **生产（热重载零重启）**：`POST /v0/management/plugin-store/workbuddy-provider/install?version=0.21.26` → `restart_required:false`；`hot reloaded active_version=0.21.26 retired_version=0.21.25`；落盘 `.so` 8,466,976 B sha256 **`fca9f1550424b2136f7e58f0a01ef8e0e99f526c98048669620637ee54a70cca`** 与本地 release zip 逐字节一致，`grep -a -c auth_raw` = 3；面板 `/v0/resource/plugins/workbuddy-provider/panel` 200 / 86919 B 含 `auth_raw`；账号池 **30 个**，work10.json 的 10 个 uid **10/10 已在生产**。
+  - **生产行为验收（决定性）**：取 `work10.json` 中 uid `399529bf-4251-4f08-b9a8-c0ca053c4b3d` 的**原始未转换记录**直接 POST `/import` → 200 `success:true`；落盘 `workbuddy-399529bf-….json` 3469 B，`auth keys=['accessToken','domain','expiresAt','refreshToken']`、`expiresAt` 为 **int 1796910717（毫秒已 /1000）**、`domain=www.workbuddy.cn`、`atLen/rtLen=1539/1540`、`account.uid` 正确、`note=CN · 积分未知`、**`auth_raw` 残留 False**。
+  - **新踩坑**：① `registry.json` raw CDN 这次滞后 **4.5 分钟**（14 次重试全旧版），改用 GitHub Contents API（`/contents/registry.json?ref=main` + base64）才读到 0.21.26；② auth 文件在**容器内** `/root/.cli-proxy-api/`（宿主同名路径不存在），且容器内无 `python3`，需 `docker exec cat > /tmp/x.json` 拉到宿主再解析；③ 生产管理密钥在 `config.yaml` 第 **479** 行 `workbuddy-provider` 段的 `cpa_management_key`（9 字节明文），`remote-management.secret-key` 取不到（`rm_key_len=0`，用它 401）。
+  - **遗留**：`darwin_arm64` / `windows_arm64` 平台缺件（同 0.21.25，按 `--allow-missing` 剔除槽位）；`doc/5-tests/` 与 `doc/6-review/` 未为本次改动补验证记录与风格回归记录。
+
 - 会话（2026-11-12 21:09-22:10）：**qoderwork 0.13.17：面板「测试」把上游容量排队（10605 排队帧）与账号故障分开（生产已生效）**：
   - **用户诉求**：贴生产面板截图 + 报错 `活跃测试失败 (模型: Qwen4-Max-Preview): upstream 200: 403: 10605: {"isQueued":true,"modelKey":"qmodel_latest","queueCount":1,"queueType":"p4","retryAfterSeconds":60,"serviceAvailable":true,"subCode":"RESOURCE_LIMIT","waitTime":60}`，问「QoderWork 测试 Qwen4-Max-Preview 失败」。
   - **根因（非账号故障）**：该响应是上游**容量排队帧**（HTTP 200 + 顶层 `code=403` + 内嵌 10605/`isQueued`，`serviceAvailable=true`），不是凭据失效或账号坏。failover 侧早已正确拦截（`accountFailover.go:274` `isQueueFrame(body) → return false`，不计数不冷却；`failover_disable.go` 排队帧不触发禁用），**缺陷只在用户呈现层**：`sendActivePingQoder` 把排队帧当普通错误抛，面板只能显示红色「测试失败」+ 截断 200 字符的原始 JSON 转义串（`&#34;`），用户无法分辨「上游拥堵」还是「账号坏了」。
@@ -178,24 +190,3 @@
   - **超时换号重试收益模拟**：若 TTFT 超 15s 换号（840 样本），11.1% 的请求触发，其中 **82.8% 得到改善**（p50 从 33702ms 降到 18997ms）。但代价是这 11.1% 必然多付 15 秒，且换号后新账号仍是同分布抽样（p50 4s/p90 20s），对原本 20 秒的请求反而变差；同时增加 11% 上游调用量。**决定不实施**。
   - **本轮最终结论**：上游 prefill 存在不可预测的突发排队，是首字延迟长尾的唯一根因。插件侧可优化点已全部落地（首字闸门 1.2s、错误即时化、prefill 原样透传）。若需进一步改善只能减少 input 长度（客户端侧决策）。
   - **文档**：诊断文档扩至 15 节（26,989 字节）。
-
-- 会话（2026-11-10 00:00-00:20，接续上条）：**完整归因收敛——prefill 占 59.3%，生成速度与 workbuddy 仅差 7%**：
-  - **流全程耗时（近 3h，配对 1879 条 scheduled→done）**：p50 **9.0s**、p90 **40.0s**、max **558s**；≥10s 占 48.3%、≥20s 占 **26.8%**、≥60s 占 **5.4%**。直接对应「生成时间 100s+」反馈。
-  - **贡献拆解（近 12h，n=1991）**：**prefill 占 59.3%**（p50 5628ms / p90 34236ms），生成占 40.7%（p50 2342ms / p90 16918ms）。
-  - **生成速度对照（决定性）**：traework **168.1 tok/s** vs workbuddy **181.5 tok/s**，**仅差 7%** ⇒ 生成阶段不是问题。各模型中 `glm-5.3` 的 p10 仅 44.2 tok/s，是长尾生成慢的主要来源。
-  - **长耗时流（≥60s，5.5%）构成**：prefill p50 37s + 生成 p50 35s，output p50 1467 token —— 两阶段都大。
-  - **新增排除假设 2 类**：① 个别账号质量问题 —— 12 个账号 TTFT p50 都在 4~6s、慢占比 6.9%~27.8%，全池共性；② reasoning 拖慢首字 —— 各 reasoning 档位慢请求占比稳定 14~16%，无相关性。累计已排除 **8 类**假设。
-  - **最终归因三层**：① 超长 input 的 prefill 成本（59.3%，input p50 44.3 万、p90 75 万，workbuddy 无 400k+ 负载）② 长输出流生成耗时（40.7%，output p50 1467）③ 上游 prefill 长尾抖动（同账号同 input 下 TTFT 2.8s~52s 随机跳变）。
-  - **插件侧已无可压缩空间**：首字闸门封顶 1.2s（实测 p90=1075ms）、错误处理即时化（审核失败 1m26s→4.7s）、prefill 原样透传。
-  - **剩余唯一方向（需客户端配合）**：降低上下文上限（80 万→20~30 万，TTFT p50 可从 7.7s 降到 4.5s）或裁剪对话历史。**属产品决策，不是插件缺陷**。
-  - **文档**：诊断文档扩至 14 节（22,609 字节）。
-
-- 会话（2026-11-09 23:45-00:05，接续上条）：**专项分析「20w 输入 / 500 输出 / 首字 20s+」——瓶颈 100% 在 prefill，workbuddy 无 400k+ 负载**：
-  - **该画像实测（近 24h，input 150k-250k 且 output ≤1000，n=605）**：TTFT p50 4035ms、**p90 24226ms**、**max 113341ms**，TTFT≥20s 占比 **10.6%**（64/605）。
-  - **关键判读**：慢样本的 `latency - ttft` 仅 0.9~4.9 秒（如 113341ms TTFT 但生成仅 4871ms），说明**生成阶段完全正常，瓶颈 100% 在 prefill**。
-  - **TTFT 随 input 单调递增**：0-50k → 1385ms；200k-300k → 4501ms；500k+ → 7736ms（p90 16404ms）。prefill 是线性成本。
-  - **与 workbuddy 的决定性对照**：同规模输入下 traework 只慢 **1.36~1.38 倍**（100k-200k: 3660 vs 2693ms；200k-400k: 4950 vs 3581ms），但 **workbuddy 完全没有 400k+ 的请求**，而 traework 有 **6928 条（占比 58%）**。⇒ 用户感受到的「trae 慢很多」主因是 **traework 承载了 workbuddy 完全没有的超长上下文负载**，而非插件链路慢。
-  - **input 分布（n=12022）**：p50 **443218**、p90 **750291**、max 815669，**无超过 100 万的请求**（客户端已按上限截断到 ~80 万）。
-  - **已排除的优化路径**：① prompt caching —— 24h/12023 条样本的 `cached_tokens`/`cache_read_tokens`/`cache_creation_tokens` **全部为 0**，上游不提供；② 插件侧截断 —— `buildTraePayload` 原样透传，主动截断会破坏对话完整性；③ 首字闸门 —— 已封顶 1200ms（实测 p90=1075ms）；④ 并发排队 —— 已实证无关。
-  - **剩余唯一可行方向**：缩短 input 长度，需客户端（DSH）侧配合把上下文上限从 ~80 万降到 20~30 万，可让 TTFT p50 从 7.7s 降到 4.5s。**属产品决策，不是插件缺陷**。
-  - **文档**：诊断文档扩至 13 节（18,395 字节）。
