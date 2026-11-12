@@ -34,6 +34,15 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-13 00:00-00:50）：**Safeguard Killer 0.1.7：删除前身遗留的配额采集与余额调度，只保留破甲与分组**：
+  - **用户指令**：「safeguard-killer 删除一些和破甲无关的功能逻辑」。判据=三条链是否被破甲依赖：破甲链（`intercept_before/after`→`sanitizeRequest`、`intercept_stream_chunk`、`request.complete`）与分组换模型链（`model.route`/`executor.execute*`/`groups.go`）保留；余额调度链（`scheduler.pick`→`pick`+`balance.go`+`quota.go`+配额类型+面板凭据页）整块删除。
+  - **删除依据（三个实际负担）**：① 注册 `Scheduler` 抢宿主凭据调度，绕过 CPA 账号池策略；② `management_key` 隐性必填，`skipReason` 首行 `if cfg.ManagementKey == "" { return "", nil }` 让同一配置在两种环境行为不同；③ `quota.go` 1324 行维护 8 个 provider 私有 usage 端点，上游改版即失效。
+  - **改动**：整删 `quota.go`(1324 行)/`quota_test.go`(482)/`balance_test.go`(298)；`balance.go` 434→71 行（只留 `hostCall`/`stateMu`/`decisions`/`sessionKey`/`pruneSessions`/`recordDecision`/`buildUIState`）；删 `scheduler.pick` 与 `Scheduler` capability、`min_remaining`/`management_key`/`LegacyManagement`、五个配额类型与 `decision.Ranking`、`skipReason` 与 `orderByQuotaWeightedRandom`（`orderByStrategy` 去掉 `cfg`/`now` 参数）、面板凭据 tab + 配额条 + ranking + 三 banner（会话表改 6 列）。
+  - **刻意保留**：`legacyNoticePrefix`（剥离历史 assistant 消息旧前缀）、`hostCall`（破甲流式与分组链共用 + 测试替换点）、`idle_minutes`（`bindGroupSession` 算 `IdleExpiresAt`）、`detectStoredManagementKey`（读 CPA 管理密钥调宿主 API，非插件配置项）。
+  - **验证**：`cgo-shim-build.py safeguard-killer` build+vet+test 全绿；16 个 `*.go` 归一后 `gofmt -l` 空输出；面板内联 script `node --check` exit=0；DOM id 交叉校验缺失为空（28 个 id）；残留 grep 只剩刻意保留的 `legacyNoticePrefix`；UI 已删符号 19 模式 0 命中。
+  - **发布**：提交 `d4c2146`（15 文件 **+132/−3096**）已 push；CI run 1627/1628 dispatch（`allow_partial=true`）。文档 `doc/3-实施/2026-11-13_004500_SafeguardKiller删除配额采集与余额调度遗留_实施总览.md`。
+  - **未触及的既有缺口**：`emitExhaustedNoticeStream`/`buildExhaustedNonStreamBody` 只认 claude 与 chat，responses 请求经 `effectiveFormat` 得 `"openai-response"` 落进 chat 分支 ⇒ 下游 `responsesSSEFramer` 无终止事件报 `upstream stream closed before a terminal event`（502）⇒ 客户端 `TRANSPORT` 重试；本次瘦身之前已存在，单独留作后续项。
+
 - 会话（2026-11-12 23:28-23:50）：**生产磁盘 91% → 77%：/tmp 历史排查产物 + docker 悬空层回收（4.0 GB，零服务中断）**：
   - **回收前**：`/dev/vda1 29G 27G 2.8G 91%`；`/tmp` 852 个文件合计 **2,954.6 MB**；`docker system df` Images 4.672GB 中可回收 **607.5MB**（5 个悬空层）。
   - **第一轮 2,657 MB / 38 项**：`/tmp` 根下历史排查产物全清，Top：`cpa_hist.txt` 688.5M、`q.log` 595.3M、`cpa_53.txt` 399.9M、`cpa_sess.txt` 381.9M、`cpa_glm53.txt` 239.2M、`cpa_gate.txt` 112.4M、`cpa_wb.txt` 80.2M；另清 `cpa-pre/`（11-08 插件包临时下载）、`njs/`+`qjs/`（JS 反混淆）、`auths_probe/`（账号探测副本）、`cpasrc/`（空）。
@@ -132,14 +141,11 @@
   - **部署后外部配置漂移（21:24–21:26，非本会话）**：0.21.25 上线后 4 分钟，生产 `safeguard-killer` group 被并行会话经 7 次 `PUT /v8/management/config/plugins/configs/safeguard-killer` 改成单 group `"id": "deepseek-v4-pro"`（`models: hy4free/glm-5.3-flash/minimax-m3.1-flash/deepseek-v4.1-flash`）。因 group id 与 workbuddy 注册 ID 同名且 `groupServing` 大小写敏感 ⇒ **小写名开始被劫持进 group、大写名反而绕开**（与 0.21.25 前的方向正好相反）。未造成 11102 回归；本轮仅记录事实、不改该配置。收口建议：group id 应改成不与任何 provider 注册 ID 同名的中性 codename（如 `wb-mix`）。已写入诊断文档「部署后观察：外部会话改写 group 配置」小节（提交 `496e59a`）。
   - **知识库沉淀**：新建 `20-Knowledge/工程实践/忽略大小写的相等判断会短路规范化重写.md`（`id: case-insensitive-equality-short-circuits-canonical-rewrite`，active），并在 `30-MOCs/工程实践/插件体系与扩展架构.md` 补两条入链（新笔记 + 历史孤岛）；`knowledge_index.py check` 由 `exit=5` 转为 **`ok:true` / `unmounted_count:0`**。
 
-- 会话（2026-11-11 22:26-22:57）：**qoderwork 导入弹窗改为只认凭据 JSON，删除 PAT 全部逻辑（0.13.16，未发布）**：
-  - **用户诉求**：生产面板截图红框指出导入弹窗仍要 `pt-` PAT，「改成只要选择或者输入 JSON 就导入就可以了，不需要 PAT 的这些逻辑」。
-  - **前端收敛**：弹窗从「`#importPAT` 单条输入 + 批量区块 + 底部单 PAT 按钮」三层压成「选文件行 + 一个大文本框 + 唯一按钮『导入并保存』」。删 `importAuth` / `runBatchImport` / `parseBatchInput` / `describeBatchItems` / `isPATToken` / `credentialPATToken` / `PAT_RE` / `BATCH_GAP_MS` / `.import-batch` 样式；新增 `parseImportInput` / `describeImportItems` / `runImport`，全部输入统一走 `POST /import-cred` 离线回灌。
-  - **后端同步**：删 `handleImportPAT`（67 行）、`POST /import` 路由注册与 `mutatingManagementPath` 条目；`failover_disable_test.go` 白名单审计同步删除 `handleImportPAT` 条目。
-  - **保留**：嵌套/平铺凭据、凭据数组、`{accounts:[{credential}]}` 导出包装、JSONL、多文件多选；逐条串行、单项失败不中断、失败明细常驻、部分成功后收敛为仅失败项、批内去重。auth 文件 `personalToken` 字段与 `jrt-` 刷新兜底链路未动。
-  - **验证**：解析层 16 条 + E2E 26 条断言全绿；**5 组变异 4 KILLED + 1 等价变异（记明原因）**；`cgo-shim-build.py qoderwork` build/vet/test 全绿；无头 Chrome 本地渲染截图确认弹窗结构符合预期。
-  - **文档**：`doc/5-tests/2026-11-11_225600_...验证.md`、`doc/6-review/2026-11-11_225600_..._6-review.md`（STYLE: PASS）、需求主文档追加第 6 节「口径收敛」。
-  - **发布（2026-11-12 00:10 完成）**：提交 `f3d50db`（代码 16 文件）+ `0f32552` / `4b01f7c`（registry）。生产 `plugin-store install` 热重载 `active_version=0.13.16 retired_version=0.13.15`，落盘 `.so` sha256 `edfb78d5…`，面板与本地 `panel.html` 逐字节一致（`80305b3f…`，87257 字节）；`POST /import` 生产实测 404、`POST /import-cred` 200 且返回结构化校验错误；真实入口 `deepseek-v4-pro` 流式 94 chunks / `[DONE]` / `finish_reason=stop` / usage 115 tokens。**平台缺件**：`darwin_arm64` 与 `windows_arm64` 未发布——CI 侧 `snap install zig` 连续 5 次 `unable to contact snap store`（GitHub 基础设施故障，与本轮代码无关），按 `--allow-missing` 发 4 平台。
+- 会话（2026-11-11 22:26-22:57）：**qoderwork 导入弹窗只认凭据 JSON，删除 PAT 全部逻辑（0.13.16）**：
+  - **诉求**：面板导入弹窗仍要 `pt-` PAT，「只要选择或输入 JSON 就导入，不需要 PAT 逻辑」。
+  - **改动**：前端弹窗三层压成「选文件 + 一个大文本框 + 唯一按钮『导入并保存』」，删 `importAuth`/`runBatchImport`/`parseBatchInput`/`describeBatchItems`/`isPATToken`/`credentialPATToken`/`PAT_RE`/`BATCH_GAP_MS`/`.import-batch`，新增 `parseImportInput`/`describeImportItems`/`runImport` 统一走 `POST /import-cred`；后端删 `handleImportPAT`（67 行）、`POST /import` 路由与 `mutatingManagementPath` 条目。保留嵌套/平铺凭据、凭据数组、`{accounts:[{credential}]}` 包装、JSONL、多文件多选、逐条串行、失败明细常驻；auth 的 `personalToken` 与 `jrt-` 刷新兜底未动。
+  - **验证**：解析层 16 条 + E2E 26 条断言全绿；5 组变异 4 KILLED + 1 等价变异（记明原因）；`cgo-shim-build.py qoderwork` 全绿；无头 Chrome 截图确认弹窗结构。
+  - **发布（11-12 00:10）**：提交 `f3d50db` + `0f32552`/`4b01f7c`；热重载 `0.13.15→0.13.16`，落盘 sha256 `edfb78d5…`、面板与本地 `panel.html` 逐字节一致（`80305b3f…`，87257 B）；`POST /import` 生产 404、`POST /import-cred` 200。**缺 `darwin_arm64`/`windows_arm64`**：CI 侧 `snap install zig` 连续 5 次 `unable to contact snap store`（GitHub 基础设施故障，与代码无关），按 `--allow-missing` 发 4 平台。
 
 - 会话（2026-11-10 20:43-21:50）：**traework 首字延迟：连接池与 DNS 假设被否证 + 生产流量 100% 走宿主桥**：
   - **假设 A（连接池不足）否证**：同分钟并发 1-5→慢 9.9%、16-30→26.5% 曾呈正相关，故把 `MaxIdleConns` 20→200、`MaxIdleConnsPerHost` 5→64（0.5.40）。部署后对照 90 条：ttft50 **9108→10168ms**、慢20s% **20.3%→24.4%**，**未见改善** ⇒ 保留改动（无害且理论正确）但不作为优化方向。
@@ -171,22 +177,14 @@
   - **部署验收**：0.5.38 `hot reloaded`（01:25:45）sha256 `01a5cb3e…` 一致；0.5.39 `hot reloaded` 并产出诊断日志。
   - **文档**：诊断文档扩至 18 节（35,545 字节），含问题演进表、诊断日志原文、三层根因链、诊断方法论。
 
-- 会话（2026-11-10 00:20-01:00，接续上条）：**用户新反馈「轮询没生效，一直用一个号」→ 缺陷十一/十二**：
-  - **缺陷十一（0.5.35）积分耗尽账号仍被探活**：23:20 生产实测 14 个已配额耗尽账号在 2 分钟内被探活各 2~3 次，全部返回 `exceeded the quota`。根因 `doFetchOne` 末尾无条件调用 `triggerActivePing`。修复：抽出 `shouldActivePingForCredits`（`cr != nil && cr.TotalRemain > 0`）。
-  - **缺陷十二（0.5.36）轮换参数过长致「一直用一个号」**：24h 生产实证 —— 轮换让位**仅 4 次**、每次都是连续使用满 `1h0m0s` 才触发；最长连续段 `3735516826058092` **351 请求 / 29 分钟**全压一个号；主号占比 **21%~35%**（理想 1/13≈7.7%）。根因 `defaultRotationServeMinutes = 60`。修复：serve/cooldown **60→10 分钟**、idle **10→3 分钟**（idle 必须显著小于 serve，否则「中断重算」与「已服务满」判据冲突）。
-  - **修复验证（关键）**：0.5.36 部署（00:40:39）后，每 5 分钟窗口的活跃账号数从 **1 个**（00:22）提升到 **6 个**（00:44~00:50）；近 30 分钟 **11 个不同 auth_hash** 在用（33.2%/31.7%/16.3%/9.7%...）。
-  - **宿主选号路径澄清**：插件 `scheduler` 已注册（`Scheduler: true`），但生产日志无 scheduler 调用记录 —— 宿主选号不走插件 scheduler。轮换冷却通过 `scheduler.go`/`active_auth.go` 的过滤点生效，实际分散由宿主自身 selector + 插件禁用/冷却状态共同决定。
-  - **新增测试**：`active_ping_exhausted_test.go`（5 条边界）、`rotation_defaults_test.go`（锁定 serve=10/cooldown=10/idle=3 及相互关系 serve≤15、cooldown≤2×serve、idle<serve）；同步修正 `usage_rotation_test.go`（改引用常量）与 `panel_rotation_badge_test.go`（时间线匹配 idle=3）。两处变异验证均被捕获。
-  - **部署验收**：0.5.35 `hot reloaded 0.5.34→0.5.35`；0.5.36 `hot reloaded 0.5.35→0.5.36`（00:40:39），落盘 `.so` sha256 `14d83c49…` 与 release zip 逐字节一致。
-  - **文档**：诊断文档扩至 17 节（33,328 字节）。
+- 会话（2026-11-10 00:20-01:00，接续上条）：**「轮询没生效，一直用一个号」→ 缺陷十一/十二**：
+  - **缺陷十一（0.5.35）**：积分耗尽账号仍被探活（14 个账号 2 分钟内各探 2~3 次，全返回 `exceeded the quota`）。根因 `doFetchOne` 末尾无条件 `triggerActivePing`；修复抽出 `shouldActivePingForCredits`（`cr != nil && cr.TotalRemain > 0`）。
+  - **缺陷十二（0.5.36）**：24h 实证轮换让位仅 **4 次**、每次满 `1h0m0s` 才触发，最长连续段 351 请求 / 29 分钟全压一个号、主号占比 **21%~35%**（理想 7.7%）。根因 `defaultRotationServeMinutes = 60`；修复 serve/cooldown **60→10**、idle **10→3**（idle 必须显著小于 serve，否则「中断重算」与「已服务满」判据冲突）。
+  - **验证**：0.5.36 部署后每 5 分钟窗口活跃账号数 **1 个 → 6 个**，近 30 分钟 11 个不同 auth_hash 在用。新增 `active_ping_exhausted_test.go`（5 条边界）与 `rotation_defaults_test.go`（锁定 serve≤15、cooldown≤2×serve、idle<serve）。
+  - **宿主选号路径澄清**：插件 `scheduler` 已注册但生产日志无调用记录 —— 宿主选号不走插件 scheduler；轮换冷却通过 `scheduler.go`/`active_auth.go` 过滤点生效，分散由宿主 selector 与插件冷却状态共同决定。
 
-- 会话（2026-11-10 00:00-01:50）：**traework 首字延迟归因收尾：时段分层 + 上游抖动定量 + 轮换三层根因**：
-  - **时段分层（决定性）**：20w 输入分时段 TTFT 慢请求——深夜 02:00 **0.0%**、05:00 1.6%、03:00 2.6%；晚间 21:00 **32.3%**、22:00 20.8%、23:00 12.0%。同时段 workbuddy 慢请求 **0.0%**，排除客户端负载与本机资源竞争 ⇒ 上游容量排队。
-  - **抖动定量（783 对同账号相邻请求）**：TTFT 跳变 p90=6.4x、p99=13.4x、**max=44.8x**（`2513ms → 112548ms`，间隔仅 7 秒），≥5x 占 13.7%。
-  - **最终归因四层**（全部插件不可干预）：上游晚间排队（18.1% vs 深夜 1.6%）、超长 input prefill（占 59.3%，input p50 44.3 万）、上游随机抖动、长输出生成耗时（40.7%）。`max_tokens` 默认值与 payload 冗余两个假设均被实测排除。
-  - **慢速冷却评估**：24h 仅触发 1 次且立即释放——上游抖动是随机单次，中位数被快速拉平，属设计边界不是缺陷。超时换号模拟：11.1% 触发、82.8% 改善但必然多付 15 秒，**决定不实施**。
-  - **轮换三层根因（0.5.38/0.5.39）**：serve=60 分钟过长 → 调到 10 分钟仍无让位 → 加阈值打点零日志 → **改为每 30 秒输出 `served` 真值后定位**：计时正常推进，宿主 selector 自然切换周期 **6~7 分钟**，serve 必须小于它才能主动让位。最终 serve **5 分钟** / cooldown 10 / idle 3。
-  - **方法论沉淀（重要）**：排查「机制不生效」时**阈值附近打点无效**（无法区分计时没推进 / 被重置 / 判定失败三种情况），正确做法是**周期性输出核心变量真值**同屏比对。
-  - **缺陷十一/十二（0.5.35/0.5.36）**：积分耗尽账号仍被探活（`shouldActivePingForCredits`）；主号 24h 占 **21%~35%**（理想 7.7%）、最长连续 **351 请求 / 29 分钟**。
-  - **文档**：诊断文档扩至 15–18 节（26,989 → 35,545 字节）。
+- 会话（2026-11-10 00:00-01:50）：**traework 首字延迟归因收尾：时段分层 + 上游抖动定量**：
+  - **时段分层（决定性）**：20w 输入分时段 TTFT 慢请求——深夜 02:00 **0.0%** / 05:00 1.6% / 03:00 2.6%；晚间 21:00 **32.3%** / 22:00 20.8% / 23:00 12.0%。同时段 workbuddy 慢请求 **0.0%** ⇒ 上游容量排队，排除客户端负载与本机资源竞争。
+  - **抖动定量（783 对同账号相邻请求）**：TTFT 跳变 p90=6.4x、p99=13.4x、**max=44.8x**（`2513ms → 112548ms`，间隔 7 秒），≥5x 占 13.7%。
+  - **归因四层（插件不可干预）**：上游晚间排队（18.1% vs 深夜 1.6%）、超长 input prefill 占 59.3%（input p50 44.3 万）、上游随机抖动、长输出生成耗时 40.7%；`max_tokens` 默认值与 payload 冗余两假设均被实测排除。慢速冷却 24h 仅触发 1 次且立即释放，超时换号模拟 11.1% 触发 / 82.8% 改善但必多付 15 秒 ⇒ **决定不实施**。
 
