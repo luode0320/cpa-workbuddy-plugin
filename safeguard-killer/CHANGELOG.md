@@ -2,6 +2,17 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.8
+
+### Fix - responses 通道的破甲与兜底帧补齐，修掉「破甲未生效 + 客户端反复重试」
+
+- 背景: DSH 客户端的 `luode` provider 配的是 `api: openai-responses`，请求体形如 `{model, input: [...], stream: true}`——系统提示装在 `input` 数组的 `role=system`/`developer` 项里，**没有 `messages` 字段**。而 `sanitizeRequest` 的 JSON 层只处理 `body["messages"]`，`instructions`/`input`/顶层 `system` 一个都不碰，于是破甲改写（`claudeCyberGatePrompt` 替换、`<system-reminder>` 剥离）在这条通道上全程空转。更糟的是分组全失败时 `emitExhaustedNoticeStream` 的 `else` 分支只发 chat 帧 + `[DONE]`，不含 `response.completed`；CPA 的 `responsesSSEFramer` 只认 `response.completed`/`incomplete`/`failed` 这类终止事件，收不到就返回 502 `upstream stream closed before a terminal event`，客户端随即按 `TRANSPORT` 连续重试 4 次。实测某会话（`session-fc904680`）累计 73 次 `llm/retry`，服务端 `state.decisions` 同步出现 15 条 `failed: refusal (content_filter)` + `every model failed`。
+- 改动（破甲覆盖 responses/Anthropic 通道）: 新增 `cleanSystemField`，同时处理顶层 `system` 的字符串与 text 块数组两种形状；`sanitizeRequest` 在 `messages` 之外新增 `input`、`system`、`instructions` 三处净化分支；`cleanMessages` 增加 `dropWholeSystem` 参数——chat/Claude 通道传 `true`（那里的 system 消息整条都是限制文案，整条丢弃更彻底），responses 的 `input` 传 `false`（`input` 里的 system 项常与正常指令混排，只能剥片段，整条删会把用户自己的系统提示一起删掉）。
+- 改动（responses 兜底帧）: 新增 `isResponsesFormat`（认 `openai-response`/`openai-responses`/`openai_responses`/`responses` 四种同义写法并忽略大小写空白）、`buildResponsesExhaustedBody`（非流式，产出合法 `object=response` 结构）、`buildResponsesExhaustedSSE`（流式，发 `response.created` → `output_item.added` → `output_text.delta` → `output_item.done` → `response.completed` 五帧，终止事件收尾）；`buildExhaustedNonStreamBody` 与 `emitExhaustedNoticeStream` 在 claude 判断之前先分流 responses；`injectNonStreamNotice` 增加 responses 分支（提示写进 `output[].content[]` 的 `output_text`）；`injectStreamNotice` 对 responses 直接原样返回——`response.*` 事件序列的 `output_index` 必须与流内一致，硬插 chat delta 帧会污染事件流。
+- 语义: 破甲优先、兜底其次。破甲现在能真正作用到 responses 与 Anthropic 通道的系统提示；分组全失败时客户端至少拿到结构合法、带终止事件的兜底响应，不再陷入 `TRANSPORT` 重试。
+- 验证: 新增 `refusal_responses_test.go`（7 个测试函数 / 21 个用例）覆盖格式识别、流式兜底帧的终止事件与末帧位置、非流式兜底体的 `object=response` 结构、`input` 与 `developer` 角色的系统项净化、顶层 `system` 两种形状、开关关闭时不动请求体、responses 非流式提示注入、responses 流不被插帧。三组变异全部 KILLED 且失败形态为断言失败：① `isResponsesFormat` 退化为永不命中；② `input` 的 `dropWholeSystem` 改回 `true`；③ 删掉 `injectStreamNotice` 的 responses 短路。变异脚本对每个锚点断言恰好命中 1 次，命中数不是 1 直接退出（防「锚点出现两次只替换了第一处」的假通过）。
+- 涉及文件: `refusal.go`、`refusal_responses_test.go`、`VERSION`、`main.go`、`CHANGELOG.md`。
+
 ## 0.1.7
 
 ### Refactor - 删除插件前身遗留的配额采集与余额调度，只保留破甲与分组

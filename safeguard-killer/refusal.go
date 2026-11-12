@@ -853,8 +853,147 @@ func buildGroupExhaustedNotice(cfg pluginConfig, group modelGroup, attempts []gr
 	return fmt.Sprintf("%severy model in %s failed: %s", prefix, label, strings.Join(chain, " → "))
 }
 
+// isResponsesFormat 判断插件从宿主拿到的通道格式是否属于 OpenAI Responses 协议族。
+// 宿主的 translator 常量只有 "openai-response"（单数），但为兼容不同宿主版本，同义写法一并认。
+//
+// [参数] format：effectiveFormat 归一后的通道格式
+// [返回] true 表示 responses 通道，兜底帧必须发 responses 事件序列
+// 最近修改时间 2026-11-13 02:05:00, 新增, responses 通道缺终止事件导致客户端 TRANSPORT 重试
+func isResponsesFormat(format string) bool {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "openai-response", "openai-responses", "openai_responses", "responses":
+		return true
+	}
+	return false
+}
+
+// buildResponsesExhaustedBody 构造 responses 通道的非流式兜底响应体。
+// 上游返回 content_filter 且分组内所有模型都失败时，必须给出合法的 response 对象，
+// 否则客户端的 responses 解析器拿不到 output 内容。
+//
+// [参数] modelID：回显给客户端的模型名
+// [参数] notice：兜底提示文本
+// [返回] responses 非流式响应体 JSON
+// 最近修改时间 2026-11-13 02:05:00, 新增, 补齐 responses 非流式兜底
+func buildResponsesExhaustedBody(modelID, notice string) []byte {
+	itemJSON, _ := json.Marshal(map[string]any{
+		"type":   "message",
+		"id":     "msg_sk_exhausted",
+		"status": "completed",
+		"role":   "assistant",
+		"content": []map[string]any{
+			{"type": "output_text", "text": notice, "annotations": []any{}},
+		},
+	})
+	body := map[string]any{
+		"id":         "resp_sk_exhausted",
+		"object":     "response",
+		"created_at": 0,
+		"status":     "completed",
+		"model":      modelID,
+		"output":     []json.RawMessage{itemJSON},
+		"usage": map[string]any{
+			"input_tokens":  0,
+			"output_tokens": 1,
+			"total_tokens":  1,
+		},
+	}
+	out, errMarshal := json.Marshal(body)
+	if errMarshal != nil {
+		return []byte(`{"id":"resp_sk_exhausted","object":"response","status":"completed","output":[]}`)
+	}
+	return out
+}
+
+// buildResponsesExhaustedSSE 构造 responses 通道的流式兜底事件序列。
+// 关键点：序列里必须包含 response.completed，否则 CPA 的 responsesSSEFramer 认为
+// 「stream closed before a terminal event」返回 502，客户端随即按 TRANSPORT 重试。
+//
+// [参数] modelID：回显给客户端的模型名
+// [参数] notice：兜底提示文本
+// [返回] 完整的 SSE 文本（message 事件 + response.completed 终止事件）
+// 最近修改时间 2026-11-13 02:05:00, 新增, 补齐 responses 流式终止事件
+func buildResponsesExhaustedSSE(modelID, notice string) string {
+	respJSON, _ := json.Marshal(map[string]any{
+		"id":         "resp_sk_exhausted",
+		"object":     "response",
+		"created_at": 0,
+		"status":     "in_progress",
+		"model":      modelID,
+		"output":     []any{},
+	})
+	itemAddedJSON, _ := json.Marshal(map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": 0,
+		"item": map[string]any{
+			"type":    "message",
+			"id":      "msg_sk_exhausted",
+			"status":  "in_progress",
+			"role":    "assistant",
+			"content": []any{},
+		},
+	})
+	deltaJSON, _ := json.Marshal(map[string]any{
+		"type":          "response.output_text.delta",
+		"item_id":       "msg_sk_exhausted",
+		"output_index":  0,
+		"content_index": 0,
+		"delta":         notice,
+	})
+	doneItem := map[string]any{
+		"type":   "message",
+		"id":     "msg_sk_exhausted",
+		"status": "completed",
+		"role":   "assistant",
+		"content": []map[string]any{
+			{"type": "output_text", "text": notice, "annotations": []any{}},
+		},
+	}
+	itemDoneJSON, _ := json.Marshal(map[string]any{
+		"type":         "response.output_item.done",
+		"output_index": 0,
+		"item":         doneItem,
+	})
+	completedJSON, _ := json.Marshal(map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":         "resp_sk_exhausted",
+			"object":     "response",
+			"created_at": 0,
+			"status":     "completed",
+			"model":      modelID,
+			"output":     []any{doneItem},
+			"usage": map[string]any{
+				"input_tokens":  0,
+				"output_tokens": 1,
+				"total_tokens":  1,
+			},
+		},
+	})
+	var sb strings.Builder
+	sb.WriteString("event: response.created\ndata: ")
+	sb.Write(respJSON)
+	sb.WriteString("\n\n")
+	sb.WriteString("event: response.output_item.added\ndata: ")
+	sb.Write(itemAddedJSON)
+	sb.WriteString("\n\n")
+	sb.WriteString("event: response.output_text.delta\ndata: ")
+	sb.Write(deltaJSON)
+	sb.WriteString("\n\n")
+	sb.WriteString("event: response.output_item.done\ndata: ")
+	sb.Write(itemDoneJSON)
+	sb.WriteString("\n\n")
+	sb.WriteString("event: response.completed\ndata: ")
+	sb.Write(completedJSON)
+	sb.WriteString("\n\n")
+	return sb.String()
+}
+
 func buildExhaustedNonStreamBody(format, modelID, notice string) []byte {
 	textJSON, _ := json.Marshal(notice)
+	if isResponsesFormat(format) {
+		return buildResponsesExhaustedBody(modelID, notice)
+	}
 	if format == "claude" || format == "" {
 		return []byte(fmt.Sprintf(
 			`{"id":"msg_sk_exhausted","type":"message","role":"assistant","model":%q,"content":[{"type":"text","text":%s}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":1}}`,
@@ -870,7 +1009,9 @@ func buildExhaustedNonStreamBody(format, modelID, notice string) []byte {
 func emitExhaustedNoticeStream(target, callbackID, format, modelID, notice string) {
 	textJSON, _ := json.Marshal(notice)
 	var sse string
-	if format == "claude" || format == "" {
+	if isResponsesFormat(format) {
+		sse = buildResponsesExhaustedSSE(modelID, notice)
+	} else if format == "claude" || format == "" {
 		sse = fmt.Sprintf(
 			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_sk_exhausted\",\"type\":\"message\",\"role\":\"assistant\",\"model\":%q,\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":1}}}\n\n"+
 				"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"+
@@ -898,12 +1039,74 @@ func effectiveFormat(exitFormat, sourceFormat string) string {
 }
 
 // injectNonStreamNotice prepends notice to a non-streaming response body.
+// injectNonStreamNotice 在非流式响应体开头插入换模型提示。
+//
+// [参数] body：上游返回的非流式响应体
+// [参数] format：effectiveFormat 归一后的通道格式
+// [参数] notice：要插入的提示文本
+// [返回] 插入提示后的响应体；无法识别形状时原样返回
+// 最近修改时间 2026-11-13 02:20:00, 修改, 补齐 responses 的 output 数组提示注入
 func injectNonStreamNotice(body []byte, format, notice string) []byte {
 	if notice == "" {
 		return body
 	}
 	var root map[string]json.RawMessage
 	if json.Unmarshal(body, &root) != nil {
+		return body
+	}
+	// Responses 通道：提示放进 output 数组首个 message 项的 content 里。
+	if isResponsesFormat(format) {
+		var output []map[string]json.RawMessage
+		if json.Unmarshal(root["output"], &output) != nil {
+			return body
+		}
+		changed := false
+		for _, item := range output {
+			var itemType string
+			_ = json.Unmarshal(item["type"], &itemType)
+			if itemType != "message" {
+				continue
+			}
+			var content []map[string]json.RawMessage
+			if json.Unmarshal(item["content"], &content) != nil {
+				continue
+			}
+			replaced := false
+			for _, part := range content {
+				var partType, partText string
+				_ = json.Unmarshal(part["type"], &partType)
+				if partType != "output_text" {
+					continue
+				}
+				_ = json.Unmarshal(part["text"], &partText)
+				part["text"], _ = json.Marshal(notice + "\n\n" + partText)
+				replaced = true
+				break
+			}
+			if !replaced {
+				noticePart, _ := json.Marshal(map[string]any{
+					"type": "output_text", "text": notice + "\n\n", "annotations": []any{},
+				})
+				var noticeRaw map[string]json.RawMessage
+				if json.Unmarshal(noticePart, &noticeRaw) == nil {
+					content = append([]map[string]json.RawMessage{noticeRaw}, content...)
+					replaced = true
+				}
+			}
+			if !replaced {
+				continue
+			}
+			item["content"], _ = json.Marshal(content)
+			changed = true
+			break
+		}
+		if !changed {
+			return body
+		}
+		root["output"], _ = json.Marshal(output)
+		if out, errMarshal := json.Marshal(root); errMarshal == nil {
+			return out
+		}
 		return body
 	}
 	if rawContent, ok := root["content"]; ok {
@@ -936,11 +1139,22 @@ func injectNonStreamNotice(body []byte, format, notice string) []byte {
 	return body
 }
 
-// injectStreamNotice injects notice at the start of prefetched stream chunks. It returns the
-// updated chunks and whether subsequent chunks in forwardStream must shift Claude content_block
-// indices by +1.
+// injectStreamNotice 在预取块的头部插入换模型提示。返回更新后的块，以及 forwardStream
+// 是否需要把后续 Claude content_block 序号整体 +1。
+//
+// [参数] prefetched：已预取的流分片
+// [参数] format：effectiveFormat 归一后的通道格式
+// [参数] notice：要插入的提示文本
+// [返回] 更新后的分片，以及是否需要重排 Claude 块序号
+// 最近修改时间 2026-11-13 02:20:00, 修改, responses 通道不再前置 chat 帧，避免破坏事件序列
 func injectStreamNotice(prefetched [][]byte, format, notice string) ([][]byte, bool) {
 	if notice == "" || len(prefetched) == 0 {
+		return prefetched, false
+	}
+	// Responses 通道的分片是 response.* 事件序列，output_index 必须与流内一致。
+	// 在前面硬插 chat delta 帧会污染事件流；另插 output item 又无法与后续序号对齐，
+	// 因此这里放弃插入提示——保证协议正确优先于提示文本。
+	if isResponsesFormat(format) || bytes.Contains(prefetched[0], []byte(`"response.created"`)) {
 		return prefetched, false
 	}
 	if format == "claude" || bytes.Contains(prefetched[0], []byte(`"message_start"`)) {
@@ -1124,9 +1338,17 @@ func hasNoticePrefix(text string, prefixes []string) bool {
 	return false
 }
 
-// cleanMessages removes previously injected Safeguard Killer notice blocks and optionally
-// strips restrictive mid-conversation <system-reminder> or role="system" refusal turns.
-func cleanMessages(rawMessages json.RawMessage, cfg pluginConfig) json.RawMessage {
+// cleanMessages 剥离本插件历史上注入的通知块，并按开关移除限制性 <system-reminder> 片段。
+//
+// [参数] rawMessages：messages 或 responses 的 input 数组原始 JSON
+// [参数] cfg：当前插件配置
+// [参数] dropWholeSystem：命中限制性提醒的 system 消息是否整条丢弃。
+// 传 true 时用于 chat/Claude 通道——那里的 system 消息通常整条都是限制文案，整条删更彻底；
+// 传 false 时用于 responses 的 input——那里 system 项常与正常指令混排，只能剥片段不能整条删，
+// 否则会把用户自己的系统提示一起删掉。
+// [返回] 净化后的 JSON；无需改动时原样返回入参
+// 最近修改时间 2026-11-13 02:15:00, 修改, 增加整条丢弃开关，修掉 input 系统项被整条删除的问题
+func cleanMessages(rawMessages json.RawMessage, cfg pluginConfig, dropWholeSystem bool) json.RawMessage {
 	prefixes := activeNoticePrefixes(cfg)
 	hasNotice := false
 	for _, p := range prefixes {
@@ -1149,7 +1371,10 @@ func cleanMessages(rawMessages json.RawMessage, cfg pluginConfig) json.RawMessag
 	for _, msg := range messages {
 		var role string
 		_ = json.Unmarshal(msg["role"], &role)
-		if cfg.Features.StripRestrictiveReminders && role == "system" && restrictiveSystemReminderPattern.Match(msg["content"]) {
+		// Responses 通道的系统消息可能是 role="developer"，与 chat 通道的 role="system" 等价。
+		// 但只有 dropWholeSystem 为真时才整条丢弃，否则交给下面按片段净化。
+		if dropWholeSystem && cfg.Features.StripRestrictiveReminders &&
+			(role == "system" || role == "developer") && restrictiveSystemReminderPattern.Match(msg["content"]) {
 			changed = true
 			continue
 		}
@@ -1220,6 +1445,74 @@ func cleanMessages(rawMessages json.RawMessage, cfg pluginConfig) json.RawMessag
 	return out
 }
 
+// cleanSystemField 净化顶层 system 字段（Anthropic 通道的系统提示）。
+// 该字段既可能是纯字符串，也可能是 text 块数组，两种形状都要处理：
+// 剥掉本插件历史上注入的 notice 前缀，并按开关移除限制性 <system-reminder> 片段。
+//
+// [参数] rawSystem：body["system"] 的原始 JSON
+// [参数] cfg：当前插件配置，用于读取 StripRestrictiveReminders 开关
+// [返回] 净化后的 JSON；无需改动时原样返回入参
+// 最近修改时间 2026-11-13 02:10:00, 新增, 补齐 responses/Anthropic 通道的系统提示净化
+func cleanSystemField(rawSystem json.RawMessage, cfg pluginConfig) json.RawMessage {
+	prefixes := activeNoticePrefixes(cfg)
+	var text string
+	if json.Unmarshal(rawSystem, &text) == nil {
+		updated := text
+		for _, p := range prefixes {
+			if strings.HasPrefix(strings.TrimSpace(updated), p) {
+				if idx := strings.Index(updated, "\n\n"); idx != -1 {
+					updated = updated[idx+2:]
+				}
+			}
+		}
+		if cfg.Features.StripRestrictiveReminders {
+			updated = restrictiveSystemReminderPattern.ReplaceAllString(updated, "")
+		}
+		if updated == text {
+			return rawSystem
+		}
+		out, errMarshal := json.Marshal(updated)
+		if errMarshal != nil {
+			return rawSystem
+		}
+		return out
+	}
+	var blocks []map[string]json.RawMessage
+	if json.Unmarshal(rawSystem, &blocks) != nil {
+		return rawSystem
+	}
+	changed := false
+	for _, block := range blocks {
+		var blockText string
+		if json.Unmarshal(block["text"], &blockText) != nil {
+			continue
+		}
+		updated := blockText
+		for _, p := range prefixes {
+			if strings.HasPrefix(strings.TrimSpace(updated), p) {
+				if idx := strings.Index(updated, "\n\n"); idx != -1 {
+					updated = updated[idx+2:]
+				}
+			}
+		}
+		if cfg.Features.StripRestrictiveReminders {
+			updated = restrictiveSystemReminderPattern.ReplaceAllString(updated, "")
+		}
+		if updated != blockText {
+			block["text"], _ = json.Marshal(updated)
+			changed = true
+		}
+	}
+	if !changed {
+		return rawSystem
+	}
+	out, errMarshal := json.Marshal(blocks)
+	if errMarshal != nil {
+		return rawSystem
+	}
+	return out
+}
+
 // sanitizeRequest applies the enabled wire adaptations to a request body and headers, returning
 // the updated body, updated headers, headers to clear, and whether incoming "safeguards" was present.
 func sanitizeRequest(payload []byte, headers http.Header, cfg pluginConfig) (bodyOut []byte, headersOut http.Header, clearHeaders []string, hadSafeguards bool) {
@@ -1271,9 +1564,34 @@ func sanitizeRequest(payload []byte, headers http.Header, cfg pluginConfig) (bod
 			}
 		}
 		if rawMessages, ok := body["messages"]; ok {
-			cleaned := cleanMessages(rawMessages, cfg)
+			// chat/Claude 的 system 消息整条都是限制文案，命中即整条丢弃。
+			cleaned := cleanMessages(rawMessages, cfg, true)
 			if !bytes.Equal(cleaned, rawMessages) {
 				body["messages"] = cleaned
+				bodyModified = true
+			}
+		}
+		// Responses 通道没有 messages，系统提示塞在 input 数组里；Anthropic 通道用顶层 system。
+		// 这两处以前完全不处理，导致破甲改写只作用于 Claude 的 messages，在 responses 上全程空转。
+		// input 里的 system 项常与正常指令混排，只能剥片段，不能整条删。
+		if rawInput, ok := body["input"]; ok {
+			cleaned := cleanMessages(rawInput, cfg, false)
+			if !bytes.Equal(cleaned, rawInput) {
+				body["input"] = cleaned
+				bodyModified = true
+			}
+		}
+		if rawSystem, ok := body["system"]; ok {
+			cleaned := cleanSystemField(rawSystem, cfg)
+			if !bytes.Equal(cleaned, rawSystem) {
+				body["system"] = cleaned
+				bodyModified = true
+			}
+		}
+		if rawInstructions, ok := body["instructions"]; ok {
+			cleaned := cleanSystemField(rawInstructions, cfg)
+			if !bytes.Equal(cleaned, rawInstructions) {
+				body["instructions"] = cleaned
 				bodyModified = true
 			}
 		}
