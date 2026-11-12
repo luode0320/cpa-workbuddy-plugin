@@ -263,7 +263,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
       <button type="button" class="modal-x" onclick="closeImportModal()" aria-label="关闭">×</button>
     </div>
     <div class="modal-bd">
-      <p class="hint">支持 nested <code>{"auth":{...},"account":{...}}</code> / flat <code>{"accessToken":...}</code> / 批量数组 / 「导出凭证」文件。落盘为 <code>workbuddy-&lt;uid&gt;.json</code>。</p>
+      <p class="hint">支持 nested <code>{"auth":{...},"account":{...}}</code> / flat <code>{"accessToken":...}</code> / 第三方导出 <code>{"auth_raw":{...},"profile_raw":{...}}</code> / 批量数组 / 「导出凭证」文件。落盘为 <code>workbuddy-&lt;uid&gt;.json</code>。</p>
       <textarea id="importRaw" rows="6" placeholder='粘贴 WorkBuddy / CodeBuddy 凭证 JSON'></textarea>
       <div class="file-row">
         <label class="sec" for="importFiles" title="可一次选择多个 .json 文件">📁 选择 JSON 凭证文件</label>

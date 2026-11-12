@@ -356,7 +356,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.21.25"
+var version = "0.21.26"
 
 func wbRegistration() registration {
 	return registration{
@@ -507,23 +507,30 @@ type authStateData struct {
 	AuthURL string `json:"authUrl"`
 }
 
+// parseStored 解析凭证文档，兼容三种存在于磁盘的形态。
+// [参数] raw：凭证文档原文。
+// [返回] 归一化后的凭证；accessToken 缺失时返回 parse_error。
+// 最近修改时间：2026-11-12 22:45:00；改动原因：支持第三方导出的 auth_raw/profile_raw 形态。
 func parseStored(raw []byte) (*storedAuth, error) {
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("empty auth storage")
 	}
-	// Accept both shapes seen in the wild:
-	//   nested: {"auth":{"accessToken":...},"account":{"uid":...}} (plugin/oauth output)
-	//   flat:   {"accessToken":...,"uid":...,"nickname":...} (CPA-Manager-Plus auths/workbuddy.json)
+	// 1. 先按顶层键判定文档形态，再交给对应分支解析。
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return nil, fmt.Errorf("storage_parse_error: %w", err)
 	}
 	var sa storedAuth
 	if _, nested := probe["auth"]; nested {
+		// 1.1 插件与 oauth 落盘的嵌套形态 {"auth":{...},"account":{...}}。
 		if err := json.Unmarshal(raw, &sa); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
 		}
+	} else if isThirdPartyStored(probe) {
+		// 1.2 第三方导出的账号记录 {"auth_raw":{...},"profile_raw":{...}}。
+		sa = parseThirdPartyStored(raw)
 	} else {
+		// 1.3 CPA-Manager-Plus 的扁平形态 {"accessToken":...,"uid":...}。
 		var flat struct {
 			AccessToken  string `json:"accessToken"`
 			RefreshToken string `json:"refreshToken"`
@@ -539,6 +546,7 @@ func parseStored(raw []byte) (*storedAuth, error) {
 		sa.Auth = storedTokens{AccessToken: flat.AccessToken, RefreshToken: flat.RefreshToken, ExpiresAt: flat.ExpiresAt, Domain: flat.Domain}
 		sa.Account = storedAccount{UID: flat.UID, EnterpriseID: flat.EnterpriseID, Nickname: flat.Nickname}
 	}
+	// 2. 三种形态都必须拿到 accessToken 才算有效凭证。
 	if sa.Auth.AccessToken == "" {
 		return nil, fmt.Errorf("parse_error: missing accessToken")
 	}

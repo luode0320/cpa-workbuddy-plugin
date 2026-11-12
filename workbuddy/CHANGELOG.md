@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.21.26
+
+### Feature - 导入直接兼容第三方导出的 auth_raw/profile_raw 记录，免手工转换
+
+- 背景: 第三方导出工具给出的账号记录是顶层数组，令牌藏在 `auth_raw` 对象里、
+  账号信息藏在 `profile_raw` 里，过期时间 `expiresAt` 是**毫秒**；而插件
+  `parseStored` 只认插件自己落盘的嵌套 `{"auth":{...},"account":{...}}` 与
+  CPA-Manager-Plus 的扁平 `{"accessToken":...}`，两种都不匹配，逐条报
+  `parse_error: missing accessToken`。生产上一份 10 账号的导出文件必须先手工跑
+  脚本映射字段才能导入。
+- 修复:
+  1. `main.go` `parseStored` 改为按顶层键三分发：有 `auth` 键走嵌套分支，命中
+     第三方特征键走新分支，其余仍走扁平分支；三种形态末尾统一校验
+     `accessToken` 非空，报错文案不变。
+  2. 新增 `auth_thirdparty.go`：`isThirdPartyStored` 判定 `auth_raw` /
+     `profile_raw` / `access_token` 任一顶层键；`parseThirdPartyStored` 把记录
+     归一化成 `storedAuth`——令牌优先取 `auth_raw` 并回落顶层 snake_case 字段，
+     账号信息优先取 `profile_raw` 的 `uid` / `nickname` / 企业字段并回落顶层，
+     `domain` 原样保留；`epochsToSeconds` 把毫秒时间戳换算成秒（`> 1e11` 判毫秒）。
+  3. `panel.html` 导入弹窗提示补一种可识别形态，写清 `auth_raw` / `profile_raw`。
+- 为什么不改上游或调用方: 该格式由第三方导出工具决定，插件是唯一能把它读成
+  内部凭证结构的位置；`parseStored` 是导入、认领、执行、导出四类链路共用的
+  唯一解析入口，改一处即全线兼容，不需要在每个调用方分别兜底。
+- 测试: 新增 `test/workbuddy/auth_thirdparty_test.go`，5 个测试函数覆盖第三方
+  形态主路径、缺 `auth_raw` 的回落、嵌套与扁平两形态回归、三种形态缺令牌统一
+  报错、毫秒与秒双向换算。真实数据级验证用一份 10 账号的第三方导出文件逐条过
+  `parseStored`，10/10 解析成功且 uid、昵称、秒级过期时间、domain、令牌长度全部
+  与原值一致。
+
 ## 0.21.25
 
 ### Fix - 客户端发大写模型名导致上游 11102，一次拼写问题被放大成整池换号
