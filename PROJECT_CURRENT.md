@@ -35,6 +35,21 @@
 ## 活动会话进展摘要
 
 
+- 会话（2026-11-12 21:09-22:10）：**qoderwork 0.13.17：面板「测试」把上游容量排队（10605 排队帧）与账号故障分开（生产已生效）**：
+  - **用户诉求**：贴生产面板截图 + 报错 `活跃测试失败 (模型: Qwen4-Max-Preview): upstream 200: 403: 10605: {"isQueued":true,"modelKey":"qmodel_latest","queueCount":1,"queueType":"p4","retryAfterSeconds":60,"serviceAvailable":true,"subCode":"RESOURCE_LIMIT","waitTime":60}`，问「QoderWork 测试 Qwen4-Max-Preview 失败」。
+  - **根因（非账号故障）**：该响应是上游**容量排队帧**（HTTP 200 + 顶层 `code=403` + 内嵌 10605/`isQueued`，`serviceAvailable=true`），不是凭据失效或账号坏。failover 侧早已正确拦截（`accountFailover.go:274` `isQueueFrame(body) → return false`，不计数不冷却；`failover_disable.go` 排队帧不触发禁用），**缺陷只在用户呈现层**：`sendActivePingQoder` 把排队帧当普通错误抛，面板只能显示红色「测试失败」+ 截断 200 字符的原始 JSON 转义串（`&#34;`），用户无法分辨「上游拥堵」还是「账号坏了」。
+  - **模型映射确认**：仓库内无 `Qwen4-Max-Preview` 硬编码映射，它走 `lookupUpstreamKey` 运行时映射（上游 `display_name` → 内部代号），上游把该官方名挂在 `qmodel_latest` 代号上，故报错里 `modelKey=qmodel_latest` 属正常。
+  - **实现（3 文件 + 1 新测试，+223/−14）**：① `policy.go` 新增 `type queueFrameInfo`（8 字段与上游原帧同名）、`waitSeconds()`（`retryAfterSeconds` 优先、回退 `waitTime`）、`parseQueueFrameInfo(body string) (queueFrameInfo, bool)`（对每个 `{` 起点用 `json.NewDecoder` 试解，规避 `upstream 200: 403: 10605: {...}` 前缀不能整体 Unmarshal）；② `active_ping.go` 新增 `*queueFrameError`（`Error()` 文本**逐字不变**，供历史日志对照）+ `queueFrameNotice`（中文可读提示）+ `buildActivePingFailure`（`errors.As` 命中即返回 `upstream_queued`/`detail`/`retry_after_seconds`/`queue_type`/`queue_count`/`sub_code`/`upstream_model`），`sendActivePingQoder` 的两个错误返回点先判排队；③ `panel.html` 结果渲染改**三态**（成功 ok / 排队 warn / 失败 err）+ 新增 `.r-hd.warn`/`.r-warn` 样式（`.toast.warn` 本就存在）。
+  - **键名决策**：用 `upstream_queued` 而非 `queued`——本插件 `credits_handler.go:233` 与 `management.go:255` 的 `queued` 是「后台刷新排队数」，同名会混淆。
+  - **不做自动重试**：上游有 110 日调用次数上限（自动探活已于 2026-10-12 移除），且 `defaultActivePingTimeout=20s` 装不下 60s 等待 ⇒ 只做「明确排队中 + 可重试」提示，不引入换号/等待逻辑；failover 语义零改动。
+  - **验证**：`cgo-shim-build.py qoderwork` build/vet/test 全绿（14.4s）；新增 7 测试 + 4 项既有排队帧回归全 PASS；**哨兵** `TestZZSentinelQueueFrameCompiled` 证实新测试真进编译（FAIL + `SENTINEL-ALIVE: waitSeconds() = 60`）；**变异**（把 `parseQueueFrameInfo` 命中条件改恒假）触发 shim FAIL；gofmt clean；panel.html `new Function()` `blocks=2 bad=0`；`panel_batch_import.mjs` / `panel_batch_import_e2e.mjs` 既有回归全通过。
+  - **文档**：`doc/4-bugs/2026-11-12_214500_QoderWork测试按钮把上游排队当账号失败根因与修复.md`、`doc/3-实施/2026-11-12_214500_QoderWork排队帧与测试失败分离_实施总览.md`、`doc/5-tests/2026-11-12_214500_QoderWork测试按钮排队帧与失败分离验证.md`（含生产验收与发布记录）、`doc/6-review/2026-11-12_215000_QoderWork排队帧与测试失败分离_6-review.md`（`STYLE: PASS`）。
+  - **发布**：提交 `7c4527c`（11 文件 +815/−16）→ CI run `43231575197`（`allow_partial=true`）→ Release job success，13 个 `Test (<dir>)` 全绿，失败仅 `windows-arm64 (go-cross)` STEP 5 与 `darwin/arm64` cancelled（踩坑 44 已知形态）→ tag `qoderwork-provider-v0.13.17`（id 443029174，5 assets）→ `ALL CHECKSUMS OK` → registry `0791998`（4 artifacts，`--allow-missing` 剔除 darwin_arm64/windows_arm64）→ 远端 raw registry 已读到 0.13.17。
+  - **生产（热重载零重启）**：`plugin-store/qoderwork-provider/install?version=0.13.17` HTTP 200 `restart_required:false`；`hot reloaded active_version=0.13.17 retired_version=0.13.16`；落盘 `.so` sha256 `911c983e…34725d8`（8363872 B）与本地 zip 内 `.so` 逐字节一致；面板 `87771` 字节 sha256 `13965adc…e906705b` 与本地 `panel.html` 完全一致（含 `upstream_queued`、`r-hd.warn`）；账号池 5 个全启用。
+  - **生产行为验收（决定性）**：`POST /test-active {"auth_index":"4afdceb9ea8cb1de","model":"Qwen4-Max-Preview"}` → HTTP 200 / 0.323s，返回 `{"error":"上游排队中 (模型: Qwen4-Max-Preview，队列 p4，前方 1 个请求)，约 60 秒后可重试；账号与凭据正常，属上游容量排队而非测试失败","upstream_queued":true,"retry_after_seconds":60,"queue_type":"p4","queue_count":1,"sub_code":"RESOURCE_LIMIT","upstream_model":"qmodel_latest","detail":"upstream 200: 403: 10605: {...}"}`；插件日志 `[qoderwork] manual active ping test queued for model Qwen4-Max-Preview: ...`。改造前同请求返回红色「活跃测试失败」。
+  - **同族未同步（需当轮授权）**：`qoder-ai/active_ping.go` 与 `qwenwork/active_ping.go` 结构同构，可逐函数照搬；`workbuddy`/`workbuddy-ai` 的探活只读首包 512 字节即判成功（排队帧会被误判成功），属另一独立问题。本轮按跨项目写入红线未动其它插件目录。
+  - **发布脚本踩坑**：`scripts/download-release-assets.py` 的参数顺序是 `<version> [plugin]`，写成 `qoderwork-provider 0.13.17` 会 404。
+
 - 会话（2026-11-12 01:14-02:18）：**safeguard-killer 0.1.5 发布：成员模型真实名称直接进入智能分组（生产已生效）**：
   - **用户诉求演进**：先问「workbuddy 的 cpa 插件有破甲版本吗」→ 装好后报「Safeguard Killer 不生效」→ 诊断出根因后裁定「改成只要配置模型名称，只要是这个模型的请求就进入这个插件」。
   - **诊断（含一次自我纠错，重要教训）**：初判「三个破甲常量被抹成空操作」**错误**——`claudeCyberGatePrompt`(459 字符)/`Replacement`(323)、`RefusalRetryNudge`(224)/`Replacement`(91)、`ToolNotRun`(82/77)、`ToolInterrupted`(155/136)、`Fable51`(226)/`Fable5`(167) 全部互不相同且非空，替换逻辑完整有效。误判根因是**同一文件被 `read` 工具 / `Get-Content` / `git show` / Python 读出四种不同内容**（工具渲染污染，三次采样 sha256 恒为 `ECAEDC39…`/55421 字节）。**裁决铁律**：字面比对一律用 Python 读原始字节做布尔断言，不信任多层工具转述。
@@ -184,37 +199,3 @@
   - **已排除的优化路径**：① prompt caching —— 24h/12023 条样本的 `cached_tokens`/`cache_read_tokens`/`cache_creation_tokens` **全部为 0**，上游不提供；② 插件侧截断 —— `buildTraePayload` 原样透传，主动截断会破坏对话完整性；③ 首字闸门 —— 已封顶 1200ms（实测 p90=1075ms）；④ 并发排队 —— 已实证无关。
   - **剩余唯一可行方向**：缩短 input 长度，需客户端（DSH）侧配合把上下文上限从 ~80 万降到 20~30 万，可让 TTFT p50 从 7.7s 降到 4.5s。**属产品决策，不是插件缺陷**。
   - **文档**：诊断文档扩至 13 节（18,395 字节）。
-
-- 会话（2026-11-09 23:25-23:45，接续上条）：**缺陷十「内容审核失败客户端仍收 200」（traework 0.5.34）**：
-  - **修复效果确认（0.5.31 生效）**：`glm-5.3-flashx` 审核失败耗时从 **1m26s/1m34s 降到 4.7s/2.2s**，因 0.5.31 让插件在 done 时立即识别审核原因并终止，不再等完整生成。
-  - **新缺陷十**：但客户端仍收到 **HTTP 200**（`gin_logger` 记录 `200 | 10.02s | POST /v1/responses`），无法区分「正常完成」与「被审核截断」。根因：流式错误信封 `marshalStreamErrorEnvelope` 只带 `error` 字段、**不带 `http_status`**，宿主 `statusCodeFromError` 得 0，客户端按成功收尾。
-  - **修复（0.5.34）**：新增 `isContentModerationFailure`（认 `sensitive content` 与 `content error finish reason`），`envelopeHTTPStatusForError` 据此返回 **400**。宿主 `IsRequestFault(400)` 判定为请求级故障，既不冷却凭据也不跨凭据轮转 —— 这类失败与账号健康度无关，同一段对话换号必然重演。
-  - **验证**：新增 `content_moderation_test.go` 两组用例（7 条识别边界含配额/渠道/500 反例、状态码映射）；变异移除该分支后 `TestEnvelopeHTTPStatusForContentModeration` 失败。
-  - **部署验收**：`hot reloaded 0.5.33→0.5.34`（23:39:32），落盘 `.so` sha256 `31dd3b16…` 与 release zip 逐字节一致。
-  - **闸门数据持续稳定**：54 条样本 `gate_ms` p50=0 / p90=1075ms，全部被 1200ms 上限压住。
-
-- 会话（2026-11-09 23:05-23:25，接续上条）：**闸门延迟实测验收 + 观测点修正（traework 0.5.33）**：
-  - **路径核实（重要修正）**：生产流量**全部走 `exec stream async`**（2h 内 1289 次），该路径直接调用 `pumpTraeStreamAttempt`，因此 0.5.32 的闸门修复**对生产有效**；但 0.5.32 把观测日志加在 `pumpTraeStream` 包装函数里（生产不经过它），导致日志一条都没有。0.5.33 把观测点移到 `executor.go` 的 async 循环内。
-  - **闸门机制实证**：生产 2h async done 样本 1289 条，`chunks` p50 仅 **34**（p10=8 / p90=222），即典型输出约 136 字符，**远达不到 600 门槛** —— 闸门在多数请求里全程不开，分片一直留在 pending 直到 done 才统一释放。这是首字被拖后的直接机制。
-  - **修复效果实测（0.5.33 部署后 8 分钟，16 条样本）**：`gate_ms` **p50=0 / p90=1015 / max=1026**，全部被 1200ms 上限压住。`gate_ms=0` 是字符数够快立即打开；`gate_ms≈1015` 正是上限生效强制放行。修复前该值等于「攒满 600 字符所需时间」，可能达数十秒。
-  - **5 个目标模型现状（近 12h，失败率均 <1.2%）**：deepseek-v4.1-flash n=512 fail 1.2% ttft50 5006ms；glm-5.3-flashx n=394 fail 0.8% ttft50 5387ms；minimax-m3.1-flash n=323 fail 0.9% ttft50 6161ms；glm-5.3 n=207 fail 0.5% ttft50 5571ms；DeepSeek-V4-Pro-Official n=75 fail 0.0% ttft50 6391ms。
-  - **部署验收**：`hot reloaded 0.5.32→0.5.33`（23:16:53），落盘 `.so` sha256 `922b145b…` 与 release zip 逐字节一致。
-
-- 会话（2026-11-09 22:45-23:10，接续上条）：**缺陷九「首字闸门无时间上限致长任务首帧被拖后」（traework 0.5.32）**：
-  - **用户核心诉求**：traework 首字延迟高。本轮定位到插件侧一个此前未发现的可干预点。
-  - **根因**：`pump` 路径的首字闸门按**字符数**攒够 `pseudoCompletionMaxChars(600)` 才把缓冲分片下发给客户端。0.5.29 把伪完成阈值从 200 提到 20000 后，`gateOpen := ctx.InputChars < 20000` 使 **99.1%** 的真实请求（input ≥ 5000 token）全部走闸门。
-  - **量化证据**：闸门组 TTFT p50 **5630ms**（n=1103）vs 直通组 **1866ms**（n=10），相差 **3 倍**。对照 workbuddy：**完全没有首字闸门**（grep `gateOpen|pending` 零命中），其 TTFT p50 仅 2526ms。
-  - **修复（0.5.32）**：新增 `pseudoGateMaxHold = 1200ms`，闸门改为**双条件** —— 攒够健康字符 **或** 持有超上限，任一满足即放行。伪完成防护让位于首字体感：「已生成内容被回滚」可接受，「长时间零输出」不可接受。
-  - **可观测性**：`traeStreamAttemptResult` 新增 `GateOpenedAt`，成功路径输出 `stream pump gate delay: gate_ms=… ttft_ms=…`，可直接量出闸门给用户感知首字带来的额外延迟。
-  - **验证**：新增 `gate_hold_test.go` 三组用例（上限取值合理性 500ms~2s 区间、持有超时放行、未超时仍按字符判定且伪完成零泄漏）；变异把 `heldTooLong` 置 false 后 `TestPumpGateOpensOnHoldTimeout` 失败。
-  - **部署验收**：`hot reloaded 0.5.31→0.5.32`（23:01:03），落盘 `.so` sha256 `6382f250…` 与 release zip 逐字节一致。部署后 12 分钟错误指标全零；闸门延迟样本因夜间低谷暂无真实请求，下轮补采。
-
-- 会话（2026-11-09 22:10-22:40，接续上条）：**缺陷八「done 事件终止原因被丢弃致内容审核失败无标记」（traework 0.5.31）**：
-  - **现象**：`glm-5.3-flashx` 两次请求耗时 **1m26s / 1m34s**、生成 **2946 个分片**后才报 `upstream 200: sensitive content error finish reason: sensitive`，且客户端收到 **HTTP 200**（被截断但无错误标记）。
-  - **根因**：上游把终止原因放在 `done` 事件的 **data** 里，而三条扫描路径（collect / aggregate / pump）的 `case "done"` 分支都只调 `terminal.recordDone()` 后立即返回，**完全不解析 payload** —— 审核失败被当业务完整收尾。
-  - **修复（0.5.31）**：新增 `doneTerminalError`，在 `recordDone()` 之前解析 done 的 data；命中 `sensitive` / `content error` 时返回 `upstream <status>: <原因>` 错误。三条路径统一接入（pump 路径用 `ctx.StatusCode`）。判据方向为「宁可放过」——只认内容审核关键词，其余未知 payload 按正常完成处理。
-  - **验证**：新增 `done_terminal_test.go` 两组用例（11 条识别边界含 7 种正常完成形态、脱敏截断）；变异使 `doneTerminalError` 恒返回空串后 4 条用例失败。
-  - **部署验收**：`hot reloaded 0.5.30→0.5.31`（22:35:50），落盘 `.so` sha256 `fc538b6b…` 与 release zip 逐字节一致。部署后 10 分钟：上游失败 **0**、内容审核 0、探活失败 0、11128 0、换号耗尽 0、伪完成重试 0。
-  - **发布踩坑（复现第 2 次）**：CDN 缓存导致 `plugin-store install` 连续 6 次返回旧版本（`{"status":"installed"}` 但无版本号）；等待约 5 分钟缓存过期后第 7 次拿到 0.5.31。**教训：install 返回不带目标版本号即视为未生效，需等待后重试，不能凭 status=installed 判定成功。**
-  - **本轮失败率基线（近 6h）**：workbuddy 0.26%（2/757）、traework 1.39%（7/505），其中 traework 剩余失败为本次修复的内容审核 4 条 + 零星 504。
-
