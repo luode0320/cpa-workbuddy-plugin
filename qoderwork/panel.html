@@ -161,6 +161,9 @@ button.danger:hover{background:var(--err);color:#fff}
 .import-result .r-item:first-of-type{border-top:0}
 .import-result .r-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .import-result .r-err{color:var(--err);flex:none;max-width:55%;text-align:right;word-break:break-all}
+/* 排队态：上游容量饱和，账号正常，与红色「测试失败」严格区分 */
+.import-result .r-hd.warn{color:var(--warn)}
+.import-result .r-warn{color:var(--warn);flex:none;max-width:55%;text-align:right;word-break:break-word}
 /* 凭据导入：多文件选择 · 文件清单 · 识别预览 · 进度提示 */
 .file-picker{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
 .file-picker label.sec{background:var(--btn-sec);color:var(--fg);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;display:inline-block;line-height:1.2}
@@ -1144,13 +1147,19 @@ async function runTestModel(btn){
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({auth_index: idx, model: model})
     });
+    // 三态渲染：成功 / 上游排队 / 真失败
+    const queued=!!(d&&d.upstream_queued);
     const ok=!(d&&d.error);
+    const kind=queued?"warn":(ok?"ok":"err");
+    const head=queued?"排队中":(ok?"测试成功":"测试失败");
+    const text=ok?(d.message||"活跃成功"):(d.error||"未知错误");
     if(res){
       res.className="import-result show";
-      res.innerHTML='<div class="r-hd '+(ok?"ok":"err")+'">'+(ok?"测试成功":"测试失败")+'</div>'+
-        '<div class="r-item"><span class="r-name">'+esc(model)+'</span><span class="'+(ok?"":"r-err")+'">'+esc(ok?(d.message||"活跃成功"):(d.error||"未知错误"))+'</span></div>';
+      res.innerHTML='<div class="r-hd '+kind+'">'+head+'</div>'+
+        '<div class="r-item"><span class="r-name">'+esc(model)+'</span><span class="'+(queued?"r-warn":(ok?"":"r-err"))+'">'+esc(text)+'</span></div>';
     }
-    if(ok)toast("活跃测试成功","ok",d.message||("模型: "+model));
+    if(queued)toast("上游排队中","warn",text);
+    else if(ok)toast("活跃测试成功","ok",d.message||("模型: "+model));
     else toast("测试失败","err",d.error);
   }catch(e){
     if(res){res.className="import-result show";res.innerHTML='<div class="r-hd err">测试失败</div><div class="r-item"><span class="r-name">'+esc(model)+'</span><span class="r-err">'+esc(e.message||String(e))+'</span></div>';}

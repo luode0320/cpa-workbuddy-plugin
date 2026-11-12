@@ -521,6 +521,55 @@ func isQueueFrame(body string) bool {
 		strings.Contains(body, queueBusinessCode)
 }
 
+// queueFrameInfo 是排队帧解析出的结构化容量信息，字段与上游原帧同名。
+type queueFrameInfo struct {
+	IsQueued          bool   `json:"isQueued"`
+	QueueType         string `json:"queueType"`
+	QueueCount        int    `json:"queueCount"`
+	RetryAfterSeconds int    `json:"retryAfterSeconds"`
+	WaitTime          int    `json:"waitTime"`
+	SubCode           string `json:"subCode"`
+	ModelKey          string `json:"modelKey"`
+	ServiceAvailable  bool   `json:"serviceAvailable"`
+}
+
+// waitSeconds 返回上游给出的预计等待秒数，优先 retryAfterSeconds。
+// [参数] 无。
+// [返回] 秒数；两者都缺失时返回 0，调用方按「无建议等待时间」处理。
+// 最近修改时间 2026-11-12 21:30:00；改动原因：新增，排队帧需要统一的建议等待秒数口径。
+func (q queueFrameInfo) waitSeconds() int {
+	if q.RetryAfterSeconds > 0 {
+		return q.RetryAfterSeconds
+	}
+	return q.WaitTime
+}
+
+// parseQueueFrameInfo 从带任意前缀的上游错误文本里解析排队帧的结构化信息。
+// [参数] body：上游错误文本，可含任意前缀与尾随内容。
+// [返回] 解析成功且确实带排队语义时返回结构化信息与 true；否则返回零值与 false。
+// 最近修改时间 2026-11-12 21:30:00；改动原因：面板需要把排队帧呈现为「排队中」而不是账号故障。
+func parseQueueFrameInfo(body string) (queueFrameInfo, bool) {
+	// 1. 非排队文本直接判否，避免对普通错误做无意义解码
+	if !isQueueFrame(body) {
+		return queueFrameInfo{}, false
+	}
+	// 2. 从每个 '{' 起解码第一个完整 JSON 值，命中带排队语义的那一层即为答案
+	for i := 0; i < len(body); i++ {
+		if body[i] != '{' {
+			continue
+		}
+		var cand queueFrameInfo
+		dec := json.NewDecoder(strings.NewReader(body[i:]))
+		if err := dec.Decode(&cand); err != nil {
+			continue
+		}
+		if cand.IsQueued || cand.QueueCount > 0 || cand.SubCode != "" {
+			return cand, true
+		}
+	}
+	return queueFrameInfo{}, false
+}
+
 // envelopeHTTPStatusForError 决定失败信封对外携带的 HTTP 状态码。
 //
 // 宿主 statusCodeFromError（conductor_cooldown.go:1448）只认 StatusCode() int

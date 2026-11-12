@@ -1,5 +1,49 @@
 # QoderWork Plugin Changelog
 
+## 0.13.17
+
+### Change - 面板「测试」把上游容量排队（10605 排队帧）与账号故障分开呈现
+
+- 背景: 用户在生产面板点「测试」选中 `Qwen4-Max-Preview`，拿到红字
+  `活跃测试失败 (模型: Qwen4-Max-Preview): upstream 200: 403: 10605: {&#34;errorCode&#34;:0,&#34;isQueued&#34;:true,...}`，
+  据此怀疑账号或凭据坏了。该帧 `errorCode:0`、`serviceAvailable:true`、
+  `subCode:RESOURCE_LIMIT`、`queueType:p4`、`queueCount:1`、
+  `retryAfterSeconds:60` —— 账号完全健康，饱和的只是上游队列。
+  排队判定与 failover 拦截（`accountFailover.go` 对排队帧 `return false`）
+  一直是对的，缺失的是「识别之后语义没有往用户态传」：`sendActivePingQoder`
+  把排队与真故障压成同一个 `error`，`handleTestActiveWithAuth` 无条件包成
+  「活跃测试失败」，`panel.html` 只有 ok/err 两态，最终把半截转义 JSON 怼到面板。
+- 变更: `policy.go` 新增 `queueFrameInfo`（`isQueued`/`queueType`/`queueCount`/
+  `retryAfterSeconds`/`waitTime`/`subCode`/`modelKey`/`serviceAvailable`）、
+  `waitSeconds()`、`parseQueueFrameInfo(body string) (queueFrameInfo, bool)`
+  （对每个 `{` 起点用 `json.NewDecoder` 解第一个完整 JSON 值，兼容
+  `upstream 200: 403: 10605: ` 这类前缀）；`active_ping.go` 新增
+  `queueFrameError`（`Error()` 文本与改造前逐字一致，保证探活日志与历史日志
+  可对照）与 `queueFrameNotice`（中文提示），`sendActivePingQoder` 两个失败
+  返回点先判排队，失败结果统一由新增的 `buildActivePingFailure` 折叠；
+  `panel.html` 的 `runTestModel` 改为三态，新增 `.import-result .r-hd.warn`
+  与 `.r-warn` 两条样式（复用既有 `--warn` 变量与 `.toast.warn`）。
+- 新增字段: `/test-active` 命中排队时结果带 `upstream_queued:true`、
+  `detail`（上游原始错误）、`retry_after_seconds`、`queue_type`、
+  `queue_count`、`sub_code`、`upstream_model`（按存在性追加）。
+  键名用 `upstream_queued` 而不是 `queued`：本插件别处 `queued` 指
+  「后台刷新排队数」（`credits_handler.go` / `management.go`），同名会混淆。
+- 保留: 排队判定（`isQueueFrame`）、failover 计数/冷却/禁用逻辑、自动探活
+  行为完全不变——排队帧在 `recordAccountFailure` 里依旧 `return false`，
+  失败探活依旧按 `err != nil` 记一次「这次探不通」（不解禁账号）；
+  非排队失败文案与行为逐字未变（有测试锁定）。
+- 不做: 不引入自动等待 60 秒重试——`defaultActivePingTimeout` 只有 20 秒
+  装不下，且上游 110 日调用次数上限让自动重试有成本；排队是请求级 + 时段性，
+  按 SSE 规则「立即以错误收尾、不在号池内消耗换号」。
+- 验证: `python scripts/cgo-shim-build.py qoderwork` build / vet / test 全绿；
+  新增 7 个测试（`active_ping_queue_frame_test.go`）全部 `--- PASS`；
+  哨兵反证 `SENTINEL-ALIVE: waitSeconds() = 60` + `--- FAIL` 后复原全绿；
+  变异反证（把 `parseQueueFrameInfo` 命中条件改成恒假）shim
+  `FAILED: go test (exit 1)` 后复原全绿；面板两段 script
+  `new Function()` 校验 `blocks=2 bad=0`；`gofmt -l` 无输出。
+- 涉及文件: `policy.go`、`active_ping.go`、`panel.html`、
+  `active_ping_queue_frame_test.go`（新增）、`CHANGELOG.md`、`VERSION`、`main.go`。
+
 ## 0.13.16
 
 ### Change - 导入弹窗改为「只认凭据 JSON」，移除 PAT 单条与 PAT 批量逻辑
