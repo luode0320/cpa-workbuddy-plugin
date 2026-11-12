@@ -34,23 +34,28 @@ var (
 )
 
 // setConfiguredModels 整体替换 config_yaml `models:` 覆盖列表。
+//
+// 释放 configuredModelsMu 之后再刷新归一表：refreshUpstreamModelIDCache 会
+// 反向读 configuredModels，持写锁期间调用会自死锁。
 // [参数] models：新的模型列表（非 nil 非空）
 // [返回] 无
-// 最近修改时间 2026-08-28 00:41:58（新增 config_yaml models 覆盖支持）
+// 最近修改时间 2026-11-12（追加模型名大小写归一表刷新）
 func setConfiguredModels(models []pluginapi.ModelInfo) {
 	configuredModelsMu.Lock()
 	configuredModels = models
 	configuredModelsMu.Unlock()
+	refreshUpstreamModelIDCache()
 }
 
 // clearConfiguredModels 清空覆盖，恢复动态获取 / 静态默认路径。
 // [参数] 无
 // [返回] 无
-// 最近修改时间 2026-08-28 00:41:58（新增 config_yaml models 覆盖支持）
+// 最近修改时间 2026-11-12（追加模型名大小写归一表刷新）
 func clearConfiguredModels() {
 	configuredModelsMu.Lock()
 	configuredModels = nil
 	configuredModelsMu.Unlock()
+	refreshUpstreamModelIDCache()
 }
 
 // getConfiguredModels 返回当前覆盖列表的引用（调用方不得原地修改）。
@@ -213,12 +218,20 @@ func markDynamicModelsFailed() {
 	dynamicModelsCache.Unlock()
 }
 
+// storeDynamicModels 写入动态发现结果，并同步刷新模型名大小写归一表。
+//
+// 归一表必须在释放 dynamicModelsCache 写锁之后刷新：refreshUpstreamModelIDCache
+// 会反向读 dynamicModelsCache，持锁调用会自死锁。
+// [参数] models：上游返回的模型列表
+// [返回] 无
+// 最近修改时间 2026-11-12（追加模型名大小写归一表刷新）
 func storeDynamicModels(models []pluginapi.ModelInfo) {
 	dynamicModelsCache.Lock()
 	dynamicModelsCache.models = models
 	dynamicModelsCache.fetched = time.Now()
 	dynamicModelsCache.failedAt = time.Time{} // 成功即清除负缓存窗口
 	dynamicModelsCache.Unlock()
+	refreshUpstreamModelIDCache()
 }
 
 // fetchDynamicModelsFromStorage 拉取动态模型列表，**不**在此处兜底静态列表。
@@ -527,8 +540,74 @@ func cacheModelAliases(host pluginapi.HostConfigSummary) {
 	modelAliasCache.Unlock()
 }
 
+// upstreamModelIDCache 保存「小写 → 上游真实注册 ID」归一表，供
+// canonicalUpstreamModelID 把客户端随意大小写的模型名折叠回上游注册时的
+// 精确大小写。上游 CodeBuddy 的模型 ID 大小写敏感：请求 DeepSeek-V4-Pro
+// 时上游返回 11102 model service info not found，只有 deepseek-v4-pro 可用。
+// 数据源与 resolveModels 的优先级链一致（动态发现 + config_yaml 覆盖）。
+var upstreamModelIDCache struct {
+	sync.RWMutex
+	byLower map[string]string
+}
+
+// refreshUpstreamModelIDCache 重建模型 ID 归一表。
+//
+// 调用时机：动态模型列表写入 / 清空、config_yaml models 覆盖变更。
+// 重建而非增量写入，保证列表整体替换后不残留已下线的旧 ID。
+// 先取齐两份数据再拿写锁，避免与 configuredModelsMu / dynamicModelsCache
+// 形成嵌套持锁。
+// [参数] 无
+// [返回] 无
+// 最近修改时间 2026-11-12（新增：模型名大小写归一）
+func refreshUpstreamModelIDCache() {
+	byLower := make(map[string]string)
+	collect := func(models []pluginapi.ModelInfo) {
+		for _, m := range models {
+			id := strings.TrimSpace(m.ID)
+			if id == "" {
+				continue
+			}
+			byLower[strings.ToLower(id)] = id
+		}
+	}
+	collect(getConfiguredModels())
+	dynamicModelsCache.RLock()
+	collect(dynamicModelsCache.models)
+	dynamicModelsCache.RUnlock()
+	upstreamModelIDCache.Lock()
+	upstreamModelIDCache.byLower = byLower
+	upstreamModelIDCache.Unlock()
+}
+
+// canonicalUpstreamModelID 把模型名折回上游注册时的精确大小写。
+//
+// 归一表未命中时原样返回：上游模型列表尚未拉取（无凭据 / 发现失败）时
+// 归一表为空，此时保持透传语义，绝不猜测大小写。
+// [参数] model：待归一的模型名，允许带首尾空白
+// [返回] 归一表中记录的注册 ID；未命中时返回去空白后的原值
+// 最近修改时间 2026-11-12（新增：模型名大小写归一）
+func canonicalUpstreamModelID(model string) string {
+	m := strings.TrimSpace(model)
+	if m == "" {
+		return model
+	}
+	upstreamModelIDCache.RLock()
+	id, ok := upstreamModelIDCache.byLower[strings.ToLower(m)]
+	upstreamModelIDCache.RUnlock()
+	if ok {
+		return id
+	}
+	// 归一表未命中：只去空白后原样返回，绝不猜测大小写。
+	return m
+}
+
 // resolveUpstreamModel maps an aliased requested model back to the real
 // upstream model ID. Returns the input unchanged when nothing matches.
+//
+// 2026-11-12：alias 表按小写索引，反向解析出的目标名与原始模型名都要再经
+// canonicalUpstreamModelID 折叠大小写——客户端发来的 DeepSeek-V4-Pro 与上游
+// 注册的 deepseek-v4-pro 只差大小写，alias 表里没有这条记录，旧实现直接透传，
+// 上游返回 11102 后插件按账号级故障逐个换号，把一次拼写问题放大成整池遍历。
 func resolveUpstreamModel(model string, attributes map[string]string) string {
 	m := strings.TrimSpace(model)
 	if m == "" {
@@ -536,15 +615,15 @@ func resolveUpstreamModel(model string, attributes map[string]string) string {
 	}
 	key := strings.ToLower(m)
 	if name, ok := parseModelAliasAttribute(attributes)[key]; ok {
-		return name
+		return canonicalUpstreamModelID(name)
 	}
 	modelAliasCache.RLock()
 	name, ok := modelAliasCache.byAlias[key]
 	modelAliasCache.RUnlock()
 	if ok {
-		return name
+		return canonicalUpstreamModelID(name)
 	}
-	return m
+	return canonicalUpstreamModelID(m)
 }
 
 // parseModelAliasAttribute decodes a per-auth alias override from auth

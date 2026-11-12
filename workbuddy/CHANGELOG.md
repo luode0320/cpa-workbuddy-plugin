@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.21.25
+
+### Fix - 客户端发大写模型名导致上游 11102，一次拼写问题被放大成整池换号
+
+- 背景: 上游 CodeBuddy 的模型 ID **大小写敏感**，注册 ID 全是小写
+  （`deepseek-v4-pro` / `glm-5.3-flash` 等）。CPA 的 provider 路由对模型名大小写
+  **不敏感**，会把 `DeepSeek-V4-Pro` 正常认领到 workbuddy-provider；但插件旧实现
+  在两处按「忽略大小写」判断相等，于是把大写名原样透传上游，上游返回
+  `11102 model service info not found`。
+- 放大链路: 11102 被归为账号级故障 → 插件逐个换号重试 → 20 个账号全遍历一遍
+  → 单次请求打满整池、全部失败，客户端只看到一次普通报错。生产实测 60 分钟内
+  workbuddy 请求 1196 次、失败 1014 次（84.8%），其中 11102 占 1007 次。
+- 修复:
+  1. `models.go` 新增上游模型 ID 归一表 `upstreamModelIDCache`
+     （`strings.ToLower(id)` → 注册时原样 ID），由 `refreshUpstreamModelIDCache()`
+     从配置模型列表与动态发现列表**整体重建**，`setConfiguredModels` /
+     `clearConfiguredModels` / `storeDynamicModels` 在释放各自写锁后触发刷新。
+  2. `models.go` 新增 `canonicalUpstreamModelID(model string) string`，把任意
+     大小写写法折回上游注册 ID；**归一表未命中时只去空白、原样返回，绝不猜测
+     大小写**（上游列表未拉到时表为空，此时保持透传语义）。
+  3. `models.go` `resolveUpstreamModel` 的三条返回路径（alias 属性命中、全局
+     alias 表命中、末尾 fallback）全部经过归一。
+  4. `payload.go` `rewriteModelInPlace` / `rewriteModelInBody` 的「当前值是否已是
+     目标模型」判断，由忽略大小写的 `strings.EqualFold` 改为**逐字节精确相等**——
+     只差大小写时也要真正写回 body，把目标名写成上游注册 ID。
+- 为什么不改上游或调用方: 客户端直发大写名这一行为不受插件控制，也可能来自
+  任何上游调用方；插件是唯一能保证「发给上游的 model 字段逐字节等于注册 ID」
+  的位置，修在这里才是根治。
+- 测试: 新增 `model_case_normalize_test.go`，10 个测试函数覆盖 7 种大小写变体、
+  归一表未命中透传、空表保大小写、alias 目标归一、四种 body 重写形态、两个
+  缓存刷新入口。变异验证两组（把 `payload.go` 精确比较改回 `EqualFold`、
+  把 `resolveUpstreamModel` 末尾 fallback 改回直接返回原值）均被测试捕获。
+
 ## 0.21.24
 
 ### Fix - 内容审核拦截未进入失败分类，100% 被审模型无法退出路由

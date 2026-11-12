@@ -163,15 +163,23 @@ func ensureSystemMessageInPlace(obj map[string]any, sa *storedAuth) bool {
 }
 
 // rewriteModelInPlace swaps obj["model"] to upstreamModel when non-empty.
-// Mirrors rewriteModelInBody's behavior (case-insensitive compare); returns
-// true when modified.
+// Returns true when modified.
+//
+// 2026-11-12：比较改为**逐字节精确相等**。此前用 strings.EqualFold，客户端发
+// DeepSeek-V4-Pro、目标 deepseek-v4-pro 时被判"已相等"直接跳过重写，大写名原样
+// 透传上游（上游模型 ID 大小写敏感）→ 11102 model service info not found → 插件
+// 按账号级故障逐个换号，把一次大小写问题放大成整池遍历。目标名是上游权威 ID，
+// 只有完全一致才允许跳过。
+// [参数] obj：已解析的请求体；upstreamModel：上游注册的精确模型 ID
+// [返回] true 表示改写了 model 字段
+// 最近修改时间 2026-11-12（大小写不敏感比较改为精确比较）
 func rewriteModelInPlace(obj map[string]any, upstreamModel string) bool {
 	upstreamModel = strings.TrimSpace(upstreamModel)
 	if upstreamModel == "" {
 		return false
 	}
 	cur, _ := obj["model"].(string)
-	if strings.EqualFold(strings.TrimSpace(cur), upstreamModel) {
+	if cur == upstreamModel {
 		return false
 	}
 	obj["model"] = upstreamModel
@@ -446,6 +454,12 @@ func forceMaxThinking(obj map[string]any) bool {
 
 // rewriteModelInBody replaces the "model" field of a chat-completions body
 // with the resolved upstream model ID.
+//
+// 2026-11-12：比较改为逐字节精确相等，理由同 rewriteModelInPlace——大小写不同
+// 的目标名必须真正写回，否则上游 11102。
+// [参数] body：原始请求体；upstreamModel：上游注册的精确模型 ID
+// [返回] 改写后的请求体；body 为空或解析失败时原样返回
+// 最近修改时间 2026-11-12（大小写不敏感比较改为精确比较）
 func rewriteModelInBody(body []byte, upstreamModel string) []byte {
 	if len(body) == 0 || strings.TrimSpace(upstreamModel) == "" {
 		return body
@@ -455,7 +469,7 @@ func rewriteModelInBody(body []byte, upstreamModel string) []byte {
 		return body
 	}
 	cur, _ := obj["model"].(string)
-	if strings.EqualFold(strings.TrimSpace(cur), strings.TrimSpace(upstreamModel)) {
+	if cur == strings.TrimSpace(upstreamModel) {
 		return body
 	}
 	obj["model"] = upstreamModel
