@@ -35,6 +35,17 @@
 ## 活动会话进展摘要
 
 
+- 会话（2026-11-12 22:20-23:12）：**Safeguard Killer 从「破甲」退化成「换模型」：同名分组劫持 + 空响应误判（0.1.6 已上线）**：
+  - **用户诉求与定调**：报「wokrbuddy 的 deepseek-v4-pro 还是不停失败、重试、切换模型依旧失败」，随后定调「Safeguard Killer 希望要的是破甲的能力, 而不是切换模型的能力」——破甲是目的，切模型只能作兜底。
+  - **复现（3/3 稳定）**：小写 `deepseek-v4-pro` + `max_tokens=300` → http=200 但响应 `model` 变成 `glm-5.3-flash`，正文前缀 `⚡ [Safeguard Killer] hy4free (empty response (no text or tool calls)) → switched to glm-5.3-flash`，耗时 7.2–10.7s；大写名反而直通。new-api 把 109 次全记 type=2 成功，用户侧只看到「换了模型」。
+  - **根因第一层（破甲被架空）**：分组 `id` 被改成与 workbuddy 注册 ID 同名的 `deepseek-v4-pro`，成员却是 `['hy4free','glm-5.3-flash','minimax-m3.1-flash']`，**没有 deepseek-v4-pro**。`safeguard-killer/config.go:220-227` 按 id 精确匹配、`groups.go:181-192` 命中即劫持并 `rotateModels` ⇒ 请求被逐成员轮转，**从未发给目标模型本体**，破甲改写落在链首思考模型上。架构前提：破甲走 `refusal.go:1401 handleRequestIntercept` → `:1425 sanitizeRequest`，**与分组完全解耦**，故清空分组后破甲照旧生效。
+  - **根因第二层（思考被判拒绝）**：`hy4free` 思考链吃满 `max_tokens=300` 配额（`finish=length`、正文空），旧判据 `refusal.go:749-763` / `:810-813` 只认可见文本或 tool call，且 `Choices`（`:466-480`）**无 `reasoning_content` 字段** ⇒ 判成 `empty response (no text or tool calls)` → 触发 `fallback_on_refusal` 换模型。量化：300 下 10 次 **OK=1 EMPTY=9**；2000 下 `reasoning_len` 714/545/919。
+  - **修复**：① 生产 `groups=[]`（备份 `config.yaml.bak-20261112_2233`，76,835 B），刻意不重建分组；② `refusal.go` 新增 `hasTruncatedOrReasoningOutput`（认 `finish_reason=length`、`message/delta` 的 `reasoning_content`/`reasoning`），`checkNonStreamResponse` 与 `prefetchStream` 空判据命中即放行、预取遇推理内容即转发；`content_filter`/`refusal`/`detectTextRefusal` 判据不变；刻意**不抬 max_tokens**（`workbuddy/model_specs.go:3-24` 记录 2026-11-07 已删除全部自研 max_tokens 控制）。
+  - **验证**：`refusal_truncation_test.go` 10 用例 + 哨兵确认进编译 + **3 组变异全 KILLED 且形态为断言失败**；`cgo-shim-build.py safeguard-killer` 全绿。发布 `2324bb9`（5 文件 +186/−6）→ CI run `43241690267`（`allow_partial=true`）4 平台 `ALL CHECKSUMS OK` → registry `7bf67bf` → 热重载 `active_version=0.1.6 retired_version=0.1.5`、落盘 `.so` sha256 `f178ac5acf369f4de4598f3b6ed85816342aeea4d879f67e91fbda95c4c9c3a6`（29,372,928 B）与 release zip 一致、容器未重启。
+  - **生产验收（决定性）**：`deepseek-v4-pro`+300 → 200 `model=deepseek-v4-pro` `finish=stop` 无切换；`hy4free`+300 → 200 `finish=length` `reasoning_len=449` 无切换；分组场景 `id=sg-trunc-test`（单成员 hy4free）+300 → 200 `finish=stop` 正文「请提问」**SK切换=False**（修复前必降级到 glm-5.3-flash）。验证分组已删除，`groups` 回读 `[]`。
+  - **新踩坑**：① dispatch CI **前必须先 commit+push**，否则构建远端 HEAD、产物不含本地修复；② `plugin-store install` 多源同 id 返回 409 `plugin_store_source_required`，须带 `&source=<id>`（源 id 现取勿硬编码）；③ ssh 用 `cpa-server` 别名（root / 18998 / IdentityFile 已配），`luode@IP` 会 Permission denied。
+  - **文档**：`doc/4-bugs/2026-11-12_230000_SafeguardKiller分组劫持破甲退化为换模型根因与修复.md`（172 行），提交 `c7f0c54`。**遗留**：分组是否重建与中性 codename 待裁定；其它 provider 插件是否有同构空响应判据待同族同步。
+
 - 会话（2026-11-12 22:05-22:52）：**workbuddy 0.21.26：导入原生兼容第三方 `auth_raw`/`profile_raw` 记录（已发布 + 生产验收通过）**：
   - **用户诉求**：先报「work10.json 导入到 wokrbuddy 失败了」，裁定「改成可导入的给我们手动导入就可以了」拿到转换产物后，进一步要求「把 wokrbuddy 的导入兼容一下这种格式的 json，下次我们就不用手动转换手动导入了」。
   - **根因（非插件 bug）**：第三方导出文件是**顶层数组 + `auth_raw`/`profile_raw` 嵌套 + `access_token` 蛇形命名**，而 `workbuddy/main.go:510 parseStored` 只认「顶层有 `auth` 键的嵌套形态」与「扁平 `accessToken`」，两者都不匹配 ⇒ 逐条 `parse_error: missing accessToken`。`panel.html:1639 expandCredentials` 会把顶层数组展开成 10 条，但每条仍无 `accessToken`。
@@ -124,25 +135,15 @@
   - **文档**：`doc/5-tests/2026-11-11_225600_...验证.md`、`doc/6-review/2026-11-11_225600_..._6-review.md`（STYLE: PASS）、需求主文档追加第 6 节「口径收敛」。
   - **发布（2026-11-12 00:10 完成）**：提交 `f3d50db`（代码 16 文件）+ `0f32552` / `4b01f7c`（registry）。生产 `plugin-store install` 热重载 `active_version=0.13.16 retired_version=0.13.15`，落盘 `.so` sha256 `edfb78d5…`，面板与本地 `panel.html` 逐字节一致（`80305b3f…`，87257 字节）；`POST /import` 生产实测 404、`POST /import-cred` 200 且返回结构化校验错误；真实入口 `deepseek-v4-pro` 流式 94 chunks / `[DONE]` / `finish_reason=stop` / usage 115 tokens。**平台缺件**：`darwin_arm64` 与 `windows_arm64` 未发布——CI 侧 `snap install zig` 连续 5 次 `unable to contact snap store`（GitHub 基础设施故障，与本轮代码无关），按 `--allow-missing` 发 4 平台。
 
-- 会话（2026-11-10 21:20-21:50，接续上条）：**决定性发现——生产流量走宿主桥，插件连接池不参与**：
-  - **核心洞察**：0.5.40 把连接池扩到 `MaxIdleConns=200 / PerHost=64` 后 TTFT 未见改善。追查调用链发现生产流式请求走 `hostHTTPDoStream` → **宿主 `host.stream.do` RPC**，完全绕过插件的 `streamHTTPClient`。近 15 分钟日志中 `stream bridge / direct fallback / bridge unavailable` 降级关键字 **0 次**，确认生产 **100% 走宿主桥**。
-  - **结论**：插件的连接池配置对生产流量**无效**。连接池在宿主进程内，插件无权配置；宿主 `config.yaml` 也无相关可调项。这解释了 0.5.40 扩容后无改善。
-  - **宿主桥固有开销**：`bridgedRead` 每读一个分片都要分配 channel + 启动 goroutine + 创建 timer + 一次 cgo RPC。2946 分片的流 = 2946 次这套开销。**但这是流式读取阶段（首字之后），不直接影响 TTFT**。
-  - **新增对照开关（0.5.41）**：`stream_direct_forced`（默认 false）—— true 时走插件直连，用插件自己的连接池。运维可做 A/B 对照定位延迟来源。`stream_direct_test.go` 锁定默认值必须为 false（防止误改生产路径）。
-  - **累计排除 12 类假设**（新增：宿主桥开销）。唯一剩下的解释是**上游 Trae 的 prefill 时间**，三层证据：① 时段分层（深夜 1.6% vs 晚间 18.1%，workbuddy 全时段 0%）② 同账号 7 秒内 TTFT 跳变 44.8 倍 ③ prefill 占 59.3%。
-  - **部署验收**：0.5.41 `hot reloaded 0.5.40→0.5.41`（21:42:32），sha256 `712fd0c0…`。
-  - **文档**：诊断文档扩至 20 节（42,447 字节）。
-
-- 会话（2026-11-10 20:43-21:20，接续上条）：**用户明确「首字延迟高是主要问题」→ 验证连接池与 DNS 两个新假设**：
-  - **假设 A：连接池容量不足**。实证（近 6h，228 条）：同分钟并发 **1-5 → 慢20s% 9.9%**、6-15 → 10.0%、**16-30 → 26.5%**、30+ → 18.8%，呈正相关。原配置 `MaxIdleConns=20 / MaxIdleConnsPerHost=5`，生产 28 个账号并发时会频繁新建连接（TCP+TLS 握手各一次）。
-  - **修复（0.5.40）**：`MaxIdleConns` 20→**200**、`MaxIdleConnsPerHost` 5→**64**（shared 与 stream 两个 client 同步）。新增 `conn_pool_test.go` 断言 ≥28；变异改回 5/20 后测试失败。
-  - **部署后验证（90 条样本）**：部署前 n=816 ttft50 9108ms / 慢20s% 20.3%；部署后 n=90 ttft50 10168ms / 慢20s% 24.4%。**未见改善** ⇒ 连接池不是主因，保留该改动（无害且理论上正确）但不作为主要优化方向。
-  - **假设 B：DNS 解析慢**。容器 `/etc/resolv.conf` 为 `nameserver 1.1.1.1`；宿主机为 `1.1.1.1 + 8.8.8.8`，**两个都是境外地址**。Go 的 `http.Transport` 会缓存 DNS，仅在新建连接时重解析，影响面有限且属基础设施层，非插件缺陷。
-  - **累计已排除 11 类假设**：插件链路、payload 冗余、流式节流、并发排队、prompt cache、账号质量、reasoning、生成速度、max_tokens、首字闸门（已修）、连接池（本轮）。
-  - **确认的主因（插件不可干预）**：① Trae 上游晚间容量排队（晚间 18.1% vs 深夜 1.6%，workbuddy 全时段 0%）② 超长 input 的 prefill 成本（占 59.3%，input p50 44.3 万）③ 上游随机突发抖动（同账号 7 秒内跳变 44.8 倍）。
-  - **插件侧可干预点已全部落地并验证**：首字闸门 1.2s（实测占 TTFT 2.3%）、伪完成阈值（失败率 26.5%→0%）、done 终止识别（1m26s→4.7s）、内容审核终局、积分耗尽不探活、轮换 serve 5 分钟（已触发）、连接池扩容。
-  - **部署验收**：0.5.40 `hot reloaded 0.5.39→0.5.40`（21:13:31），sha256 `b08f55e6…`。
-  - **文档**：诊断文档扩至 19 节（39,215 字节），含 11 类假设排除表与连接池/DNS 实证数据。
+- 会话（2026-11-10 20:43-21:50）：**traework 首字延迟：连接池与 DNS 假设被否证 + 生产流量 100% 走宿主桥**：
+  - **假设 A（连接池不足）否证**：同分钟并发 1-5→慢 9.9%、16-30→26.5% 曾呈正相关，故把 `MaxIdleConns` 20→200、`MaxIdleConnsPerHost` 5→64（0.5.40）。部署后对照 90 条：ttft50 **9108→10168ms**、慢20s% **20.3%→24.4%**，**未见改善** ⇒ 保留改动（无害且理论正确）但不作为优化方向。
+  - **假设 B（DNS 慢）**：容器 `nameserver 1.1.1.1`、宿主 `1.1.1.1 + 8.8.8.8` 全为境外地址；Go `http.Transport` 会缓存 DNS、仅新建连接时重解析，影响面有限，属基础设施层非插件缺陷。
+  - **决定性发现（生产流量走宿主桥）**：0.5.40 扩容无效后追调用链，生产流式请求走 `hostHTTPDoStream` → 宿主 `host.stream.do` RPC，**完全绕过插件的 `streamHTTPClient`**；近 15 分钟 `stream bridge / direct fallback / bridge unavailable` 降级关键字 **0 次** ⇒ 生产 **100% 走宿主桥**，插件连接池配置对生产流量**无效**（连接池在宿主进程内，宿主 `config.yaml` 无对应可调项）。
+  - **宿主桥固有开销**：`bridgedRead` 每读一分片都要分配 channel + 起 goroutine + 建 timer + 一次 cgo RPC（2946 分片 = 2946 次），但发生在首字之后，不直接决定 TTFT。
+  - **对照开关（0.5.41）**：新增 `stream_direct_forced`（默认 false），true 时走插件直连用自己的连接池，供运维 A/B 定位延迟来源；`stream_direct_test.go` 锁定默认值防止误改生产路径。
+  - **累计排除 12 类假设**：插件链路、payload 冗余、流式节流、并发排队、prompt cache、账号质量、reasoning、生成速度、max_tokens、首字闸门（已修）、连接池、宿主桥开销 ⇒ 唯一剩下的解释是上游 Trae 的 prefill 时间（后续由时段分层 + 抖动定量 + prefill 占比 59.3% 三层证据坐实）。
+  - **插件侧可干预点已全部落地并验证**：首字闸门 1.2s（实测占 TTFT 2.3%）、伪完成阈值（失败率 26.5%→0%）、done 终止识别（1m26s→4.7s）、内容审核终局、积分耗尽不探活、轮换 serve 5 分钟、连接池扩容。
+  - **部署验收**：0.5.40 `hot reloaded 0.5.39→0.5.40`（21:13:31）sha256 `b08f55e6…`；0.5.41 `hot reloaded 0.5.40→0.5.41`（21:42:32）sha256 `712fd0c0…`。诊断文档扩至 19–20 节（39,215–42,447 字节）。
 
 - 会话（2026-11-10 20:36-21:30）：**DSH 客户端 `@` 文件引用段触发 11128 根因定位与修复（workbuddy 0.21.23）**：
   - **问题**：DSH（DeepSeek-Harness）客户端接入 CN 账号池后每轮第一条消息稳定 `400 code 11128`，既有品牌词改写覆盖不到。
@@ -173,20 +174,13 @@
   - **部署验收**：0.5.35 `hot reloaded 0.5.34→0.5.35`；0.5.36 `hot reloaded 0.5.35→0.5.36`（00:40:39），落盘 `.so` sha256 `14d83c49…` 与 release zip 逐字节一致。
   - **文档**：诊断文档扩至 17 节（33,328 字节）。
 
-- 会话（2026-11-10 00:00-00:20，接续上条）：**时段分层证明 Trae 上游晚间容量排队（决定性证据）**：
-  - **20w 输入分时段 TTFT**：深夜 02:00 慢请求 **0.0%**、05:00 **1.6%**、03:00 2.6%；晚间 21:00 **32.3%**、22:00 **20.8%**、23:00 12.0%。同一 input 量级，时段差异达 20 倍。
-  - **全池分时段对照（决定性）**：traework 20:00 慢请求 **18.1%**、21:00 12.9%、22:00 17.7%、23:00 14.5%；而 **workbuddy 在所有时段（含 20:00 同刻）慢请求均为 0.0%**。这排除了「客户端负载/时段因素」（同时段 workbuddy 完全正常）与「本机资源竞争」（两插件共用同进程与网络出口）⇒ **唯一解释是 Trae 上游自身容量排队**。
-  - **max_tokens 默认值假设排除**：`streamDefaultMaxTokens=128000`（客户端未传时补），实测 6h/2222 条 output_tokens：p50 382、p90 1645、p99 7680、max 16000，**≥100000 占比 0.00%**，该默认值不构成 prefill 负担。
-  - **payload 冗余假设排除**：`toTraeMessages` 只做格式转换（字符串→parts 数组）不改变内容长度；`buildTraePayload` 只加标量字段，不注入固定 system prompt。
-  - **最终归因四层**：① Trae 上游晚间容量排队（晚间 18.1% vs 深夜 1.6%）② 超长 input 的 prefill 成本（占 59.3%）③ 上游随机突发抖动（同账号 7 秒内跳变 44.8x）④ 长输出流生成耗时（占 40.7%）。**四层全部无法由插件干预**。
-  - **可操作建议（不涉及插件改动）**：① 错峰使用（深夜慢请求 1.6% vs 晚间 18%）② 降低上下文上限 80 万→20~30 万 ③ 对长任务设合理预期（20 万 input 的 TTFT 合理区间为深夜 3~6 秒、晚间高峰 30 秒）。
-  - **文档**：诊断文档扩至 16 节（30,690 字节）。
-  - **宿主重启影响**：本轮开始时宿主重启导致一次工具调用结果未知，核实工作树干净、无未提交改动、后台任务已清空后，重跑只读分析脚本恢复。
+- 会话（2026-11-10 00:00-01:50）：**traework 首字延迟归因收尾：时段分层 + 上游抖动定量 + 轮换三层根因**：
+  - **时段分层（决定性）**：20w 输入分时段 TTFT 慢请求——深夜 02:00 **0.0%**、05:00 1.6%、03:00 2.6%；晚间 21:00 **32.3%**、22:00 20.8%、23:00 12.0%。同时段 workbuddy 慢请求 **0.0%**，排除客户端负载与本机资源竞争 ⇒ 上游容量排队。
+  - **抖动定量（783 对同账号相邻请求）**：TTFT 跳变 p90=6.4x、p99=13.4x、**max=44.8x**（`2513ms → 112548ms`，间隔仅 7 秒），≥5x 占 13.7%。
+  - **最终归因四层**（全部插件不可干预）：上游晚间排队（18.1% vs 深夜 1.6%）、超长 input prefill（占 59.3%，input p50 44.3 万）、上游随机抖动、长输出生成耗时（40.7%）。`max_tokens` 默认值与 payload 冗余两个假设均被实测排除。
+  - **慢速冷却评估**：24h 仅触发 1 次且立即释放——上游抖动是随机单次，中位数被快速拉平，属设计边界不是缺陷。超时换号模拟：11.1% 触发、82.8% 改善但必然多付 15 秒，**决定不实施**。
+  - **轮换三层根因（0.5.38/0.5.39）**：serve=60 分钟过长 → 调到 10 分钟仍无让位 → 加阈值打点零日志 → **改为每 30 秒输出 `served` 真值后定位**：计时正常推进，宿主 selector 自然切换周期 **6~7 分钟**，serve 必须小于它才能主动让位。最终 serve **5 分钟** / cooldown 10 / idle 3。
+  - **方法论沉淀（重要）**：排查「机制不生效」时**阈值附近打点无效**（无法区分计时没推进 / 被重置 / 判定失败三种情况），正确做法是**周期性输出核心变量真值**同屏比对。
+  - **缺陷十一/十二（0.5.35/0.5.36）**：积分耗尽账号仍被探活（`shouldActivePingForCredits`）；主号 24h 占 **21%~35%**（理想 7.7%）、最长连续 **351 请求 / 29 分钟**。
+  - **文档**：诊断文档扩至 15–18 节（26,989 → 35,545 字节）。
 
-- 会话（2026-11-10 00:20-00:40，接续上条）：**上游抖动定量证明（同账号 7 秒内 TTFT 跳变 44.8 倍）+ 慢速冷却机制评估**：
-  - **抖动定量（20w 输入，783 对同账号相邻请求）**：TTFT 跳变倍数 **p90=6.4x、p99=13.4x、max=44.8x**，≥5x 的对数占 **13.7%**。最极端：`2513ms → 112548ms`（间隔仅 **7 秒**，44.8 倍）。这是上游突发排队的铁证。
-  - **时间序列样本（账号 460889140028，3 分钟内）**：`3474 → 8489 → 3754 → 36255 → 4210 → 8901 → 5201 → 4915 → 3814 → 3610 → 8306 → 27506 → 3344 → 25494`，无任何可预测规律。
-  - **慢速冷却机制评估**：插件已有 `slow_account.go`（默认开启，2.5 倍阈值 / 15 分钟窗口 / 5 样本 / 3000ms 绝对下限 / 池 ≥10 / P25 基准）。**24h 生产仅触发 1 次**（median=14154ms baseline=4490ms ratio=3.2x），且因防抽干立即释放。原因：判据要求「账号持续慢」，而上游抖动是「随机单次」—— 跳到 112 秒后下一次回落 2.9 秒，中位数被快速拉平。**这是设计边界，不是缺陷**。
-  - **超时换号重试收益模拟**：若 TTFT 超 15s 换号（840 样本），11.1% 的请求触发，其中 **82.8% 得到改善**（p50 从 33702ms 降到 18997ms）。但代价是这 11.1% 必然多付 15 秒，且换号后新账号仍是同分布抽样（p50 4s/p90 20s），对原本 20 秒的请求反而变差；同时增加 11% 上游调用量。**决定不实施**。
-  - **本轮最终结论**：上游 prefill 存在不可预测的突发排队，是首字延迟长尾的唯一根因。插件侧可优化点已全部落地（首字闸门 1.2s、错误即时化、prefill 原样透传）。若需进一步改善只能减少 input 长度（客户端侧决策）。
-  - **文档**：诊断文档扩至 15 节（26,989 字节）。
