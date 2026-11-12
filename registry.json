@@ -6,7 +6,7 @@
       "name": "WorkBuddy Provider",
       "description": "Tencent CodeBuddy (WorkBuddy) OAuth provider for CLIProxyAPI: multi-account login, dynamic models, chat executor, CN daily check-in, Global one-shot expert trial (manual), credit lifecycle (disable on exhaustion, auth file kept for both realms), credits panel with CN/Global filters, optional credits-aware scheduler.",
       "author": "Sliverkiss",
-      "version": "0.21.24",
+      "version": "0.21.25",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
       "logo": "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/workbuddy",
@@ -24,30 +24,30 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/workbuddy-provider-v0.21.24/workbuddy-provider_0.21.24_darwin_amd64.zip",
-            "sha256": "8a2e35ea3f0893753b39292a35a0955da388c79634065a13845b4c6482077396",
-            "size": 3237189
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/workbuddy-provider-v0.21.25/workbuddy-provider_0.21.25_darwin_amd64.zip",
+            "sha256": "a8333e99766e086c84821dadaeb8704032ea8435818dfe6905e100ca485b21a7",
+            "size": 3238513
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/workbuddy-provider-v0.21.24/workbuddy-provider_0.21.24_linux_amd64.zip",
-            "sha256": "c1a48674e9f74e07c6ca355471d07005e55568d877eb0f0706dc0c568107549c",
-            "size": 3404943
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/workbuddy-provider-v0.21.25/workbuddy-provider_0.21.25_linux_amd64.zip",
+            "sha256": "5307c55a3cff20d9037a9c6cb4ce8aa77deb1b865ca6746b16cce7e82acd9dcc",
+            "size": 3405727
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/workbuddy-provider-v0.21.24/workbuddy-provider_0.21.24_linux_arm64.zip",
-            "sha256": "5a58ab86d8795bc612e0759d28edacde2de7523121dab34ecf37459051ae894e",
-            "size": 3090140
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/workbuddy-provider-v0.21.25/workbuddy-provider_0.21.25_linux_arm64.zip",
+            "sha256": "e449f57125186c8042bc9644564be0a39cfd4b11c338b14d35ff8bcd18ac143f",
+            "size": 3090276
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/workbuddy-provider-v0.21.24/workbuddy-provider_0.21.24_windows_amd64.zip",
-            "sha256": "f537f1e9d9279b8c4bd9596dd0aaf7c7713008dbcc3b91fddf4d60fc83b41c65",
-            "size": 3321972
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/workbuddy-provider-v0.21.25/workbuddy-provider_0.21.25_windows_amd64.zip",
+            "sha256": "3a7faebb3b06f2eb3db078b23e464dd84f71d25ae6665a158a36147d61d7b682",
+            "size": 3322814
           }
         ]
       }
