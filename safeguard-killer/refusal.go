@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"math"
 	"math/rand/v2"
 	"net/http"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -98,7 +96,7 @@ func groupCandidateOrder(cfg pluginConfig, session string, group modelGroup, now
 					rest = append(rest, m)
 				}
 			}
-			orderedRest := orderByStrategy(cfg, rest, strategy, now)
+			orderedRest := orderByStrategy(rest, strategy)
 			order = make([]string, 0, len(group.Models))
 			order = append(order, prevModel)
 			order = append(order, orderedRest...)
@@ -106,10 +104,15 @@ func groupCandidateOrder(cfg pluginConfig, session string, group modelGroup, now
 		}
 	}
 
-	return orderByStrategy(cfg, group.Models, strategy, now), nil, prevModel
+	return orderByStrategy(group.Models, strategy), nil, prevModel
 }
 
-func orderByStrategy(cfg pluginConfig, models []string, strategy string, now time.Time) []string {
+// orderByStrategy 按分组策略给模型链排序。
+// [参数] models：分组成员模型链
+// [参数] strategy：分组策略，random 打乱，其余保持配置顺序
+// [返回] 排好序的新切片，不修改入参
+// 最近修改时间 2026-11-13 00:42:00, 修改, 删除 quota 策略后不再需要配置与时钟参数
+func orderByStrategy(models []string, strategy string) []string {
 	if len(models) <= 1 {
 		return append([]string(nil), models...)
 	}
@@ -118,85 +121,9 @@ func orderByStrategy(cfg pluginConfig, models []string, strategy string, now tim
 		out := append([]string(nil), models...)
 		rand.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
 		return out
-	case groupStrategyQuota:
-		return orderByQuotaWeightedRandom(cfg, models, now)
 	default:
 		return append([]string(nil), models...)
 	}
-}
-
-// orderByQuotaWeightedRandom orders models using Efraimidis-Spirakis weighted random sampling
-// without replacement, weighted by each model's best eligible credential rate (remaining /
-// hours_to_reset), so usage spreads across providers proportional to available quota per hour.
-func orderByQuotaWeightedRandom(cfg pluginConfig, models []string, now time.Time) []string {
-	weights := make([]float64, len(models))
-	var positiveRates []float64
-	snapshot, errHost := hostState(now)
-	if errHost == nil && cfg.ManagementKey != "" {
-		ensureQuotaFresh(cfg.ManagementKey, snapshot.auths)
-		modelMap := mergedModels(snapshot)
-		if snapshot.modelsErr != nil {
-			ensureFallbackModels(cfg.ManagementKey, snapshot.auths)
-		}
-		for i, model := range models {
-			bestRate := 0.0
-			sawCred := false
-			allExhausted := true
-			for _, auth := range snapshot.auths {
-				if auth.Disabled || !servesKnownModel(modelMap, auth.ID, model) {
-					continue
-				}
-				sawCred = true
-				entry := rankEntry{AuthID: auth.ID, Provider: auth.Provider}
-				rateCredential(&entry, model, cfg.MinRemaining, now)
-				if entry.Excluded == "" && entry.Rate > bestRate {
-					bestRate = entry.Rate
-					allExhausted = false
-				} else if !strings.Contains(entry.Excluded, "% left") {
-					allExhausted = false
-				}
-			}
-			if bestRate > 0 {
-				weights[i] = bestRate
-				positiveRates = append(positiveRates, bestRate)
-			} else if sawCred && allExhausted {
-				weights[i] = 1e-9
-			}
-		}
-	}
-	fallbackWeight := 1.0
-	if len(positiveRates) > 0 {
-		sum := 0.0
-		for _, r := range positiveRates {
-			sum += r
-		}
-		fallbackWeight = sum / float64(len(positiveRates))
-	}
-	type scoredModel struct {
-		model string
-		score float64
-	}
-	scored := make([]scoredModel, len(models))
-	for i, m := range models {
-		w := weights[i]
-		if w <= 0 {
-			w = fallbackWeight
-		}
-		u := rand.Float64()
-		if u <= 1e-12 {
-			u = 1e-12
-		}
-		// Efraimidis-Spirakis key u^(1/w); higher key (log(u)/w closer to 0) wins.
-		scored[i] = scoredModel{model: m, score: math.Log(u) / w}
-	}
-	sort.SliceStable(scored, func(i, j int) bool {
-		return scored[i].score > scored[j].score
-	})
-	out := make([]string, len(models))
-	for i, s := range scored {
-		out[i] = s.model
-	}
-	return out
 }
 
 // bindGroupSession records the model that served a group request and returns the model that had

@@ -42,16 +42,6 @@ func callManagement(t *testing.T, method, path string) managementResponse {
 }
 
 func TestHandleManagementState(t *testing.T) {
-	hostCall = func(method string, _ any) (json.RawMessage, error) {
-		if method == methodHostAuthList {
-			return json.RawMessage(`{"files":[{"id":"a","auth_index":"1","provider":"claude"}]}`), nil
-		}
-		return json.RawMessage(`{"credentials":[{"id":"a","models":["claude-opus-4-8"]}]}`), nil
-	}
-	t.Cleanup(func() { hostCall = callHost })
-	hostMu.Lock()
-	hostCache = hostSnapshot{}
-	hostMu.Unlock()
 	resp := callManagement(t, http.MethodGet, "/v0/management/plugins/safeguard-killer/state")
 	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Headers.Get("Content-Type"), "application/json") {
 		t.Fatalf("status=%d headers=%v", resp.StatusCode, resp.Headers)

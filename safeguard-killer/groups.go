@@ -237,14 +237,6 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 	order, attempts, prevLookupModel := groupCandidateOrder(cfg, session, group, now)
 	var lastErr error
 	for _, model := range order {
-		reason, errSkip := skipReason(cfg, model, now)
-		if errSkip != nil {
-			return nil, errSkip
-		}
-		if reason != "" {
-			attempts = append(attempts, groupAttempt{Model: model, Result: "skipped: " + reason})
-			continue
-		}
 		body, errBody := withModel(sanitizedPayload, model)
 		if errBody != nil {
 			return nil, errBody
@@ -310,14 +302,6 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 	order, attempts, prevLookupModel := groupCandidateOrder(cfg, session, group, now)
 	var lastErr error
 	for _, model := range order {
-		reason, errSkip := skipReason(cfg, model, now)
-		if errSkip != nil {
-			return nil, errSkip
-		}
-		if reason != "" {
-			attempts = append(attempts, groupAttempt{Model: model, Result: "skipped: " + reason})
-			continue
-		}
 		body, errBody := withModel(sanitizedPayload, model)
 		if errBody != nil {
 			return nil, errBody
@@ -415,39 +399,6 @@ func forwardStream(source, target, callbackID string, prefetched [][]byte, sourc
 func closeStream(target, callbackID, errText string) {
 	// The host owns the client connection; a failed close has no other channel to report through.
 	_, _ = hostCall(methodHostStreamClose, hostStreamEmit{StreamID: target, Error: errText, HostCallbackID: callbackID})
-}
-
-// skipReason reports why a target model should not be tried: every credential serving it is
-// below min_remaining. Credentials without quota data (API keys, unsupported providers) are
-// assumed usable, so a model is only skipped on positive evidence.
-func skipReason(cfg pluginConfig, model string, now time.Time) (string, error) {
-	if cfg.ManagementKey == "" {
-		return "", nil
-	}
-	snapshot, errHost := hostState(now)
-	if errHost != nil {
-		return "", errHost
-	}
-	modelMap := mergedModels(snapshot)
-	if snapshot.modelsErr != nil {
-		ensureFallbackModels(cfg.ManagementKey, snapshot.auths)
-	}
-	var exhausted []string
-	for _, auth := range snapshot.auths {
-		if auth.Disabled || !servesKnownModel(modelMap, auth.ID, model) {
-			continue
-		}
-		entry := rankEntry{AuthID: auth.ID}
-		rateCredential(&entry, model, cfg.MinRemaining, now)
-		if entry.Excluded == "" || !strings.Contains(entry.Excluded, "% left") {
-			return "", nil
-		}
-		exhausted = append(exhausted, auth.ID+" ("+entry.Excluded+")")
-	}
-	if len(exhausted) == 0 {
-		return "", nil
-	}
-	return "all credentials low on quota: " + strings.Join(exhausted, ", "), nil
 }
 
 // withModel sets the top-level "model" field the client sent to the target model.

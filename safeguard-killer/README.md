@@ -4,7 +4,7 @@ A [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) ABI v1 plugi
 that neutralizes client/upstream safety classifiers, strips refusal-taint
 telemetry, and provides **Smart Groups** — virtual models that route around
 safeguard refusals across providers while preserving 5-minute prompt-cache
-stickiness and balancing provider quota.
+stickiness.
 
 Ported into this repository from
 [esauvisky/CLIProxyAPI-Safeguard-Killer-Plugin](https://github.com/esauvisky/CLIProxyAPI-Safeguard-Killer-Plugin)
@@ -18,11 +18,6 @@ models**, **Codex**, and **Gemini models**.
 > to pin your Smart Groups (`★ General Purpose`, `★ Heavy Thinkers`,
 > `★ Uncensored Best`, ...) to the top of `/model` and hide individual
 > fallback-only models.
->
-> **Required:** set `management_key` in the plugin config
-> (`plugins.configs.safeguard-killer.management_key`, or the **General
-> Settings** tab in the UI) so the plugin can query provider quota and balance
-> credentials.
 
 ## Features
 
@@ -84,38 +79,21 @@ A **Smart Group** exposes a virtual model id (e.g. `best`, `heavy`, `fast`,
   server-side prompt cache warm. After 5 minutes of inactivity the binding
   resets so a higher-ranked model can take over again.
 - **`order`** (default) — strict top-to-bottom, advancing only when a model
-  refuses, errors, or all its credentials fall below `min_remaining`.
-- **`quota`** — scores each model by its best eligible credential's burn rate
-  (`remaining / hours_until_reset`) and picks the starting model with
-  Efraimidis–Spirakis weighted random sampling (`u^(1/rate)`), then pins it
-  for 5 minutes.
+  refuses or errors.
 - **`random`** — uniform shuffle for new or cache-expired sessions, falling
   through on refusal and pinning to the answering model for 5 minutes.
 
-### Quota-aware credential balancing
-
-When one model is served by two or more credentials, eligible credentials are
-ranked by `rate = remaining / hours_until_reset` of the longest quota window
-governing that model. A credential with 30% left resetting in 24 h (1.25%/h)
-beats one with 60% left resetting in 6 days (0.42%/h). Credentials with any
-applicable window below `min_remaining` are excluded, and active sessions stay
-bound to their credential until `idle_minutes` (default 5) pass without a
-prompt.
-
 ### Management UI
 
-Open **Safeguard Killer** in the CPA Management Center sidebar. Five tabs:
+Open **Safeguard Killer** in the CPA Management Center sidebar. Four tabs:
 
-1. **General Settings** — `management_key`, `min_remaining`,
-   `idle_minutes`, `stream_prefetch_bytes`, the safeguard/adaptation
-   toggles, and the client notice prefix.
+1. **General Settings** — `idle_minutes`, `stream_prefetch_bytes`, the
+   safeguard/adaptation toggles, and the client notice prefix.
 2. **Smart Groups** — add, reorder, and delete groups; pick each group's
    routing strategy and manage its model chain.
-3. **Sessions** — live view of active credential bindings and 5-minute group
-   model pins with expiry countdowns.
-4. **Recent Decisions** — audit log of every group failover chain and
-   credential quota ranking.
-5. **Credentials** — live status and quota windows for every host credential.
+3. **Sessions** — live view of active 5-minute group model pins with expiry
+   countdowns.
+4. **Recent Decisions** — audit log of every group failover chain.
 
 ## Install
 
@@ -159,8 +137,6 @@ plugins:
   configs:
     safeguard-killer:
       enabled: true
-      management_key: "<management key>"
-      min_remaining: 0.02
       idle_minutes: 5
       stream_prefetch_bytes: 128
       features:

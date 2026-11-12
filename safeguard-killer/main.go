@@ -54,12 +54,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 	"unsafe"
 )
 
 // version 由 CI 在链接期用 -ldflags -X main.version 注入；本地构建回退到下面的默认值。
-var version = "0.1.6"
+var version = "0.1.7"
 
 // pluginVersion 在包初始化阶段继承 version，保证 -X 注入值对注册元数据生效。
 var pluginVersion = version
@@ -79,7 +78,6 @@ const (
 	methodPluginReconfigure  = "plugin.reconfigure"
 	methodPluginQuiesce      = "plugin.quiesce"
 	methodPluginShutdown     = "plugin.shutdown"
-	methodSchedulerPick      = "scheduler.pick"
 	methodModelRegister      = "model.register"
 	methodModelRoute         = "model.route"
 	methodManagementRegister = "management.register"
@@ -182,16 +180,6 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return okEnvelope(pluginRegistration())
 	case methodPluginQuiesce, methodPluginShutdown:
 		return okEnvelope(struct{}{})
-	case methodSchedulerPick:
-		var req schedulerPickRequest
-		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
-			return nil, errUnmarshal
-		}
-		resp, errPick := pick(req, currentConfig(), time.Now())
-		if errPick != nil {
-			return nil, errPick
-		}
-		return okEnvelope(resp)
 	case methodModelRegister:
 		return okEnvelope(groupModelRegistration(currentConfig()))
 	case methodModelRoute:

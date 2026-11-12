@@ -9,9 +9,34 @@ import (
 )
 
 func groupConfig() pluginConfig {
-	cfg := balanceConfig()
+	cfg := defaultPluginConfig()
 	cfg.Groups = []modelGroup{{ID: "uncensored-models", Name: "Uncensored", Models: []string{"glm-5.3-uncensored", "deepseek-v4.1-flash-uncensored", "abliterated"}}}
 	return cfg
+}
+
+// stubHost 用 other 接管宿主回调，并在用例前后重置分组会话与决策记录，避免用例间串状态。
+func stubHost(t *testing.T, other func(method string, payload any) (json.RawMessage, error)) {
+	t.Helper()
+	hostCall = other
+	stateMu.Lock()
+	groupSessions = make(map[string]*sessionBinding)
+	decisions = nil
+	stateMu.Unlock()
+	t.Cleanup(func() {
+		hostCall = callHost
+		stateMu.Lock()
+		groupSessions = make(map[string]*sessionBinding)
+		decisions = nil
+		stateMu.Unlock()
+	})
+}
+
+// noOtherHost 断言除被测路径外不再发生任何宿主回调。
+func noOtherHost(t *testing.T) func(string, any) (json.RawMessage, error) {
+	return func(method string, _ any) (json.RawMessage, error) {
+		t.Fatalf("unexpected host call %s", method)
+		return nil, nil
+	}
 }
 
 func decodeOK(t *testing.T, raw []byte, out any) {
@@ -91,7 +116,7 @@ func TestProductionStyleGroupEntersByMemberModel(t *testing.T) {
 	// Mirrors the production config: one group whose id ("1") is not a model name, holding real
 	// model IDs. Before member-name entry existed, every request for these models bypassed the
 	// plugin entirely and the group was never exercised.
-	cfg := balanceConfig()
+	cfg := defaultPluginConfig()
 	cfg.Groups = []modelGroup{{
 		ID:       "1",
 		Name:     "1",
@@ -135,9 +160,9 @@ func TestGroupModelRegistration(t *testing.T) {
 	}
 }
 
-func TestExecuteGroupFallsThroughFailuresAndLowQuota(t *testing.T) {
+func TestExecuteGroupFallsThroughFailures(t *testing.T) {
 	var tried []string
-	fakeHost(t, []string{"glm-5.3-uncensored", "deepseek-v4.1-flash-uncensored", "abliterated"}, func(method string, payload any) (json.RawMessage, error) {
+	stubHost(t, func(method string, payload any) (json.RawMessage, error) {
 		if method != methodHostModelExecute {
 			t.Fatalf("unexpected host call %s", method)
 		}
@@ -152,13 +177,7 @@ func TestExecuteGroupFallsThroughFailuresAndLowQuota(t *testing.T) {
 			return nil, &statusError{Code: "host_call_failed", Message: "upstream 500", HTTPStatus: 500}
 		}
 		return json.Marshal(hostModelResponse{StatusCode: 200, Body: []byte(`{"served":"` + req.Model + `"}`)})
-	}, "only-cred")
-	// The credential's deepseek-only window is drained, so deepseek is skipped without a call.
-	// skipReason runs on the real clock, so the windows are anchored to it.
-	now := time.Now()
-	setQuota(t, "only-cred",
-		quotaWindow{Name: "7d", Remaining: 0.5, ResetAt: now.Add(24 * time.Hour), Period: 7 * 24 * time.Hour},
-		quotaWindow{Name: "deepseek weekly", Remaining: 0, ResetAt: now.Add(24 * time.Hour), Period: 7 * 24 * time.Hour, Models: []string{"deepseek-v4.1-flash-uncensored"}})
+	})
 
 	raw, errExec := executeGroup([]byte(`{"Model":"uncensored-models","SourceFormat":"openai","Format":"openai","Payload":"`+b64(`{"model":"uncensored-models","messages":[]}`)+`","host_callback_id":"cb"}`), groupConfig())
 	if errExec != nil {
@@ -166,19 +185,19 @@ func TestExecuteGroupFallsThroughFailuresAndLowQuota(t *testing.T) {
 	}
 	var resp executorResponse
 	decodeOK(t, raw, &resp)
-	if string(resp.Payload) != `{"served":"abliterated"}` || strings.Join(tried, ",") != "glm-5.3-uncensored,abliterated" {
+	if string(resp.Payload) != `{"served":"deepseek-v4.1-flash-uncensored"}` || strings.Join(tried, ",") != "glm-5.3-uncensored,deepseek-v4.1-flash-uncensored" {
 		t.Fatalf("payload = %s tried = %v", resp.Payload, tried)
 	}
 	stateMu.Lock()
 	last := decisions[len(decisions)-1]
 	stateMu.Unlock()
-	if last.Kind != "group" || len(last.Attempts) != 3 || !strings.HasPrefix(last.Attempts[1].Result, "skipped") {
+	if last.Kind != "group" || len(last.Attempts) != 2 || !strings.HasPrefix(last.Attempts[0].Result, "failed") || last.Attempts[1].Result != "served" {
 		t.Fatalf("decision = %+v", last)
 	}
 }
 
 func TestExecuteGroupAllFailReturnsLastStatus(t *testing.T) {
-	fakeHost(t, nil, func(method string, payload any) (json.RawMessage, error) {
+	stubHost(t, func(method string, payload any) (json.RawMessage, error) {
 		return nil, &statusError{Code: "host_call_failed", Message: "rate limited", HTTPStatus: 429}
 	})
 	_, errExec := executeGroup([]byte(`{"Model":"uncensored-models","SourceFormat":"openai","Payload":"`+b64(`{"model":"x"}`)+`"}`), groupConfig())
@@ -191,7 +210,7 @@ func TestExecuteGroupAllFailReturnsLastStatus(t *testing.T) {
 func TestExecuteGroupStreamForwardsChunks(t *testing.T) {
 	emitted := make(chan string, 8)
 	reads := 0
-	fakeHost(t, nil, func(method string, payload any) (json.RawMessage, error) {
+	stubHost(t, func(method string, payload any) (json.RawMessage, error) {
 		switch method {
 		case methodHostModelStream:
 			if payload.(hostModelRequest).Model == "glm-5.3-uncensored" {
@@ -246,7 +265,7 @@ func TestExecuteGroupStreamFallsThroughSafeguardRefusalAndRemembersSession(t *te
 	var closedStreams []string
 	var openedModels []string
 	var lastNudgeBody string
-	fakeHost(t, nil, func(method string, payload any) (json.RawMessage, error) {
+	stubHost(t, func(method string, payload any) (json.RawMessage, error) {
 		switch method {
 		case methodHostModelStream:
 			req := payload.(hostModelRequest)
@@ -359,7 +378,6 @@ func TestExecuteGroupStreamFallsThroughSafeguardRefusalAndRemembersSession(t *te
 }
 
 func TestAutoModeClassifierShortCircuitAndSafeguardSanitization(t *testing.T) {
-	resetHostState(t)
 	classifierReq := `{"Headers":{"Anthropic-Beta":["dangerous-tool-use-2026-09-03,oauth-2025-04-20"],"X-Is-Refusal-Fallback":["true"]},"Body":"` +
 		b64(`{"model":"claude-sonnet-5-5","stop_sequences":["</severity>"],"messages":[{"role":"user","content":"<transcript>\nfoo\n</transcript>\nRespond with <severity>N</severity> ONLY."}]}`) + `"}`
 	raw, errIntercept := handleRequestIntercept([]byte(classifierReq))
@@ -416,29 +434,28 @@ func TestAutoModeClassifierShortCircuitAndSafeguardSanitization(t *testing.T) {
 	}
 }
 
-func TestGroupRoutingStrategiesRandomAndQuotaSticky(t *testing.T) {
-	fakeHost(t, []string{"m1", "m2", "m3"}, noOther(t), "c1")
-	setQuota(t, "c1", weekly(0.5, 24*time.Hour))
-	cfg := balanceConfig()
+func TestGroupRoutingStrategiesRandomAndOrderSticky(t *testing.T) {
+	stubHost(t, noOtherHost(t))
+	cfg := defaultPluginConfig()
 	group := modelGroup{
 		ID:       "spread",
 		Name:     "Spread",
-		Strategy: groupStrategyQuota,
+		Strategy: groupStrategyRandom,
 		Models:   []string{"m1", "m2", "m3"},
 	}
 	now := time.Now()
-	order1, skipped1, prev1 := groupCandidateOrder(cfg, "sess-q", group, now)
+	order1, skipped1, prev1 := groupCandidateOrder(cfg, "sess-r", group, now)
 	if len(order1) != 3 || len(skipped1) != 0 || prev1 != "" {
-		t.Fatalf("initial quota order = %v skipped=%v prev=%q", order1, skipped1, prev1)
+		t.Fatalf("initial random order = %v skipped=%v prev=%q", order1, skipped1, prev1)
 	}
 	chosen := order1[0]
-	bindGroupSession(cfg, "sess-q", group.ID, chosen, prev1, now)
+	bindGroupSession(cfg, "sess-r", group.ID, chosen, prev1, now)
 
 	// Within 5 minutes, the chosen model is always placed first to preserve prompt cache.
 	for i := 0; i < 10; i++ {
-		order2, _, prev2 := groupCandidateOrder(cfg, "sess-q", group, now.Add(2*time.Minute))
+		order2, _, prev2 := groupCandidateOrder(cfg, "sess-r", group, now.Add(2*time.Minute))
 		if order2[0] != chosen || prev2 != chosen {
-			t.Fatalf("sticky quota order[0] = %q (prev %q), want %q", order2[0], prev2, chosen)
+			t.Fatalf("sticky random order[0] = %q (prev %q), want %q", order2[0], prev2, chosen)
 		}
 	}
 

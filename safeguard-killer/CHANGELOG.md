@@ -2,6 +2,20 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.7
+
+### Refactor - 删除插件前身遗留的配额采集与余额调度，只保留破甲与分组
+
+- 背景: 插件由 `Quota Smart Router` 演进而来（`legacyNoticePrefix = "⚡ [Quota Smart Router] "` 是其残留），迁移到 `Safeguard Killer` 后仍拖着整套「读取各 provider 配额 → 按 burn rate 排序凭据 → `scheduler.pick` 抢占宿主调度」的链路。这条链路与破甲零耦合：破甲走 `request.intercept_before` → `sanitizeRequest`，分组走 `model.route` / `executor.execute`，两者都不依赖配额。留着它带来三个实际负担：① 插件注册了 `Scheduler` 能力就会接管宿主的凭据调度，把宿主的账号池策略挤掉；② `management_key` 成为必填项，未配置时 `skipReason` 静默返回空、分组行为随配置漂移；③ `quota.go` 1300+ 行维护着 8 个 provider 的私有 usage 端点，随上游改版持续失效。
+- 改动（整块删除）: 删 `quota.go` 全文件（provider usage 端点、`ensureQuotaFresh`/`quotaFor`/`fetchCredentialQuota` 六个 `fetch*Quota`、`ensureFallbackModels`/`fallbackModels`、`managementStatus`/`cpaManagementCall`）；`balance.go` 由 434 行重写为 80 行，只保留 `hostCall` 测试替换点、`stateMu`/`decisions` 环形缓冲、`sessionKey`、`pruneSessions`（只清 `groupSessions`）、`recordDecision`、`buildUIState`（模型列表改由配置里的分组 id 与成员推导，会话取自 `groupSessions`）；删 `pick`/`rankCredentials`/`rateCredential`/`rolledWindow`/`governingReset`/`bestRank`/`findRank`/`touchSession`/`authsByID`/`hostCredentialModels`/`hostState`/`hostCache`/`hostMu`/`hostModelsUnsupported`/`mergedModels`/`servesKnownModel`/`containsString`/`isUnsupportedCallback` 及其全部 DTO。
+- 改动（类型与配置）: `types.go` 删 `hostAuth`/`quotaWindow`/`credentialQuota`/`rankEntry`/`uiCredential` 五个类型、`decision.Ranking`、`uiState.Credentials|ManagementError|ModelsError`；`config.go` 删 `groupStrategyQuota` 常量、`pluginConfig.MinRemaining|ManagementKey|LegacyManagement`、`defaultPluginConfig` 的 `min_remaining` 默认值、`configurePlugin` 的 legacy management key 迁移段、`validateConfig` 的 min_remaining 校验与 quota 策略分支（报错文案改 `want order or random`）、`pluginRegistration` 的 `management_key`/`min_remaining` 两个 ConfigFields 与 `Capabilities.Scheduler`；`main.go` 删 `methodSchedulerPick` 常量与 `case methodSchedulerPick:` 分支、不再使用的 `time` 导入。
+- 改动（分组链）: `groups.go` 删 `skipReason` 整个函数与两条执行路径上的调用（原本配额低就跳过模型，现在只在拒答/报错时才前进）；`refusal.go` 删 `orderByQuotaWeightedRandom`（Efraimidis–Spirakis 加权随机）与 `orderByStrategy` 的 quota 分支、不再使用的 `math` 与 `sort` 导入。
+- 改动（管理面板）: `ui.go` 删「凭据」tab 与其表格、`renderWindow`/`renderCredentials`/`renderRanking`/`num`/`pct`/`tierOf`/`fracToPct`/`credName`/`credNameByID`/`details`/`openDetails` 及其 toggle 监听；状态栏去掉「凭据」胶囊，横幅由 5 个减为 2 个（错误/保存），设置表单去掉「管理密钥」与「最低剩余比例」两个字段，会话表由 7 列改 6 列（会话/命中模型/分组/绑定时间/最后访问/空闲缓存到期），决策表去掉 ranking 分支；翻译函数 `zhExcluded`/`zhMgmtError`/`zhStatus`/`STATUS_TEXT`/`zhHostError`/`zhModelsError` 一并删除，`REASON_TEXT` 由 7 条减为 2 条、`zhKind` 只保留分组路由；`--quota-medium-color`、`.quota-bar`/`.quota-fill`/`.windows`/`.win-*`/`.rank` 等配额专用 CSS 清除。
+- 保留（刻意不动）: `legacyNoticePrefix = "⚡ [Quota Smart Router] "` 保留——多轮会话里历史 assistant 消息可能仍带旧前缀，`cleanMessages` 需要它才能剥干净；`hostCall` 保留——破甲流式路径与分组执行链都靠它回调宿主；`idle_minutes` 保留——分组会话粘性靠它算 `IdleExpiresAt`；`detectStoredManagementKey` 保留——那是读 CPA 自己的管理密钥用于面板调管理 API，不是插件的 `management_key` 配置项。
+- 验证: `python scripts/cgo-shim-build.py safeguard-killer` 的 build / vet / test 全绿；`groups_test.go` 用新写的 `stubHost`/`noOtherHost` 替代已删除的 `balance_test.go` 辅助函数，`TestExecuteGroupFallsThroughFailuresAndLowQuota` 改名 `TestExecuteGroupFallsThroughFailures` 并去掉配额窗口注入，`TestGroupRoutingStrategiesRandomAndQuotaSticky` 改名 `TestGroupRoutingStrategiesRandomAndOrderSticky` 改用 `random` 策略；提取 `uiHTML` 内嵌 `<script>`（26,728 字节）跑 `node --check` 退出码 0；全包 `quota|Quota|credential|Credential|balance|Balance|scheduler|Scheduler|management_key|min_remaining|host\.auth|rankEntry|hostState|mergedModels` 残留扫描只剩 `refusal.go:21` 的 legacy 前缀常量与 `ui.go` 的 `detectStoredManagementKey`（均为刻意保留）。
+- 删除文件: `quota.go`、`quota_test.go`、`balance_test.go`。
+- 涉及文件: `safeguard-killer/balance.go`、`safeguard-killer/config.go`、`safeguard-killer/groups.go`、`safeguard-killer/main.go`、`safeguard-killer/refusal.go`、`safeguard-killer/types.go`、`safeguard-killer/ui.go`、`safeguard-killer/groups_test.go`、`safeguard-killer/ui_test.go`、`safeguard-killer/README.md`、`safeguard-killer/VERSION`、`safeguard-killer/CHANGELOG.md`。
+
 ## 0.1.6
 
 ### Fix - 配额截断与纯推理内容不再被误判为空响应而触发换模型

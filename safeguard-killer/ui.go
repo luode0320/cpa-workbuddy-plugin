@@ -51,14 +51,14 @@ func managementRegistrationPayload() managementRegistration {
 			{
 				Method:      http.MethodGet,
 				Path:        mgmtStateRoutePath,
-				Description: "返回 Safeguard Killer 的配置、护栏适配开关、智能分组、配额窗口、会话绑定以及近期路由决策。",
+				Description: "返回 Safeguard Killer 的配置、护栏适配开关、智能分组、会话绑定以及近期路由决策。",
 			},
 		},
 		Resources: []managementResource{
 			{
 				Path:        uiResourcePath,
 				Menu:        "Safeguard Killer",
-				Description: "在 Claude Code、Claude、OpenAI/Codex 与 Gemini 模型上清除模型侧安全护栏与 auto-mode 分类器，用智能分组（5 分钟缓存粘性的故障转移链）绕开拒答。需在插件配置里设置 management_key。可与模型改名/重排插件 CLIProxyAPI-Model-List-Tweaker-Plugin 配合使用。",
+				Description: "在 Claude Code、Claude、OpenAI/Codex 与 Gemini 模型上清除模型侧安全护栏与 auto-mode 分类器，用智能分组（5 分钟缓存粘性的故障转移链）绕开拒答。可与模型改名/重排插件 CLIProxyAPI-Model-List-Tweaker-Plugin 配合使用。",
 			},
 		},
 	}
@@ -120,7 +120,6 @@ const uiHTML = `<!doctype html>
     --border-hover: #5a544d;
     --primary-color: #8b8680;
     --success-color: #10b981;
-    --quota-medium-color: #ffd862;
     --error-color: #c65746;
     --viz-success: #0fae78;
     --viz-failure: #cf4b3a;
@@ -151,7 +150,6 @@ const uiHTML = `<!doctype html>
     --border-color: #e3e1db;
     --border-hover: #cecac4;
     --primary-color: #8b8680;
-    --quota-medium-color: #e0aa14;
     --viz-success: #10b981;
     --viz-failure: #c65746;
     --success-badge-bg: #d1fae5;
@@ -178,7 +176,6 @@ const uiHTML = `<!doctype html>
     --border-color: #e5e5e5;
     --border-hover: #cccccc;
     --primary-color: #8b8680;
-    --quota-medium-color: #e0aa14;
     --viz-success: #10b981;
     --viz-failure: #c65746;
     --success-badge-bg: #d1fae5;
@@ -353,25 +350,15 @@ const uiHTML = `<!doctype html>
     word-break: break-word;
   }
 
-  .windows { display: flex; flex-direction: column; gap: 8px; min-width: 260px; }
-  .win-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
-  .win-name { font-weight: 650; }
+  /* win-meta 仍在决策表里作为时间副标使用，保留最小定义。 */
   .win-meta { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
-  .quota-bar { background: var(--bg-tertiary); height: 7px; border-radius: var(--radius-full); overflow: hidden; margin-top: 3px; }
-  .quota-fill { height: 100%; border-radius: var(--radius-full); }
-  .quota-fill.high { background: var(--viz-success); }
-  .quota-fill.medium { background: var(--quota-medium-color); }
-  .quota-fill.low { background: var(--viz-failure); }
 
   details > summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; font-weight: 600; user-select: none; }
   details > summary:hover { color: var(--text-primary); }
   .kv { margin-top: 6px; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; }
   .kv .k { color: var(--text-tertiary); }
   .kv .v { word-break: break-all; }
-  .rank { margin-top: 8px; }
-  .rank th, .rank td { padding: 4px 8px; white-space: nowrap; }
-  .rank tr.winner td { background: var(--winner-bg); font-weight: 650; }
-  .banner.warn { background: var(--warn-badge-bg); color: var(--warn-badge-text); border-color: color-mix(in srgb, var(--quota-medium-color) 45%, transparent); }
+  .banner.warn { background: var(--warn-badge-bg); color: var(--warn-badge-text); border-color: color-mix(in srgb, var(--warn-badge-text) 45%, transparent); }
   .banner.ok { background: var(--success-badge-bg); color: var(--success-badge-text); border-color: var(--success-badge-border); }
   .btn.sm { padding: 3px 8px; font-size: 12px; }
   .btn.primary { background: var(--success-badge-bg); color: var(--success-badge-text); border-color: var(--success-badge-border); }
@@ -446,13 +433,12 @@ const uiHTML = `<!doctype html>
 <main class="main-content">
   <header class="page-header">
     <h1 class="page-title">Safeguard Killer</h1>
-    <p class="page-desc">在 Claude Code、Claude、OpenAI/Codex 与 Gemini 模型上清除模型侧安全护栏与 auto-mode 分类器，用智能分组（5 分钟缓存粘性的故障转移链）绕开拒答，并在多个供应商之间平衡配额。需在插件配置里设置 <span class="mono">management_key</span>。可与 <a href="https://github.com/esauvisky/CLIProxyAPI-Model-List-Tweaker-Plugin" target="_blank" rel="noopener" style="color:var(--text-primary);">模型重排/重命名</a> 配合使用。</p>
+    <p class="page-desc">在 Claude Code、Claude、OpenAI/Codex 与 Gemini 模型上清除模型侧安全护栏与 auto-mode 分类器，用智能分组（5 分钟缓存粘性的故障转移链）绕开拒答。可与 <a href="https://github.com/esauvisky/CLIProxyAPI-Model-List-Tweaker-Plugin" target="_blank" rel="noopener" style="color:var(--text-primary);">模型重排/重命名</a> 配合使用。</p>
   </header>
 
   <div class="status-bar">
     <div class="status-pills">
       <span class="status-pill"><span class="status-dot" id="statusDot"></span><span class="status-label">版本</span><span class="status-value mono" id="versionVal">-</span></span>
-      <span class="status-pill"><span class="status-label">凭据</span><span class="status-value" id="credCount">0</span></span>
       <span class="status-pill"><span class="status-label">分组</span><span class="status-value" id="groupCount">0</span></span>
       <span class="status-pill"><span class="status-label">会话</span><span class="status-value" id="sessCount">0</span></span>
       <span class="status-pill"><span class="status-label">最后更新</span><span class="status-value" id="lastUpdated">从未</span></span>
@@ -468,31 +454,21 @@ const uiHTML = `<!doctype html>
 
   <div id="errorBanner" class="banner" style="display:none;"></div>
   <div id="saveBanner" class="banner" style="display:none;"></div>
-  <div id="hostErrorBanner" class="banner" style="display:none;"></div>
-  <div id="modelsWarnBanner" class="banner warn" style="display:none;"></div>
-  <div id="mgmtErrorBanner" class="banner" style="display:none;"></div>
 
   <nav class="tabs" id="tabBar">
     <button class="tab-btn active" data-tab="settings">通用设置</button>
     <button class="tab-btn" data-tab="groups">智能分组 <span class="badge" id="tabGroupCount">0</span></button>
     <button class="tab-btn" data-tab="sessions">会话 <span class="badge" id="tabSessCount">0</span></button>
     <button class="tab-btn" data-tab="decisions">最近决策 <span class="badge" id="tabDecCount">0</span></button>
-    <button class="tab-btn" data-tab="credentials">凭据 <span class="badge" id="tabCredCount">0</span></button>
   </nav>
 
   <div class="tab-pane active" id="pane-settings">
     <section class="card">
-      <div class="card-header"><h2 class="card-title">路由与配额设置</h2></div>
+      <div class="card-header"><h2 class="card-title">分组与会话设置</h2></div>
       <div class="form-grid" id="settingsForm">
-        <label class="field"><span class="cfg-key">管理密钥</span>
-          <input class="input" type="password" autocomplete="new-password" placeholder="保持不变" data-field="management_key" data-setting="key">
-          <span class="hint">配额采集与配额平衡必须使用。只写字段：留空表示沿用已保存的密钥。</span></label>
-        <label class="field"><span class="cfg-key">最低剩余比例（%）</span>
-          <input class="input" type="number" step="any" min="0" max="99.999" data-field="min_remaining" data-setting="min_remaining_pct">
-          <span class="hint">凭据要被使用，其每个适用配额窗口都必须保留至少这么多余量。</span></label>
         <label class="field"><span class="cfg-key">空闲分钟数</span>
           <input class="input" type="number" step="1" min="0" data-field="idle_minutes" data-setting="idle_minutes">
-          <span class="hint">会话超过该时长没有新提示后，可换到其它凭据或分组模型（填 0 表示关闭粘性）。</span></label>
+          <span class="hint">会话超过该时长没有新提示后，可换到分组里的其它模型（填 0 表示关闭粘性）。</span></label>
         <label class="field"><span class="cfg-key">流预取字节数</span>
           <input class="input" type="number" step="1" min="1" data-field="stream_prefetch_bytes" data-setting="stream_prefetch_bytes">
           <span class="hint">分组流在转发给客户端之前先缓冲并检查拒答的可见文本字节数。</span></label>
@@ -574,7 +550,7 @@ const uiHTML = `<!doctype html>
         <h2 class="card-title">智能分组</h2>
         <button class="btn sm" data-action="add-group" id="addGroupBtn">新增分组</button>
       </div>
-      <p class="card-desc">智能分组对外暴露一个虚拟模型 ID，同时也可以用成员模型的真实名称直接进入：客户端请求任一成员模型时，请求会自动接管并从这个模型开始尝试，被拒答再往分组里的下一个模型滚动，客户端无需改配置。成员模型在多个模型之间自动绕开安全护栏拒答、内容过滤、授权范围说教与配额耗尽。某个模型不拒答之后，会话会在服务端 prompt 缓存仍热的 5 分钟内固定使用它；超过 5 分钟后重置，重新从分组头部开始尝试（也可以纯粹用于多供应商便利或配额分摊）。</p>
+      <p class="card-desc">智能分组对外暴露一个虚拟模型 ID，同时也可以用成员模型的真实名称直接进入：客户端请求任一成员模型时，请求会自动接管并从这个模型开始尝试，被拒答再往分组里的下一个模型滚动，客户端无需改配置。成员模型在多个模型之间自动绕开安全护栏拒答、内容过滤与授权范围说教。某个模型不拒答之后，会话会在服务端 prompt 缓存仍热的 5 分钟内固定使用它；超过 5 分钟后重置，重新从分组头部开始尝试。</p>
       <div class="groups" id="groupsEditor"></div>
       <datalist id="modelList"></datalist>
     </section>
@@ -585,7 +561,7 @@ const uiHTML = `<!doctype html>
       <div class="card-header"><h2 class="card-title">会话</h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>会话</th><th>凭据 / 目标</th><th>供应商</th><th>模型 / 分组</th><th>绑定时间</th><th>最后访问</th><th>空闲 / 缓存到期</th></tr></thead>
+          <thead><tr><th>会话</th><th>命中模型</th><th>分组</th><th>绑定时间</th><th>最后访问</th><th>空闲 / 缓存到期</th></tr></thead>
           <tbody id="sessBody"></tbody>
         </table>
       </div>
@@ -603,18 +579,6 @@ const uiHTML = `<!doctype html>
       </div>
     </section>
   </div>
-
-  <div class="tab-pane" id="pane-credentials">
-    <section class="card">
-      <div class="card-header"><h2 class="card-title">凭据</h2></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>凭据</th><th>状态</th><th>配额窗口</th><th>数据来源</th></tr></thead>
-          <tbody id="credBody"></tbody>
-        </table>
-      </div>
-    </section>
-  </div>
 </main>
 
 <script>
@@ -628,8 +592,6 @@ let state = null;
 let lastOkAt = null;
 // Offset between server clock (state.now) and browser clock, so countdowns use server time.
 let clockSkewMs = 0;
-// Keys of <details> blocks the user opened; kept across re-renders.
-const openDetails = new Set();
 
 // Editable copy of the config. Live refreshes never touch it while it has unsaved edits.
 let draft = null;
@@ -637,8 +599,6 @@ let dirty = false;
 let saving = false;
 // Canonical form of the state.config the draft was last loaded from.
 let draftSourceCanon = null;
-// The credentials table holds weight inputs; it is not re-rendered while one has focus.
-let credRenderPending = false;
 
 function syncThemeWithCPA() {
   const root = document.documentElement;
@@ -759,34 +719,8 @@ function tick() {
   }
 }
 
-function pct(fraction) {
-  return (fraction * 100).toFixed(1) + '%';
-}
-
-function tierOf(fraction) {
-  if (fraction >= 0.5) return 'high';
-  if (fraction >= 0.2) return 'medium';
-  return 'low';
-}
-
 function truncate(s, n) {
   return s.length > n ? s.slice(0, n) + '…' : s;
-}
-
-function details(key, summary, body) {
-  const open = openDetails.has(key) ? ' open' : '';
-  return '<details data-key="' + esc(key) + '"' + open + '><summary>' + summary + '</summary>' + body + '</details>';
-}
-
-function credName(a) {
-  // Label, email and name are each optional on host credentials; show the most specific one present.
-  for (const v of [a.label, a.email, a.name]) if (v) return v;
-  return a.id;
-}
-
-function credNameByID(id) {
-  for (const c of state.credentials) if (c.auth.id === id) return credName(c.auth);
-  return id;
 }
 
 // ---- draft (editable config) ----
@@ -819,12 +753,11 @@ function featuresOf(cfg) {
 }
 
 function normStrategy(s) {
-  return s === 'random' || s === 'quota' ? s : 'order';
+  return s === 'random' ? s : 'order';
 }
 
 function canonConfig(cfg) {
   return JSON.stringify({
-    min_remaining: cfg.min_remaining,
     idle_minutes: cfg.idle_minutes,
     stream_prefetch_bytes: cfg.stream_prefetch_bytes,
     groups: groupsOf(cfg).map(g => ({ id: g.id, name: g.name, strategy: normStrategy(g.strategy), models: g.models })),
@@ -832,17 +765,11 @@ function canonConfig(cfg) {
   });
 }
 
-function fracToPct(f) {
-  return String(Number((f * 100).toPrecision(12)));
-}
-
 function loadDraft(cfg) {
   draft = {
     settings: {
-      min_remaining_pct: fracToPct(cfg.min_remaining),
       idle_minutes: String(cfg.idle_minutes),
       stream_prefetch_bytes: String(cfg.stream_prefetch_bytes),
-      key: '',
     },
     features: featuresOf(cfg),
     groups: groupsOf(cfg).map(g => ({ id: g.id, name: g.name, strategy: normStrategy(g.strategy), models: g.models.slice(), pending: '' })),
@@ -854,7 +781,6 @@ function loadDraft(cfg) {
   setDirty(false);
   markInvalid(new Set());
   renderGroups();
-  renderCredentials();
 }
 
 function setDirty(v) {
@@ -877,9 +803,6 @@ function parseNum(s) {
 function validateDraft() {
   const errors = [];
   const s = draft.settings;
-  const minPct = parseNum(s.min_remaining_pct);
-  const minFrac = Number((minPct / 100).toPrecision(12));
-  if (!Number.isFinite(minPct) || minFrac < 0 || minFrac >= 1) errors.push(['min_remaining', '最低剩余比例必须落在 [0, 100) 区间内，当前为 "' + s.min_remaining_pct + '"']);
   const idle = parseNum(s.idle_minutes);
   if (!Number.isInteger(idle) || idle < 0) errors.push(['idle_minutes', '空闲分钟数必须是非负整数，当前为 "' + s.idle_minutes + '"']);
   const prefetch = parseNum(s.stream_prefetch_bytes);
@@ -911,7 +834,6 @@ function validateDraft() {
   return {
     errors: errors,
     cfg: {
-      min_remaining: minFrac,
       idle_minutes: idle,
       stream_prefetch_bytes: prefetch,
       groups: groups,
@@ -985,14 +907,8 @@ async function saveValidated(cfg) {
   if (etag !== null) etag = etag.replace(/^W\//, '');
 
   const merged = Object.assign({}, node);
-  merged.min_remaining = cfg.min_remaining;
   merged.idle_minutes = cfg.idle_minutes;
   merged.stream_prefetch_bytes = cfg.stream_prefetch_bytes;
-  if (draft.settings.key.trim() !== '') merged.management_key = draft.settings.key.trim();
-  else if (!merged.management_key && isPlainObject(merged.management) && typeof merged.management.key === 'string' && merged.management.key !== '') {
-    merged.management_key = merged.management.key;
-  }
-  delete merged.management;
   delete merged.weights;
   if (cfg.groups.length > 0) merged.groups = cfg.groups;
   else delete merged.groups;
@@ -1015,8 +931,6 @@ async function saveValidated(cfg) {
   }
 
   // The host now calls plugin.reconfigure and re-registers the group models.
-  draft.settings.key = '';
-  document.querySelector('[data-setting="key"]').value = '';
   setDirty(false);
   showSaveBanner('ok', '已保存', '正在等待插件应用新配置…');
   await sleep(APPLY_WAIT_MS);
@@ -1040,8 +954,7 @@ function groupFieldAttr(i, rest) {
 }
 
 const STRATEGY_HINTS = {
-  order: '按顺序：自上而下依次尝试模型，只有当前模型拒答、报错或配额耗尽时才前进。命中第一个正常作答的模型后固定 5 分钟（缓存保持温热），5 分钟后重新从第 1 个开始。',
-  quota: '配额分摊：按各供应商的可用配额速率（剩余量 / 距重置小时数）加权随机挑选起始模型，以便更高效地分摊 token 消耗；遇拒答继续回退，命中后固定 5 分钟。',
+  order: '按顺序：自上而下依次尝试模型，只有当前模型拒答或报错时才前进。命中第一个正常作答的模型后固定 5 分钟（缓存保持温热），5 分钟后重新从第 1 个开始。',
   random: '随机：新会话或缓存已过期（5 分钟以上）的会话在分组内均匀随机挑选起始模型；遇拒答继续回退，命中后固定 5 分钟。',
 };
 
@@ -1073,7 +986,6 @@ function renderGroups() {
         '<label class="field"><span class="cfg-key">路由策略</span>' +
           '<select class="input" data-group="' + i + '" data-gfield="strategy"' + groupFieldAttr(i, 'strategy') + '>' +
             '<option value="order"' + (strat === 'order' ? ' selected' : '') + '>按顺序（仅作回退，粘性 5 分钟）</option>' +
-            '<option value="quota"' + (strat === 'quota' ? ' selected' : '') + '>配额分摊（加权随机，粘性 5 分钟）</option>' +
             '<option value="random"' + (strat === 'random' ? ' selected' : '') + '>随机（均匀随机，粘性 5 分钟）</option>' +
           '</select></label>' +
         '<button class="btn sm danger" data-action="group-remove" data-group="' + i + '">删除分组</button>' +
@@ -1146,15 +1058,10 @@ function onEditorInput(ev) {
 
 // ---- live state ----
 
-// 后端的 reason、attempt 结果与排除原因目前是英文常量，这里只在展示层翻译，
-// 不改动后端逻辑与既有断言（skipReason 依赖排除原因里的 % left 标记）。
+// 后端的 reason 与 attempt 结果目前是英文常量，这里只在展示层翻译，不改动后端逻辑与既有断言。
 const REASON_TEXT = {
   'served': '已应答',
   'every model failed': '所有模型都失败',
-  'session active, kept credential': '会话仍活跃，沿用原凭据',
-  'no candidate with usable quota data, host selector decides': '没有可用配额数据的候选，交由宿主选择器决定',
-  'highest rate (no session identity)': '速率最高（无会话标识）',
-  'new or idle session bound to highest rate': '新会话或空闲会话已绑定速率最高的凭据',
 };
 
 function zhReason(text) {
@@ -1163,187 +1070,37 @@ function zhReason(text) {
   if (mapped !== undefined) return mapped;
   const served = 'served by ';
   if (text.startsWith(served)) return '由 ' + text.slice(served.length) + ' 应答';
-  const lowQuota = 'all credentials low on quota: ';
-  if (text.startsWith(lowQuota)) return '所有凭据配额不足：' + text.slice(lowQuota.length);
-  // 跳过原因常常直接复用排序里的排除原因，交给 zhExcluded 再翻一层。
-  return zhExcluded(text);
+  return text;
 }
 
 function zhAttempt(result) {
   if (result === 'served') return '已应答';
-  const skipped = 'skipped: ';
-  if (result.startsWith(skipped)) return '已跳过：' + zhReason(result.slice(skipped.length));
   const failed = 'failed: ';
   if (result.startsWith(failed)) return '失败：' + result.slice(failed.length);
   return result;
 }
 
-function zhExcluded(text) {
-  if (!text) return '';
-  const left = /^(.+) has (.+)% left$/.exec(text);
-  if (left !== null) return left[1] + ' 仅剩 ' + left[2] + '%';
-  const noWindow = /^no quota window applies to (.+)$/.exec(text);
-  if (noWindow !== null) return '没有适用于 ' + noWindow[1] + ' 的配额窗口';
-  const noReset = /^(.+) has no reset time$/.exec(text);
-  if (noReset !== null) return noReset[1] + ' 没有重置时间';
-  return text;
-}
-
 function zhKind(kind) {
-  if (kind === 'balance') return '配额平衡';
   if (kind === 'group') return '分组路由';
   return kind;
-}
-
-function zhMgmtError(text) {
-  if (!text) return '';
-  if (text === 'management_key is not set; quota collection is off') return '未设置 management_key，配额采集已关闭';
-  const rejected = 'management key rejected, set a new management_key: ';
-  if (text.startsWith(rejected)) return '管理密钥被拒绝，请重新设置 management_key：' + text.slice(rejected.length);
-  const banned = 'management API banned this IP until ';
-  if (text.startsWith(banned)) return '管理 API 已封禁本机 IP，解封时间 ' + text.slice(banned.length);
-  return text;
-}
-
-const STATUS_TEXT = {
-  active: '正常',
-  ready: '就绪',
-  disabled: '已禁用',
-  unavailable: '不可用',
-  expired: '已过期',
-  invalid: '无效',
-  error: '异常',
-  pending: '待验证',
-  refreshing: '刷新中',
-  cooling: '冷却中',
-};
-
-// 宿主返回的凭据状态值是英文技术标识，展示层统一翻译成中文。
-function zhStatus(text) {
-  if (!text) return '正常';
-  const key = String(text).toLowerCase();
-  return Object.prototype.hasOwnProperty.call(STATUS_TEXT, key) ? STATUS_TEXT[key] : text;
-}
-
-// 宿主回调失败返回的原文是英文技术串，展示层给出中文说明并保留原文便于排查。
-function zhHostError(text) {
-  if (!text) return '';
-  if (text.indexOf('host.auth.list') >= 0 && text.toLowerCase().indexOf('unsupported') >= 0) {
-    return '宿主未实现 host.auth.list 回调，插件无法读取凭据列表。原文：' + text;
-  }
-  return text;
-}
-
-// 宿主缺少 host.auth.models 只是降级：模型列表改由管理 API 补充，未列出模型的凭据按可用处理。
-function zhModelsError(text) {
-  if (!text) return '';
-  if (text.indexOf('host.auth.models') >= 0 && text.toLowerCase().indexOf('unsupported') >= 0) {
-    return '当前宿主未实现 host.auth.models 回调，插件已改用管理 API 补充各凭据的模型列表；管理 API 也取不到模型的凭据按「可服务任意模型」处理，路由照常工作。升级宿主后可恢复由宿主直接上报模型列表。原文：' + text;
-  }
-  if (text.indexOf('host.auth.models') >= 0) {
-    return '读取宿主模型列表失败，已改用管理 API 补充；取不到模型的凭据按「可服务任意模型」处理。原文：' + text;
-  }
-  return text;
-}
-
-function renderWindow(w) {
-  const r = Math.max(0, Math.min(1, w.remaining));
-  const periodH = w.period / 3.6e12;
-  // models is omitempty: absent means the window covers every model of the credential.
-  const models = w.models && w.models.length > 0 ? w.models.join(', ') : '全部模型';
-  return '<div>' +
-    '<div class="win-head"><span class="win-name">' + esc(w.name) +
-      (periodH > 0 ? ' <span class="subtle">(' + esc(periodH >= 24 ? (periodH / 24).toFixed(periodH % 24 ? 1 : 0) + '天' : periodH.toFixed(periodH % 1 ? 1 : 0) + '小时') + ')</span>' : '') +
-    '</span><span class="mono">' + esc(pct(w.remaining)) + '</span></div>' +
-    '<div class="quota-bar"><div class="quota-fill ' + tierOf(r) + '" style="width:' + (r * 100).toFixed(1) + '%"></div></div>' +
-    '<div class="win-meta">重置 ' + (isZero(w.reset_at) ? '未知' : rel(w.reset_at) + ' · ' + esc(absText(w.reset_at))) + '</div>' +
-    '<div class="win-meta">' + esc(models) + '</div>' +
-  '</div>';
-}
-
-function renderCredentials() {
-  const body = document.getElementById('credBody');
-  if (state.credentials.length === 0) {
-    body.innerHTML = '<tr><td colspan="4" class="empty">宿主未上报任何凭据。</td></tr>';
-    return;
-  }
-  body.innerHTML = state.credentials.map(c => {
-    const a = c.auth;
-    const q = c.quota;
-    const name = credName(a);
-    const secondary = [a.email, a.name, a.id].filter(v => v && v !== name);
-    const models = c.models === null ? [] : c.models;
-    // 模型列表缺失是宿主降级态：这类凭据按「可服务任意模型」参与路由，界面上要说明语义。
-    const modelsNote = models.length > 0 ? '' : '<div class="win-meta">模型列表未知（按可服务任意模型处理）</div>';
-
-    const status = [];
-    if (a.disabled) status.push('<span class="badge bad">已禁用</span>');
-    if (a.unavailable) status.push('<span class="badge bad">不可用</span>');
-    if (!a.disabled && !a.unavailable) status.push('<span class="badge ok">' + esc(a.status === '' ? '正常' : zhStatus(a.status)) + '</span>');
-    else if (a.status !== '') status.push('<span class="badge">' + esc(zhStatus(a.status)) + '</span>');
-    if (!isZero(a.next_retry_after)) status.push('<div class="win-meta">重试 ' + rel(a.next_retry_after) + '</div>');
-
-    let windows;
-    if (!c.has_quota) windows = '<span class="subtle">尚无配额快照</span>';
-    else if (q.windows === null || q.windows.length === 0) windows = '<span class="subtle">未上报配额窗口</span>';
-    else windows = '<div class="windows">' + q.windows.map(renderWindow).join('') + '</div>';
-
-    let source = '<span class="subtle">-</span>';
-    if (c.has_quota) {
-      source = '<span class="badge">' + esc(q.source) + '</span>' +
-        (q.plan ? ' <span class="badge">' + esc(q.plan) + '</span>' : '') +
-        '<div class="win-meta">抓取于 ' + rel(q.fetched_at) + '</div>';
-    }
-
-    return '<tr>' +
-      '<td><div class="cred-name">' + esc(name) + '</div>' +
-        '<div class="win-meta"><span class="badge">' + esc(a.provider) + '</span> ' + secondary.map(esc).join(' · ') + '</div>' +
-        (q.error ? '<div class="err-box">配额错误：' + esc(q.error) + '</div>' : '') +
-        (models.length > 0 ? '<div style="margin-top:6px">' + details('models:' + a.id, '模型（' + models.length + '）', '<div class="small mono">' + models.map(esc).join('<br>') + '</div>') + '</div>' : modelsNote) +
-      '</td>' +
-      '<td class="nowrap">' + status.join(' ') + '</td>' +
-      '<td>' + windows + '</td>' +
-      '<td class="nowrap">' + source + '</td>' +
-    '</tr>';
-  }).join('');
 }
 
 function renderSessions() {
   const body = document.getElementById('sessBody');
   if (state.sessions.length === 0) {
-    body.innerHTML = '<tr><td colspan="7" class="empty">暂无绑定的会话。</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="empty">暂无绑定的会话。</td></tr>';
     return;
   }
   body.innerHTML = state.sessions.map(s =>
     '<tr>' +
       '<td class="mono nowrap" title="' + esc(s.session) + '">' + esc(truncate(s.session, 24)) + '</td>' +
-      '<td>' + esc(credNameByID(s.auth_id)) + '</td>' +
-      '<td><span class="badge">' + esc(s.provider) + '</span></td>' +
+      '<td class="mono">' + esc(s.auth_id) + '</td>' +
       '<td class="mono">' + esc(s.model) + '</td>' +
       '<td class="nowrap">' + rel(s.bound_at) + '</td>' +
       '<td class="nowrap">' + rel(s.last_seen) + '</td>' +
       '<td class="nowrap">' + countdown(s.idle_expires_at) + '</td>' +
     '</tr>'
   ).join('');
-}
-
-function num(v, digits) {
-  return Number.isFinite(v) ? v.toFixed(digits) : String(v);
-}
-
-function renderRanking(d) {
-  const rows = d.ranking.map(r =>
-    '<tr class="' + (r.auth_id === d.auth_id ? 'winner' : '') + '">' +
-      '<td>' + esc(credNameByID(r.auth_id)) + '</td>' +
-      '<td>' + esc(r.provider) + '</td>' +
-      '<td>' + esc(r.window ? r.window : '-') + '</td>' +
-      '<td class="mono">' + esc(pct(r.remaining)) + '</td>' +
-      '<td class="mono">' + esc(num(r.hours_to_reset, 2)) + '</td>' +
-      '<td class="mono">' + esc(num(r.rate, 4)) + '</td>' +
-      '<td>' + (r.excluded ? '<span class="badge bad">' + esc(zhExcluded(r.excluded)) + '</span>' : '') + '</td>' +
-    '</tr>'
-  ).join('');
-  return '<table class="rank"><thead><tr><th>凭据</th><th>供应商</th><th>窗口</th><th>剩余</th><th>距重置小时</th><th>速率</th><th>排除原因</th></tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
 function renderAttempts(d) {
@@ -1362,19 +1119,10 @@ function renderDecisions() {
   }
   const sorted = state.decisions.slice().sort((a, b) => new Date(b.time) - new Date(a.time));
   body.innerHTML = sorted.map(d => {
-    const key = 'dec:' + d.time + ':' + d.kind + ':' + d.session + ':' + d.model;
+    // 删掉配额调度后只剩分组决策；attempts 是 omitempty。
     let extra = '';
-    let chosen;
-    // ranking and attempts are omitempty.
-    if (d.kind === 'balance') {
-      if (d.ranking && d.ranking.length > 0) extra = details(key, '排序（' + d.ranking.length + '）', renderRanking(d));
-      chosen = d.auth_id ? esc(credNameByID(d.auth_id)) : '<span class="badge bad">无</span>';
-    } else if (d.kind === 'group') {
-      if (d.attempts && d.attempts.length > 0) extra = renderAttempts(d);
-      chosen = d.auth_id ? '<span class="mono">' + esc(d.auth_id) + '</span>' : '<span class="badge bad">无</span>';
-    } else {
-      throw new Error('未知决策类型 ' + d.kind);
-    }
+    if (d.attempts && d.attempts.length > 0) extra = renderAttempts(d);
+    const chosen = d.auth_id ? '<span class="mono">' + esc(d.auth_id) + '</span>' : '<span class="badge bad">无</span>';
     return '<tr>' +
       '<td class="nowrap">' + rel(d.time) + '<div class="win-meta">' + esc(absText(d.time)) + '</div></td>' +
       '<td><span class="badge">' + esc(zhKind(d.kind)) + '</span></td>' +
@@ -1387,37 +1135,13 @@ function renderDecisions() {
 }
 
 function render() {
-  const hostBanner = document.getElementById('hostErrorBanner');
-  if (state.error) {
-    hostBanner.innerHTML = '<strong>路由组件读取宿主凭据列表失败</strong>' + esc(zhHostError(state.error));
-    hostBanner.style.display = 'block';
-  } else {
-    hostBanner.style.display = 'none';
-  }
-  const modelsBanner = document.getElementById('modelsWarnBanner');
-  if (state.models_error) {
-    modelsBanner.innerHTML = '<strong>模型列表来源降级</strong>' + esc(zhModelsError(state.models_error));
-    modelsBanner.style.display = 'block';
-  } else {
-    modelsBanner.style.display = 'none';
-  }
-  const mgmtBanner = document.getElementById('mgmtErrorBanner');
-  if (state.management_error) {
-    mgmtBanner.innerHTML = '<strong>配额采集未运行：' + esc(zhMgmtError(state.management_error)) + '</strong>';
-    mgmtBanner.style.display = 'block';
-  } else {
-    mgmtBanner.style.display = 'none';
-  }
   document.getElementById('versionVal').textContent = state.version;
-  document.getElementById('credCount').textContent = String(state.credentials.length);
   document.getElementById('sessCount').textContent = String(state.sessions.length);
-  document.getElementById('tabCredCount').textContent = String(state.credentials.length);
   document.getElementById('tabSessCount').textContent = String(state.sessions.length);
   document.getElementById('tabDecCount').textContent = String(state.decisions.length);
   document.getElementById('modelList').innerHTML = state.models.map(m => '<option value="' + esc(m) + '"></option>').join('');
   // Follow config changes made elsewhere only while there is nothing unsaved here.
   if (draft === null || (!dirty && !saving && canonConfig(state.config) !== draftSourceCanon)) loadDraft(state.config);
-  renderCredentials();
   renderSessions();
   renderDecisions();
 }
@@ -1476,7 +1200,7 @@ async function doRefresh() {
       return false;
     }
     // Go encodes empty slices as null; normalize so renderers can rely on arrays.
-    for (const k of ['credentials', 'sessions', 'decisions', 'models']) if (next[k] === null) next[k] = [];
+    for (const k of ['sessions', 'decisions', 'models']) if (next[k] === null) next[k] = [];
     state = next;
     clockSkewMs = new Date(state.now).getTime() - Date.now();
     render();
@@ -1536,13 +1260,6 @@ const savedTab = localStorage.getItem('qsr-active-tab');
 if (savedTab && document.getElementById('pane-' + savedTab) !== null) {
   selectTab(savedTab);
 }
-
-document.addEventListener('toggle', (ev) => {
-  const el = ev.target;
-  if (el.tagName !== 'DETAILS') return;
-  if (el.open) openDetails.add(el.dataset.key);
-  else openDetails.delete(el.dataset.key);
-}, true);
 
 window.addEventListener('error', (ev) => showError('页面脚本异常', String(ev.message)));
 window.addEventListener('unhandledrejection', (ev) => showError('页面脚本异常（未处理的 Promise 拒绝）', String(ev.reason)));

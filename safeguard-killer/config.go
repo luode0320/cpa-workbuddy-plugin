@@ -15,7 +15,6 @@ const (
 
 	groupStrategyOrder  = "order"
 	groupStrategyRandom = "random"
-	groupStrategyQuota  = "quota"
 )
 
 // executorFormats lists every client protocol; group requests pass through in the client's own format.
@@ -49,7 +48,6 @@ type configField struct {
 }
 
 type registrationCapabilities struct {
-	Scheduler             bool     `json:"scheduler"`
 	ModelRegistrar        bool     `json:"model_registrar"`
 	ModelRouter           bool     `json:"model_router"`
 	ManagementAPI         bool     `json:"management_api"`
@@ -63,21 +61,14 @@ type registrationCapabilities struct {
 }
 
 type pluginConfig struct {
-	// MinRemaining is the fraction every applicable quota window must keep for a credential to be used.
-	MinRemaining float64 `yaml:"min_remaining" json:"min_remaining"`
-	// IdleMinutes is how long a session may go without a prompt before it can move to another credential.
+	// IdleMinutes is how long a session may go without a prompt before it can move to another model.
 	IdleMinutes int `yaml:"idle_minutes" json:"idle_minutes"`
 	// StreamPrefetchBytes is how many bytes of visible text executeGroupStream buffers before
 	// committing to a candidate model, so prompt-level, thinking-phase, and streaming safeguard or
 	// text refusals can switch to the next model in the group before any chunk is sent.
 	StreamPrefetchBytes int           `yaml:"stream_prefetch_bytes" json:"stream_prefetch_bytes"`
-	ManagementKey       string        `yaml:"management_key" json:"-"`
 	Groups              []modelGroup  `yaml:"groups" json:"groups"`
 	Features            featureConfig `yaml:"features" json:"features"`
-	// LegacyManagement reads existing management.key configs on upgrade.
-	LegacyManagement struct {
-		Key string `yaml:"key" json:"key"`
-	} `yaml:"management,omitempty" json:"-"`
 }
 
 // featureConfig controls safeguard and client-wire adaptations.
@@ -106,7 +97,7 @@ type modelGroup struct {
 	ID string `yaml:"id" json:"id"`
 	// Name is the display name shown in model lists.
 	Name string `yaml:"name" json:"name"`
-	// Strategy is "order" (default), "random", or "quota".
+	// Strategy is "order" (default) or "random".
 	Strategy string   `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 	Models   []string `yaml:"models" json:"models"`
 }
@@ -117,8 +108,6 @@ func (g modelGroup) effectiveStrategy() string {
 		return groupStrategyOrder
 	case groupStrategyRandom:
 		return groupStrategyRandom
-	case groupStrategyQuota:
-		return groupStrategyQuota
 	default:
 		return strings.ToLower(strings.TrimSpace(g.Strategy))
 	}
@@ -132,7 +121,6 @@ func init() {
 
 func defaultPluginConfig() pluginConfig {
 	return pluginConfig{
-		MinRemaining:        0.02,
 		IdleMinutes:         5,
 		StreamPrefetchBytes: 128,
 		Features: featureConfig{
@@ -166,9 +154,6 @@ func configurePlugin(raw []byte) error {
 			return errUnmarshal
 		}
 	}
-	if cfg.ManagementKey == "" && cfg.LegacyManagement.Key != "" {
-		cfg.ManagementKey = cfg.LegacyManagement.Key
-	}
 	if errValidate := validateConfig(cfg); errValidate != nil {
 		return errValidate
 	}
@@ -177,9 +162,6 @@ func configurePlugin(raw []byte) error {
 }
 
 func validateConfig(cfg pluginConfig) error {
-	if cfg.MinRemaining < 0 || cfg.MinRemaining >= 1 {
-		return fmt.Errorf("min_remaining must be in [0, 1), got %v", cfg.MinRemaining)
-	}
 	if cfg.IdleMinutes < 0 {
 		return fmt.Errorf("idle_minutes must be non-negative, got %d", cfg.IdleMinutes)
 	}
@@ -202,9 +184,9 @@ func validateConfig(cfg pluginConfig) error {
 			return fmt.Errorf("group %s needs at least one model", group.ID)
 		}
 		switch group.effectiveStrategy() {
-		case groupStrategyOrder, groupStrategyRandom, groupStrategyQuota:
+		case groupStrategyOrder, groupStrategyRandom:
 		default:
-			return fmt.Errorf("group %s has unknown strategy %q (want order, random, or quota)", group.ID, group.Strategy)
+			return fmt.Errorf("group %s has unknown strategy %q (want order or random)", group.ID, group.Strategy)
 		}
 	}
 	for _, group := range cfg.Groups {
@@ -236,16 +218,13 @@ func pluginRegistration() registration {
 			GitHubRepository: pluginRepo,
 			Logo:             pluginLogo,
 			ConfigFields: []configField{
-				{Name: "management_key", Type: "string", Description: "Required: CPA management key used to read provider quota and save settings from the UI."},
-				{Name: "min_remaining", Type: "number", Default: 0.02, Description: "Quota fraction (0-1) every window of a credential must keep for it to be used."},
-				{Name: "idle_minutes", Type: "integer", Default: 5, Description: "Minutes without a prompt after which a credential or smart group session binding may re-rank (0 disables session stickiness)."},
+				{Name: "idle_minutes", Type: "integer", Default: 5, Description: "Minutes without a prompt after which a smart group session binding may re-rank (0 disables session stickiness)."},
 				{Name: "stream_prefetch_bytes", Type: "integer", Default: 128, Description: "Bytes of visible text a smart group stream buffers and checks for refusals before forwarding to the client."},
-				{Name: "groups", Type: "array", Description: "Smart Groups ({id, name, strategy, models}): virtual models that automatically route around safeguard refusals, errors, and low quota with 5m cache stickiness."},
+				{Name: "groups", Type: "array", Description: "Smart Groups ({id, name, strategy, models}): virtual models that automatically route around safeguard refusals and errors with 5m cache stickiness."},
 				{Name: "features", Type: "object", Description: "Safeguard and client-wire adaptation toggles and custom notice_prefix."},
 			},
 		},
 		Capabilities: registrationCapabilities{
-			Scheduler:             true,
 			ModelRegistrar:        true,
 			ModelRouter:           true,
 			ManagementAPI:         true,
