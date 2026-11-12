@@ -744,10 +744,49 @@ func inspectStreamChunk(payload []byte) (refusal string, visibleText string, saw
 	return "", textBuf.String(), sawToolUse, sawEnvelope
 }
 
+// hasTruncatedOrReasoningOutput 判断响应是否为「配额截断」或「仅推理内容」的合法产出。
+// 这两种情况正文为空但模型确实完成了工作，属于放行范围，不构成拒绝。
+// [参数] raw：单条响应体或单个流式分片
+// [返回] 命中截断或推理内容时返回 true
+// 最近修改时间 2026-11-12 22:35:00, 新增, 区分截断与推理内容，避免误判空响应
+func hasTruncatedOrReasoningOutput(raw []byte) bool {
+	var msg struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+			Message      *struct {
+				ReasoningContent string `json:"reasoning_content"`
+				Reasoning        string `json:"reasoning"`
+			} `json:"message"`
+			Delta *struct {
+				ReasoningContent string `json:"reasoning_content"`
+				Reasoning        string `json:"reasoning"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(raw, &msg) != nil {
+		return false
+	}
+
+	// 1. 任一候选命中截断或推理内容即放行
+	for _, choice := range msg.Choices {
+		if choice.FinishReason == "length" {
+			return true
+		}
+		if choice.Message != nil && (strings.TrimSpace(choice.Message.ReasoningContent) != "" || strings.TrimSpace(choice.Message.Reasoning) != "") {
+			return true
+		}
+		if choice.Delta != nil && (strings.TrimSpace(choice.Delta.ReasoningContent) != "" || strings.TrimSpace(choice.Delta.Reasoning) != "") {
+			return true
+		}
+	}
+	return false
+}
+
 // checkNonStreamResponse returns an error if a non-streaming response is a refusal or has no
 // visible text or tool calls.
 func checkNonStreamResponse(body []byte) error {
-	refusal, visible, sawTool, sawEnvelope := inspectPayload(bytes.TrimSpace(body))
+	trimmedBody := bytes.TrimSpace(body)
+	refusal, visible, sawTool, sawEnvelope := inspectPayload(trimmedBody)
 	if refusal != "" {
 		return fmt.Errorf("%s", refusal)
 	}
@@ -757,7 +796,10 @@ func checkNonStreamResponse(body []byte) error {
 		}
 	}
 	if sawEnvelope && len(strings.TrimSpace(visible)) == 0 && !sawTool {
-		return fmt.Errorf("empty response (no text or tool calls)")
+		// 截断与推理内容属正常产出，不按空响应处理
+		if !hasTruncatedOrReasoningOutput(trimmedBody) {
+			return fmt.Errorf("empty response (no text or tool calls)")
+		}
 	}
 	return nil
 }
@@ -771,6 +813,7 @@ func prefetchStream(sourceStreamID, callbackID string, checkRefusal bool, prefet
 	var visibleBuf strings.Builder
 	sawTool := false
 	sawEnvelope := false
+	sawTruncatedOrReasoning := false
 	for {
 		rawRead, errRead := hostCall(methodHostModelStreamRead, hostStreamRef{StreamID: sourceStreamID, HostCallbackID: callbackID})
 		if errRead != nil {
@@ -794,6 +837,7 @@ func prefetchStream(sourceStreamID, callbackID string, checkRefusal bool, prefet
 			visibleBuf.WriteString(vis)
 			sawTool = sawTool || tool
 			sawEnvelope = sawEnvelope || env
+			sawTruncatedOrReasoning = sawTruncatedOrReasoning || hasTruncatedOrReasoningOutput(chunk.Payload)
 			if !sawTool {
 				if textRefusal := detectTextRefusal(visibleBuf.String()); textRefusal != "" {
 					_, _ = hostCall(methodHostModelStreamClose, hostStreamRef{StreamID: sourceStreamID, HostCallbackID: callbackID})
@@ -807,13 +851,15 @@ func prefetchStream(sourceStreamID, callbackID string, checkRefusal bool, prefet
 			return nil, false, fmt.Errorf("%s", chunk.Error)
 		}
 		if chunk.Done {
-			if checkRefusal && sawEnvelope && len(strings.TrimSpace(visibleBuf.String())) == 0 && !sawTool {
+			// 截断与推理内容属正常产出，不按空响应处理
+			if checkRefusal && sawEnvelope && len(strings.TrimSpace(visibleBuf.String())) == 0 && !sawTool && !sawTruncatedOrReasoning {
 				_, _ = hostCall(methodHostModelStreamClose, hostStreamRef{StreamID: sourceStreamID, HostCallbackID: callbackID})
 				return nil, false, fmt.Errorf("empty response (no text or tool calls)")
 			}
 			return prefetched, true, nil
 		}
-		if sawTool || visibleBuf.Len() >= prefetchBytes {
+		// 推理内容已到达时无需再等可见文本，直接放行避免整段思考被缓冲
+		if sawTool || sawTruncatedOrReasoning || visibleBuf.Len() >= prefetchBytes {
 			return prefetched, false, nil
 		}
 	}

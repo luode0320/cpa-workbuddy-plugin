@@ -59,7 +59,7 @@ import (
 )
 
 // version 由 CI 在链接期用 -ldflags -X main.version 注入；本地构建回退到下面的默认值。
-var version = "0.1.5"
+var version = "0.1.6"
 
 // pluginVersion 在包初始化阶段继承 version，保证 -X 注入值对注册元数据生效。
 var pluginVersion = version

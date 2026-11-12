@@ -2,6 +2,17 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.6
+
+### Fix - 配额截断与纯推理内容不再被误判为空响应而触发换模型
+
+- 背景: 分组内包含思考模型（如 `hy4free`）时，客户端传较小的 `max_tokens`（实测 300），推理链会吃满整个输出配额，`finish_reason=length`、正文为空、只有 `reasoning_content`。旧实现的空响应判据只认「无可见文本、无工具调用」，把这种正常产出当成模型拒绝，于是滚到分组下一个模型，客户端拿到的回答来自另一个模型，正文前缀是 `⚡ [Safeguard Killer] ... switched to ...`。这使破甲能力退化成模型切换能力。
+- 改动: `refusal.go` 新增 `hasTruncatedOrReasoningOutput`，识别 `finish_reason=length`、`message.reasoning_content` / `message.reasoning`、`delta.reasoning_content` / `delta.reasoning`；`checkNonStreamResponse` 与 `prefetchStream` 的空响应判据改为在该识别命中时放行。
+- 语义: 破甲优先，换模型只是兜底。推理内容与配额截断都属模型已完成工作，不构成拒绝；真正的 `content_filter`、`refusal` 字段、文本拒绝模式仍按原判据拦截。
+- 流式行为: `prefetchStream` 在检测到推理内容时提前结束预取并开始转发，避免整段思考链被缓冲后才吐给客户端。
+- 验证: `refusal_truncation_test.go` 覆盖截断、非流式推理内容、驼峰与短名两种字段、流式 delta、空推理内容、非 JSON、以及 `content_filter` 仍被拒绝共 10 个用例；三组变异（删除 `length` 判据、空响应判据回退为无条件报错、删除推理内容判据）全部 KILLED 且失败形态为断言失败。
+- 涉及文件: `refusal.go`、`refusal_truncation_test.go`、`VERSION`、`main.go`。
+
 ## 0.1.5
 
 ### Feat - 用成员模型的真实名称直接进入智能分组，无需客户端改配置
