@@ -634,18 +634,16 @@
     {
       "id": "safeguard-killer",
       "name": "Safeguard Killer",
-      "description": "Neutralize model safeguards and auto-mode classifiers across Claude Code, Claude, OpenAI/Codex and Gemini, strip refusal-taint telemetry, and route around refusals with Smart Groups (5m prompt-cache sticky failover chains, quota-aware credential balancing). Requires management_key in the plugin config.",
+      "description": "Neutralize model safeguards and auto-mode classifiers across Claude Code, Claude, OpenAI/Codex and Gemini, strip refusal-taint telemetry, and route around refusals with Smart Groups (5m prompt-cache sticky failover chains).",
       "author": "luode0320 (ported from esauvisky/CLIProxyAPI-Safeguard-Killer-Plugin)",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
       "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/SafeguardKiller.png",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/safeguard-killer",
       "license": "MIT",
       "tags": [
-        "Scheduler",
         "Router",
         "Executor",
-        "Quota",
         "Management",
         "Safeguard"
       ],
@@ -655,30 +653,37 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.6/safeguard-killer_0.1.6_darwin_amd64.zip",
-            "sha256": "bcbfe54bef8645c681a36e006947a6c9ee158b388668d1db1156bdd3b6df7c8c",
-            "size": 6049164
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.7/safeguard-killer_0.1.7_darwin_amd64.zip",
+            "sha256": "c3deeb5edcdf0ff379a51eb2c215ecee01ff28f9b993103dc2bc8c1103760cfd",
+            "size": 5113711
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.6/safeguard-killer_0.1.6_linux_amd64.zip",
-            "sha256": "b95339eeaf131f18ec9e253dab0fb56e5ecedc2ae6ee9d16b6c1cb0dd09a0c65",
-            "size": 8186941
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.7/safeguard-killer_0.1.7_linux_amd64.zip",
+            "sha256": "ba53e5783592ac825b4f82d4d7697d2277caa61b231c57189371e79a68b61a4d",
+            "size": 7189068
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.6/safeguard-killer_0.1.6_linux_arm64.zip",
-            "sha256": "440a9866700b748b657ee5ca9c57b3dd088f6488b5026e6e86005561d7902dd5",
-            "size": 7873363
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.7/safeguard-killer_0.1.7_linux_arm64.zip",
+            "sha256": "2385b3468602235d506a8d5f76b285a40b5aaac6972ee060023194174f76e7ee",
+            "size": 6971606
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.6/safeguard-killer_0.1.6_windows_amd64.zip",
-            "sha256": "f1989d9d8ccf19c5da47a420767e68a7c73f1cc4dcdff4c760791d394a10cd3d",
-            "size": 6110141
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.7/safeguard-killer_0.1.7_windows_amd64.zip",
+            "sha256": "197b572265fd04679b7530c9a2bfa89149b98fb0b4efc1c4ba4df38f89a435a4",
+            "size": 5165589
+          },
+          {
+            "goos": "windows",
+            "goarch": "arm64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/safeguard-killer-v0.1.7/safeguard-killer_0.1.7_windows_arm64.zip",
+            "sha256": "7cd68f528c6094aef5f429d647f41f4fc34831b648b4566d6dfbc5cfee9b31d1",
+            "size": 5020903
           }
         ]
       }
