@@ -707,7 +707,43 @@
       ],
       "install": {
         "type": "direct",
-        "artifacts": []
+        "artifacts": [
+          {
+            "goos": "darwin",
+            "goarch": "amd64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.7/doubao-provider_0.1.7_darwin_amd64.zip",
+            "sha256": "e4f3c10168c02b997c181d687a7c6fe36a0de9ee48f17f2227e767b6f9be820c",
+            "size": 3099093
+          },
+          {
+            "goos": "linux",
+            "goarch": "amd64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.7/doubao-provider_0.1.7_linux_amd64.zip",
+            "sha256": "79c4669be7afe92cd6b59870aa026b1a2333a408448cfb43b60602a499e6e299",
+            "size": 3249398
+          },
+          {
+            "goos": "linux",
+            "goarch": "arm64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.7/doubao-provider_0.1.7_linux_arm64.zip",
+            "sha256": "0ff17ae2ee13a9875bef80384262d1bbbb5ebec80ce1f38f0303c5215ba396d4",
+            "size": 2947618
+          },
+          {
+            "goos": "windows",
+            "goarch": "amd64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.7/doubao-provider_0.1.7_windows_amd64.zip",
+            "sha256": "40c76b305d2a2097127d72a720b2a76cb5d81e922bd71d9d5ea4ccf3ff018877",
+            "size": 3171207
+          },
+          {
+            "goos": "windows",
+            "goarch": "arm64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.7/doubao-provider_0.1.7_windows_arm64.zip",
+            "sha256": "921c7205aca33cc89c6870e01d7fd048a82f640d7d12c8826949d395805de1fc",
+            "size": 2929873
+          }
+        ]
       }
     }
   ]
