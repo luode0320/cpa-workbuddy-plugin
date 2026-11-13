@@ -17,11 +17,11 @@
   11. `workbuddy-token-usage`：统一 Token 用量统计与实时看板服务；
   12. `doubao-provider`：豆包工作模式（agent_mode=1 PC 客户端管线；DeepSeek V4 / Kimi K3 / GLM 5.3 直连；Cookie 导入 + device_id 派生）。
 - 非范围：CLIProxyAPI 核心服务本体；跨项目文件修改。
-- 已下线插件：`gemini-provider`（2026-10-11）、`notion-provider`（2026-10-22）。**`doubao-provider` 2026-10-22 下线、2026-11-14 以工作模式 0.1.7 重新上线（生产已加载）。**
+- 已下线插件：`gemini-provider`（2026-10-11）、`notion-provider`（2026-10-22）。**`doubao-provider` 2026-10-22 下线、2026-11-14 以工作模式 0.1.7 重新上线、0.1.8 面板重写与导入导出已上线（生产已加载）。**
 
 ## 项目概况
 
-- 状态：活跃维护中。12 大插件全景（11 Provider + 1 用量统计）。**2026-11-14 doubao-provider 以工作模式管线 0.1.7 重新上线**（原 2026-10-22 下线，源码从 tag v0.1.6 回灌后重写工作模式链路）。
+- 状态：活跃维护中。12 大插件全景（11 Provider + 1 用量统计）。**2026-11-14 doubao-provider 以工作模式管线 0.1.7 重新上线，0.1.8 面板重写与账号导入导出已上线（生产已加载）**。
 - **生产主机（2026-11-07 起）= 45.207.222.65（`cpa-server`，端口 18998），254（`cpa-server-new`）已弃用**：用户明示「254 已经放弃，改回 65 为主服务器」，全部域名已解析到 65，254 只剩 mysql+nginx（CPA 已停）。部署/验收一律打 65，管理密钥用插件配置 `cpa_management_key`，账号在 `auth-dir=/CLIProxyAPI/mysqlstore/mysqlstore/auths`（62 个）。
 - **2026-11-07 01:27 已在 65 完成全量对齐与启用**：11 个插件全部 `configured/registered/enabled=true` —— workbuddy 0.21.9（20 号）/ coze 0.7.4（23 号）/ qoderwork 0.12.6（2 号）/ workbuddy-ai 0.1.35（6 号）/ token-usage 0.2.8 / traework 0.5.7 / qoder-ai 0.1.35 / zcode 0.3.5 / copilot 0.1.12 / qwenwork 0.2.13 / cursor 0.1.7（首次安装）。install 前 5 个显示 `registered=false` 是「该版本 .so 从未加载」（config 里 enabled 本为 true），install 后日志为 `plugin loaded + plugin registered`，非 hot reload 形态。
 - **2026-11-07 19:40 当前生产版本（max_tokens 最小干预批次）**：workbuddy-ai **0.1.37** / qoder-ai **0.1.37** / qoderwork **0.13.5** / traework **0.5.13** / zcode **0.3.7** / qwenwork **0.2.15** —— 上述插件 `configured/registered/enabled/effective_enabled` 全 true，`.so` sha256 与 release zip 逐字节一致。**管理 API 端口是 8317（不是 18998，18998 是 sshd）**。
@@ -31,9 +31,21 @@
 - **2026-11-08 14:51 traework 升级 0.5.18 → 0.5.19**（下行 usage 帧缺失修复，`hot reloaded active_version=0.5.19 retired 0.5.18`，落盘 sha256 `27d74d19…` 与 release zip 逐字节一致；容器未重启）。同刻 workbuddy 0.21.15 / qoderwork 0.13.12 由并行会话上线。
 - 2026-10-25 历史发布批（已过期，仅存档）：zcode 0.3.1 / qoderwork 0.12.1 / traework 0.5.1 / workbuddy 0.21.2 / cursor 0.1.6 / qoder-ai 0.1.31 / coze 0.6.2 / qwenwork 0.2.9 / copilot 0.1.11 / workbuddy-ai 0.1.30 / token-usage 0.2.8（细节见 git log 与 CHANGELOG）。
 - 活动工作区：F:\cpa-plugin
-- 当前时间：2026-11-07 (GMT+8)
+- 当前时间：2026-11-14 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 会话（2026-11-14 02:40-03:30）：**doubao 0.1.8：面板重写为 workbuddy 同源形态 + 账号导入导出（生产热重载已生效）**：
+  - **用户指令**（m01353）：「不要用户自己填密钥, 参考 workbuddy 面板来设计豆包的面板、导入、导出、账号等功能。」截图停在「加载账号失败：需要管理密钥」。
+  - **根因**：`doubao/panel.html` 密钥段只有 `enc::v1::`，缺 `ENC_PREFIX_V2`（宿主新版只拼 host）与 `readSessionKey` 脏值清理，是 12 个插件里唯一落后的面板。
+  - **后端**：新建 `doubao/export.go`（276 行）——`handleExportAccounts`（`{version,exported_at,plugin,count,accounts[]}`）、`handleExportAccountsZip`（archive/zip 原样写物理文件字节、无号 404、头 `doubao-credentials-<YYYY-MM-DD>.zip`）、`rawCredentialBytes`、`exportAccountFileName`、`uniqueZipName`、`extractImportPayload`/`cookieFromValue`（深度 4、键序 cookie/cookie_header/cookieHeader/raw/text/json/credential/accounts/auth/account）；`management.go` 路由 8→**10**（:73 `/export`、:74 `/export/zip`），`handleImportCredentials` 兼容 `{cookie,label}`/`{raw}`/`{json}`，成功返回 8 键。
+  - **前端**：`panel.html` 整页重写（生产实测 **53382 B**）——三套 CSS token + `window.__dbThemeSync` 父页 MutationObserver、v2+v1 密钥解码、401 累计 3 次才清 key + 60s 冷却、403 `IP banned` 退避 clamp[30s,30min]、筛选四态（全部/可用/已禁用/过期）+ summary + 三列卡片、导入弹窗（粘贴 + 多选 JSON ≤2MB + `expandCredentials` 三形态）、导出 JSON/ZIP、删除二次确认、测试弹窗（`pendingTestAuthIndex` 丢弃过期响应）。豆包无额度/签到能力，卡片不做积分与签到。
+  - **本地验证**：`cgo-shim-build.py doubao` 全绿；自建 shim 跑 `go test -v` → **PASS=154 SKIP=13 FAIL=0**；`node --check` 两 script 块 exit=0；DOM 交叉校验 35 id / 20 refs / 16 handlers MISSING=[]；gofmt clean；`scan_test_pollution.py` → POLLUTION: PASS。
+  - **文档**：`doc/5-tests/2026-11-14_031515_doubao管理面板重写与账号导入导出验证.md`、`doc/6-review/2026-11-14_031515_doubao管理面板重写与账号导入导出_6-review.md`（`STYLE: PASS`）。
+  - **发布链**：提交 `d28391b`（10 文件 +1654/−323）→ CI run 43490690397（`darwin/arm64` cancelled、Release skipped）→ `allow_partial=true` 重派 run 43491137617 → release `doubao-provider-v0.1.8` id=444644251 **6 assets** → registry `d0b8e2a`（16+/16−，`validate-registry.py` → 13 plugin OK）→ 远端 raw `version=0.1.8 artifacts=5`。
+  - **生产热重载**：`POST /v0/management/plugin-store/doubao-provider/install?version=0.1.8` → `restart_required:false`；`plugin hot reloaded plugin_id=doubao-provider active_version=0.1.8 retired_version=0.1.7`（03:26:16）；落盘 `.so` **8188384 B** sha256 `f5f61bcb4ba7a84e7e332c74e056932b2c8d005f1f945fdd8e7c76f41b496241` 与本地 zip 内 `.so` **逐字节一致**；容器 `Up 45 hours` **未重启**。
+  - **生产验收**：`/v0/resource/plugins/doubao-provider/panel` 200（53382 B）命中 `enc::v2::`/`doubao-mgmt-key`/`__dbThemeSync`/`readSessionKey`/`exportAuthZip`/`openImportModal`/`filterBar`/`authBox` 八标记；`GET /export` 200 `{"accounts":[],"count":0,"exported_at":"2026-11-13T19:26:52Z"}`；`GET /export/zip` 404 `{"error":"没有可导出的账号"}`；`/accounts` 200 空、`/models` 仍 `{"error":"auth_index 不能为空"}`。
+  - **遗留**：`/accounts` 仍为 0 —— 宿主只在 provider 有账号时才注册模型，导入真实 Cookie 后才会出现 `doubao/*` 与端到端能力。
 
 - 会话（2026-11-14 01:00-02:35）：**doubao-provider 重新上线 0.1.7：豆包工作模式 agent_mode=1 PC 客户端管线（生产已加载）**：
   - **用户诉求演进**：先问「我们是不是又豆包工作的插件?」→ 追问「GitHub 上有豆包工作的反代项目吗」（调研出唯一完整实现 `yyydsz/doubao2api`）→ 裁定「开始实施」。
@@ -161,16 +173,3 @@
   - **修复**：① group `"1"` 成员改 8 项全小写 workbuddy 注册 ID（移除三不存在的 `Doubao-Seed-2.1-Pro`/`hy4`/`qwen3.8-flash`，`hy4` 真名 `hy4free`），备份 `config.yaml.bak-20261112_202935`；② `models.go` 新增归一表 `upstreamModelIDCache`（`ToLower(id)`→注册原样 ID）+ `canonicalUpstreamModelID`（**未命中只去空白原样返回，绝不猜大小写**），`resolveUpstreamModel` 三条返回路径全套，缓存刷新在**释放写锁之后**（持锁调用自死锁）；③ `payload.go` 两处改**逐字节精确相等**。新增 `model_case_normalize_test.go`（10 函数）。
   - **两个假通过陷阱（重要）**：① 归一表未命中分支初版写成 `return canonicalUpstreamModelID(m)`（**自我递归**），被变异验证的 `fatal error: stack overflow`（`models.go:600`）暴露 → 改 `return m`；② 变异脚本 `replace(old,new,1)` 只改首个匹配，锚点出现两次 ⇒ 变异落在自递归行、fallback 从未被改 → **变异存活假通过**且 `restore` 把修复还原成自递归；脚本最终改为**校验锚点恰好命中 1 次**。
   - **验证与发布**：`cgo-shim-build.py workbuddy` 全绿；**2 组变异均 KILLED** 且失败形态为断言 FAIL；代码 `8eae84b`（6 文件 +366/−11）；CI run 1614 `Release skipped`，`allow_partial=true` 重跑 run 1615 才 release。文档见 `doc/4-bugs/2026-11-12_010000_会话压缩阶段异常根因诊断.md`（含「部署后观察：外部会话改写 group 配置」小节）。知识库沉淀 `20-Knowledge/工程实践/忽略大小写的相等判断会短路规范化重写.md`。
-
-- 会话（2026-11-11 22:26-22:57）：**qoderwork 导入弹窗只认凭据 JSON，删除 PAT 全部逻辑（0.13.16）**：
-  - **诉求**：面板导入弹窗仍要 `pt-` PAT，「只要选择或输入 JSON 就导入，不需要 PAT 逻辑」。
-  - **改动**：前端弹窗三层压成「选文件 + 一个大文本框 + 唯一按钮『导入并保存』」，删 `importAuth`/`runBatchImport`/`parseBatchInput`/`describeBatchItems`/`isPATToken`/`credentialPATToken`/`PAT_RE`/`BATCH_GAP_MS`/`.import-batch`，新增 `parseImportInput`/`describeImportItems`/`runImport` 统一走 `POST /import-cred`；后端删 `handleImportPAT`（67 行）、`POST /import` 路由与 `mutatingManagementPath` 条目。保留嵌套/平铺凭据、凭据数组、`{accounts:[{credential}]}` 包装、JSONL、多文件多选、逐条串行、失败明细常驻；auth 的 `personalToken` 与 `jrt-` 刷新兜底未动。
-  - **验证**：解析层 16 条 + E2E 26 条断言全绿；5 组变异 4 KILLED + 1 等价变异（记明原因）；`cgo-shim-build.py qoderwork` 全绿；无头 Chrome 截图确认弹窗结构。
-  - **发布（11-12 00:10）**：提交 `f3d50db` + `0f32552`/`4b01f7c`；热重载 `0.13.15→0.13.16`，落盘 sha256 `edfb78d5…`、面板与本地 `panel.html` 逐字节一致（`80305b3f…`，87257 B）；`POST /import` 生产 404、`POST /import-cred` 200。**缺 `darwin_arm64`/`windows_arm64`**：CI 侧 `snap install zig` 连续 5 次 `unable to contact snap store`（GitHub 基础设施故障，与代码无关），按 `--allow-missing` 发 4 平台。
-
-- 会话（2026-11-10 全天批次，已归档为结论摘要）：**traework 轮换/首字延迟/DSH 11128 三线收尾**：
-  - **轮换参数最终值**：serve **5 分钟** / cooldown 10 分钟 / idle 3 分钟（0.5.38/0.5.39）。三层根因：serve=60 分钟过长 → 宿主 selector 自然切换周期 **6~7 分钟**永远等不到 → serve=5 分钟才落在换走之前主动让位。
-  - **诊断方法论（重要）**：排查「机制不生效」时阈值附近打点无效——无法区分「计时没推进」/「计时被重置」/「判定失败」；正确做法是周期性输出核心变量真值（本案例每 30 秒一条 `served`/`serve`/`enabled`），三个值同屏即可定位。
-  - **traework 首字延迟归因（插件不可干预）**：时段分层决定性——深夜 02:00 慢请求 **0.0%** vs 晚间 21:00 **32.3%**，同时段 workbuddy 0.0% ⇒ 上游容量排队；抖动定量 p90=6.4x / p99=13.4x / **max=44.8x**；累计排除 12 类假设（插件链路、payload 冗余、流式节流、并发排队、prompt cache、账号质量、reasoning、生成速度、max_tokens、首字闸门、连接池、宿主桥开销）；生产流式 100% 走宿主桥 `hostHTTPDoStream`，插件连接池对生产无效。超时换号模拟 11.1% 触发 / 82.8% 改善但必多付 15 秒 ⇒ **决定不实施**。
-  - **DSH 11128 修复（workbuddy 0.21.23）**：真机消融确认 @ 文件引用段在 **system 与 assistant 角色**触发 400/11128、user 角色 200；`keyword_neutralize.go` 新增 `dshFileReferenceAnchorRe` + `neutralizeForRole` 按角色分派，开关 `dsh_fingerprint_neutralize` 默认开。
-  - **宿主选号路径澄清**：插件 `scheduler` 已注册但生产日志无调用记录——宿主选号不走插件 scheduler；轮换冷却通过 `scheduler.go`/`active_auth.go` 过滤点生效。
