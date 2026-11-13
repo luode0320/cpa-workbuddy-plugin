@@ -2,6 +2,18 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.11
+
+### Refactor - 面板不再向用户索要管理密钥，状态接口改走免鉴权的 resource 路由
+
+- 背景: 用户在 CPA 主面板里打开 Safeguard Killer 面板时，看到右上角一个「管理密钥」输入框，以及红色横幅 `HTTP 401: 管理密钥缺失或被拒绝。请在上方输入密钥后点刷新。 {"error":"invalid management key"}`。根因是面板把**读状态**也放在需要密钥的 `/v0/management/...` 下，而密钥只有一个来源——CPA 主面板 `localStorage['cli-proxy-auth']`，且主面板只在用户勾选「记住密码」时才持久化它；没持久化时旧实现就弹输入框让人手填。让使用者手工找密钥、粘贴、点刷新，既不合理也容易因连续失败触发宿主的 5 次封禁（`maxFailures=5`、`banDuration=30m`）。
+- 依据: 宿主只对 `/v0/management` 前缀校验管理密钥；`/v0/resource/plugins/<id>/` 走 `pluginResourceNoRoute`，`F:\CLIProxyAPI\internal\pluginhost\management.go` 的 `ServeResourceHTTP` 注释原文即 "dispatches an unauthenticated browser-navigable resource request"。实测 `https://cpa.luode.vip/v0/resource/plugins/safeguard-killer/ui` 200（无鉴权），同域名下 `/v0/management/plugins/safeguard-killer/state` 403。因此状态完全可以走免鉴权通道，面板不需要密钥就能显示。
+- 改动: ① `managementRegistrationPayload()` 的 `Resources` 新增 `/state`（`Menu` 留空，避免侧边栏多菜单），与面板 `/ui` 并列挂在无鉴权 resource 路由下；② `handleManagement` 让管理路由与 resource 路由共用同一支（两者都以 `/plugins/safeguard-killer/state` 结尾，无需第二段分支）；③ 面板 `STATE_API_URL` 改为 `/v0/resource/plugins/safeguard-killer/state`，`doRefresh()` 不再带鉴权头、不再处理 401/403；④ 删除 `#mgmtKey` 输入框与全部 `document.getElementById('mgmtKey').style.display = ...` 回退逻辑，`authHeaders()` 收窄为 `mgmtAuthHeaders()`（只返回宿主已持久化密钥的头）；⑤ 保存前先判断能否拿到密钥，拿不到就明确提示去 CPA 主面板「插件管理 → Safeguard Killer → 编辑配置」，或先在主面板勾选「记住密码」；⑥ `detectStoredManagementKey()` 对 `localStorage` 读取与解析全程 try/catch，异常一律返回空串。
+- 语义: 读状态永远可用，且永不因缺密钥而报错；**写配置仍需管理密钥**（宿主对 `/v8/management/config/plugins/configs/*` 强制校验，这一点没有变），但面板不再向用户索要——拿不到就引导用户走宿主自己的配置编辑器。
+- 验证: `ui_test.go` 同步更新并加强——`TestManagementRegistrationPaths` 断言 `Resources` 恰好两条且 `/state` 的 `Menu` 为空；`TestHandleManagementUI` 改为断言 HTML 引用 `/v0/resource/plugins/safeguard-killer/state` 且**不含 `mgmtKey`**；新增 `TestHandleManagementStateResourcePath` 断言 resource 路由与需要密钥的管理路由返回同一份状态。三组变异全部 KILLED 且失败形态均为断言失败：① 删掉 `/state` resource 声明 → `TestManagementRegistrationPaths` 报 `resources = [{Path:/ui ...}]`；② 把密钥输入框塞回 HTML → `TestHandleManagementUI` 报 `ui html still contains the management key input`；③ 状态 URL 退回管理路由 → `TestHandleManagementUI` 报 `ui html does not reference /v0/resource/plugins/safeguard-killer/state`。变异脚本对每个锚点断言恰好命中 1 次。
+- 附带发现: 首版把 `/state` 写成独立 case，与既有的 `strings.HasSuffix(path, mgmtStateRoutePath)` 重叠成死代码——变异 1（删该 case）测试照样全绿。已按最小改动收敛为单支，并在注释里写明两条路由共享后缀的原因。
+- 涉及文件: `ui.go`、`ui_test.go`、`VERSION`、`main.go`、`CHANGELOG.md`。
+
 ## 0.1.10
 
 ### Fix - responses 的裸字符串 delta 不再丢掉正文，SK 不再把正常回答判成空响应

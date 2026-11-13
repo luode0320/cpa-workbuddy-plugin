@@ -11,6 +11,9 @@ import (
 const (
 	uiResourcePath     = "/ui"
 	mgmtStateRoutePath = "/plugins/safeguard-killer/state"
+	// 面板与状态接口都挂在无鉴权的 resource 路由下：宿主只对 /v0/management 校验管理密钥，
+	// /v0/resource/plugins/<id>/ 完全不校验，因此面板不需要、也不应该让用户手填密钥。
+	uiStateResourcePath = "/state"
 )
 
 type managementRegistration struct {
@@ -45,13 +48,17 @@ type managementResponse struct {
 	Body       []byte      `json:"Body"`
 }
 
+// managementRegistrationPayload 声明插件的管理入口。
+// [返回] 带鉴权的 management 路由供脚本/运维读取状态；面板自身改走无鉴权 resource 路由，
+// 因此面板不需要用户手填管理密钥。
+// 最近修改时间 2026-11-14 00:05:00, 修改, 新增无鉴权状态 resource 路由，面板不再需要用户手填管理密钥。
 func managementRegistrationPayload() managementRegistration {
 	return managementRegistration{
 		Routes: []managementRoute{
 			{
 				Method:      http.MethodGet,
 				Path:        mgmtStateRoutePath,
-				Description: "返回 Safeguard Killer 的配置、护栏适配开关、智能分组、会话绑定以及近期路由决策。",
+				Description: "返回 Safeguard Killer 的配置、护栏适配开关、智能分组、会话绑定以及近期路由决策。需要管理密钥。",
 			},
 		},
 		Resources: []managementResource{
@@ -60,10 +67,19 @@ func managementRegistrationPayload() managementRegistration {
 				Menu:        "Safeguard Killer",
 				Description: "在 Claude Code、Claude、OpenAI/Codex 与 Gemini 模型上清除模型侧安全护栏与 auto-mode 分类器，用智能分组（5 分钟缓存粘性的故障转移链）绕开拒答。可与模型改名/重排插件 CLIProxyAPI-Model-List-Tweaker-Plugin 配合使用。",
 			},
+			{
+				// Menu 留空：这是面板自己 fetch 的数据接口，不该在侧边栏多出一个菜单项。
+				Path:        uiStateResourcePath,
+				Description: "面板自用的只读状态快照，免管理密钥。",
+			},
 		},
 	}
 }
 
+// handleManagement 处理插件自己的 management / resource 路由请求。
+// [参数] request：宿主编排层透传的管理请求信封
+// [返回] 含 managementResponse 的信封，或无法识别路径时的错误
+// 最近修改时间 2026-11-14 00:05:00, 修改, 状态接口同时挂在无鉴权 resource 路由下，与面板同源且无需管理密钥。
 func handleManagement(request []byte) ([]byte, error) {
 	var req managementRequest
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
@@ -71,6 +87,8 @@ func handleManagement(request []byte) ([]byte, error) {
 	}
 	path := strings.TrimRight(req.Path, "/")
 	switch {
+	// 管理路由是 /v0/management/plugins/safeguard-killer/state，
+	// resource 路由是 /v0/resource/plugins/safeguard-killer/state，两者都以该后缀结尾，因此共用这一支。
 	case strings.HasSuffix(path, mgmtStateRoutePath):
 		if req.Method != http.MethodGet {
 			return nil, fmt.Errorf("management route %s: unsupported method %q", path, req.Method)
@@ -444,7 +462,6 @@ const uiHTML = `<!doctype html>
       <span class="status-pill"><span class="status-label">最后更新</span><span class="status-value" id="lastUpdated">从未</span></span>
     </div>
     <div class="toolbar">
-      <input type="password" id="mgmtKey" class="input" placeholder="管理密钥" style="display:none;" onkeydown="if (event.key === 'Enter') refresh()">
       <button class="btn" id="refreshBtn" onclick="refresh()">刷新</button>
       <span class="badge warn" id="dirtyBadge" style="display:none;">有未保存的修改</span>
       <button class="btn" id="discardBtn" onclick="discardDraft()" disabled>放弃修改</button>
@@ -582,7 +599,10 @@ const uiHTML = `<!doctype html>
 </main>
 
 <script>
-const STATE_API_URL = '/v0/management/plugins/safeguard-killer/state';
+// 状态走无鉴权的 resource 路由：宿主只对 /v0/management 校验管理密钥，
+// 因此面板打开即可读到状态，不再出现 401 与密钥输入框。
+const STATE_API_URL = '/v0/resource/plugins/safeguard-killer/state';
+// 写入仍必须走需要密钥的 v8 管理配置接口，密钥只从宿主已持久化的存储里取。
 const CONFIG_API_URL = '/v8/management/config/plugins/configs/safeguard-killer';
 const REFRESH_MS = 10000;
 const APPLY_WAIT_MS = 1500;
@@ -639,17 +659,31 @@ function deobfuscateCPAStore(payload) {
   return new TextDecoder().decode(out);
 }
 
+// 从 CPA 主面板的同源 localStorage 里取管理密钥。
+// 主面板只在用户勾选「记住密码」时才持久化它；没勾选时这里返回空串，
+// 此时保存会引导用户去主面板改配置，而不是弹一个让人手填密钥的输入框。
+// [返回] 已 trim 的密钥，或空串
+// 最近修改时间 2026-11-14 00:08:00, 修改, 去掉面板内手填密钥的回退路径，只保留宿主已持久化的密钥。
 function detectStoredManagementKey() {
-  const authRaw = localStorage.getItem('cli-proxy-auth');
-  if (authRaw === null) return '';
-  // managementKey is only persisted when "remember password" is on; without it the key input is shown.
-  const k = JSON.parse(deobfuscateCPAStore(authRaw)).state.managementKey;
-  return typeof k === 'string' ? k.trim() : '';
+  let authRaw;
+  try {
+    authRaw = localStorage.getItem('cli-proxy-auth');
+  } catch (err) {
+    return '';
+  }
+  if (authRaw === null || authRaw === '') return '';
+  try {
+    const k = JSON.parse(deobfuscateCPAStore(authRaw)).state.managementKey;
+    return typeof k === 'string' ? k.trim() : '';
+  } catch (err) {
+    return '';
+  }
 }
 
-function authHeaders() {
-  const typed = document.getElementById('mgmtKey').value.trim();
-  const key = typed !== '' ? typed : detectStoredManagementKey();
+// 组装管理接口写请求所需的鉴权头。
+// [返回] 有宿主已持久化的密钥时返回鉴权头，否则返回空对象
+function mgmtAuthHeaders() {
+  const key = detectStoredManagementKey();
   const headers = {};
   if (key !== '') {
     headers['Authorization'] = 'Bearer ' + key;
@@ -875,6 +909,13 @@ async function save() {
     showSaveBanner('error', '未保存：请先修正 ' + v.errors.length + ' 个不合法字段' , v.errors.map(e => '- ' + e[1]).join('\n'));
     return;
   }
+  // 没有宿主已持久化的密钥就不写配置：不弹输入框，直接给出可执行的替代路径。
+  if (detectStoredManagementKey() === '') {
+    showSaveBanner('error', '未保存：本页面拿不到管理密钥',
+      '面板不会向你索要密钥。请在 CPA 主面板的「插件管理 → Safeguard Killer → 编辑配置」里改同样的字段，' +
+      '或先在主面板勾选「记住密码」后再回来保存。');
+    return;
+  }
   saving = true;
   setDirty(dirty);
   try {
@@ -885,18 +926,21 @@ async function save() {
   }
 }
 
+// saveValidated 把面板草稿写回 CPA 的插件配置节点。
+// [参数] cfg：已通过 validateDraft 校验的配置对象
+// [返回] 无；成功与失败都通过 saveBanner 呈现
+// 最近修改时间 2026-11-14 00:08:00, 修改, 移除手填密钥回退，鉴权只依赖宿主已持久化的密钥。
 async function saveValidated(cfg) {
-  const getResp = await fetch(CONFIG_API_URL, { method: 'GET', headers: authHeaders(), cache: 'no-store' });
+  const getResp = await fetch(CONFIG_API_URL, { method: 'GET', headers: mgmtAuthHeaders(), cache: 'no-store' });
   const getText = await getResp.text();
   let node;
   let etag = null;
   if (getResp.status === 404) {
     // No plugin config node yet; fetch the parent map ETag so the PUT creates it.
     node = {};
-    const parentResp = await fetch('/v8/management/config/plugins/configs', { method: 'GET', headers: authHeaders(), cache: 'no-store' });
+    const parentResp = await fetch('/v8/management/config/plugins/configs', { method: 'GET', headers: mgmtAuthHeaders(), cache: 'no-store' });
     if (parentResp.ok) etag = parentResp.headers.get('ETag');
   } else if (!getResp.ok) {
-    if (getResp.status === 401 || getResp.status === 403) document.getElementById('mgmtKey').style.display = 'inline-block';
     showSaveBanner('error', '未保存：读取 ' + CONFIG_API_URL + ' 返回 HTTP ' + getResp.status, getText);
     return;
   } else {
@@ -914,7 +958,7 @@ async function saveValidated(cfg) {
   else delete merged.groups;
   merged.features = cfg.features;
 
-  const headers = authHeaders();
+  const headers = mgmtAuthHeaders();
   headers['Content-Type'] = 'application/json';
   if (etag !== null) headers['If-Match'] = etag;
   const putResp = await fetch(CONFIG_API_URL, { method: 'PUT', headers: headers, body: JSON.stringify(merged), cache: 'no-store' });
@@ -925,7 +969,6 @@ async function saveValidated(cfg) {
     return;
   }
   if (!putResp.ok) {
-    if (putResp.status === 401 || putResp.status === 403) document.getElementById('mgmtKey').style.display = 'inline-block';
     showSaveBanner('error', '未保存：写入 ' + CONFIG_API_URL + ' 返回 HTTP ' + putResp.status, putText);
     return;
   }
@@ -1170,6 +1213,8 @@ function refresh() {
 }
 
 // Returns whether a new state was loaded.
+// 状态接口是无鉴权的 resource 路由，因此这里既不带鉴权头，也不再处理 401/403。
+// 最近修改时间 2026-11-14 00:10:00, 修改, 状态改走无鉴权 resource 路由，去掉密钥输入框提示。
 async function doRefresh() {
   refreshBusy = true;
   const btn = document.getElementById('refreshBtn');
@@ -1177,17 +1222,12 @@ async function doRefresh() {
   try {
     let resp;
     try {
-      resp = await fetch(STATE_API_URL, { method: 'GET', headers: authHeaders(), cache: 'no-store' });
+      resp = await fetch(STATE_API_URL, { method: 'GET', cache: 'no-store' });
     } catch (err) {
       showError('网络错误，请求 ' + STATE_API_URL + ' 失败', String(err));
       return false;
     }
     const text = await resp.text();
-    if (resp.status === 401 || resp.status === 403) {
-      document.getElementById('mgmtKey').style.display = 'inline-block';
-      showError('HTTP ' + resp.status + ': 管理密钥缺失或被拒绝。请在上方输入密钥后点刷新。', text);
-      return false;
-    }
     if (!resp.ok) {
       showError('HTTP ' + resp.status + ' ' + resp.statusText + '，来自 ' + STATE_API_URL, text);
       return false;
@@ -1266,7 +1306,6 @@ window.addEventListener('unhandledrejection', (ev) => showError('页面脚本异
 window.addEventListener('beforeunload', (ev) => { if (dirty) ev.preventDefault(); });
 
 syncThemeWithCPA();
-if (detectStoredManagementKey() === '') document.getElementById('mgmtKey').style.display = 'inline-block';
 void refresh();
 setInterval(() => { if (!refreshBusy) void refresh(); }, REFRESH_MS);
 setInterval(tick, 1000);
