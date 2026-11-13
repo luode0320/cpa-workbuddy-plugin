@@ -2,6 +2,16 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.10
+
+### Fix - responses 的裸字符串 delta 不再丢掉正文，SK 不再把正常回答判成空响应
+
+- 背景: 0.1.9 修好了「仅推理内容」的误判，但普通请求（带 system-reminder + `max_output_tokens=64`）仍然 3/3 命中兜底，客户端拿到的正文是 `⚡ [Safeguard Killer] every model in 1 failed: deepseek-v4-pro (empty response (no text or tool calls))`。把分组临时指向 `glm-5.3` 让 `deepseek-v4-pro` 直通上游后取原始流，上游完全正常：`response.output_text.delta` 的 `delta` 是**裸字符串** `"收到"`、`response.output_item.done` 的 `item.content[0]` 是 `{"type":"output_text","text":"收到"}`、末帧 `response.completed`。Go 实测复现了失败点：`inspectPayload` 把 `Delta` 声明成对象指针，遇到字符串报 `json: cannot unmarshal string into Go struct field ... of type struct {...}`，**整帧反序列化失败**直接返回全空值，正文就此丢失；原 `refusal.go` 里那段 `if msg.Type == "response.output_text.delta"` 的补救分支在整帧 Unmarshal 已失败之后根本不会被执行。
+- 改动: `inspectPayload` 的 `Delta` 由对象指针改为 `json.RawMessage`，取到后先试字符串形态写正文，失败再按对象形态解 `text_delta` / `input_json_delta` / `refusal` / `stop_reason`；`sawEnvelope` 判据由 `msg.Delta != nil` 改为 `len(msg.Delta) > 0`；删除上面那段已多余的 `response.output_text.delta` 补救分支；`item` 结构补 `content[]`，`response` 结构补 `output[]`，分别提取 `output_text`/`text` 正文，覆盖「正文只出现在 `output_item.done`」或「正文只在终止帧 `response.completed` 里」两种上游形态。
+- 语义: 破甲优先、兜底其次。这三种形态都是上游正常产出，不该被当成空响应。`content_filter`、`refusal` 字段、文本拒绝模式与真空白判据一律不变。
+- 验证: 新增 `refusal_payload_test.go`（3 个测试函数 / 7 个用例）——`TestInspectPayload_ResponsesStringDelta` 覆盖裸字符串 delta、对象 `text_delta`、`input_json_delta` 记工具调用、对象 delta 的 `refusal` 判拒绝、`output_item.done` 的 `item.content` 带正文；`TestCheckNonStreamResponse_ResponsesStringDeltaPasses` 覆盖终止帧独占正文；`TestPrefetchStream_ResponsesStringDeltaPasses` 覆盖流式字符串 delta。三组变异全部 KILLED 且失败形态均为断言失败：① 不再识别字符串 delta → `refusal_payload_test.go:60: visible = "", want 包含 "收到"` + `:109 prefetchStream() = empty response ...`；② 去掉 `item.content` 正文提取 → `output_item.done 的 item.content 带正文` FAIL；③ 去掉 `response.output` 正文提取 → `TestCheckNonStreamResponse_ResponsesStringDeltaPasses` FAIL。变异脚本对每个锚点断言恰好命中 1 次。
+- 涉及文件: `refusal.go`、`refusal_payload_test.go`、`VERSION`、`main.go`、`CHANGELOG.md`。
+
 ## 0.1.9
 
 ### Fix - 「仅推理内容」的响应不再被误判成空响应，破甲与分组不再被截断思考误伤

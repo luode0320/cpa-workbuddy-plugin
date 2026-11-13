@@ -375,16 +375,9 @@ func inspectPayload(raw []byte) (refusal string, visibleText string, sawToolUse 
 		StopDetails *struct {
 			Category string `json:"category"`
 		} `json:"stop_details"`
-		Delta *struct {
-			Type        string `json:"type"`
-			Text        string `json:"text"`
-			PartialJSON string `json:"partial_json"`
-			Refusal     string `json:"refusal"`
-			StopReason  string `json:"stop_reason"`
-			StopDetails *struct {
-				Category string `json:"category"`
-			} `json:"stop_details"`
-		} `json:"delta"`
+		// delta 在 Claude 侧是对象（{type,text}），在 responses 的 response.output_text.delta
+		// 里却是裸字符串；声明成对象会让整帧反序列化失败、正文全丢，故按原始字节接收后再分流。
+		Delta        json.RawMessage `json:"delta"`
 		ContentBlock *struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
@@ -416,9 +409,24 @@ func inspectPayload(raw []byte) (refusal string, visibleText string, sawToolUse 
 				BlockReason string `json:"blockReason"`
 			} `json:"promptFeedback"`
 			Candidates []geminiCandidate `json:"candidates"`
+			// 流式终止帧 response.completed 会把整条输出放进 response.output，
+			// 若正文只在这一帧出现（例如上游没发 output_text.delta），必须在这里取到。
+			Output []struct {
+				Type    string `json:"type"`
+				Content []struct {
+					Type    string `json:"type"`
+					Text    string `json:"text"`
+					Refusal string `json:"refusal"`
+				} `json:"content"`
+			} `json:"output"`
 		} `json:"response"`
 		Item *struct {
-			Type string `json:"type"`
+			Type    string `json:"type"`
+			Content []struct {
+				Type    string `json:"type"`
+				Text    string `json:"text"`
+				Refusal string `json:"refusal"`
+			} `json:"content"`
 		} `json:"item"`
 		Output []struct {
 			Type    string `json:"type"`
@@ -436,7 +444,7 @@ func inspectPayload(raw []byte) (refusal string, visibleText string, sawToolUse 
 	if errUnmarshal := json.Unmarshal(raw, &msg); errUnmarshal != nil {
 		return "", "", false, false
 	}
-	sawEnvelope = msg.StopReason != "" || msg.Delta != nil || msg.ContentBlock != nil ||
+	sawEnvelope = msg.StopReason != "" || len(msg.Delta) > 0 || msg.ContentBlock != nil ||
 		len(msg.Content) > 0 || len(msg.Choices) > 0 || len(msg.Candidates) > 0 ||
 		msg.Response != nil || len(msg.Output) > 0 ||
 		strings.HasPrefix(msg.Type, "message_") || strings.HasPrefix(msg.Type, "content_block_") || strings.HasPrefix(msg.Type, "response.")
@@ -451,19 +459,37 @@ func inspectPayload(raw []byte) (refusal string, visibleText string, sawToolUse 
 		return reason, "", false, true
 	}
 	var textBuf strings.Builder
-	if msg.Delta != nil {
-		if reason := claudeStopRefusal(msg.Delta.StopReason, msg.Delta.StopDetails); reason != "" {
-			return reason, "", false, true
-		}
-		if msg.Delta.Refusal != "" {
-			return "refusal", "", false, true
-		}
-		switch msg.Delta.Type {
-		case "text_delta":
-			textBuf.WriteString(msg.Delta.Text)
-		case "input_json_delta":
-			if msg.Delta.PartialJSON != "" {
-				sawToolUse = true
+	if len(msg.Delta) > 0 {
+		// delta 有两种形态：Claude 的对象 {type,text}，与 responses 的裸字符串正文。
+		var deltaText string
+		if json.Unmarshal(msg.Delta, &deltaText) == nil {
+			textBuf.WriteString(deltaText)
+		} else {
+			var deltaObj struct {
+				Type        string `json:"type"`
+				Text        string `json:"text"`
+				PartialJSON string `json:"partial_json"`
+				Refusal     string `json:"refusal"`
+				StopReason  string `json:"stop_reason"`
+				StopDetails *struct {
+					Category string `json:"category"`
+				} `json:"stop_details"`
+			}
+			if json.Unmarshal(msg.Delta, &deltaObj) == nil {
+				if reason := claudeStopRefusal(deltaObj.StopReason, deltaObj.StopDetails); reason != "" {
+					return reason, "", false, true
+				}
+				if deltaObj.Refusal != "" {
+					return "refusal", "", false, true
+				}
+				switch deltaObj.Type {
+				case "text_delta":
+					textBuf.WriteString(deltaObj.Text)
+				case "input_json_delta":
+					if deltaObj.PartialJSON != "" {
+						sawToolUse = true
+					}
+				}
 			}
 		}
 	}
@@ -489,16 +515,20 @@ func inspectPayload(raw []byte) (refusal string, visibleText string, sawToolUse 
 	if msg.Response != nil && msg.Response.IncompleteDetails != nil && msg.Response.IncompleteDetails.Reason == "content_filter" {
 		return "refusal (content_filter)", "", false, true
 	}
-	if msg.Type == "response.output_text.delta" {
-		var deltaEvt struct {
-			Delta string `json:"delta"`
-		}
-		if json.Unmarshal(raw, &deltaEvt) == nil {
-			textBuf.WriteString(deltaEvt.Delta)
-		}
-	}
 	if msg.Type == "response.function_call_arguments.delta" || (msg.Item != nil && msg.Item.Type == "function_call") {
 		sawToolUse = true
+	}
+	// responses 的 output_item.added/done 会把整条 message 项带在 item 里，
+	// 正文就在 item.content[].text；只有流里没有单独的 output_text.delta 时才靠它拿到文本。
+	if msg.Item != nil {
+		for _, part := range msg.Item.Content {
+			if part.Type == "refusal" || part.Refusal != "" {
+				return "refusal", "", false, true
+			}
+			if part.Type == "output_text" || part.Type == "text" {
+				textBuf.WriteString(part.Text)
+			}
+		}
 	}
 	for _, item := range msg.Output {
 		if item.Type == "function_call" {
@@ -509,6 +539,19 @@ func inspectPayload(raw []byte) (refusal string, visibleText string, sawToolUse 
 				return "refusal", "", false, true
 			}
 			textBuf.WriteString(part.Text)
+		}
+	}
+	if msg.Response != nil {
+		for _, item := range msg.Response.Output {
+			if item.Type == "function_call" {
+				sawToolUse = true
+			}
+			for _, part := range item.Content {
+				if part.Type == "refusal" || part.Refusal != "" {
+					return "refusal", "", false, true
+				}
+				textBuf.WriteString(part.Text)
+			}
 		}
 	}
 	for _, choice := range msg.Choices {
