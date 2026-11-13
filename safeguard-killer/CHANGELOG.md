@@ -2,6 +2,17 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.9
+
+### Fix - 「仅推理内容」的响应不再被误判成空响应，破甲与分组不再被截断思考误伤
+
+- 背景: 0.1.8 补齐了 responses 通道的净化与终止帧，但客户端那条链路的失败并未消失——症状从「502 + TRANSPORT 重试」变成「客户端收到 `⚡ [Safeguard Killer] every model in 1 failed: ...` 兜底提示」。生产 `state.decisions` 在 02:14:09 / 02:16:01 / 02:16:19 / 02:21:07 连续记下 4 条 `failed: empty response (no text or tool calls)`。直连上游复现：带 `reasoning: {effort: "high", summary: "auto"}` 且 `max_output_tokens` 偏小时，上游整段流里**一个 `response.output_text.*` 事件都没有**，只有 `response.reasoning_summary_text.delta` × 24、`reasoning` 类型的 `output_item.added|done`，末帧 `response.incomplete` 的 `incomplete_details.reason = "max_output_tokens"`——活干完了，只是全在思考链里。而 `hasTruncatedOrReasoningOutput` 只解析 chat 形态的 `choices[].finish_reason` 与 `reasoning_content`，对这套 responses 事件一个都不认，于是正文为空 + `sawEnvelope=true` 直接落进空响应判据。
+- 背景（更深一层）: 即使把上面的形态补全，流式路径仍然不生效——`prefetchStream` 传给该函数的 `chunk.Payload` 是**带 `data: ` 前缀的 SSE 文本**，函数内直接 `json.Unmarshal` 必然失败并返回 `false`。也就是说 0.1.6 引入的这个保护从一开始就只覆盖非流式请求。这一点由本轮新增的 `TestPrefetchStream_ResponsesReasoningOnlyPasses` 抓出（首版实现下该用例稳定 FAIL 于 `empty response (no text or tool calls)`）。
+- 改动: `hasTruncatedOrReasoningOutput` 拆成两层——外层先看首字符，`{` 开头按单个 JSON 对象处理，否则按 SSE 逐行剥 `data:` 前缀后逐条判断；内层 `hasTruncatedOrReasoningObject` 在原有 chat 判据之外新增四组 responses 判据：① `response.reasoning_summary_text.delta` / `response.reasoning_text.delta` 且 `delta` 非空；② 对应的 `.done` 事件且 `text` 非空；③ `item`/`output[]` 中 `type=="reasoning"` 且 `summary` 或 `content` 非空；④ `incomplete_details.reason == "max_output_tokens"`（顶层与 `response` 内两种位置，语义等同 chat 的 `finish_reason=="length"`）。`content_filter` 不在放行范围，仍判 `refusal (content_filter)`。
+- 语义: 仍是「破甲优先、兜底其次」，只是把「模型把配额烧在推理链上」正式列为合法产出。空响应判据本身没有放松——真正没有任何产出的流依然判 `empty response`。
+- 验证: `refusal_truncation_test.go` 由 8 个用例扩到 18 个（新增 responses 推理增量/完成帧/推理 item 起始帧与完成帧/顶层 `max_output_tokens`/`content_filter` 不算截断/非流式 output 含推理项/非流式空输出等），并新增两个流式端到端用例 `TestPrefetchStream_ResponsesReasoningOnlyPasses`（推理流放行且提前返回）与 `TestPrefetchStream_ResponsesTrulyEmptyStillFails`（真空流仍报错）。三组变异全部 KILLED 且失败形态均为断言失败：① 去掉 responses 推理增量识别 → 3 个 `TestHasTruncatedOrReasoningOutput` 子用例 FAIL；② 去掉 SSE 逐行解析、退回整段 `Unmarshal` → `TestPrefetchStream_ResponsesReasoningOnlyPasses` FAIL 于 `empty response (no text or tool calls)`；③ 去掉 `max_output_tokens` 识别 → `responses 顶层 max_output_tokens 截断` 与 `responses 配额截断放行` FAIL。变异脚本对每个锚点断言恰好命中 1 次。
+- 涉及文件: `refusal.go`、`refusal_truncation_test.go`、`VERSION`、`main.go`、`CHANGELOG.md`。
+
 ## 0.1.8
 
 ### Fix - responses 通道的破甲与兜底帧补齐，修掉「破甲未生效 + 客户端反复重试」

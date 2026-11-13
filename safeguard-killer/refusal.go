@@ -673,11 +673,46 @@ func inspectStreamChunk(payload []byte) (refusal string, visibleText string, saw
 
 // hasTruncatedOrReasoningOutput 判断响应是否为「配额截断」或「仅推理内容」的合法产出。
 // 这两种情况正文为空但模型确实完成了工作，属于放行范围，不构成拒绝。
-// [参数] raw：单条响应体或单个流式分片
+// 同时覆盖 chat-completions 与 responses 两套形态：responses 的推理内容不落在
+// choices 里，而是走 response.reasoning_summary_text.delta 事件与 reasoning 类型的
+// output item；配额截断则体现为 incomplete_details.reason = max_output_tokens。
+// [参数] raw：非流式响应体，或一段可能含多条事件的 SSE 分片文本
 // [返回] 命中截断或推理内容时返回 true
-// 最近修改时间 2026-11-12 22:35:00, 新增, 区分截断与推理内容，避免误判空响应
+// 最近修改时间 2026-11-13 22:05:00, 修改, 流式分片按 SSE 逐行解析，原先整段 Unmarshal 必然失败
 func hasTruncatedOrReasoningOutput(raw []byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return false
+	}
+	if trimmed[0] == '{' {
+		return hasTruncatedOrReasoningObject(trimmed)
+	}
+	// 2. 流式分片：逐条 data: 事件判断，任一命中即放行
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		if len(data) == 0 || data[0] != '{' {
+			continue
+		}
+		if hasTruncatedOrReasoningObject(data) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasTruncatedOrReasoningObject 判断单个 JSON 响应对象是否为截断或仅推理内容。
+// [参数] raw：单个 JSON 对象（已剥离 SSE 的 data: 前缀）
+// [返回] 命中截断或推理内容时返回 true
+// 最近修改时间 2026-11-13 22:05:00, 新增, 从 hasTruncatedOrReasoningOutput 拆出可复用判定
+func hasTruncatedOrReasoningObject(raw []byte) bool {
 	var msg struct {
+		Type    string `json:"type"`
+		Delta   string `json:"delta"`
+		Text    string `json:"text"`
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
 			Message      *struct {
@@ -689,12 +724,30 @@ func hasTruncatedOrReasoningOutput(raw []byte) bool {
 				Reasoning        string `json:"reasoning"`
 			} `json:"delta"`
 		} `json:"choices"`
+		Item *struct {
+			Type    string            `json:"type"`
+			Summary []json.RawMessage `json:"summary"`
+			Content []json.RawMessage `json:"content"`
+		} `json:"item"`
+		IncompleteDetails *struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
+		Response *struct {
+			IncompleteDetails *struct {
+				Reason string `json:"reason"`
+			} `json:"incomplete_details"`
+		} `json:"response"`
+		Output []struct {
+			Type    string            `json:"type"`
+			Summary []json.RawMessage `json:"summary"`
+			Content []json.RawMessage `json:"content"`
+		} `json:"output"`
 	}
 	if json.Unmarshal(raw, &msg) != nil {
 		return false
 	}
 
-	// 1. 任一候选命中截断或推理内容即放行
+	// 1. chat 形态：任一候选命中截断或推理内容即放行
 	for _, choice := range msg.Choices {
 		if choice.FinishReason == "length" {
 			return true
@@ -705,6 +758,36 @@ func hasTruncatedOrReasoningOutput(raw []byte) bool {
 		if choice.Delta != nil && (strings.TrimSpace(choice.Delta.ReasoningContent) != "" || strings.TrimSpace(choice.Delta.Reasoning) != "") {
 			return true
 		}
+	}
+
+	// 2. responses 流式：推理摘要增量到达即为合法产出
+	switch msg.Type {
+	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+		if strings.TrimSpace(msg.Delta) != "" {
+			return true
+		}
+	case "response.reasoning_summary_text.done", "response.reasoning_text.done":
+		if strings.TrimSpace(msg.Text) != "" {
+			return true
+		}
+	}
+
+	// 3. responses 形态：推理类型的 output item（增量帧 summary 为空，完成帧带内容）
+	if msg.Item != nil && msg.Item.Type == "reasoning" && (len(msg.Item.Summary) > 0 || len(msg.Item.Content) > 0) {
+		return true
+	}
+	for _, item := range msg.Output {
+		if item.Type == "reasoning" && (len(item.Summary) > 0 || len(item.Content) > 0) {
+			return true
+		}
+	}
+
+	// 4. responses 形态：配额截断，语义等同 chat 的 finish_reason = length
+	if msg.IncompleteDetails != nil && msg.IncompleteDetails.Reason == "max_output_tokens" {
+		return true
+	}
+	if msg.Response != nil && msg.Response.IncompleteDetails != nil && msg.Response.IncompleteDetails.Reason == "max_output_tokens" {
+		return true
 	}
 	return false
 }
