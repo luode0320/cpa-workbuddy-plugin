@@ -10,155 +10,296 @@
 :root{
   --bg:#faf9f5;--card:#ffffff;--border:#e3e1db;--fg:#2d2a26;--mut:#6d6760;
   --acc:#4c8dff;--on-acc:#ffffff;--ok:#10b981;--warn:#e0aa14;--err:#c65746;
-  --surface:#f0eee8;--btn-sec:#eef1f6;--btn-sec-hover:#e4e8ef;
-  --input-bg:#ffffff;--placeholder:rgba(109,103,96,.55);
+  --surface:#f0eee8;--surface-muted:#e9e6df;--btn-sec:#eef1f6;--btn-sec-hover:#e4e8ef;
+  --input-bg:#ffffff;--code-bg:#f3f4f6;--code-fg:#374151;--placeholder:rgba(109,103,96,.55);
   --ok-soft:rgba(16,185,129,.10);--ok-border:rgba(16,185,129,.30);
   --warn-soft:rgba(224,170,20,.12);--warn-border:rgba(224,170,20,.32);
   --err-soft:rgba(198,87,70,.10);--err-border:rgba(198,87,70,.30);
+  --mut-soft:rgba(109,103,96,.12);--mut-border:rgba(109,103,96,.28);
+  --scrim:rgba(45,42,38,.35);--toast-shadow:0 10px 30px rgba(45,42,38,.12);
+  --modal-shadow:0 18px 48px rgba(45,42,38,.22);
   --radius-md:12px;--radius-lg:16px;--acc-ring:rgba(76,141,255,.18);
   color-scheme:light
 }
 :root[data-theme="white"]{
   --bg:#f5f5f5;--card:#ffffff;--border:#e6e6e6;--fg:#1f1f1f;--mut:#707070;
-  --surface:#fafafa;--btn-sec:#f0f0f0;--btn-sec-hover:#e8e8e8;
-  --input-bg:#ffffff;--placeholder:rgba(112,112,112,.55);
+  --surface:#fafafa;--surface-muted:#f0f0f0;--btn-sec:#f0f0f0;--btn-sec-hover:#e8e8e8;
+  --input-bg:#ffffff;--code-bg:#f3f4f6;--code-fg:#374151;--placeholder:rgba(112,112,112,.55);
   color-scheme:light
 }
 :root[data-theme="dark"]{
   --bg:#1e1d1b;--card:#26241f;--border:#3a3833;--fg:#ede9e3;--mut:#9a948c;
   --acc:#4c8dff;--on-acc:#ffffff;--ok:#34d399;--warn:#f0c050;--err:#e07a6a;
-  --surface:#2f2d28;--btn-sec:#35332e;--btn-sec-hover:#3f3c36;
-  --input-bg:#1e1d1b;--placeholder:rgba(154,148,140,.55);
+  --surface:#2f2d28;--surface-muted:#35332e;--btn-sec:#35332e;--btn-sec-hover:#3f3c36;
+  --input-bg:#1e1d1b;--code-bg:#2b2926;--code-fg:#d6d2ca;--placeholder:rgba(154,148,140,.55);
   --ok-soft:rgba(52,211,153,.12);--ok-border:rgba(52,211,153,.38);
   --warn-soft:rgba(240,192,80,.14);--warn-border:rgba(240,192,80,.38);
   --err-soft:rgba(224,122,106,.12);--err-border:rgba(224,122,106,.38);
+  --mut-soft:rgba(154,148,140,.14);--mut-border:rgba(154,148,140,.32);
+  --scrim:rgba(10,10,9,.55);--toast-shadow:0 10px 30px rgba(0,0,0,.45);
+  --modal-shadow:0 18px 48px rgba(0,0,0,.55);
   --acc-ring:rgba(76,141,255,.28);
   color-scheme:dark
 }
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
 .wrap{max-width:1400px;margin:0 auto;padding:24px 20px}
-h1{font-size:20px;margin:0 0 4px}
-.sub{color:var(--mut);font-size:13px;margin-bottom:20px}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);font-size:13px;margin-bottom:20px}
 .bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
 button{background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
-button.sec{background:var(--btn-sec);color:var(--fg)}
-button.sec:hover{background:var(--btn-sec-hover)}
-button:disabled{opacity:.5;cursor:default}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:16px}
-.card h2{font-size:14px;margin:0 0 10px}
-.card .row{display:flex;justify-content:space-between;font-size:12px;color:var(--mut);margin:4px 0;gap:8px}
-.card .row .v{color:var(--fg)}
-.empty{background:var(--card);border:1px dashed var(--border);border-radius:var(--radius-md);padding:28px;text-align:center;color:var(--mut);font-size:13px}
-.msg{margin-top:14px;padding:10px 14px;border-radius:8px;font-size:13px;display:none}
-.msg.ok{display:block;background:var(--ok-soft);border:1px solid var(--ok-border);color:var(--ok)}
-.msg.err{display:block;background:var(--err-soft);border:1px solid var(--err-border);color:var(--err)}
-.import{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:16px;margin-bottom:16px}
-.import h2{font-size:14px;margin:0 0 6px}
-.import ol{margin:6px 0 10px;padding-left:20px;color:var(--mut);font-size:12px;line-height:1.8}
-.import textarea{width:100%;box-sizing:border-box;min-height:88px;border:1px solid var(--border);border-radius:8px;padding:9px 11px;font:12px/1.5 ui-monospace,Consolas,monospace;background:var(--input-bg);color:var(--fg);outline:none;resize:vertical}
-.import textarea:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
-.import .row{display:flex;gap:8px;align-items:center;margin-top:10px}
-.import input[type=text]{flex:0 1 220px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:7px 11px;color:var(--fg);font-size:13px;outline:none}
-.import input[type=text]:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
-.card .acts{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
-.card .acts button{padding:5px 10px;font-size:12px}
-.auth{background:var(--card);border:1px solid var(--warn-border);border-radius:var(--radius-md);padding:14px 16px;margin-bottom:16px}
-.auth .hint{color:var(--mut);font-size:12px;margin-bottom:8px;line-height:1.6}
-.auth .row{display:flex;gap:8px}
-.auth input{flex:1;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:7px 11px;color:var(--fg);font-size:13px;outline:none}
-.auth input:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
-.badge{font-size:11px;padding:2px 7px;border-radius:999px}
-.badge.on{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
-.badge.off{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
-.mask{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:20px;z-index:50}
-.mask.show{display:flex}
-.modal{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);width:100%;max-width:420px;padding:18px 20px;box-shadow:0 18px 48px rgba(0,0,0,.22)}
-.modal h2{font-size:15px;margin:0 0 4px}
-.modal .hint{color:var(--mut);font-size:12px;margin-bottom:12px}
-.modal .hint b{color:var(--fg)}
-.modal .models{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto}
-.modal .models button{background:var(--btn-sec);color:var(--fg);text-align:left;padding:9px 12px;font:13px ui-monospace,Consolas,monospace}
-.modal .models button:hover{background:var(--btn-sec-hover)}
-.modal .result{margin-top:12px;font-size:12px;line-height:1.6;display:none}
-.modal .result.show{display:block}
-.modal .result .hd{font-weight:600;margin-bottom:2px}
-.modal .result .hd.ok{color:var(--ok)}
-.modal .result .hd.err{color:var(--err)}
-.modal .result .body{color:var(--mut);word-break:break-all}
-.modal .foot{display:flex;justify-content:flex-end;margin-top:14px}
+button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background:var(--btn-sec-hover)}button:disabled{opacity:.5;cursor:default}
+.bar .search{max-width:230px;flex:0 1 230px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--fg);font-size:13px;outline:none}
+.bar .search:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
+.bar .search::placeholder{color:var(--placeholder)}
+.bar .sort-btn{font-size:13px;white-space:nowrap}
+.bar .sort-btn.active{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
+.grid{display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:16px}
+.card,.summary{background:var(--card);border:1px solid var(--border);border-radius:12px}
+.card{padding:16px}
+.card.selected{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc-ring)}
+.card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:8px}
+.badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
+.badge.off{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
+.badge.expired{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
+.filter-bar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.ftag{background:var(--surface);border:1px solid var(--border);color:var(--mut);border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600}
+.ftag.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}
+.ftag .cnt{font-size:10px;opacity:.75;margin-left:4px}
+.summary{padding:16px;margin-bottom:14px}
+.summary-hd{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.summary-title{font-weight:700;font-size:14px}
+.summary-meta{color:var(--mut);font-size:12px}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.summary-item{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.summary-item .k{color:var(--mut);font-size:11px;margin-bottom:4px}
+.summary-item .v{font-size:18px;font-weight:700}
+.summary-item .v.ok{color:var(--ok)}.summary-item .v.warn{color:var(--warn)}.summary-item .v.err{color:var(--err)}.summary-item .v.muted{color:var(--mut)}
+.row{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px dashed var(--border);font-size:12px}
+.row:first-of-type{border-top:0}.k{color:var(--mut)}.v{font-weight:600;word-break:break-all;text-align:right}
+.v.ok{color:var(--ok)}.v.warn{color:var(--warn)}.v.err{color:var(--err)}
+.actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
+.actions button{padding:5px 10px;font-size:12px}
+.field-input{flex:1;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--fg);outline:none}
+.field-input:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
+.toasts{position:fixed;top:16px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:9999;max-width:360px}
+.toast{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--acc);border-radius:var(--radius-md);padding:14px 18px;font-size:13px;box-shadow:var(--toast-shadow);transform:translateX(120%);opacity:0;transition:transform .3s cubic-bezier(.2,.9,.3,1.1),opacity .25s;cursor:pointer;word-break:break-all}
+.toast.show{transform:translateX(0);opacity:1}
+.toast.ok{border-left-color:var(--ok);background:var(--ok-soft)}
+.toast.warn{border-left-color:var(--warn);background:var(--warn-soft)}
+.toast.err{border-left-color:var(--err);background:var(--err-soft)}
+.toast .t{font-weight:600;margin-bottom:3px}
+.toast .d{color:var(--mut);font-size:12px;line-height:1.45}
+button.done{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border);cursor:default;opacity:1}
+button.done:disabled{opacity:1}
+button.danger{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
+button.danger:hover{background:var(--err);color:#fff}
+.card-del{background:transparent;color:var(--mut);border:0;padding:2px 7px;font-size:16px;line-height:1;border-radius:6px;cursor:pointer;flex:none}
+.card-del:hover{background:var(--err-soft);color:var(--err)}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--on-acc);border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
+button .spin{border-color:var(--on-acc);border-top-color:transparent}
+button.sec .spin{border-color:var(--fg);border-top-color:transparent}
+.loading{color:var(--mut);text-align:center;padding:40px}
+.modal-mask{position:fixed;inset:0;background:var(--scrim);display:none;align-items:center;justify-content:center;z-index:9000;padding:16px;backdrop-filter:blur(2px)}
+.modal-mask.show{display:flex}
+.modal{background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-lg);width:min(560px,100%);max-height:min(90vh,640px);display:flex;flex-direction:column;box-shadow:var(--modal-shadow)}
+.modal-hd{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border)}
+.modal-hd h2{font-size:15px;margin:0;color:var(--fg);font-weight:600}
+.modal-x{background:transparent;color:var(--mut);padding:4px 10px;font-size:18px;line-height:1}
+.modal-x:hover{color:var(--fg);background:var(--surface-muted)}
+.modal-bd{padding:16px;overflow:auto}
+.modal-bd .hint{color:var(--mut);font-size:12px;margin:0 0 10px;line-height:1.6}
+.modal-bd .hint code{background:var(--code-bg);color:var(--code-fg);padding:1px 5px;border-radius:4px;font-size:11px}
+.modal-bd textarea{width:100%;min-height:160px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--fg);font:12px/1.45 ui-monospace,monospace;resize:vertical;outline:none}
+.modal-bd textarea:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
+.modal-bd textarea::placeholder{color:var(--placeholder)}
+.file-row{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+.file-row .sec{display:inline-flex;align-items:center;gap:6px;cursor:pointer;margin:0}
+.file-list{margin-top:8px;max-height:150px;overflow:auto;border:1px dashed var(--border);border-radius:8px;padding:6px 10px;display:none}
+.file-list.show{display:block}
+.file-item{display:flex;justify-content:space-between;gap:10px;padding:4px 0;font-size:12px;border-bottom:1px dashed var(--border)}
+.file-item:last-child{border-bottom:0}
+.file-item .fn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-item .fs{color:var(--mut);flex:none;font-size:11px}
+.file-info{color:var(--mut);font-size:12px;margin-top:6px;line-height:1.45}
+.file-info.bad{color:var(--err)}
+.import-result{margin-top:12px;border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:12px;max-height:180px;overflow:auto;display:none}
+.import-result.show{display:block}
+.import-result .r-hd{font-weight:600;margin-bottom:6px}
+.import-result .r-hd.ok{color:var(--ok)}.import-result .r-hd.err{color:var(--err)}
+.import-result .r-item{display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-top:1px dashed var(--border)}
+.import-result .r-item:first-of-type{border-top:0}
+.import-result .r-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.import-result .r-err{color:var(--err);flex:none;max-width:55%;text-align:right;word-break:break-all}
+.modal-ft{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border);background:var(--surface);border-radius:0 0 var(--radius-lg) var(--radius-lg)}
+.modal-ft button.sec:hover{background:var(--btn-sec-hover)}
+.model-list{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto;border:1px dashed var(--border);border-radius:8px;padding:6px}
+.model-item{display:block;width:100%;text-align:left;background:var(--btn-sec);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:13px;font-family:ui-monospace,monospace;cursor:pointer;word-break:break-all}
+.model-item:hover{background:var(--btn-sec-hover);border-color:var(--acc)}
+.model-item:disabled{opacity:.5;cursor:default}
 </style>
+<script>
+/* Early theme sync (before body paint): mirror CPA parent data-theme when
+   embedded; standalone falls back to prefers-color-scheme. DOM data-theme is
+   the single source of truth, same semantics as the sibling provider panels. */
+(function(){
+  var ATTR="data-theme";
+  function embedded(){try{return window.self!==window.top}catch(e){return false}}
+  function apply(t){
+    var el=document.documentElement;
+    if(t==="white"||t==="dark")el.setAttribute(ATTR,t);
+    else el.removeAttribute(ATTR);
+  }
+  function parentTheme(){
+    if(!embedded())return null;
+    try{
+      var raw=window.parent.document.documentElement.getAttribute(ATTR);
+      if(raw==="white"||raw==="dark")return raw;
+      return "light";
+    }catch(e){return null}
+  }
+  function systemTheme(){
+    try{return window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}catch(e){return "light"}
+  }
+  function sync(){apply(parentTheme()||systemTheme())}
+  sync();
+  window.__dbThemeSync=function(){
+    sync();
+    if(!embedded()){
+      try{
+        var mq=window.matchMedia("(prefers-color-scheme: dark)");
+        var on=function(){sync()};
+        if(mq.addEventListener)mq.addEventListener("change",on);
+        else if(mq.addListener)mq.addListener(on);
+      }catch(e){}
+      return;
+    }
+    try{
+      var parentEl=window.parent.document.documentElement;
+      new MutationObserver(sync).observe(parentEl,{attributes:true,attributeFilter:[ATTR]});
+      window.addEventListener("storage",function(e){if(e.key==="cli-proxy-theme")sync()});
+    }catch(e){}
+  };
+})();
+</script>
 </head>
 <body>
 <div class="wrap">
   <h1>豆包 Provider</h1>
   <div class="sub">导入浏览器登录态后，本插件把豆包账号能力以 OpenAI 兼容接口提供给 CPA。</div>
-
-  <div class="auth" id="authBox" style="display:none">
-    <div class="hint">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
-    <div class="row">
-      <input type="password" id="keyInput" placeholder="management key" autocomplete="off">
-      <button id="keySave">连接</button>
+  <div id="authBox" class="card" style="display:none;margin-bottom:16px">
+    <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
+    <div style="display:flex;gap:8px">
+      <input id="keyInput" type="password" placeholder="management key" class="field-input">
+      <button onclick="saveKey()">连接</button>
     </div>
   </div>
-
-  <div class="import">
-    <h2>导入登录态</h2>
-    <ol>
-      <li>在浏览器打开并登录 <code>https://www.doubao.com</code></li>
-      <li>开发者工具 → Application → Cookies → <code>https://www.doubao.com</code></li>
-      <li>复制完整 Cookie header（须含 <code>flow_cur_user_sec_id</code> 与 <code>sessionid</code>）</li>
-      <li>粘贴到下方文本框，点击「导入」</li>
-    </ol>
-    <textarea id="cookie" placeholder="flow_cur_user_sec_id=...; sessionid=...; ttwid=..."></textarea>
-    <div class="row">
-      <input type="text" id="label" placeholder="备注名（可选）">
-      <button id="import">导入</button>
-    </div>
-  </div>
-
   <div class="bar">
-    <button id="refresh" class="sec">刷新账号</button>
-    <span class="sub" id="count" style="margin:0"></span>
+    <button class="sec" id="importBtn" onclick="openImportModal()">导入凭证</button>
+    <button class="sec" id="exportBtn" onclick="exportAuth(this)" title="导出全部账号凭证为单个 JSON 汇总文件，可直接再导入">导出凭证</button>
+    <button class="sec" id="exportZipBtn" onclick="exportAuthZip(this)" title="导出为 zip，每个账号一个独立 JSON 文件，便于按账号分发或迁移">导出 ZIP</button>
+    <input id="searchInput" class="search" type="search" placeholder="搜索 昵称 / 备注 / 账号标识" oninput="onSearchChange(this.value)" autocomplete="off">
+    <button class="sec sort-btn" id="sortBtn" onclick="toggleSort(this)" title="当前：创建时间倒序（新→旧），点击切账号标识升序">创建 ↓</button>
   </div>
-
-  <div id="list"></div>
-  <div class="msg" id="msg"></div>
+  <div class="filter-bar" id="filterBar">
+    <button type="button" class="ftag active" data-region="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
+    <button type="button" class="ftag" data-region="enabled" onclick="filterRegion('enabled',this)" title="未禁用且登录态有效，可正常接流量">可用 <span class="cnt" id="cntEnabled">0</span></button>
+    <button type="button" class="ftag" data-region="disabled" onclick="filterRegion('disabled',this)" title="被手动禁用的账号，不参与路由">已禁用 <span class="cnt" id="cntDisabled">0</span></button>
+    <button type="button" class="ftag" data-region="expired" onclick="filterRegion('expired',this)" title="登录态已过期，需要重新导入 Cookie">过期 <span class="cnt" id="cntExpired">0</span></button>
+  </div>
+  <div class="summary card" id="summaryBox" style="display:none"></div>
+  <div id="grid" class="grid"><div class="loading">加载中…</div></div>
 </div>
-
-<div class="mask" id="testModal">
-  <div class="modal">
-    <h2>测试模型</h2>
-    <p class="hint" id="testHint">选择要测试的模型</p>
-    <div class="models" id="testModels"></div>
-    <div class="result" id="testResult"></div>
-    <div class="foot"><button class="sec" id="testClose">关闭</button></div>
+<div class="modal-mask" id="importModal" onclick="onImportMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
+    <div class="modal-hd">
+      <h2 id="importModalTitle">导入凭证</h2>
+      <button type="button" class="modal-x" onclick="closeImportModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint">支持三种形态：完整 Cookie header（须含 <code>flow_cur_user_sec_id</code> 与 <code>sessionid</code>）、「导出凭证」生成的汇总 JSON、以及本插件账号物理文件 <code>doubao-&lt;id&gt;.json</code>。批量粘贴数组或多选文件时逐条串行导入。落盘为 <code>doubao-&lt;id&gt;.json</code>。</p>
+      <p class="hint">Cookie 获取：浏览器登录 <code>https://www.doubao.com</code> → 开发者工具 → Application → Cookies → 复制完整 Cookie 请求头。</p>
+      <textarea id="importRaw" rows="6" placeholder="flow_cur_user_sec_id=...; sessionid=...; ttwid=... 或粘贴导出的 JSON"></textarea>
+      <div class="file-row">
+        <label class="sec" for="importFiles" title="可一次选择多个 .json 文件">📁 选择 JSON 凭证文件</label>
+        <input type="file" id="importFiles" multiple accept=".json,application/json" hidden>
+        <button type="button" class="sec" id="clearImportFiles" onclick="clearImportFiles()" style="display:none">清除</button>
+      </div>
+      <div class="file-list" id="importFileList"></div>
+      <div class="file-info" id="importFileInfo"></div>
+      <div class="import-result" id="importResult"></div>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="closeImportModal()">取消</button>
+      <button type="button" onclick="importAuth(this)">导入并保存</button>
+    </div>
   </div>
 </div>
-
+<div class="modal-mask" id="deleteModal" onclick="onDeleteMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="deleteModalTitle">
+    <div class="modal-hd">
+      <h2 id="deleteModalTitle">删除账号</h2>
+      <button type="button" class="modal-x" onclick="closeDeleteModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint" id="deleteModalHint">确定要删除该账号吗？</p>
+      <p class="hint" style="color:var(--err)">此操作会永久删除该账号及其认证文件，且不可恢复。</p>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="closeDeleteModal()">取消</button>
+      <button type="button" class="danger" id="deleteConfirmBtn" onclick="confirmDeleteAuth()">删除</button>
+    </div>
+  </div>
+</div>
+<div class="modal-mask" id="testModal" onclick="onTestMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="testModalTitle">
+    <div class="modal-hd">
+      <h2 id="testModalTitle">测试模型</h2>
+      <button type="button" class="modal-x" onclick="closeTestModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint" id="testModalHint">选择要测试的模型</p>
+      <div class="model-list" id="testModelList"><div class="loading">加载模型中…</div></div>
+      <div class="import-result" id="testResult"></div>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="closeTestModal()">关闭</button>
+    </div>
+  </div>
+</div>
+<div class="toasts" id="toasts"></div>
 <script>
 const API = "/v0/management/plugins/doubao-provider";
 
 /* ---------- management key acquisition (3 fallbacks, zero config) ----------
    1) CPA main panel localStorage "cli-proxy-auth" (XOR+base64, same-origin
-      iframe embed) — same approach as the sibling provider panels.
-   2) ?key= URL param (cleaned from history after read, kept in sessionStorage).
-   3) Manual input (sessionStorage only, never persisted).
-   宿主对 /v0/management/* 统一做鉴权：不带 Authorization 时直接返回
-   401 {"error":"missing management key"}，面板必须自行补齐该请求头。
+      iframe embed) — 与兄弟 provider 面板同一套方案。
+   2) ?key= URL 参数（读后从浏览器历史里抹掉，落 sessionStorage）。
+   3) 手工输入（只进 sessionStorage，不落盘）。
+   宿主对 /v0/management/* 统一鉴权：不带 Authorization 直接 401
+   {"error":"missing management key"}，面板必须自行补齐该请求头。
 */
 const ENC_PREFIX = "enc::v1::";
+const ENC_PREFIX_V2 = "enc::v2::";
 const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
 const PANEL_STORE = "cli-proxy-auth";
 const SS_KEY = "doubao-mgmt-key";
 
 function _enc(t){return new TextEncoder().encode(t)}
 function _dec(b){return new TextDecoder().decode(b)}
-function _keyBytes(){try{return _enc(SECRET_SALT+"|"+window.location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
+// v2 是宿主主面板 2026-10-31 起的新格式：XOR key 只含 host，不再拼 userAgent。
+// v1 保留 host+UA，用于解码升级前已写入 localStorage 的旧值。
+function _keyBytes(v2){try{return _enc(v2?SECRET_SALT+"|"+window.location.host:SECRET_SALT+"|"+window.location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
 function _xor(d,k){const r=new Uint8Array(d.length);for(let i=0;i<d.length;i++)r[i]=d[i]^k[i%k.length];return r}
 function _b64d(s){const bin=atob(s);const b=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b}
-function deobfuscate(p){if(!p||!p.startsWith(ENC_PREFIX))return p;try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes()))}catch(e){return p}}
+function deobfuscate(p){
+  if(!p)return p;
+  // 1. 先按 v2 解：宿主的当前格式，解不出保留原文走下一步。
+  if(p.startsWith(ENC_PREFIX_V2)){try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX_V2.length)),_keyBytes(true)))}catch(e){return p}}
+  // 2. 再按 v1 解：兼容升级前遗留的旧值。
+  if(p.startsWith(ENC_PREFIX)){try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes(false)))}catch(e){return p}}
+  return p;
+}
 function isEmbedded(){try{return window.self!==window.top}catch(e){return false}}
 
 function readPanelKey(){
@@ -184,23 +325,23 @@ function readUrlKey(){
   return m;
 }
 // readUrlKey() 会立刻把 key 从 URL 上抹掉，而 readPanelKey() 依赖父窗口的
-// localStorage；若解析后不落盘，首次调用之后 getKey() 将永远返回空。
+// localStorage（iframe 隔离 / 父页清理时会失效）。若解析后不落盘，首次调用
+// 之后 getKey() 将永远返回空 —— 表现为面板首屏正常、随后所有请求被
+// 「需要管理密钥」拦断。因此这里统一做一次持久化兜底。
 function persistKey(k){
   if(!k) return k;
   try{ sessionStorage.setItem(SS_KEY,k); }catch(e){}
   return k;
 }
-function getKey(){
-  let stored=null;try{stored=sessionStorage.getItem(SS_KEY)}catch(e){}
-  return stored||persistKey(readPanelKey())||persistKey(readUrlKey());
+// 旧版本可能把未解密的 enc:: 密文写进 sessionStorage，它不是可用密钥。
+// 不清理会让面板持续用错误 Bearer 打服务端并停在 401，且无法自愈。
+function readSessionKey(){
+  let v=null;try{v=sessionStorage.getItem(SS_KEY)}catch(e){return null}
+  if(v&&(v.startsWith(ENC_PREFIX)||v.startsWith(ENC_PREFIX_V2))){try{sessionStorage.removeItem(SS_KEY)}catch(e){};return null}
+  return v;
 }
-function authHeaders(k){return k?{"Authorization":"Bearer "+k}:{}}
-function showAuth(){
-  const box=document.getElementById("authBox");
-  if(!box)return;
-  box.style.display="block";
-  const i=document.getElementById("keyInput");
-  if(i)i.focus();
+function getKey(){
+  return readSessionKey()||persistKey(readPanelKey())||persistKey(readUrlKey());
 }
 function saveKey(){
   const i=document.getElementById("keyInput");
@@ -208,236 +349,693 @@ function saveKey(){
   if(!v)return;
   try{ sessionStorage.setItem(SS_KEY,v); }catch(e){}
   document.getElementById("authBox").style.display="none";
-  refresh();
+  load();
 }
+function showAuth(){
+  const box=document.getElementById("authBox");
+  if(!box)return;
+  box.style.display="block";
+  const i=document.getElementById("keyInput");
+  if(i)i.focus();
+}
+function authHeaders(k){return k?{"Authorization":"Bearer "+k}:{}}
 /* --------------------------------------------------------------------------- */
 
-async function api(path, opts) {
-  const key = getKey();
-  if (!key) {
-    showAuth();
-    throw new Error("需要管理密钥，请在 CPA 主面板中打开本页，或在下方向输入框填入");
-  }
-  const headers = Object.assign(
-    { "Content-Type": "application/json" },
-    authHeaders(key),
-    (opts && opts.headers) || {}
-  );
-  const res = await fetch(API + path, Object.assign({}, opts, { headers, cache: "no-store" }));
-  if (res.status === 401 || res.status === 403) {
-    try { sessionStorage.removeItem(SS_KEY); } catch (e) { /* 隐私模式下不可写时忽略 */ }
-    showAuth();
-    throw new Error("管理密钥无效或已失效，请重新填写");
-  }
-  let data = null;
-  try { data = await res.json(); } catch (e) { data = { error: "响应解析失败" }; }
-  return data;
+function toast(title, kind="ok", detail=""){
+  const box=document.getElementById("toasts");
+  const el=document.createElement("div");
+  el.className="toast "+kind;
+  el.innerHTML='<div class="t"></div>'+(detail?'<div class="d"></div>':'');
+  el.querySelector(".t").textContent=title;
+  if(detail)el.querySelector(".d").textContent=detail;
+  box.appendChild(el);
+  requestAnimationFrame(()=>requestAnimationFrame(()=>el.classList.add("show")));
+  const kill=()=>{el.classList.remove("show");setTimeout(()=>el.remove(),300)};
+  el.onclick=kill;
+  setTimeout(kill, kind==="err"?6000:4000);
+  while(box.children.length>5)box.firstChild.remove();
+}
+function busy(btn, on){
+  if(!btn)return;
+  if(on){btn.dataset.orig=btn.innerHTML;btn.disabled=true;btn.innerHTML='<span class="spin"></span>处理中…'}
+  else{btn.disabled=false;if(btn.dataset.orig)btn.innerHTML=btn.dataset.orig}
+}
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+// 统一北京时间展示：RFC3339/ISO 输入 → "YYYY-MM-DD HH:mm:ss"（Asia/Shanghai）。
+function fmtCST(s){
+  if(!s) return "";
+  const d=new Date(s);
+  if(isNaN(d.getTime())) return String(s);
+  return d.toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"}).replaceAll("/","-");
 }
 
-function showMsg(text, kind) {
-  const el = document.getElementById("msg");
-  el.className = "msg " + (kind || "");
-  el.textContent = text;
+/* ---------- 请求层 ----------
+   401 累计 3 次才清 key：单次偶发 401（宿主重启 / key 轮换中）属可自愈的
+   瞬时状态，无条件清 key 会把面板永久打回鉴权态。403 若命中 IP 封禁则按
+   上游给出的等待窗口退避，静默请求同样退避，避免轮询延长封禁。 */
+let authFailCount=0;
+let authFailUntil=0;
+async function api(path, opts={}){
+  const silent=!!opts.__silent;
+  const fetchOpts={...opts};
+  delete fetchOpts.__silent;
+  const k=getKey();
+  if(!k){
+    if(!silent) showAuth();
+    throw new Error("需要管理密钥");
+  }
+  if(Date.now()<authFailUntil){
+    throw new Error("认证多次失败，请稍后重试（防 IP 封禁）");
+  }
+  const r=await fetch(API+path,{...fetchOpts,credentials:'omit',cache:'no-store',headers:{...(opts.headers||{}),...authHeaders(k)}});
+  if(r.status===401){
+    if(silent) throw new Error("management key 无效或缺失");
+    authFailCount++;
+    if(authFailCount>=3){
+      try{ sessionStorage.removeItem(SS_KEY); }catch(_e){}
+      authFailUntil=Date.now()+60000;
+      authFailCount=0;
+      showAuth();
+      throw new Error("认证多次失败，请检查管理密钥后 60s 再试");
+    }
+    throw new Error("management key 无效或缺失（将自动重试）");
+  }
+  if(r.status===403){
+    let body="";
+    try{body=await r.text()}catch(_){}
+    if(/IP banned|too many failed/i.test(body)){
+      let waitMs=60000;
+      const m=body.match(/(\d+)\s*m(?:in(?:ute)?s?)?\s*(\d+)\s*s/i)||body.match(/(\d+)\s*m/i);
+      if(m){
+        const mins=parseInt(m[1],10)||0;
+        const secs=m[2]?parseInt(m[2],10):0;
+        waitMs=Math.min(Math.max((mins*60+secs)*1000, 30000), 30*60*1000);
+      }
+      authFailUntil=Date.now()+waitMs;
+      throw new Error(body.trim()||"IP 被封禁，请稍后再试");
+    }
+    if(silent) throw new Error(body.trim()||"禁止访问 (403)");
+    authFailCount++;
+    if(authFailCount>=3){
+      authFailUntil=Date.now()+60000;
+      authFailCount=0;
+    }
+    throw new Error(body.trim()||"禁止访问 (403)");
+  }
+  if(!silent) authFailCount=0;
+  /* 健壮解析：空响应 / 非 JSON / 解析失败都返回结构化 {error}，
+     不向调用方抛 SyntaxError —— 批量导入不能因一条坏响应整批崩掉。 */
+  const _ct=(r.headers.get('content-type')||'').toLowerCase();
+  const _text=await r.text();
+  if(!_text){return {error:"empty response (HTTP "+r.status+" "+(r.statusText||"")+")"}}
+  if(!_ct.includes('application/json')){
+    return {error:"non-JSON response (HTTP "+r.status+" "+(_ct||"no content-type")+"): "+_text.slice(0,200)}
+  }
+  try{return JSON.parse(_text)}catch(_e){
+    return {error:"bad JSON (HTTP "+r.status+"): "+_text.slice(0,200)}
+  }
 }
 
-function esc(s) {
-  return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
-    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+/* ---------- 列表态与筛选排序 ---------- */
+let currentFilter="all";
+let currentSearch="";
+let currentSort="created_desc"; // "created_desc" | "auth_asc" | "label_asc"
+let lastAccounts=[];
+const SORT_LABELS={created_desc:"创建 ↓",auth_asc:"标识 ↑",label_asc:"名称 ↑"};
+const SORT_NEXT={created_desc:"auth_asc",auth_asc:"label_asc",label_asc:"created_desc"};
+const SORT_TITLE={
+  created_desc:"当前：创建时间倒序（新→旧），点击切账号标识升序",
+  auth_asc:"当前：账号标识升序，点击切备注名升序",
+  label_asc:"当前：备注名升序，点击切创建时间倒序"
+};
+function onSearchChange(q){
+  currentSearch=(q==null?"":String(q)).trim().toLowerCase();
+  applyCardVisibility();
+}
+function toggleSort(btn){
+  currentSort=SORT_NEXT[currentSort]||"created_desc";
+  if(btn){
+    btn.textContent=SORT_LABELS[currentSort];
+    btn.title=SORT_TITLE[currentSort];
+    btn.classList.toggle("active", currentSort!=="created_desc");
+  }
+  renderGrid();
+}
+function sortedAccounts(accounts){
+  const list=accounts||[];
+  if(currentSort==="created_desc"){
+    return [...list].sort((x,y)=>{
+      const xt=x&&x.created_at?Date.parse(x.created_at):0;
+      const yt=y&&y.created_at?Date.parse(y.created_at):0;
+      return yt-xt;
+    });
+  }
+  if(currentSort==="auth_asc"){
+    return [...list].sort((x,y)=>String((x&&x.auth_id)||"").localeCompare(String((y&&y.auth_id)||"")));
+  }
+  return [...list].sort((x,y)=>String((x&&(x.label||x.screen_name))||"").localeCompare(String((y&&(y.label||y.screen_name))||"")));
+}
+function accountState(a){
+  if(!a) return "unknown";
+  if(a.disabled) return "disabled";
+  if(a.auth_state==="expired") return "expired";
+  return "enabled";
+}
+function filterRegion(region, btn){
+  currentFilter=region||"all";
+  document.querySelectorAll("#filterBar .ftag").forEach(el=>{
+    el.classList.toggle("active", el.dataset.region===currentFilter);
+  });
+  applyCardVisibility();
+}
+function applyCardVisibility(){
+  const q=(currentSearch||"").toLowerCase();
+  document.querySelectorAll("#grid .card").forEach(c=>{
+    let show=true;
+    if(currentFilter==="all") show=true;
+    else show=c.dataset.state===currentFilter;
+    if(show&&q){
+      const hay=((c.dataset.nickname||"")+" "+(c.dataset.label||"")+" "+(c.dataset.auth||"")+" "+(c.dataset.uid||"")).toLowerCase();
+      show=hay.includes(q);
+    }
+    c.style.display=show?"":"none";
   });
 }
+function updateFilterCounts(accounts){
+  const list=accounts||[];
+  const cnt={all:list.length,enabled:0,disabled:0,expired:0};
+  list.forEach(a=>{const s=accountState(a);if(cnt[s]!=null)cnt[s]++;});
+  const set=(id,n)=>{const el=document.getElementById(id);if(el)el.textContent=String(n)};
+  set("cntAll",cnt.all);set("cntEnabled",cnt.enabled);set("cntDisabled",cnt.disabled);set("cntExpired",cnt.expired);
+}
+function renderSummary(accounts){
+  const box=document.getElementById("summaryBox");
+  const list=accounts||[];
+  if(!list.length){box.style.display="none";box.innerHTML="";return}
+  let enabled=0,disabled=0,expired=0;
+  list.forEach(a=>{const s=accountState(a);if(s==="enabled")enabled++;else if(s==="disabled")disabled++;else if(s==="expired")expired++;});
+  box.style.display="block";
+  box.innerHTML='<div class="summary-hd"><span class="summary-title">账号总览</span><span class="summary-meta">共 '+list.length+' 个账号 · 渲染于 '+esc(fmtCST(new Date().toISOString()))+'</span></div>'+
+    '<div class="summary-grid">'+
+    '<div class="summary-item"><div class="k">总数</div><div class="v">'+list.length+'</div></div>'+
+    '<div class="summary-item"><div class="k">可用</div><div class="v ok">'+enabled+'</div></div>'+
+    '<div class="summary-item"><div class="k">已禁用</div><div class="v muted">'+disabled+'</div></div>'+
+    '<div class="summary-item"><div class="k">登录态过期</div><div class="v '+(expired?"err":"muted")+'">'+expired+'</div></div>'+
+    '</div>';
+}
 
-function renderAccounts(accounts) {
-  const list = document.getElementById("list");
-  document.getElementById("count").textContent = "共 " + accounts.length + " 个账号";
-  if (!accounts.length) {
-    list.innerHTML = '<div class="empty">暂无账号。请在上方粘贴浏览器 Cookie 完成导入。</div>';
+/* ---------- 账号卡片 ---------- */
+function card(a){
+  const id=esc(a.auth_id||"");
+  const idx=esc(a.auth_index||a.auth_id||"");
+  const state=accountState(a);
+  const stateBadge=state==="disabled"
+    ? '<span class="badge off">已禁用</span>'
+    : (state==="expired"?'<span class="badge expired">登录态过期</span>':'<span class="badge">可用</span>');
+  const who=a.label||a.screen_name||a.auth_id||"未命名";
+  const disableBtn=state==="disabled"
+    ? '<button class="sec" data-action="enable" data-auth-id="'+id+'">启用</button>'
+    : '<button class="sec" data-action="disable" data-auth-id="'+id+'">禁用</button>';
+  return '<div class="card" data-state="'+state+'" data-auth="'+idx+'" data-nickname="'+esc(a.screen_name||"")+'" data-label="'+esc(a.label||"")+'" data-uid="'+esc(a.sec_user_id||"")+'">'+
+    '<h2>'+esc(who)+' <span style="display:flex;gap:6px;align-items:center;flex:none">'+stateBadge+
+    '<button type="button" class="card-del" data-action="delete" data-auth-id="'+id+'" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>'+
+    '<div class="uid" title="'+(a.auth_id||"")+'">'+esc(a.auth_id||"")+'</div>'+
+    (a.screen_name?'<div class="row"><span class="k">昵称</span><span class="v">'+esc(a.screen_name)+'</span></div>':'')+
+    (a.mobile?'<div class="row"><span class="k">手机</span><span class="v">'+esc(a.mobile)+'</span></div>':'')+
+    '<div class="row"><span class="k">账号标识</span><span class="v">'+esc(a.sec_user_id||"-")+'</span></div>'+
+    '<div class="row"><span class="k">登录态</span><span class="v '+(state==="expired"?"err":(state==="enabled"?"ok":"warn"))+'">'+(state==="expired"?"已过期":(state==="disabled"?"已禁用":"有效"))+'</span></div>'+
+    '<div class="row"><span class="k">创建时间</span><span class="v">'+esc(fmtCST(a.created_at)||"-")+'</span></div>'+
+    '<div class="row"><span class="k">更新时间</span><span class="v">'+esc(fmtCST(a.updated_at)||"-")+'</span></div>'+
+    '<div class="actions">'+
+    '<button class="sec" data-action="test" data-auth-index="'+idx+'">测试</button>'+
+    disableBtn+
+    '<button class="sec" data-action="delete" data-auth-id="'+id+'">删除</button>'+
+    '</div></div>';
+}
+function bindCardActions(root){
+  (root||document).querySelectorAll("[data-action]").forEach(btn=>{
+    if(btn._bound) return;
+    btn._bound=true;
+    btn.addEventListener("click", ev=>{
+      const act=ev.currentTarget.dataset.action;
+      const authId=ev.currentTarget.dataset.authId||"";
+      const authIndex=ev.currentTarget.dataset.authIndex||"";
+      if(act==="test") openTestModal(authIndex);
+      else if(act==="delete") openDeleteModal(authId);
+      else if(act==="enable") setAccountStatus(authId,false,ev.currentTarget);
+      else if(act==="disable") setAccountStatus(authId,true,ev.currentTarget);
+    });
+  });
+}
+function renderGrid(){
+  const g=document.getElementById("grid");
+  if(!g||!lastAccounts.length) return;
+  g.innerHTML=sortedAccounts(lastAccounts).map(card).join("");
+  bindCardActions(g);
+  applyCardVisibility();
+  updateFilterCounts(lastAccounts);
+}
+
+/* ---------- 加载账号 ---------- */
+async function load(){
+  const g=document.getElementById("grid");
+  if(!getKey()){
+    showAuth();
+    // 已有卡片时保留网格：鉴权浮层本身已足够提示，抹掉网格会让用户误以为数据丢失。
+    if(!lastAccounts.length) g.innerHTML='<div class="loading">请先填写 management key</div>';
     return;
   }
-  list.innerHTML = accounts.map(function (a) {
-    const id = esc(a.auth_id);
-    return '<div class="card"><h2><span class="name">' + esc(a.label || a.auth_id || "未命名") + '</span>' +
-      '<span class="badge ' + (a.disabled ? "off" : "on") + '">' + (a.disabled ? "已禁用" : "已启用") + '</span></h2>' +
-      (a.screen_name ? '<div class="row"><span>昵称</span><span class="v">' + esc(a.screen_name) + '</span></div>' : '') +
-      (a.mobile ? '<div class="row"><span>手机</span><span class="v">' + esc(a.mobile) + '</span></div>' : '') +
-      '<div class="row"><span>账号标识</span><span class="v">' + esc(a.sec_user_id || a.auth_id) + '</span></div>' +
-      '<div class="row"><span>更新于</span><span class="v">' + esc(a.updated_at || "-") + '</span></div>' +
-      '<div class="acts">' +
-      '<button data-act="test" data-id="' + id + '" data-label="' + esc(a.label || a.screen_name || a.auth_id || "") + '">测试</button>' +
-      '<button class="sec" data-act="' + (a.disabled ? "enable" : "disable") + '" data-id="' + id + '">' + (a.disabled ? "启用" : "禁用") + '</button>' +
-      '<button class="sec" data-act="delete" data-id="' + id + '">删除</button>' +
-      '</div></div>';
-  }).join("");
-}
-
-async function refresh() {
-  const btn = document.getElementById("refresh");
-  btn.disabled = true;
-  try {
-    const data = await api("/accounts");
-    if (data && data.error) { showMsg("加载账号失败：" + data.error, "err"); return; }
-    renderAccounts((data && data.accounts) || []);
-  } catch (e) {
-    showMsg("加载账号失败：" + e.message, "err");
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-async function doImport() {
-  const btn = document.getElementById("import");
-  const cookie = document.getElementById("cookie").value.trim();
-  const label = document.getElementById("label").value.trim();
-  if (!cookie) { showMsg("请先粘贴 Cookie", "err"); return; }
-  btn.disabled = true;
-  showMsg("正在校验登录态…", "");
-  try {
-    const data = await api("/import", { method: "POST", body: JSON.stringify({ cookie: cookie, label: label }) });
-    if (data && data.ok) {
-      document.getElementById("cookie").value = "";
-      document.getElementById("label").value = "";
-      showMsg("导入成功：" + (data.label || data.auth_id || ""), "ok");
-      refresh();
-    } else {
-      showMsg("导入失败：" + ((data && data.error) || "未知错误"), "err");
+  try{
+    const d=await api("/accounts");
+    if(d&&d.error){
+      // 单次偶发失败不得清空面板：保留上一次渲染结果，仅顶部提示。
+      if(!lastAccounts.length) g.innerHTML='<div class="loading">'+esc(d.error)+"</div>";
+      else toast("加载账号失败，已保留上次数据","err",String(d.error||""));
+      return;
     }
-  } catch (e) {
-    showMsg("导入失败：" + e.message, "err");
-  } finally {
-    btn.disabled = false;
+    const accounts=(d&&d.accounts)||[];
+    // 后端瞬时返回空列表时抹掉网格会被用户感知为「数据被清空」。
+    if(!accounts.length&&lastAccounts.length){
+      toast("账号列表暂时为空，已保留上次数据","err","");
+      return;
+    }
+    lastAccounts=accounts;
+    if(!accounts.length){
+      g.innerHTML='<div class="loading">暂无豆包账号，点击「导入凭证」粘贴浏览器 Cookie</div>';
+      renderSummary([]);
+      updateFilterCounts([]);
+      return;
+    }
+    g.innerHTML=sortedAccounts(accounts).map(card).join("");
+    bindCardActions(g);
+    applyCardVisibility();
+    updateFilterCounts(accounts);
+    renderSummary(accounts);
+  }catch(e){
+    const msg=e&&e.message?e.message:String(e);
+    if(!lastAccounts.length) g.innerHTML='<div class="loading">'+esc(msg)+"</div>";
+    else toast("加载账号失败，已保留上次数据","err",msg);
   }
 }
 
-/* ---------- 测试模型：先选模型，再发起一次真实推理 ----------
-   点卡片「测试」→ GET /models 拉取可测试模型 → 点某个模型 → POST /test-active。
-   后端只等首个有效输出帧就返回，所以结果通常在 1~3 秒内出现。 */
-let testAuthID = "";
-
-function openTestModal(id, label) {
-  testAuthID = id;
-  document.getElementById("testHint").innerHTML = "选择要测试的模型：<b>" + esc(label || id) + "</b>";
-  document.getElementById("testResult").className = "result";
-  document.getElementById("testResult").innerHTML = "";
-  document.getElementById("testModels").innerHTML = '<div class="hint">加载模型中…</div>';
-  document.getElementById("testModal").classList.add("show");
-  loadTestModels(id);
+/* ---------- 导入 ---------- */
+let importQueue=[]; // {name,text}
+const MAX_IMPORT_FILE=2*1024*1024;
+function openImportModal(){
+  document.getElementById("importModal").classList.add("show");
+  const ta=document.getElementById("importRaw");
+  if(ta) setTimeout(()=>ta.focus(),0);
+  hideImportResult();
+}
+function closeImportModal(){
+  document.getElementById("importModal").classList.remove("show");
+}
+function onImportMaskClick(e){
+  if(e.target===document.getElementById("importModal")) closeImportModal();
+}
+function clearImportFiles(){
+  importQueue=[];
+  document.getElementById("importFiles").value="";
+  document.getElementById("importFileList").innerHTML="";
+  document.getElementById("importFileList").classList.remove("show");
+  document.getElementById("importFileInfo").textContent="";
+  document.getElementById("importFileInfo").className="file-info";
+  document.getElementById("clearImportFiles").style.display="none";
+}
+document.getElementById("importFiles").addEventListener("change",async e=>{
+  const input=e.target;
+  const fs=[...(input.files||[])];
+  input.value="";
+  importQueue=[];
+  const list=document.getElementById("importFileList");
+  const info=document.getElementById("importFileInfo");
+  const clearBtn=document.getElementById("clearImportFiles");
+  list.innerHTML="";
+  let skipped=0;
+  for(const f of fs){
+    if(!(/\.json$/i.test(f.name)||f.type==="application/json")){skipped++;continue}
+    if(f.size>MAX_IMPORT_FILE){skipped++;continue}
+    try{
+      const text=await f.text();
+      if(!text.trim()){skipped++;continue}
+      // 一个文件可能装一条凭据、一个数组，或导出包装（accounts[].credential），
+      // 统一展开成逐条凭据项，交给同一个单条 /import 管线串行处理。
+      const expanded=expandCredentials(text);
+      if(expanded&&expanded.length){
+        expanded.forEach((c,i)=>{
+          importQueue.push({name:expanded.length>1?f.name+" #"+(i+1):f.name, text:JSON.stringify(c)});
+        });
+      }else{
+        importQueue.push({name:f.name,text});
+      }
+      const d=document.createElement("div");
+      d.className="file-item";
+      d.innerHTML='<span class="fn">'+esc(f.name)+'</span><span class="fs">'+(f.size/1024).toFixed(1)+' KB</span>';
+      list.appendChild(d);
+    }catch(_){skipped++}
+  }
+  list.classList.toggle("show",importQueue.length>0);
+  clearBtn.style.display=importQueue.length?"inline-block":"none";
+  if(importQueue.length){
+    info.textContent="已选 "+importQueue.length+" 个凭证项"+(skipped?"，跳过 "+skipped+" 个文件（非 .json / 超 2MB / 空内容）":"");
+    info.className="file-info"+(skipped?" bad":"");
+  }else{
+    info.textContent=fs.length?("没有可导入的文件"+(skipped?"（跳过 "+skipped+" 个）":"")):"";
+    info.className="file-info bad";
+  }
+});
+function hideImportResult(){
+  const r=document.getElementById("importResult");
+  r.classList.remove("show");
+  r.innerHTML="";
+}
+function showImportResult(ok,fail){
+  const r=document.getElementById("importResult");
+  const hd=fail.length
+    ? '<div class="r-hd err">导入完成：'+ok.length+' 成功 / '+fail.length+' 失败（失败项保留在此，修正后可重新导入）</div>'
+    : '<div class="r-hd ok">导入成功：'+ok.length+' 个账号</div>';
+  const items=fail.map(f=>
+    '<div class="r-item"><span class="r-name">'+esc(f.name)+'</span><span class="r-err">'+esc(f.error)+'</span></div>'
+  ).join("");
+  r.innerHTML=hd+'<div class="r-list">'+items+'</div>';
+  r.classList.add("show");
+}
+// 单条导入：JSON 能解析就按 {json:...} 提交，否则按 {raw:...} 交原文。
+// 后端会递归下钻 cookie / cookie_header / credential 等键，所以导出文件、
+// 物理账号文件、裸 Cookie 三种形态都能走同一条通道。
+async function importOne(text){
+  let payload={raw:text};
+  try{payload={json:JSON.parse(text)}}catch(_){}
+  for(let attempt=0;attempt<4;attempt++){
+    const d=await api("/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(d&&d.error&&/rate limit/i.test(d.error)&&attempt<3){
+      await new Promise(res=>setTimeout(res,7000));
+      continue;
+    }
+    return d;
+  }
+}
+async function importAuth(btn){
+  const raw=(document.getElementById("importRaw").value||"").trim();
+  const items=queuedImportItems(raw);
+  for(const f of importQueue) items.push(f);
+  if(!items.length){toast("请粘贴 Cookie / 凭证 JSON 或选择凭证文件","warn");return}
+  busy(btn,true);
+  hideImportResult();
+  const ok=[], fail=[];
+  for(let i=0;i<items.length;i++){
+    if(items.length>1) btn.innerHTML='<span class="spin"></span>导入中 '+(i+1)+'/'+items.length;
+    const it=items[i];
+    try{
+      const d=await importOne(it.text);
+      const success=!!(d&&(d.success||d.ok));
+      if(success){
+        ok.push({name:it.name,nick:d.nickname||d.label,uid:d.uid||d.auth_id});
+      }else{
+        fail.push({name:it.name,error:(d&&d.error)||"unknown error"});
+      }
+    }catch(e){fail.push({name:it.name,error:e.message})}
+  }
+  if(!fail.length){
+    const who=ok.map(o=>o.nick||o.uid||o.name).join("、");
+    toast("导入成功："+ok.length+" 个账号","ok",who.slice(0,220));
+    clearImportFiles();
+    document.getElementById("importRaw").value="";
+    closeImportModal();
+    load();
+  }else{
+    const detail=fail.map(f=>f.name+": "+f.error).join("；");
+    toast("导入完成："+ok.length+" 成功 / "+fail.length+" 失败","err",detail.slice(0,300));
+    showImportResult(ok,fail);
+  }
+  busy(btn,false);
+}
+/* ---------- 批量导入展开 ----------
+   导入弹窗每次只提交一条凭据；「导出凭证」的包装（accounts[].credential）、
+   裸数组、单条对象都需要先规整成逐条凭据，才能喂给现有的单条 /import 管线。
+*/
+function expandCredentials(text){
+  let obj;
+  try{obj=JSON.parse(text)}catch(_){return null}
+  if(!obj||typeof obj!=="object") return null;
+  const out=[];
+  const push=(c)=>{if(c&&typeof c==="object"&&!Array.isArray(c))out.push(c)};
+  if(Array.isArray(obj)){
+    obj.forEach(push);
+  }else if(Array.isArray(obj.accounts)){
+    // 导出包装：每条把原始凭据放在 .credential 下。
+    obj.accounts.forEach(a=>{
+      if(a&&a.credential&&typeof a.credential==="object") out.push(a.credential);
+      else push(a);
+    });
+  }else{
+    push(obj);
+  }
+  return out;
+}
+function queuedImportItems(rawText){
+  const items=[];
+  if(rawText){
+    const expanded=expandCredentials(rawText);
+    if(expanded&&expanded.length){
+      expanded.forEach((c,i)=>items.push({name:expanded.length>1?"(粘贴) #"+(i+1):"(粘贴)", text:JSON.stringify(c)}));
+    }else{
+      items.push({name:"(粘贴)", text:rawText});
+    }
+  }
+  return items;
 }
 
-function closeTestModal() {
-  testAuthID = "";
+/* ---------- 导出（单 JSON 汇总 + 按账号 ZIP） ----------
+   GET /export 返回 {version, exported_at, count, accounts:[...]}，每条带原始
+   物理凭据 JSON；前端下载为 doubao-credentials-YYYY-MM-DD.json，同一个文件
+   能直接经导入弹窗回灌（expandCredentials 会拆回逐条凭据）。
+   GET /export/zip 返回 application/zip，每个账号一个独立 JSON，适合按账号
+   分发或逐个拖入导入弹窗。ZIP 走原生 fetch：api() 只解 JSON，二进制会被
+   降级成 {error}。
+*/
+async function exportAuth(btn){
+  busy(btn,true);
+  try{
+    const d=await api("/export");
+    if(d&&d.error){toast("导出失败","err",d.error);return}
+    const accounts=(d&&d.accounts)||[];
+    if(!accounts.length){toast("没有可导出的账号","warn");return}
+    const stamp=new Date().toISOString().slice(0,10);
+    const fname="doubao-credentials-"+stamp+".json";
+    const blob=new Blob([JSON.stringify(d,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    a.download=fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    const bad=accounts.filter(x=>x.load_error||x.parse_error).length;
+    toast("已导出 "+accounts.length+" 个账号","ok",bad?(fname+" · "+bad+" 个不完整"):fname);
+  }catch(e){
+    toast("导出失败","err",e.message||String(e));
+  }finally{
+    busy(btn,false);
+  }
+}
+async function exportAuthZip(btn){
+  busy(btn,true);
+  try{
+    const k=getKey();
+    if(!k){showAuth();return}
+    const r=await fetch(API+"/export/zip",{method:"GET",credentials:'omit',cache:'no-store',headers:authHeaders(k)});
+    if(r.status===401){
+      showAuth();
+      throw new Error("management key 无效或缺失");
+    }
+    if(!r.ok){
+      // 后端错误分支返回 JSON（无账号 / 清单读取失败），透出真实原因。
+      let msg="HTTP "+r.status;
+      try{const j=await r.json();if(j&&j.error)msg=j.error}catch(_){}
+      throw new Error(msg);
+    }
+    const blob=await r.blob();
+    if(!blob.size) throw new Error("服务端返回空压缩包");
+    const stamp=new Date().toISOString().slice(0,10);
+    const fname="doubao-credentials-"+stamp+".zip";
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    a.download=fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    toast("已导出 ZIP","ok",fname);
+  }catch(e){
+    toast("导出失败","err",e.message||String(e));
+  }finally{
+    busy(btn,false);
+  }
+}
+
+/* ---------- 删除（二次确认） ----------
+   卡片右上角 × 与底部「删除」都打开同一个确认框；取消不发任何请求；
+   确认后 POST /delete 并刷新列表。删除失败保留卡片，仅 toast 错误。
+*/
+let pendingDeleteAuthId="";
+function openDeleteModal(authId){
+  const a=(lastAccounts||[]).find(x=>x.auth_id===authId);
+  const who=a?(a.label||a.screen_name||a.auth_id):authId;
+  pendingDeleteAuthId=authId;
+  // 防御性复位：弹窗 DOM 复用，上一次的处理中状态会阻塞下一次删除
+  busy(document.getElementById("deleteConfirmBtn"),false);
+  document.getElementById("deleteModalHint").innerHTML='确定要删除账号 <b>'+esc(who)+'</b> 吗？';
+  document.getElementById("deleteModal").classList.add("show");
+}
+function closeDeleteModal(){
+  pendingDeleteAuthId="";
+  document.getElementById("deleteModal").classList.remove("show");
+}
+function onDeleteMaskClick(e){
+  if(e.target===document.getElementById("deleteModal")) closeDeleteModal();
+}
+async function confirmDeleteAuth(){
+  const authId=pendingDeleteAuthId;
+  if(!authId) return;
+  const btn=document.getElementById("deleteConfirmBtn");
+  busy(btn,true);
+  try{
+    const d=await api("/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_id:authId})});
+    if(d&&d.error){
+      toast("删除失败","err",d.error);
+      busy(btn,false);
+      return;
+    }
+    toast("已删除账号","ok",authId);
+    busy(btn,false);
+    closeDeleteModal();
+    // 先从本地态移除，再软刷新与服务端保持一致。
+    lastAccounts=(lastAccounts||[]).filter(x=>x.auth_id!==authId);
+    await load();
+  }catch(e){
+    toast("删除失败","err",e.message||String(e));
+    busy(btn,false);
+  }
+}
+
+/* ---------- 启用 / 禁用 ---------- */
+async function setAccountStatus(authId, disabled, btn){
+  busy(btn,true);
+  try{
+    const path=disabled?"/disable":"/enable";
+    const d=await api(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_id:authId})});
+    if(d&&d.error){toast(disabled?"禁用失败":"启用失败","err",d.error);busy(btn,false);return}
+    toast(disabled?"已禁用账号":"已启用账号","ok",authId);
+    await load();
+  }catch(e){
+    toast(disabled?"禁用失败":"启用失败","err",e.message||String(e));
+    busy(btn,false);
+  }
+}
+
+/* ---------- 测试模型 ----------
+   点卡片「测试」→ 打开弹窗 → GET /models 拉取该账号可用模型 → 点某个模型
+   → POST /test-active 发起一次真实推理，结果就地展示。后端只等首个有效
+   输出帧就返回，所以结果通常在 1~3 秒内出现。
+*/
+let pendingTestAuthIndex="";
+function openTestModal(authIndex){
+  pendingTestAuthIndex=authIndex;
+  const a=(lastAccounts||[]).find(x=>(x.auth_index||x.auth_id)===authIndex);
+  const who=a?(a.label||a.screen_name||a.auth_id||authIndex):authIndex;
+  const hint=document.getElementById("testModalHint");
+  if(hint)hint.innerHTML='选择要测试的模型：<b>'+esc(who)+'</b>';
+  const res=document.getElementById("testResult");
+  if(res){res.classList.remove("show");res.innerHTML="";}
+  const list=document.getElementById("testModelList");
+  if(list)list.innerHTML='<div class="loading">加载模型中…</div>';
+  document.getElementById("testModal").classList.add("show");
+  loadTestModels(authIndex,false);
+}
+function closeTestModal(){
+  pendingTestAuthIndex="";
   document.getElementById("testModal").classList.remove("show");
 }
-
-async function loadTestModels(id, force) {
-  const box = document.getElementById("testModels");
-  try {
-    const url = "/models?auth_index=" + encodeURIComponent(id) + (force ? "&force=1" : "");
-    const data = await api(url);
-    // 用户可能已关闭弹窗或换了账号，丢弃过期响应避免错投。
-    if (testAuthID !== id) return;
-    if (data && data.error) { box.innerHTML = '<div class="hint">' + esc(data.error) + '</div>'; return; }
-    const models = (data && data.models) || [];
+function onTestMaskClick(e){
+  if(e.target===document.getElementById("testModal")) closeTestModal();
+}
+async function loadTestModels(authIndex, force){
+  const list=document.getElementById("testModelList");
+  if(!list)return;
+  try{
+    const d=await api("/models?auth_index="+encodeURIComponent(authIndex)+(force?"&force=1":""));
+    // 用户可能已关闭弹窗或切换了账号，丢弃过期响应避免错投。
+    if(pendingTestAuthIndex!==authIndex)return;
+    if(d&&d.error){
+      list.innerHTML='<div class="hint" style="color:var(--err)">'+esc(d.error)+'</div>';
+      return;
+    }
+    const models=(d&&Array.isArray(d.models))?d.models.filter(m=>String(m||"").trim()):[];
     // 上游清单读不到时后端会回落到内置能力别名；把原因如实显示出来，
     // 否则用户会以为账号真的只有这几个模型。
-    const notice = data && data.notice
-      ? '<div class="hint">' + esc(data.notice) + '</div>'
-      : "";
-    if (!models.length) { box.innerHTML = notice + '<div class="hint">暂无可用模型</div>'; return; }
-    box.innerHTML = notice + models.map(function (m) {
-      return '<button type="button" data-model="' + esc(m) + '">' + esc(m) + '</button>';
-    }).join("") +
-      '<div class="hint"><button type="button" class="sec" id="reloadModels">刷新模型清单</button></div>';
-    const reload = document.getElementById("reloadModels");
-    if (reload) reload.addEventListener("click", function () { loadTestModels(id, true); });
-  } catch (e) {
-    if (testAuthID !== id) return;
-    box.innerHTML = '<div class="hint">' + esc(e.message) + '</div>';
-  }
-}
-
-async function runTestModel(btn) {
-  const id = testAuthID;
-  const model = btn && btn.getAttribute ? btn.getAttribute("data-model") : "";
-  if (!id || !model) return;
-  const buttons = document.querySelectorAll("#testModels button");
-  Array.prototype.forEach.call(buttons, function (b) { b.disabled = true; });
-  const res = document.getElementById("testResult");
-  res.className = "result show";
-  res.innerHTML = '<div class="hd">测试中…</div><div class="body">' + esc(model) + '</div>';
-  try {
-    const data = await api("/test-active", {
-      method: "POST",
-      body: JSON.stringify({ auth_index: id, model: model }),
-    });
-    if (data && data.ok) {
-      res.innerHTML = '<div class="hd ok">测试成功</div><div class="body">' + esc(data.message || model) + '</div>';
-      showMsg("测试成功：" + (data.message || model), "ok");
-    } else {
-      const msg = (data && data.error) || "未知错误";
-      res.innerHTML = '<div class="hd err">测试失败</div><div class="body">' + esc(msg) + '</div>';
-      showMsg("测试失败：" + msg, "err");
+    const notice=d&&d.notice?'<div class="hint">'+esc(d.notice)+'</div>':"";
+    if(!models.length){
+      list.innerHTML=notice+'<div class="hint">暂无可用模型</div>';
+      return;
     }
-  } catch (e) {
-    res.innerHTML = '<div class="hd err">测试失败</div><div class="body">' + esc(e.message) + '</div>';
-    showMsg("测试失败：" + e.message, "err");
-  } finally {
-    Array.prototype.forEach.call(buttons, function (b) { b.disabled = false; });
+    list.innerHTML=notice+models.map(m=>'<button type="button" class="model-item" data-model="'+esc(m)+'">'+esc(m)+'</button>').join("")+
+      '<button type="button" class="sec" id="reloadModels" style="margin-top:6px">刷新模型清单</button>';
+    const reload=document.getElementById("reloadModels");
+    if(reload) reload.addEventListener("click",()=>loadTestModels(authIndex,true));
+  }catch(e){
+    list.innerHTML='<div class="hint" style="color:var(--err)">'+esc(e.message||String(e))+'</div>';
+  }
+}
+async function runTestModel(btn){
+  const authIndex=pendingTestAuthIndex;
+  const model=btn&&btn.dataset?btn.dataset.model:"";
+  if(!authIndex||!model)return;
+  const list=document.getElementById("testModelList");
+  const buttons=list?list.querySelectorAll("button.model-item"):[];
+  if(buttons)buttons.forEach(b=>{b.disabled=true;});
+  const res=document.getElementById("testResult");
+  if(res){res.className="import-result show";res.innerHTML='<div class="r-hd">测试中…</div>';}
+  try{
+    const d=await api("/test-active",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:authIndex, model:model})});
+    const ok=!!(d&&d.ok);
+    if(res){
+      res.className="import-result show";
+      res.innerHTML='<div class="r-hd '+(ok?"ok":"err")+'">'+(ok?"测试成功":"测试失败")+'</div>'+
+        '<div class="r-item"><span class="r-name">'+esc(model)+'</span><span class="'+(ok?"":"r-err")+'">'+esc(ok?(d.message||"活跃成功"):((d&&d.error)||"未知错误"))+'</span></div>';
+    }
+    if(ok)toast("活跃测试成功","ok",d.message||("模型: "+model));
+    else toast("测试失败","err",(d&&d.error)||"未知错误");
+  }catch(e){
+    if(res){res.className="import-result show";res.innerHTML='<div class="r-hd err">测试失败</div><div class="r-item"><span class="r-name">'+esc(model)+'</span><span class="r-err">'+esc(e.message||String(e))+'</span></div>';}
+    toast("测试失败","err",e.message||String(e));
+  }finally{
+    if(buttons)buttons.forEach(b=>{b.disabled=false;});
   }
 }
 
-async function act(id, action) {
-  const path = action === "delete" ? "/delete" : (action === "enable" ? "/enable" : "/disable");
-  try {
-    const data = await api(path, { method: "POST", body: JSON.stringify({ auth_id: id }) });
-    if (data && data.ok) { showMsg("操作成功", "ok"); refresh(); }
-    else { showMsg("操作失败：" + ((data && data.error) || "未知错误"), "err"); }
-  } catch (e) {
-    showMsg("操作失败：" + e.message, "err");
-  }
+/* ---------- 事件绑定与启动 ---------- */
+document.getElementById("testModelList").addEventListener("click",ev=>{
+  const btn=ev.target.closest("button[data-model]");
+  if(btn) runTestModel(btn);
+});
+document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
+document.addEventListener("keydown",e=>{
+  if(e.key!=="Escape") return;
+  if(document.getElementById("importModal").classList.contains("show")) closeImportModal();
+  if(document.getElementById("deleteModal").classList.contains("show")) closeDeleteModal();
+  if(document.getElementById("testModal").classList.contains("show")) closeTestModal();
+});
+/* 启动主题监听（父页 MutationObserver + 独立打开时的系统偏好监听）。 */
+if(window.__dbThemeSync)window.__dbThemeSync();
+if(getKey()){
+  load();
+}else{
+  showAuth();
+  document.getElementById("grid").innerHTML='<div class="loading">请先填写 management key</div>';
 }
-
-document.getElementById("import").addEventListener("click", doImport);
-document.getElementById("refresh").addEventListener("click", refresh);
-document.getElementById("keySave").addEventListener("click", saveKey);
-document.getElementById("keyInput").addEventListener("keydown", function (ev) {
-  if (ev.key === "Enter") saveKey();
-});
-document.getElementById("list").addEventListener("click", function (ev) {
-  const btn = ev.target.closest("button[data-act]");
-  if (!btn) return;
-  const id = btn.getAttribute("data-id");
-  const action = btn.getAttribute("data-act");
-  if (action === "test") {
-    openTestModal(id, btn.getAttribute("data-label"));
-    return;
-  }
-  if (action === "delete") {
-    if (!confirm("确认删除该账号？")) return;
-    act(id, "delete");
-  } else {
-    act(id, action);
-  }
-});
-document.getElementById("testClose").addEventListener("click", closeTestModal);
-document.getElementById("testModal").addEventListener("click", function (ev) {
-  if (ev.target === document.getElementById("testModal")) closeTestModal();
-});
-document.getElementById("testModels").addEventListener("click", function (ev) {
-  const btn = ev.target.closest("button[data-model]");
-  if (btn) runTestModel(btn);
-});
-
-// 主题跟随宿主 iframe / 系统偏好
-(function syncTheme() {
-  try {
-    const t = new URLSearchParams(location.search).get("theme");
-    if (t) { document.documentElement.setAttribute("data-theme", t); return; }
-    const parentTheme = window.parent && window.parent !== window
-      ? window.parent.document.documentElement.getAttribute("data-theme") : null;
-    if (parentTheme) document.documentElement.setAttribute("data-theme", parentTheme);
-  } catch (e) { /* 跨域父页面不可读时忽略，使用默认亮色 */ }
-})();
-
-refresh();
 </script>
 </body>
 </html>

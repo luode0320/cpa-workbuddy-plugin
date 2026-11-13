@@ -69,7 +69,9 @@ func managementRegistration() managementRegistrationResponse {
 		Routes: []managementRoute{
 			{Method: http.MethodGet, Path: base + "/accounts", Description: "列出豆包账号。"},
 			{Method: http.MethodGet, Path: base + "/status", Description: "列出豆包账号状态。"},
-			{Method: http.MethodPost, Path: base + "/import", Description: "导入浏览器登录态（body: {cookie, label?}）。"},
+			{Method: http.MethodPost, Path: base + "/import", Description: "导入浏览器登录态（body: {cookie, label?} 或 {raw} / {json}）。"},
+			{Method: http.MethodGet, Path: base + "/export", Description: "导出全部账号为单个 JSON 汇总文件。"},
+			{Method: http.MethodGet, Path: base + "/export/zip", Description: "导出全部账号为 zip（每账号一个 JSON 文件）。"},
 			{Method: http.MethodPost, Path: base + "/delete", Description: "删除一个豆包账号。"},
 			{Method: http.MethodPost, Path: base + "/enable", Description: "启用一个豆包账号。"},
 			{Method: http.MethodPost, Path: base + "/disable", Description: "禁用一个豆包账号。"},
@@ -163,6 +165,12 @@ func handleManagement(raw []byte) ([]byte, error) {
 
 	case method == http.MethodPost && subPath == "/import":
 		return handleImportCredentials(req.Body)
+	case method == http.MethodGet && subPath == "/export":
+		return handleExportAccounts()
+
+	case method == http.MethodGet && subPath == "/export/zip":
+		return handleExportAccountsZip()
+
 	case method == http.MethodPost && subPath == "/delete":
 		return handleDeleteAccount(req.Body)
 
@@ -280,36 +288,40 @@ func authStateOf(sa *StoredAuth) string {
 
 // handleImportCredentials 处理登录态导入请求。
 //
-// 请求体：{cookie, label?}。cookie 是用户在浏览器中复制的完整 Cookie header。
-// 处理链路：解析 → 字段齐备性校验 → 判据端点确认登录态 → 落盘。
+// 请求体：{cookie, label?}、{raw} 或 {json:{cookie_header:...}} 三种形态。
+// cookie 是用户在浏览器中复制的完整 Cookie header；后两种由面板的批量导入与
+// 「导出凭证」文件回灌产生，统一交给 extractImportPayload 下钻提取。
+// 处理链路：载荷提取 → 解析 → 字段齐备性校验 → 判据端点确认登录态 → 落盘。
 // [参数] body: 请求体字节。
 // [返回] 管理响应。
-// 最近修改时间：2026-10-17；改动原因：新增，登录态导入入口（AC-001）。
+// 最近修改时间：2026-11-14 02:50:00；改动原因：兼容批量导入与导出文件回灌载荷。
 func handleImportCredentials(body []byte) ([]byte, error) {
-	var req struct {
-		Cookie string `json:"cookie"`
-		Label  string `json:"label"`
-	}
-	if errUnmarshal := json.Unmarshal(body, &req); errUnmarshal != nil {
-		return makeHTTPResponse(http.StatusBadRequest, []byte(fmt.Sprintf(`{"error":%q}`, "请求体格式错误，应为 JSON")))
-	}
-	if strings.TrimSpace(req.Cookie) == "" {
+	// 请求体兼容三种形态：{cookie,label}、{raw}、{json:{cookie_header:...}}。
+	// 后两种来自面板的批量导入与导出文件回灌，解析交给 extractImportPayload。
+	cookie, label := extractImportPayload(body)
+	cookie = strings.TrimSpace(cookie)
+	if cookie == "" {
 		return makeHTTPResponse(http.StatusBadRequest, []byte(`{"error":"cookie 不能为空"}`))
 	}
 
 	timeout := time.Duration(currentConfig().TimeoutSeconds) * time.Second
-	sa, errSave := saveCredentials(req.Cookie, req.Label, timeout)
+	sa, errSave := saveCredentials(cookie, strings.TrimSpace(label), timeout)
 	if errSave != nil {
 		// 校验失败是预期路径（垃圾 Cookie / 缺字段 / 会话过期），返回 400 并给出可操作提示。
 		msg, _ := json.Marshal(map[string]any{"error": errSave.Error()})
 		return makeHTTPResponse(http.StatusBadRequest, msg)
 	}
 
+	// success / nickname / uid 三键与面板批量导入的判据对齐（面板同时接受 ok）。
 	respBody, _ := json.Marshal(map[string]any{
-		"ok":      true,
-		"auth_id": sa.AuthID,
-		"label":   sa.Label,
-		"message": "登录态导入成功",
+		"ok":         true,
+		"success":    true,
+		"auth_id":    sa.AuthID,
+		"auth_index": sa.AuthID,
+		"label":      sa.Label,
+		"nickname":   sa.ScreenName,
+		"uid":        sa.SecUserID,
+		"message":    "登录态导入成功",
 	})
 	return makeHTTPResponse(http.StatusOK, respBody)
 }
