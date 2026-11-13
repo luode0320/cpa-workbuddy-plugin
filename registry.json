@@ -687,6 +687,28 @@
           }
         ]
       }
+    },
+    {
+      "id": "doubao-provider",
+      "name": "Doubao Provider",
+      "description": "Doubao workstation-mode provider for CLIProxyAPI: browser-session cookie import with device-identity derivation, agent_mode=1 client-pipeline forwarding across DeepSeek / Kimi / GLM / Doubao upstream models, image and video generation via the web skill pipeline, multi-account pool with laddered cooldown failover, and a dedicated management panel.",
+      "author": "Sliverkiss (cpa-workbuddy-plugin)",
+      "version": "0.1.7",
+      "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
+      "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/Doubao.png",
+      "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/doubao",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "Doubao",
+        "CookieImport",
+        "WorkMode",
+        "Management"
+      ],
+      "install": {
+        "type": "direct",
+        "artifacts": []
+      }
     }
   ]
 }

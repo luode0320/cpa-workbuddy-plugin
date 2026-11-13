@@ -1,0 +1,9 @@
+# 生产代码测试污染豁免登记（doubao-provider）
+# 口径：扫描器以顶层 test/ 目录分桶，不识别 Go 的 *_test.go 后缀约定，
+# 因此本插件按仓库既有惯例放在源码目录内的 *_test.go 会被误判为生产文件。
+# 下列命中项全部位于 *_test.go 内部，不进生产二进制，也不构成仅测试可达分支。
+completion_live_test.go::if os.Getenv("DOUBAO_LIVE_TEST") != "1" {  # live 测试开关，仅存在于测试文件内
+cookiejar_live_test.go::if os.Getenv("DOUBAO_LIVE_TEST") != "1" {  # live 测试开关，仅存在于测试文件内
+creation_live_test.go::if os.Getenv("DOUBAO_LIVE_TEST") != "1" {  # live 测试开关，仅存在于测试文件内
+credentials_test.go::if os.Getenv("DOUBAO_LIVE_TEST") != "1" {  # live 测试开关，仅存在于测试文件内
+executor_live_test.go::if os.Getenv("DOUBAO_LIVE_TEST") != "1" {  # live 测试开关，仅存在于测试文件内
