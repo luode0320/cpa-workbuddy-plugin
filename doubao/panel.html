@@ -140,6 +140,18 @@ button.sec .spin{border-color:var(--fg);border-top-color:transparent}
 .model-item .mi-name{display:block;font-family:inherit;font-size:13px;font-weight:600;color:var(--fg)}
 .model-item .mi-id{display:block;margin-top:2px;font-family:ui-monospace,monospace;font-size:11px;color:var(--mut);word-break:break-all}
 .ref-tag{display:inline-block;margin-left:6px;padding:0 6px;border-radius:999px;background:var(--acc-ring);color:var(--acc);font-family:inherit;font-size:11px;font-weight:500;line-height:16px;vertical-align:middle}
+.checkin{padding:16px;margin-bottom:14px}
+.checkin-hd{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.checkin-list{display:flex;flex-direction:column;gap:8px}
+.checkin-item{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.checkin-item .ci-hd{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.checkin-item .ci-name{font-weight:600;font-size:13px}
+.checkin-item .ci-meta{color:var(--mut);font-size:12px;margin-top:6px;display:flex;gap:14px;flex-wrap:wrap;line-height:1.6}
+.checkin-item .ci-note{color:var(--mut);font-size:12px;margin-top:6px;line-height:1.55;word-break:break-all}
+.ck{font-size:11px;font-weight:600;padding:2px 9px;border-radius:99px;border:1px solid var(--mut-border);background:var(--mut-soft);color:var(--mut)}
+.ck.done{background:var(--ok-soft);color:var(--ok);border-color:var(--ok-border)}
+.ck.ready{background:var(--warn-soft);color:var(--warn);border-color:var(--warn-border)}
+.ck.expired,.ck.error{background:var(--err-soft);color:var(--err);border-color:var(--err-border)}
 </style>
 <script>
 /* Early theme sync (before body paint): mirror CPA parent data-theme when
@@ -204,6 +216,7 @@ button.sec .spin{border-color:var(--fg);border-top-color:transparent}
     <button class="sec" id="exportZipBtn" onclick="exportAuthZip(this)" title="导出为 zip，每个账号一个独立 JSON 文件，便于按账号分发或迁移">导出 ZIP</button>
     <input id="searchInput" class="search" type="search" placeholder="搜索 昵称 / 备注 / 账号标识" oninput="onSearchChange(this.value)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other">
     <button class="sec sort-btn" id="sortBtn" onclick="toggleSort(this)" title="当前：创建时间倒序（新→旧），点击切账号标识升序">创建 ↓</button>
+    <button class="sec" id="checkinBtn" onclick="runCheckin(this)" title="对所有账号执行一次真实签到：已签到与需桌面端领取的账号会自动跳过">今日签到</button>
   </div>
   <div class="filter-bar" id="filterBar">
     <button type="button" class="ftag active" data-region="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
@@ -212,6 +225,7 @@ button.sec .spin{border-color:var(--fg);border-top-color:transparent}
     <button type="button" class="ftag" data-region="expired" onclick="filterRegion('expired',this)" title="登录态已过期，需要重新导入 Cookie">过期 <span class="cnt" id="cntExpired">0</span></button>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
+  <div class="checkin card" id="checkinBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
 </div>
 <div class="modal-mask" id="importModal" onclick="onImportMaskClick(event)">
@@ -548,6 +562,85 @@ function renderSummary(accounts){
     '</div>';
 }
 
+/* ---------- 签到与免费额度 ---------- */
+// 状态到徽章样式的映射：只有 ready 需要用户动作，done 为正常态。
+const CK_CLASS={done:"done",ready:"ready",desktop_only:"ready",expired:"expired",error:"error",skipped:"expired"};
+function ckBadge(state,text){
+  return '<span class="ck '+(CK_CLASS[state]||"")+'">'+esc(text||state||"未知")+'</span>';
+}
+// 把额度窗口渲染成「已用/总量（百分比）」；空数组说明该账号当前没有赠送额度。
+function ckQuotaText(groups){
+  if(!Array.isArray(groups)||!groups.length) return "暂无赠送额度";
+  return groups.map(g=>{
+    const name=g.name||"额度";
+    const pct=(g.percent==null||g.percent===0)?(g.total?Math.round(g.used/g.total*100):0):Math.round(g.percent);
+    return name+' '+g.used+'/'+g.total+'（'+pct+'%）';
+  }).join(" · ");
+}
+function renderCheckin(payload){
+  const box=document.getElementById("checkinBox");
+  const list=(payload&&payload.accounts)||[];
+  if(!list.length){box.style.display="none";box.innerHTML="";return}
+  const items=list.map(item=>{
+    const meta=[];
+    // 1. 连续天数、累计额度、今日可得额度分开展示，避免把「今日额度」误读成总额度。
+    if(item.continuous_days!=null) meta.push("连续 "+item.continuous_days+" 天");
+    if(item.rewarded_total!=null) meta.push("活动累计 "+item.rewarded_total);
+    if(item.reward_amount!=null) meta.push("今日可得 "+item.reward_amount);
+    if(item.checked_in_today===true) meta.push("今日已签");
+    else if(item.checked_in_today===false) meta.push("今日未签");
+    const quota=item.quota_error?"额度读取失败："+esc(item.quota_error):esc(ckQuotaText(item.quota));
+    return '<div class="checkin-item">'+
+      '<div class="ci-hd"><span class="ci-name">'+esc(item.label||item.auth_id||"未命名")+'</span>'+
+      ckBadge(item.state,item.state_text)+'</div>'+
+      '<div class="ci-meta">'+meta.map(t=>'<span>'+esc(t)+'</span>').join("")+'</div>'+
+      '<div class="ci-note">赠送额度：'+quota+'</div>'+
+      (item.message?'<div class="ci-note">'+esc(item.message)+'</div>':'')+
+      '</div>';
+  }).join("");
+  box.style.display="block";
+  box.innerHTML='<div class="checkin-hd"><span class="summary-title">今日签到与免费额度</span>'+
+    '<span class="summary-meta">活动 '+esc(payload.campaign||"")+' · 查询于 '+esc(fmtCST(payload.checked_at))+'</span></div>'+
+    '<div class="checkin-list">'+items+'</div>';
+}
+// 拉取签到状态：失败只在区块内降级提示，不影响账号列表渲染。
+async function loadCheckin(){
+  const box=document.getElementById("checkinBox");
+  try{
+    const d=await api("/checkin/status",{__silent:true});
+    if(!d||d.error){ throw new Error((d&&d.error)||"签到状态返回为空"); }
+    renderCheckin(d);
+  }catch(e){
+    if(!box) return;
+    box.style.display="block";
+    box.innerHTML='<div class="checkin-hd"><span class="summary-title">今日签到与免费额度</span></div>'+
+      '<div class="checkin-item"><div class="ci-note">签到状态暂时不可用：'+esc(e&&e.message?e.message:String(e))+'</div></div>';
+  }
+}
+// 手动签到：先确认再提交，成功后刷新状态。
+async function runCheckin(btn){
+  if(!getKey()){ showAuth(); return; }
+  busy(btn,true);
+  try{
+    const d=await api("/checkin/run",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    if(d&&d.error){ toast("签到失败","err",String(d.error)); return; }
+    const rows=(d&&d.results)||[];
+    // 1. 按状态分流提示：done 与 desktop_only 不算失败，error / expired 才报错。
+    const done=rows.filter(x=>x.state==="done").length;
+    const blocked=rows.filter(x=>x.state==="desktop_only").length;
+    const failed=rows.filter(x=>x.state==="error"||x.state==="expired").length;
+    toast("签到完成","ok","成功 "+done+" · 需桌面端 "+blocked+" · 失败 "+failed);
+    rows.forEach(x=>{
+      if(x.state==="error"||x.state==="expired") toast((x.label||x.auth_id||"账号")+" 签到失败","err",String(x.message||""));
+    });
+    await loadCheckin();
+  }catch(e){
+    toast("签到失败","err",e&&e.message?e.message:String(e));
+  }finally{
+    busy(btn,false);
+  }
+}
+
 /* ---------- 账号卡片 ---------- */
 function card(a){
   const id=esc(a.auth_id||"");
@@ -627,6 +720,7 @@ async function load(){
     if(!accounts.length){
       g.innerHTML='<div class="loading">暂无豆包账号。点上方「豆包一键授权」即可接入（首次拖一次书签，之后登录完点一下书签即可）。</div>';
       renderSummary([]);
+      renderCheckin(null);
       updateFilterCounts([]);
       return;
     }
@@ -635,6 +729,7 @@ async function load(){
     applyCardVisibility();
     updateFilterCounts(accounts);
     renderSummary(accounts);
+    loadCheckin();
   }catch(e){
     const msg=e&&e.message?e.message:String(e);
     if(!lastAccounts.length) g.innerHTML='<div class="loading">'+esc(msg)+"</div>";

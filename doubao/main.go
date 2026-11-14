@@ -64,7 +64,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.1.11"
+	version      = "0.1.12"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -413,6 +413,9 @@ func configurePlugin(raw []byte) error {
 
 	// 3. 整体替换运行期配置，热更新立即对后续请求生效。
 	activeConfig.Store(cfg)
+
+	// 4. 签到定时器随插件配置就绪一起拉起，幂等保证重复 reconfigure 不叠加。
+	ensureCheckinScheduler()
 	return nil
 }
 

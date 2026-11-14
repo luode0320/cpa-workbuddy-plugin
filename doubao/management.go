@@ -77,6 +77,8 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/disable", Description: "禁用一个豆包账号。"},
 			{Method: http.MethodGet, Path: base + "/models", Description: "列出账号可测试的模型（query: auth_index）。"},
 			{Method: http.MethodPost, Path: base + "/test-active", Description: "对单个账号发起一次真实推理测试（body: {auth_index, model?}）。"},
+			{Method: http.MethodGet, Path: base + "/checkin/status", Description: "查询账号今日签到状态与活动赠送额度（query: auth_index 可只查单账号）。"},
+			{Method: http.MethodPost, Path: base + "/checkin/run", Description: "对账号执行一次真实签到（body: {auth_index?}，缺省为全部账号）。"},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "Doubao", Description: "豆包 Provider 管理面板：登录态导入、账号管理、状态诊断。"},
@@ -196,6 +198,12 @@ func handleManagement(raw []byte) ([]byte, error) {
 
 	case method == http.MethodPost && subPath == "/test-active":
 		return makeJSONResponse(handleTestActive(req))
+
+	case method == http.MethodGet && subPath == "/checkin/status":
+		return makeJSONResponse(handleCheckinStatus(req))
+
+	case method == http.MethodPost && subPath == "/checkin/run":
+		return makeJSONResponse(handleCheckinRun(req))
 
 	default:
 		return makeHTTPResponse(http.StatusNotFound, []byte(`{"error":"not_found"}`))

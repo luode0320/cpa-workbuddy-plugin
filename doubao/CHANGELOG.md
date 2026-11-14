@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.12 (2026-11-14)
+
+### Feat - 每日签到与活动赠送额度（面板可见 + 手动签到 + 每日两轮定时）
+
+- 功能: 面板新增「今日签到与免费额度」区块与工具条「今日签到」按钮。每个账号一行：签到状态徽章（今日已签 / 今日未签可签到 / 需桌面端领取 / 登录态过期 / 签到失败）+ 连续天数 + 活动累计额度 + 今日可得额度 + 赠送额度窗口（已用/总量/百分比）。新增管理路由 `GET /checkin/status`（query `auth_index` 可只查单账号）与 `POST /checkin/run`（body `{auth_index?}`，缺省全部账号）。
+- 定时: 每天 `10:00` 与 `22:00` 各跑一轮全账号签到（`checkinHours = []int{10, 22}`）。两轮是刻意冗余——上午拿当天额度，晚间兜住上午因上游抖动漏签；重复提交天然幂等（上游回 `idempotent=true`），不会重复发放。
+- 契约: 签到 `POST /alice/ug/campaign/landing/checkin/` body `{"scene":"pc_incentive_task_mvp_v3"}`；活动详情 `POST /alice/ug/campaign/v3/detail/` body `{"campaign_group_code":"pc_incentive_task_mvp_v3"}`；落地页 `POST /alice/ug/campaign/landing/get`；额度 `POST /alice/commerce/sale/subscription/quota/summary/` body `{}`。四个端点全部复用既有 `postBusinessJSON`（同一套 19 键网页端 query + 网页端指纹），未新造请求栈。
+- 渠道判据（关键）: 落地页响应的 `data.chosen_type` 决定该账号能走哪条入口。`chosen_type=0` 网页签到可成功（回执 `checked_in=true`、`reward_amount=200`）；`chosen_type=3` 被平台改投桌面端（`landing_cards[0].card_code="web_pc_download_banner"`、副标题「前往豆包桌面端即可领取」），任何参数组合都回 `710010702`。生产两账号实测确认，判据可靠。
+- 渠道分流的硬约束: 只在 `chosen_type=0` 且今日未签时才提交签到；`chosen_type=3` 只上报「需桌面端领取」，**完全不产生签到写请求**。桌面端形态详情的 `tasks[]` 里根本没有 `daily_signin`（web 形态 7 条含它，客户端形态 5 条不含），说明平台按渠道裁剪活动，不是参数缺失。
+- 成功判据: 单个 `code=0` 不算成功。提交后等 2s 回查详情，只有 `daily_checkin.checked_in_today=true` 才判 done，否则如实报「已提交但上游未确认到账」。该口径与 `L0NE-6/DoubaoWork-Daily`、`hiclaw168-163/auto-signin-kit` 两个开源实现一致。
+- 风控红线: 不伪造 `biz_params` / `AgwCommonParam` / `a_bogus` 等 SDK 风控字段；不做任务奖励自动领取（`item/reward/claim` 对 `daily_signin` 只回 `biz_error.code=3 领取结果确认中`，不是有效签到路径）；不加后台探活。已签账号完全不发写请求，避免重复裸提交触发上游异常流量判定。
+- 额度读法: `quota/summary` 的 `window_limits` 数组位置由上游决定，故按 key 名递归提取，读 `feature_group_name` / `total_amount` / `used_amount` / `used_percent` / `end_time`；数值兼容数字与带千分位/货币符号的字符串。已签账号才有活动赠送额度窗口（生产实测 200/200，到期 `1797237901995`）。
+- 代码落点: 新增 `doubao/checkin.go`（接口调用、状态判定、递归额度提取、定时器）与 `doubao/checkin_test.go`（13 个用例）；`doubao/management.go` 登记 2 条路由 + 2 个分发分支；`doubao/main.go` 在 `configurePlugin` 末尾幂等拉起签到定时器；`doubao/panel.html` 新增签到区块与按钮。`protocol.go` / `models.go` / `completion.go` 零改动（`buildBusinessQuery` / `endpointURL` / `clientUserAgent` 全现成复用）。
+- 定时器取舍: 与 qoder 系插件一致，故意不提供停止函数——宿主在自身运行时拆卸阶段调用插件 shutdown，此时从 c-shared 运行时触碰 `sync` 原语会让进程 SIGSEGV，故 `ensureCheckinScheduler()` 用 `checkinSchedulerOn` 布尔做幂等，重复 reconfigure 不叠加 goroutine。
+- 验证: `python scripts/cgo-shim-build.py doubao` → build / vet / test 全绿（`ok ... 8.2s`）；`panel.html` 两个 `<script>` 块经 `node --check` 语法校验通过。生产两账号真实签到实测：账号1 `chosen_type=0` 拿到幂等回执 `checked_in=true / reward_amount=200`，账号2 `chosen_type=3` 被正确识别为「需桌面端」且未提交。
+
 ## 0.1.11 (2026-11-14)
 
 ### Fix - 工作模式全模型 503：顶层 `option.conversation_mode` 写成字符串被上游拒绝
