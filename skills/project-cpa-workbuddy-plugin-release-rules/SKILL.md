@@ -263,14 +263,45 @@ curl -s -H "Authorization: Bearer $K" http://127.0.0.1:8317/v0/management/plugin
 
 2. **启用组**：正常 `install?version=<ver>&source=<sid>`，等 40~60 秒，用 `docker logs cli-proxy-api --since 20m | grep "hot reloaded"` 核对 `active_version=<目标版本>`；**没有该记录即视为本轮发布失败**，继续查 `docker logs | grep <plugin-id>` 与 sha256。
 
-3. **停用组**：**同样 install**（保证 registry 与生产落盘版本对齐），但：
-   - **不启用、不删除、不调用任何 `PUT/POST/DELETE /v8/management/plugins/...`**；
-   - install 后**没有 `hot reloaded` 是停用态的正常表现**（踩坑 58 同源机理），**不判为失败**；
-   - 更不得为了凑「全部热重载」而改启用状态——恢复停用插件属独立宿主配置变更，须单独确认。
+3. **停用组**：**同样 install**（保证 registry 与生产落盘版本对齐），install 后**没有 `hot reloaded` 是停用态的正常表现**（踩坑 58 同源机理），**不判为失败**。
 
-4. **收口判据**：发布后再取一次启用态快照，**启用 / 停用的插件集合必须与发布前完全一致**（集合 diff 为空）。只有启用组才有 hot reloaded 验收要求；停用组只验「落盘 .so 版本与 registry 一致」。
+4. **⚠️ install 会把停用插件原地激活（2026-11-14 实测铁律，踩坑 61）**：`plugin-store install` 对停用插件同样写 `enabled=true`，日志出现 `plugin loaded` + `plugin registered`（但**没有** `hot reloaded` 行），快照里 `registered` / `enabled` / `effective_enabled` 由 `false` 全变 `true`。因此停用组必须执行**三步还原**：
 
-5. 实测样例（2026-11-14 一次发 10 个插件）：启用组 = coze / doubao / qoderwork / traework / workbuddy（5 个，必须 hot reloaded）；停用组 = cursor / qoder-ai / qwenwork / workbuddy-ai / zcode（5 个，只更新落盘）。
+```bash
+K="<管理密钥>"; P="<plugin-id>"; TS=$(date +%Y%m%d_%H%M%S)
+
+# ① 还原前先备份原配置（顶层 enabled + store 等字段整体落盘）
+mkdir -p /tmp/plugin_cfg_backup_$TS
+curl -s -H "Authorization: Bearer $K" "http://127.0.0.1:8317/v0/management/plugins/$P/config" \
+  -o /tmp/plugin_cfg_backup_$TS/$P.json
+
+# ② 取回完整配置 → enabled 置 false → 原样回写（其余字段一律不动）
+python3 - "/tmp/plugin_cfg_backup_$TS/$P.json" "$K" "$P" <<'PY'
+import json, sys, urllib.request
+path, key, pid = sys.argv[1], sys.argv[2], sys.argv[3]
+cfg = json.load(open(path, encoding="utf-8"))
+cfg["enabled"] = False
+req = urllib.request.Request(
+    f"http://127.0.0.1:8317/v0/management/plugins/{pid}/config",
+    data=json.dumps(cfg).encode("utf-8"),
+    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+    method="PUT",
+)
+print(pid, urllib.request.urlopen(req, timeout=20).read().decode())
+PY
+
+# ③ 必须回读确认；仍为 true 就重试（实测 5 个里 1 个首轮未生效）
+curl -s -H "Authorization: Bearer $K" "http://127.0.0.1:8317/v0/management/plugins/$P/config" \
+  | python3 -c 'import json,sys;print("RE-READ enabled=", json.load(sys.stdin).get("enabled"))'
+```
+
+   - 已验证可用端点只有这两个：`GET /v0/management/plugins/<id>/config` → 200 返回 `{enabled, store{...}, [cpa_management_key, cpa_management_url, lifecycle_auto, priority]}`；`PUT /v0/management/plugins/<id>/config` → 200 `{"status":"ok"}`。
+   - 不要浪费时间去试这些**不存在**的端点（2026-11-14 逐个探过）：`POST .../disable`、`POST .../enable` → 400 `{"error":"auth_id is required"}`；`PUT .../enabled`、`PUT /v0/management/plugins/<id>`、`POST /v8/management/plugins/<id>/disable`、`PUT /v8/management/plugins/<id>/enabled`、`POST /v0/management/plugin-store/<id>/disable` → 全 404；`GET /v0/management/plugins/<id>` → 404。
+   - **⛔ 禁止 `DELETE /v0/management/plugins/<id>`**：响应 `{"configured_removed":true,"file_deleted":true,"id":"<id>","restart_required":false}` —— 会**同时删除宿主配置条目与落盘 `.so`**，日志出现 `plugin unloaded plugin_id=<id>`，属**不可逆插件卸载**，不是停用手段。停用只能用上面的 `PUT .../config` 置 `enabled=false`。误删后的恢复：重新 `POST /v0/management/plugin-store/<id>/install?version=<ver>&source=<sid>`（200 + `plugin loaded` + `plugin registered`），再按第 4 步把 `enabled` 还原为 `false`。
+
+5. **收口判据**：发布后再取一次启用态快照，与 install 前的快照做**逐字段 diff**，`configured` / `registered` / `enabled` / `effective_enabled` 必须**完全一致**，判定输出 `STATE_UNCHANGED`（不是"集合一致"，是逐字段一致）。只有启用组才有 hot reloaded 验收要求；停用组验「落盘 .so 版本与 registry 一致」+「启用态已还原」。
+
+6. 实测样例（2026-11-14 一次发 10 个插件）：启用组 = coze / doubao / qoderwork / traework / workbuddy（5 个，全部 hot reloaded 验过：0.7.7 / 0.1.11 / 0.13.18 / 0.5.57 / 0.21.27）；停用组 = cursor / qoder-ai / qwenwork / workbuddy-ai / zcode（5 个，install 后全部被激活、全部靠 `PUT .../config` 还原为 `enabled=false`，qoder-ai 需重试一轮）。终态 13 插件快照与发布前逐字段 diff 为空（启用 7 = coze/doubao/qoderwork/traework/workbuddy/safeguard-killer/workbuddy-token-usage；停用 6 = copilot/cursor/qoder-ai/qwenwork/workbuddy-ai/zcode）。
 
 #### ⛔ 更新插件不需要手工改数据库表（强制红线，2026-10-11 两次生产事故后固化）
 
@@ -426,6 +457,8 @@ git -c http.proxy=socks5h://127.0.0.1:1080 push origin main
 59. **`workflow_dispatch` 发布在 Release 步骤报 `without workflows permission` = 仓库默认工作流权限是 `read`（2026-10-17 实测，已修复并验证）**：Release job 用 `GITHUB_TOKEN` 执行 `git push origin <tag>`，若 tag 指向的提交链里包含对 `.github/workflows/*` 的改动（如并行会话提交的 `ci(doubao): 接入 doubao-provider ...` 改了 build.yml），会被 GitHub 以 `! [remote rejected] ... (refusing to allow a GitHub App to create or update workflow .github/workflows/build.yml without workflows permission)` 拒绝，整个 Release 失败（构建全绿、只有推 tag 失败，极易误判为网络问题）。根因是仓库 `default_workflow_permissions` 默认 `read`。**处置**：① 改仓库设置——`PUT /repos/{owner}/{repo}/actions/permissions/workflow`，body `{"default_workflow_permissions":"write","can_approve_pull_request_reviews":false}`（返回 204），随后 `GET` 同一端点回读确认变 `write`；② 应急可本地用有权限的 SSH 凭据 `git push origin <tag>`，tag 触发时 `GITHUB_REF_TYPE=tag` 会跳过 CI 内的建 tag 步骤，同样能发；③ 该设置**只对新触发的 run 生效**，已在队列里的 run 不会重读。**验证通路的最省成本方式**：dispatch 一个带临时后缀的版本（如 `0.9.43-verify1`，`VER_RE = ^[0-9][0-9A-Za-z.+-]*$` 允许），走完 `Publish GitHub release` 步骤后立即 `DELETE /releases/<id>` + `DELETE /git/refs/tags/<tag>` 清理，并确认 `origin/main:registry.json` 无该后缀（CI 的 `Sync registry.json version` 只改 job 内工作区，不推送）。
 
 60. **多源同名插件 `install` 报 409 `plugin_store_source_required`，且用错 key 会按源 IP 封禁 30 分钟（2026-11-08 实测，safeguard-killer 0.1.3 部署）**：65 同时挂了官方商店（`official`，esauvisky 上游 `safeguard-killer` 0.5.x）与本仓库 registry（`source-636fa01121af`，`luode0320/cpa-workbuddy-plugin`）两个源，两家都含该 id 时**不带 source 直接 install 返回 HTTP 409** `{"error":"plugin_store_source_required","message":"multiple plugin store sources contain this plugin id; specify source","sources":[{...}]}`，而 `GET /v0/management/plugins` 看起来一切正常（`registered=true, enabled=true`），极易误判为路由写错。**处置铁律**：① 平台自研插件 install 必须带 `&source=<source_id>`，source id 从 `GET /v0/management/plugin-store` 的 `sources[]` 按 url 匹配取得，**机器生成会变，禁止硬编码**；② 65 的 `management.secret-key` 是 bcrypt hash，明文只能从 `/root/.bash_history` 取候选并用 `python3 -c "import bcrypt; ...checkpw(...)"` 离线验证（服务器有 bcrypt 模块，无 htpasswd / passlib）；③ 用错 key 会**按源 IP 封禁约 30 分钟**（`403 IP banned due to too many failed attempts`），宿主机被封后本机所有 curl 全败，会误读成"密钥错"，此时别继续试——改从 bridge 网络容器打 `http://172.17.0.1:8317`（另一源 IP，未封禁），但**必须先用离线 bcrypt 验明 key 正确**，否则只是把封禁换到容器网段；④ 判定成功的证据仍是 `docker logs cli-proxy-api | grep "hot reloaded"` 里的 `active_version` + `sha256sum <落盘.so>` 与本地 release zip 内 `.so` 一致（本次实测二者一致：`7781177…fae8dd`，29,352,448 字节），并额外用 `GET /v0/resource/plugins/<id>/ui` 取面板 HTML 与本地 `ui.go` 的 `uiHTML` 逐字节比对（本次 59,318 字节完全一致）来证明汉化已真上生产。
+
+61. **`plugin-store install` 会把「停用中」的插件原地激活，`DELETE /v0/management/plugins/<id>` 会连落盘 .so 一起删（2026-11-14 实测铁律，一次发 10 个插件时踩到）**：原以为停用插件 install 只更新二进制、不碰启用状态，实测**完全相反**——5 个停用插件（cursor / qoder-ai / qwenwork / workbuddy-ai / zcode）install 后快照里 `registered` / `enabled` / `effective_enabled` 从 `false` 全部变 `true`，日志出现 `plugin loaded` + `plugin registered`（但**没有** `hot reloaded`）。**处置铁律**：① 停用组 install 后必须执行三步还原 —— `GET /v0/management/plugins/<id>/config` 取完整配置备份到 `/tmp/plugin_cfg_backup_<ts>/` → 顶层 `enabled` 置 `false`、其余字段原样回写 `PUT .../config`（200 `{"status":"ok"}`）→ **必须回读** `GET .../config` 确认 `enabled=false`，**实测 5 个里有 1 个（qoder-ai）首轮 PUT 后回读仍为 `true`，重试一轮才成功，所以"回读"不是可选项**；② **⛔ 禁止用 `DELETE /v0/management/plugins/<id>` 做停用**——实测返回 `{"configured_removed":true,"file_deleted":true,"id":"zcode-provider","restart_required":false}`，同时删除宿主配置条目与落盘 `.so`，日志 `plugin unloaded plugin_id=<id>`，属不可逆卸载；误删恢复 = 重新 `POST /v0/management/plugin-store/<id>/install?version=<ver>&source=<sid>`（200 + loaded + registered）再把 `enabled` 置回 `false`；③ **只看 `GET/PUT /v0/management/plugins/<id>/config` 这两个端点**，其余端点 2026-11-14 已逐个探过全不存在（`POST .../disable`、`POST .../enable` → 400 `{"error":"auth_id is required"}`；`PUT .../enabled`、`PUT /v0/management/plugins/<id>`、`POST /v8/management/plugins/<id>/disable`、`PUT /v8/.../enabled`、`POST /v0/management/plugin-store/<id>/disable` → 全 404；`GET /v0/management/plugins/<id>` → 404），不要在探测端点上浪费时间；④ 收口判据是**逐字段快照 diff 为空**（`STATE_UNCHANGED`），不是"集合一致"，13 个插件的四个布尔字段必须与 install 前完全一致。
 
 ## 权责边界与不负责事项
 
