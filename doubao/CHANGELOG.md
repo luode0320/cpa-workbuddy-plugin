@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.13 (2026-11-14)
+
+### Fix - 桌面端渠道账号被误判为「签到活动已下线」，12 个账号里 10 个状态错误
+
+- 缺陷(生产实测 2026-11-14 17:47): 0.1.12 上线后 `GET /checkin/status` 对生产 12 个账号只给出 2 个正确状态，其余 10 个（`号10` / `用户358840` / `用户288838x` / `第七` / `用户220908` / `用户766588` / `用户815917` / `用户825285` / `用户305270` / `用户224666`）全部 `state=error` + `message=读取签到活动失败：签到活动已下线或已换季`。
+- 根因: 判据顺序错了。`checkinStatusFor` 与 `runCheckinForAccount` 都先查活动详情 `v3/detail`，详情回非 0 就整条失败；但**桌面端渠道账号在网页侧没有活动实例**，其 `v3/detail` 必然回 `{"data":null,"code":2,"message":"campaign not found"}`，而同一账号的 `landing/get` 是正常的 `{"chosen_type":3}`。于是「需桌面端领取」被错报成「活动已下线」，文案与真实原因完全不符，用户会被误导去排查活动是否换季。
+- 上游取证: 生产宿主机直打两账号对比——`doubao-adcd31d29873b4c8.json`（欧皇小德子）`v3/detail` → `code=0`（含 tasks 与 example_cases）、`landing/get` → `{"chosen_type":0,"landing_cards":[]}`；`doubao-20fcbcfb49f40321.json`（号10）`v3/detail` → `{"data":null,"code":2,"msg":"","message":"campaign not found"}`、`landing/get` → `{"chosen_type":3,"landing_cards":[{"card_code":"web_pc_download_banner",...,"content":"下载桌面端"}]}`。`landing/get` 才是渠道判据的唯一真相源。
+- 修复: `checkin.go` 两处判据顺序统一改为「登录态 → **落地页 `chosen_type` 先行** → 网页渠道才拉详情 → 三态判定 → 额度降级」。桌面端账号在落地页判定处直接返回 `desktop_only`，**完全不请求活动详情、不产生任何签到写请求**；步骤编号同步重排（`checkinStatusFor` 2/3/4/5、`runCheckinForAccount` 2/3/4/5）。
+- 测试: 新增 `TestCheckinStatusForDesktopAccountIgnoresDetailError` 锁死本次生产缺陷——桩里 `v3/detail` 回 `code=2 campaign not found`、`landing/get` 回 `chosen_type=3`，要求判 `desktop_only` 且**不请求详情路径**、不请求签到路径；`TestRunCheckinSkipsWhenAlreadySigned` 补显式 `checkinLandingPath` 桩，避免新顺序下靠默认响应蒙对。用例数 13 → 14。
+- 哨兵验证: 把落地页分支条件临时改成 `if false && chosenType != checkinChosenWeb` 后 `TestCheckinStatusForDesktopAccountIgnoresDetailError`（`checkin_test.go:203`）与 `TestRunCheckinSkipsDesktopChannel`（`checkin_test.go:230`）双双 FAIL，恢复后全绿——证明新用例真实进编译并守住了顺序。
+- 影响范围: 仅 `checkin.go` 两个函数的判据顺序与 `checkin_test.go` 用例、`VERSION` / `main.go` 版本号；路由、面板、定时器、额度递归、`protocol.go` / `models.go` / `completion.go` 零改动。
+
 ## 0.1.12 (2026-11-14)
 
 ### Feat - 每日签到与活动赠送额度（面板可见 + 手动签到 + 每日两轮定时）

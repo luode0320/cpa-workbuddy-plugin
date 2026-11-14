@@ -20,6 +20,9 @@ const checkinDetailSignedBody = `{"code":0,"data":{"tasks":[{"campaign_code":"da
 // checkinLandingWebBody 是网页渠道（chosen_type=0）的落地页响应。
 const checkinLandingWebBody = `{"code":0,"data":{"chosen_type":0,"landing_cards":[]}}`
 
+// checkinDetailCampaignNotFoundBody 是桌面端渠道账号的活动详情响应（生产实测）。
+const checkinDetailCampaignNotFoundBody = `{"data":null,"code":2,"msg":"","message":"campaign not found"}`
+
 // checkinLandingDesktopBody 是桌面端渠道（chosen_type=3）的落地页响应。
 const checkinLandingDesktopBody = `{"code":0,"data":{"chosen_type":3,"landing_cards":[{"card_code":"web_pc_download_banner","task_code":"daily_signin","title":"今日签到领 200 额度","subtitle":"前往豆包桌面端即可领取"}]}}`
 
@@ -184,6 +187,33 @@ func TestFetchQuotaGroupsReadsActivityGrant(t *testing.T) {
 	}
 }
 
+// TestCheckinStatusForDesktopAccountIgnoresDetailError 锁死生产实测的判据顺序。
+//
+// 桌面端渠道账号的活动详情回 code=2 campaign not found（该账号在网页侧没有活动实例），
+// 只有落地页 chosen_type=3 才是真相；先查详情会把它误判成「活动已下线」。
+func TestCheckinStatusForDesktopAccountIgnoresDetailError(t *testing.T) {
+	stub, restore := newCheckinStub(t, map[string]string{
+		checkinDetailPath:  checkinDetailCampaignNotFoundBody,
+		checkinLandingPath: checkinLandingDesktopBody,
+	})
+	defer restore()
+
+	item := checkinStatusFor(checkinTestAccount())
+	if item["state"] != checkinStateDesktopOnly {
+		t.Fatalf("桌面端账号状态应为 %s，实际 %v（%v）", checkinStateDesktopOnly, item["state"], item["message"])
+	}
+	if item["chosen_type"] != 3 {
+		t.Errorf("应回传 chosen_type=3，实际 %v", item["chosen_type"])
+	}
+	// 1. 桌面端账号无 web 活动实例，不该再白跑一次详情请求。
+	if stub.hasPath(checkinDetailPath) {
+		t.Errorf("桌面端账号不应请求活动详情")
+	}
+	if stub.hasPath(checkinRunPath) {
+		t.Fatalf("桌面端账号不得发起签到写请求")
+	}
+}
+
 // TestRunCheckinSkipsDesktopChannel 校验桌面端渠道账号只上报、不提交签到。
 //
 // 这是本实现最重要的红线：上游把网页入口改投桌面端时，反复裸提交会被判异常流量，
@@ -267,7 +297,8 @@ func TestRunCheckinReportsWhenUpstreamNotConfirmed(t *testing.T) {
 // TestRunCheckinSkipsWhenAlreadySigned 校验已签到账号不重复提交。
 func TestRunCheckinSkipsWhenAlreadySigned(t *testing.T) {
 	stub, restore := newCheckinStub(t, map[string]string{
-		checkinDetailPath: checkinDetailSignedBody,
+		checkinDetailPath:  checkinDetailSignedBody,
+		checkinLandingPath: checkinLandingWebBody,
 	})
 	defer restore()
 

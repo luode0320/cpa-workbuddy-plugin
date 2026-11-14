@@ -223,7 +223,7 @@ func accountLabelOf(sa *StoredAuth) string {
 // checkinStatusFor 探测单个账号的签到状态与额度（只读）。
 // [参数] sa: 账号。
 // [返回] 面板展示项。
-// 最近修改时间：2026-11-14 17:10:00；改动原因：新增，单账号只读探测。
+// 最近修改时间：2026-11-14 17:52:00；改动原因：判据顺序改为落地页先行，修桌面端账号被误判成活动下线。
 func checkinStatusFor(sa *StoredAuth) map[string]any {
 	item := map[string]any{
 		"auth_id": sa.AuthID,
@@ -240,31 +240,36 @@ func checkinStatusFor(sa *StoredAuth) map[string]any {
 	ctx, cancel := context.WithTimeout(context.Background(), checkinTimeout)
 	defer cancel()
 
-	// 2. 详情给出今日是否已签；落地页给出渠道判据。
-	detail, errDetail := fetchCampaignDetail(ctx, sa)
-	if errDetail != nil {
-		item["state"] = checkinStateError
-		item["message"] = errDetail.Error()
-		return item
-	}
+	// 2. 渠道判据先行：桌面端账号的活动详情回 code=2（该账号无 web 活动），
+	// 先查详情会把它误判成「活动已下线」，故必须先看落地页 chosen_type。
 	chosenType, errLanding := fetchLandingChosenType(ctx, sa)
 	if errLanding != nil {
 		item["state"] = checkinStateError
 		item["message"] = errLanding.Error()
 		return item
 	}
+	item["chosen_type"] = chosenType
+	if chosenType != checkinChosenWeb {
+		item["state"] = checkinStateDesktopOnly
+		item["state_text"] = checkinStateText(checkinStateDesktopOnly)
+		return item
+	}
 
-	// 3. 三态判定：已签 → 可签 → 需桌面端；找不到签到任务一律按不可签处理。
-	state := checkinStateDesktopOnly
-	switch {
-	case detail.CheckedInToday:
+	// 3. 网页渠道账号才拉活动详情：它是今日是否已签的唯一可信判据。
+	detail, errDetail := fetchCampaignDetail(ctx, sa)
+	if errDetail != nil {
+		item["state"] = checkinStateError
+		item["message"] = errDetail.Error()
+		return item
+	}
+
+	// 4. 两态判定：已签 → 可签。
+	state := checkinStateReady
+	if detail.CheckedInToday {
 		state = checkinStateDone
-	case chosenType == checkinChosenWeb:
-		state = checkinStateReady
 	}
 	item["state"] = state
 	item["state_text"] = checkinStateText(state)
-	item["chosen_type"] = chosenType
 	item["checked_in_today"] = detail.CheckedInToday
 	item["continuous_days"] = detail.ContinuousDays
 	item["total_days"] = detail.TotalDays
@@ -272,7 +277,7 @@ func checkinStatusFor(sa *StoredAuth) map[string]any {
 	item["rewarded_total"] = detail.RewardedTotal
 	item["tasks"] = detail.Tasks
 
-	// 4. 额度失败不影响签到状态展示，单独降级。
+	// 5. 额度失败不影响签到状态展示，单独降级。
 	groups, errQuota := fetchQuotaGroups(ctx, sa)
 	if errQuota != nil {
 		item["quota_error"] = errQuota.Error()
@@ -454,7 +459,7 @@ func collectQuotaGroups(node any, groups *[]checkinQuotaGroup) {
 // 硬约束：只在 chosen_type=0 且今日未签时提交；桌面端渠道账号只上报不提交。
 // [参数] sa: 账号。
 // [返回] 面板展示项（含 state 与 message）。
-// 最近修改时间：2026-11-14 17:10:00；改动原因：新增，单账号签到执行。
+// 最近修改时间：2026-11-14 17:52:00；改动原因：判据顺序改为落地页先行，桌面端账号不再白跑详情请求。
 func runCheckinForAccount(sa *StoredAuth) map[string]any {
 	item := map[string]any{
 		"auth_id": sa.AuthID,
@@ -471,6 +476,21 @@ func runCheckinForAccount(sa *StoredAuth) map[string]any {
 	ctx, cancel := context.WithTimeout(context.Background(), checkinTimeout)
 	defer cancel()
 
+	// 2. 渠道判据先行：桌面端账号的活动详情回 code=2，先查详情会被误判成活动下线。
+	chosenType, errLanding := fetchLandingChosenType(ctx, sa)
+	if errLanding != nil {
+		item["state"] = checkinStateError
+		item["message"] = errLanding.Error()
+		return item
+	}
+	if chosenType != checkinChosenWeb {
+		item["state"] = checkinStateDesktopOnly
+		item["message"] = "平台把该账号的签到入口改投豆包桌面端，网页入口不可用；请在桌面端点击「立即签到」"
+		item["chosen_type"] = chosenType
+		return item
+	}
+
+	// 3. 网页渠道账号先看今日是否已签，已签不再发写请求。
 	before, errBefore := fetchCampaignDetail(ctx, sa)
 	if errBefore != nil {
 		item["state"] = checkinStateError
@@ -485,20 +505,7 @@ func runCheckinForAccount(sa *StoredAuth) map[string]any {
 		return item
 	}
 
-	chosenType, errLanding := fetchLandingChosenType(ctx, sa)
-	if errLanding != nil {
-		item["state"] = checkinStateError
-		item["message"] = errLanding.Error()
-		return item
-	}
-	if chosenType != checkinChosenWeb {
-		item["state"] = checkinStateDesktopOnly
-		item["message"] = "平台把该账号的签到入口改投豆包桌面端，网页入口不可用；请在桌面端点击「立即签到」"
-		item["chosen_type"] = chosenType
-		return item
-	}
-
-	// 2. 提交签到：回执只作参考，最终仍以详情回查为准。
+	// 4. 提交签到：回执只作参考，最终仍以详情回查为准。
 	raw, errRun := postCampaignJSON(ctx, sa, checkinRunPath, map[string]any{
 		"scene": checkinCampaignGroup,
 	})
@@ -513,7 +520,7 @@ func runCheckinForAccount(sa *StoredAuth) map[string]any {
 		return item
 	}
 
-	// 3. 回查确认：单个 code=0 不等于到账，必须看到 checked_in_today=true。
+	// 5. 回查确认：单个 code=0 不等于到账，必须看到 checked_in_today=true。
 	time.Sleep(checkinConfirmDelay)
 	after, errAfter := fetchCampaignDetail(ctx, sa)
 	if errAfter != nil {
