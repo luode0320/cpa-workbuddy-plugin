@@ -246,6 +246,32 @@ docker run --rm --network bridge -e K="$MANAGEMENT_KEY" --entrypoint sh curlimag
 - 最终态核对：生产各插件版本应与 registry.json 完全一致
 - **非必要不重启生产 cpa 容器（强制，2026-10-11）**：`plugin-store install` 默认返回 `restart_required:false`，**插件的新增 / 更新 / 安装一般不需要重启容器**——热重载即为生效路径。重启 `cli-proxy-api` 会中断在线流量并触发 60–80 秒冷启动（9 插件 + 模型刷新），属高成本、高影响操作，**非必要不做**：只有 install 后 `docker logs | grep "hot reloaded"` 确认该插件未热重载（如踩坑 48 的偶发形态），或生产配置损坏恢复等必要场景，且已取得用户明确确认时才执行；否则保持容器运行，把重启时机交用户决定。**不得把"重启宿主"写进发布收尾的默认动作。**
 
+#### 启用状态分类安装（强制，2026-11-14 用户确立）
+
+> **规则一句话**：批量发布时，生产**只对「依旧启用」的插件验证热重载**；停用中的插件**照旧 install 更新落盘二进制，但绝不改启用状态**。
+
+1. **install 前先取启用态快照**（唯一权威来源）：
+
+```bash
+K="<管理密钥>"
+curl -s -H "Authorization: Bearer $K" http://127.0.0.1:8317/v0/management/plugins \
+  | python3 -c 'import json,sys;d=json.load(sys.stdin)["plugins"];[print(p["id"], p.get("configured"), p.get("registered"), p.get("enabled"), p.get("effective_enabled")) for p in d]'
+```
+
+   - 响应是 `{"plugins":[...]}`（**非裸数组**），条目**没有 `version` 字段**，只能读 `configured` / `registered` / `enabled` / `effective_enabled`。
+   - 把本批插件分成两组：`enabled=true 且 effective_enabled=true` → **启用组**；`registered=false 且 enabled=false` → **停用组**。
+
+2. **启用组**：正常 `install?version=<ver>&source=<sid>`，等 40~60 秒，用 `docker logs cli-proxy-api --since 20m | grep "hot reloaded"` 核对 `active_version=<目标版本>`；**没有该记录即视为本轮发布失败**，继续查 `docker logs | grep <plugin-id>` 与 sha256。
+
+3. **停用组**：**同样 install**（保证 registry 与生产落盘版本对齐），但：
+   - **不启用、不删除、不调用任何 `PUT/POST/DELETE /v8/management/plugins/...`**；
+   - install 后**没有 `hot reloaded` 是停用态的正常表现**（踩坑 58 同源机理），**不判为失败**；
+   - 更不得为了凑「全部热重载」而改启用状态——恢复停用插件属独立宿主配置变更，须单独确认。
+
+4. **收口判据**：发布后再取一次启用态快照，**启用 / 停用的插件集合必须与发布前完全一致**（集合 diff 为空）。只有启用组才有 hot reloaded 验收要求；停用组只验「落盘 .so 版本与 registry 一致」。
+
+5. 实测样例（2026-11-14 一次发 10 个插件）：启用组 = coze / doubao / qoderwork / traework / workbuddy（5 个，必须 hot reloaded）；停用组 = cursor / qoder-ai / qwenwork / workbuddy-ai / zcode（5 个，只更新落盘）。
+
 #### ⛔ 更新插件不需要手工改数据库表（强制红线，2026-10-11 两次生产事故后固化）
 
 > **结论：安装 / 更新生产插件只需要上面那一条 `plugin-store install` 管理 API 命令。`config_store` 表由 CPA 自动维护，任何人、任何步骤都不需要直接读写它。**
