@@ -364,7 +364,7 @@ func TestCampaignCodeHintCoversKeyCodes(t *testing.T) {
 	cases := map[int]string{
 		2:         "已下线或已换季",
 		710012001: "登录态已失效",
-		710010702: "改投桌面端",
+		710010702: "投放策略拒绝",
 	}
 	for code, expected := range cases {
 		if hint := campaignCodeHint(code); !strings.Contains(hint, expected) {

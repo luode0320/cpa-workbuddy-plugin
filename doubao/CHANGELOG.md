@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.14 (2026-11-14)
+
+### Feat - 签到状态与活动赠送额度改为账号卡片内联展示（取消独立区块）
+
+- 需求(用户 2026-11-14): 签到与额度不再放在账号列表上方一个悬浮的大区块里，改为直接在每张账号卡片内展示；原来那种「一排账号 + 独立区块」的呈现与卡片信息割裂，用户需要在两处对照同一个账号。
+- 面板改动: 删除 `#checkinBox` 独立容器、`.checkin` / `.checkin-hd` / `.checkin-list` / `.checkin-item` / `.ci-name` 五组 CSS 与整个 `renderCheckin()`；新增 `.ck-panel` 系列样式与 `checkinBlock(a)`，签到区块插在每张卡片的「更新时间」行之后、操作按钮之前，含状态徽章 + 连续天数 / 活动累计 / 今日可得 / 今日已签|未签 + 赠送额度窗口 + 上游提示。
+- 首屏时序: `loadCheckin()` 改为只拉数据不渲染（按 `auth_id` 建索引写进模块级 `lastCheckin`），`load()` 走 `loadCheckin().then(()=>renderGrid())` —— 先出账号卡片再补签到数据，避免 12 个账号约 4 秒的上游查询把整块列表卡住；手动签到后 `await loadCheckin(); renderGrid();` 重绘。
+- 文案校正(真实客户端取证 2026-11-14): 「需桌面端领取」改为「平台限桌面端」。原文案暗示用户可以自己去桌面端点一下就能领，实际不行——在真实豆包桌面端客户端 2.35.12 进程内用 CDP 对平台自己的「立即签到」按钮做可信点击（`Input.dispatchMouseEvent`），带平台自己生成的 `msToken` + `a_bogus`，请求与响应照样是 `{"data":null,"code":710010702}`，且点击后 `checked_in_today` 仍为 false、`progress.total_amount` 仍为 0。`checkinStateText` / `campaignCodeHint` / 面板 toast 三处文案统一改成「平台按账号投放策略拒绝」口径，不再引导用户去桌面端做无效操作。
+- 未做兼容: `desktop_only` 状态枚举值不变，只改文案与提示，管理路由响应结构、定时器、额度递归、`protocol.go` / `models.go` / `completion.go` 零改动。
+- 验证: `python scripts/cgo-shim-build.py doubao` → build / vet / test 全绿（`ok ... 6.3s`，14 个用例）；`gofmt -l` 对两个改动 `.go` 文件无输出；`panel.html` 两个 `<script>` 块（44 行 + 904 行）经 `node --check` 通过；`checkinBlock` 运行时冒烟 13 项断言全过（加载态 / done 徽章与额度文案 / desktop_only 徽章与「平台限桌面端」/ quota_error 降级 / 缺失账号 / 全局错误 / 空额度）。
+
 ## 0.1.13 (2026-11-14)
 
 ### Fix - 桌面端渠道账号被误判为「签到活动已下线」，12 个账号里 10 个状态错误

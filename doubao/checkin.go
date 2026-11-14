@@ -15,8 +15,8 @@ import (
 
 // 本文件实现豆包每日签到与活动赠送额度的查询/提交。
 //
-// 渠道判据（2026-11-14 生产实测）：落地页 chosen_type=0 走网页签到可成功，
-// =3 被平台改投桌面端且任何参数组合都回 710010702，故只在 0 且未签时提交。
+// 渠道判据（2026-11-14 生产实测 + 真实客户端取证）：落地页 chosen_type=0 走网页签到可成功；
+// =3 表示平台把该账号签到入口限定为桌面端，真人与真实客户端点击同样回 710010702，故只在 0 且未签时提交。
 
 const (
 	// checkinCampaignGroup 是「免费用豆包工作」签到活动组标识。
@@ -290,7 +290,7 @@ func checkinStatusFor(sa *StoredAuth) map[string]any {
 // checkinStateText 把状态枚举翻成面板文案。
 // [参数] state: 状态枚举。
 // [返回] 中文说明。
-// 最近修改时间：2026-11-14 17:10:00；改动原因：新增，状态文案集中维护。
+// 最近修改时间：2026-11-14 19:30:00；改动原因：桌面端投放状态文案改为平台投放口径，不再暗示可在桌面端手动领取。
 func checkinStateText(state string) string {
 	// 1. 枚举到中文文案唯一映射，未知状态回落失败态。
 	switch state {
@@ -299,7 +299,7 @@ func checkinStateText(state string) string {
 	case checkinStateReady:
 		return "今日未签，可签到"
 	case checkinStateDesktopOnly:
-		return "需桌面端领取"
+		return "平台限桌面端"
 	case checkinStateExpired:
 		return "登录态过期"
 	case "skipped":
@@ -456,10 +456,10 @@ func collectQuotaGroups(node any, groups *[]checkinQuotaGroup) {
 
 // runCheckinForAccount 对单个账号执行一次签到并回查确认。
 //
-// 硬约束：只在 chosen_type=0 且今日未签时提交；桌面端渠道账号只上报不提交。
+// 硬约束：只在 chosen_type=0 且今日未签时提交；平台限定桌面端的账号只上报不提交。
 // [参数] sa: 账号。
 // [返回] 面板展示项（含 state 与 message）。
-// 最近修改时间：2026-11-14 17:52:00；改动原因：判据顺序改为落地页先行，桌面端账号不再白跑详情请求。
+// 最近修改时间：2026-11-14 19:30:00；改动原因：桌面端拒绝口径改为平台投放策略，不再引导用户去桌面端点击。
 func runCheckinForAccount(sa *StoredAuth) map[string]any {
 	item := map[string]any{
 		"auth_id": sa.AuthID,
@@ -485,7 +485,7 @@ func runCheckinForAccount(sa *StoredAuth) map[string]any {
 	}
 	if chosenType != checkinChosenWeb {
 		item["state"] = checkinStateDesktopOnly
-		item["message"] = "平台把该账号的签到入口改投豆包桌面端，网页入口不可用；请在桌面端点击「立即签到」"
+		item["message"] = "平台把该账号的签到入口限定为豆包桌面端，网页与客户端页内点击均被拒（实测真人点击同样回 710010702），插件侧无可用通道"
 		item["chosen_type"] = chosenType
 		return item
 	}
@@ -558,7 +558,7 @@ func postCampaignJSON(ctx context.Context, sa *StoredAuth, path string, payload 
 // campaignCodeHint 把活动接口业务码翻成可操作的中文提示。
 // [参数] code: 上游业务码。
 // [返回] 中文提示。
-// 最近修改时间：2026-11-14 17:10:00；改动原因：新增，活动错误码文案。
+// 最近修改时间：2026-11-14 19:30:00；改动原因：710010702 定性为平台侧投放拒绝，不再表述成可换渠道自救。
 func campaignCodeHint(code int) string {
 	// 1. 只覆盖已知可操作码，其余原样回显业务码便于排查。
 	switch code {
@@ -567,7 +567,7 @@ func campaignCodeHint(code int) string {
 	case 710012001:
 		return "登录态已失效，请在面板重新导入 Cookie"
 	case 710010702:
-		return "平台拒绝了该账号的网页签到动作（该账号被改投桌面端）"
+		return "平台按账号投放策略拒绝了本次签到（真人点击与真实客户端同样被拒），插件侧无可用通道"
 	}
 	return fmt.Sprintf("上游返回业务码 %d", code)
 }
