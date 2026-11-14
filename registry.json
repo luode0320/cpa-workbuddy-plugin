@@ -707,7 +707,7 @@
       "name": "Doubao Provider",
       "description": "Doubao workstation-mode provider for CLIProxyAPI: browser-session cookie import with device-identity derivation, agent_mode=1 client-pipeline forwarding across DeepSeek / Kimi / GLM / Doubao upstream models, image and video generation via the web skill pipeline, multi-account pool with laddered cooldown failover, and a dedicated management panel.",
       "author": "Sliverkiss (cpa-workbuddy-plugin)",
-      "version": "0.1.11",
+      "version": "0.1.12",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
       "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/Doubao.png",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/doubao",
@@ -725,37 +725,37 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.11/doubao-provider_0.1.11_darwin_amd64.zip",
-            "sha256": "15f4e69aca53e4e78a6a5b8dff561db295b55dfadd0375ccdcc9ababe5303b5a",
-            "size": 3179979
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.12/doubao-provider_0.1.12_darwin_amd64.zip",
+            "sha256": "6ae19c8d99e4f337c986da8aac4738f7db72eca0f6ef8c647b25d936fffcb1e0",
+            "size": 3199722
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.11/doubao-provider_0.1.11_linux_amd64.zip",
-            "sha256": "ea75ea7f73f9df887447405fb5ab60f7871819db98b93e4dc97cec11d014dd40",
-            "size": 3333639
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.12/doubao-provider_0.1.12_linux_amd64.zip",
+            "sha256": "22aa62dd8b8320d71309a04f36c388f9f49921a99c35d24922569c6d0a19697e",
+            "size": 3353170
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.11/doubao-provider_0.1.11_linux_arm64.zip",
-            "sha256": "ebe1b8443771c86f218a7a7c642e725244795030a78c57cbc447fac7c5f0badd",
-            "size": 3025120
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.12/doubao-provider_0.1.12_linux_arm64.zip",
+            "sha256": "c4a4d201f4da682a6ae32b57f965d6accb00618cf32497190365500e7d966ab1",
+            "size": 3044319
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.11/doubao-provider_0.1.11_windows_amd64.zip",
-            "sha256": "84629324231a34d527510bee880829680a39c7063c745671cdbf862c1d827fe7",
-            "size": 3253003
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.12/doubao-provider_0.1.12_windows_amd64.zip",
+            "sha256": "dfe0bcba3603e38a58e2497f6987c4da9efab7760f7063cfc243658ebf4a5043",
+            "size": 3271816
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.11/doubao-provider_0.1.11_windows_arm64.zip",
-            "sha256": "973fac7c312727c35c061e6fd887549e988f0bf7c1fbbbbd3a77e9d82bc9b98e",
-            "size": 3006139
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/doubao-provider-v0.1.12/doubao-provider_0.1.12_windows_arm64.zip",
+            "sha256": "85b0712210cbb53904d67cf67ef166d9e37f39f3dc1e62d6864e44737c26f8ac",
+            "size": 3021563
           }
         ]
       }
