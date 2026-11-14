@@ -128,16 +128,17 @@ func TestRunActiveTestRejectsEmptyReply(t *testing.T) {
 	}
 }
 
-// TestHandleModelsQueryFallsBackToAliases 校验上游不可达时回落到能力别名。
+// TestHandleModelsQueryKeepsAliasCatalogue 校验上游不可达时仍返回插件别名目录。
 //
-// 上游模型清单需要真实账号凭据；这里把端点指向一个必然失败的地址，确保走的是
-// 回落路径。此时必须返回可用的能力别名并显式标注 source=fallback，而不是让弹窗空白。
+// 弹窗的可点击项必须是插件别名（与宿主 /v1/models 同源），上游内部代号无法映射到
+// 工作模式模型主键，选中后只能回落默认模型，所以代号永远不构成测试列表。
+// 上游不可达时只降级掉 upstream_models，别名目录必须照旧完整。
 // 生图/生视频别名不在此列：它们会真正触发上游生成，既耗额度又要等数十秒，
 // 失败原因与账号不可用难区分。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：改为覆盖动态发现失败后的回落路径。
-func TestHandleModelsQueryFallsBackToAliases(t *testing.T) {
+// 最近修改时间：2026-11-14 16:05:00；改动原因：列表改为插件别名目录，回落只影响上游对照。
+func TestHandleModelsQueryKeepsAliasCatalogue(t *testing.T) {
 	dir := isolateAccounts(t)
 	resetModelCache()
 	t.Cleanup(resetModelCache)
@@ -154,14 +155,19 @@ func TestHandleModelsQueryFallsBackToAliases(t *testing.T) {
 	})
 	models, _ := res["models"].([]string)
 	if len(models) == 0 {
-		t.Fatalf("回落时模型列表不应为空：%+v", res)
+		t.Fatalf("模型列表不应为空：%+v", res)
 	}
-	if res["source"] != "fallback" {
-		t.Fatalf("上游不可达时应标注 fallback，实际 %+v", res)
+	if res["source"] != "aliases" {
+		t.Fatalf("列表来源应固定为插件别名，实际 %+v", res)
 	}
-	if notice, _ := res["notice"].(string); !strings.Contains(notice, "能力别名") {
-		t.Fatalf("回落应说明当前显示的是能力别名，实际 %q", notice)
+	if res["upstream_error"] == nil {
+		t.Fatalf("上游不可达时应记录 upstream_error 供排障，实际 %+v", res)
 	}
+	if notice, _ := res["notice"].(string); !strings.Contains(notice, "仅显示插件别名目录") {
+		t.Fatalf("回落应说明只剩插件别名目录，实际 %q", notice)
+	}
+	// 工作模式模型必须出现在可测试列表里，否则面板测不到真正在用的模型。
+	hasWorkModel := false
 	for _, m := range models {
 		if m == "doubao/image" || m == "doubao/video" {
 			t.Fatalf("活跃测试不应包含生成类模型，实际 %v", models)
@@ -169,6 +175,66 @@ func TestHandleModelsQueryFallsBackToAliases(t *testing.T) {
 		if !strings.HasPrefix(m, modelIDPrefix) {
 			t.Fatalf("模型名必须带 doubao/ 前缀，实际 %q", m)
 		}
+		if m == modelIDPrefix+defaultWorkModelID {
+			hasWorkModel = true
+		}
+	}
+	if !hasWorkModel {
+		t.Fatalf("可测试列表必须包含工作模式默认模型 %s，实际 %v", defaultWorkModelID, models)
+	}
+}
+
+// TestHandleModelsQueryNeverListsUpstreamCodes 校验上游代号不进入可点击列表。
+//
+// 代号（如 anceba、ances brs）是豆包内部模型标识，插件侧没有任何映射表能把它
+// 翻译成工作模式模型主键；把它们列出来会让用户点一个必然打错模型的按钮。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-14 16:05:00；改动原因：新增，锁定代号不得作为可测试项。
+func TestHandleModelsQueryNeverListsUpstreamCodes(t *testing.T) {
+	dir := isolateAccounts(t)
+	resetModelCache()
+	t.Cleanup(resetModelCache)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"","data":{"model_list":[` +
+			`{"name":"anceba","model_name":"anceba"},{"name":"ances brs","model_name":"ances brs"}]}}`))
+	}))
+	defer srv.Close()
+	defer swapLaunchEndpoint(srv.URL + modelDiscoveryPath)()
+
+	writeLoginFixture(t, dir, "doubao-modeltest02", "模型测试号", time.Now().Format(time.RFC3339))
+
+	res := handleModelsQuery(pluginapi.ManagementRequest{
+		Query: map[string][]string{"auth_index": {"doubao-modeltest02"}},
+	})
+	models, _ := res["models"].([]string)
+	for _, m := range models {
+		if strings.Contains(m, "anceba") || strings.Contains(m, "ances") {
+			t.Fatalf("上游内部代号不得进入可测试列表，实际 %v", models)
+		}
+	}
+	upstream, _ := res["upstream_models"].([]string)
+	if len(upstream) != 2 {
+		t.Fatalf("上游代号应原样附在 upstream_models 供对照，实际 %+v", res)
+	}
+}
+
+// TestRunActiveTestRejectsUnknownModel 校验未知模型名直接失败而非静默替换。
+//
+// 旧实现把不认识的名字一律回落成工作模式默认模型，于是点任何上游代号都显示
+// 「测试成功」，结论与所选模型无关。现在必须明确报错，并说明该用别名。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-14 16:05:00；改动原因：新增，锁死严格解析语义。
+func TestRunActiveTestRejectsUnknownModel(t *testing.T) {
+	res := runActiveTest(completionTestAccount(), "doubao/ances brs")
+	if res["ok"] == true {
+		t.Fatalf("未知模型不应判成功，实际 %+v", res)
+	}
+	msg, _ := res["error"].(string)
+	if !strings.Contains(msg, "不支持的测试模型") {
+		t.Fatalf("未知模型应给出明确错误，实际 %q", msg)
 	}
 }
 

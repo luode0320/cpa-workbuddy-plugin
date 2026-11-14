@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.11 (2026-11-14)
+
+### Fix - 工作模式全模型 503：顶层 `option.conversation_mode` 写成字符串被上游拒绝
+
+- 缺陷(用户反馈 2026-11-14): 通过别名 `deepseek-pro` 请求 `doubao/deepseek-v4-pro` 报 `503 auth_unavailable ... 上游拒绝了请求参数：请确认 Content-Type 为 application/json 且请求体结构完整`。实测不止 pro 别名——`doubao/deepseek-v4-flash`、`doubao/deepseek-v4-pro`、`doubao/default`、`doubao/auto` **四个工作模式模型全部同错**，且同一时刻两个账号各失败一次，说明是请求体被上游参数校验拒绝，不是模型档位或账号问题。
+- 根因: 顶层 `option.conversation_mode` 被写成了字符串（`strconv.Itoa` → `"2"`），而上游对该键要求 **JSON 整数**。上游返回的是 HTTP 200 + SSE 错误帧 `{"error_code":710020202,"error_msg":"common invalid param"}`，心跳帧先到、错误随后，故失败耗时仅 130~190ms（正常生成 880ms~1.2s）。**同名不同型陷阱**：`aggregate_params.conversation_mode` 反而必须保持字符串 `"2"`，两处类型不同、不可互换。
+- 定位过程: 在宿主机用同账号 Cookie 复刻请求直连 `https://www.doubao.com/chat/completion` 做逐级累加消融（S0→S9）。S0~S6 全 OK，从 S7（同时加入顶层 `conversation_mode="2"`、`message_storage_type=0`、`sse_recv_event_options`+`support_lazy_fetch_stream`）起 ERR；再拆分 S7 三字段，`allbutconv`（去掉 conversation_mode）OK、`conv2int`（写整数 2）OK，最终三变体决定性对比：`"2"` → ERR、`2` → OK、缺键 → OK。
+- 修复: `completion.go` 的 `completionOption.ConversationMode` 类型由 `string` 改为 `int`（保留 `omitempty`），赋值由 `strconv.Itoa(workConversationMode)` 改为 `workConversationMode`；`aggregateParams.ConversationMode` 维持 `string` 不动。字段补注释写明该陷阱，避免后续再被"统一类型"改回字符串。
+- 验证: `python scripts/cgo-shim-build.py doubao` → build / vet / test 全绿；整数写法下上游完整跑通，事件序列 `SSE_HEARTBEAT,SSE_ACK,FULL_MSG_NOTIFY,STREAM_TIMEOUT_CONTROL,STREAM_MSG_NOTIFY,STREAM_CHUNK,...,SSE_REPLY_END`，`deepseek-v4-pro` 与 `deepseek-v4-flash` 均返回正文（`1+1=?` → `2`），无 error 帧。
+- 影响范围: 仅请求体该字段类型与赋值，以及 `workmode_test.go` 对应断言；路由、failover、SSE 解析、面板与账号逻辑零改动。
+
 ## 0.1.10 (2026-11-14)
 
 ### Fix - 面板搜索框被浏览器表单历史自动填回上次搜索词
@@ -9,6 +20,18 @@
 - 放行真输入: 用 `pointerdown` / `keydown` 记录「用户确实操作过」，只有未操作过才在 `focus`、`pageshow` 与 0/60/200/600/1200/2500ms 六个短窗口内清空 `value` 并复位 `currentSearch` + 重渲染，避免浏览器在首帧之后才恢复历史值；用户主动输入的搜索词不会被清掉。
 - 影响范围: 仅面板前端——搜索输入框属性与上述自执行清理函数，账号列表渲染、筛选语义、签到/导入/导出等全部链路零改动；后端与插件协议无变化。
 - 验证: `python scripts/cgo-shim-build.py` build / vet / test 全绿；10 个插件面板同源改动逐一落地（`searchInputNoAutofill` 与 `data-form-type` 各命中 2 处）。
+
+### Fix - 面板「测试模型」列表错乱：列出上游内部代号，且点任何代号实际都跑默认模型
+
+- 缺陷(用户反馈 2026-11-14): 面板测试弹窗列的是 `doubao/4tbp`、`doubao/anceba`、`doubao/ances brs` 这类豆包内部代号，与宿主「认证文件管理 → 支持的模型」里的可读别名对不上；更严重的是点任何一个代号，「测试成功」提示里的模型名会回显代号，实际请求却回落到了 `deepseek-v4-flash`，测试结论与所选模型无关。
+- 根因一(列表来源错): `handleModelsQuery` 直接把 `/alice/basic/launch` 返回的上游代号当模型列表下发，完全没有并入插件别名目录；宿主那侧走的是 `modelForAuth → catalogueWithUpstream`，别名在前、代号追加在后，所以宿主看着正常。
+- 根因二(静默替换): `modeForModel` 对不认识的名字一律回落 `defaultWorkModelID`（正式对话链路需要这个宽松语义，避免客户端传怪名就 400），活跃测试复用了它，于是代号被悄悄换成默认模型，而成功消息只回显客户端传入的名字。
+- 修复一: 新增 `testableAliases` / `testableModelIDs` / `testableModelDetails`，测试可选模型固定为插件别名目录（同 `modelForAuth` 同源），只排除 `image` / `video`——它们会真正触发上游生成，既耗额度又要等数十秒，失败原因还与账号不可用难区分。
+- 修复二: `/models` 改为先返回别名目录（`source: aliases`，附 `details` 供面板显示可读名与「默认」标记），上游代号只作为 `upstream_models` 附带对照并给 `notice` 说明「代号无法映射到具体模型，故不参与测试」；上游不可达时只降级掉代号，别名目录照旧完整。
+- 修复三: 新增 `aliasForTestModel` / `testModeForModel`，测试入口做严格解析——未命中别名直接返回「不支持的测试模型：…（请从模型列表中选择插件别名；上游内部代号无法映射到具体模型）」，不再静默替换；`handleTestActive` 缺省模型改为 `doubao/deepseek-v4-flash`。
+- 修复四: 成功消息回显真正打到的上游主键——`活跃成功 (模型: doubao/glm-5.3 → 上游 person-glm-5-3-261111, 耗时: …)`，模型是否真的生效一眼可辨。
+- 面板: 测试弹窗每项改为「可读名 + 默认标记 + 模型 id」两行显示（`.mi-name` / `.mi-id` / `.ref-tag`），鼠标悬停展示说明；`details` / `upstream_models` 解析全部对缺失字段做防御。
+- 新增回归: `TestHandleModelsQueryKeepsAliasCatalogue`（上游不可达仍给完整别名目录且必含工作模式默认模型）、`TestHandleModelsQueryNeverListsUpstreamCodes`（代号不得进入可点击列表，只出现在 `upstream_models`）、`TestRunActiveTestRejectsUnknownModel`（未知模型名必须报错而非静默成功）。
 
 ## 0.1.9
 

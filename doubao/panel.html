@@ -1010,7 +1010,8 @@ async function loadTestModels(authIndex, force){
   }catch(e){
     list.innerHTML='<div class="hint" style="color:var(--err)">'+esc(e.message||String(e))+'</div>';
   }
-}async function runTestModel(btn){
+}
+async function runTestModel(btn){
   const authIndex=pendingTestAuthIndex;
   const model=btn&&btn.dataset?btn.dataset.model:"";
   if(!authIndex||!model)return;

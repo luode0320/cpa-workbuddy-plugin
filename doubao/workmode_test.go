@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -42,8 +43,9 @@ func TestBuildWorkOptionContract(t *testing.T) {
 	if body.Option.NeedDeepThink != needDeepThinkOn {
 		t.Errorf("need_deep_think 应为 %d，实际 %d", needDeepThinkOn, body.Option.NeedDeepThink)
 	}
-	if body.Option.ConversationMode != "2" {
-		t.Errorf("conversation_mode 应为 \"2\"（工作任务），实际 %q", body.Option.ConversationMode)
+	if body.Option.ConversationMode != workConversationMode {
+		t.Errorf("顶层 conversation_mode 必须为整数 %d（工作时间，写成字符串会被上游 710020202 拒绝），实际 %d",
+			workConversationMode, body.Option.ConversationMode)
 	}
 	if body.Option.AggregateParams.AgentMode != "1" {
 		t.Errorf("aggregate_params.agent_mode 应为 \"1\"，实际 %q", body.Option.AggregateParams.AgentMode)
@@ -358,5 +360,22 @@ func TestWorkOptionJSONShape(t *testing.T) {
 	}
 	if sandboxID, _ := clientOption["sandbox_id"].(string); !strings.HasPrefix(sandboxID, "sandbox-") {
 		t.Errorf("sandbox_id 应为 sandbox- 前缀，实际 %q", sandboxID)
+	}
+
+	// 同名不同型陷阱：顶层 conversation_mode 必须是 JSON 数字，aggregate_params
+	// 里的同名字段必须是 JSON 字符串；任一写反上游都回 710020202。
+	if cm, isNumber := option["conversation_mode"].(float64); !isNumber {
+		t.Errorf("option.conversation_mode 必须序列化为 JSON 数字，实际 %T=%v", option["conversation_mode"], option["conversation_mode"])
+	} else if int(cm) != workConversationMode {
+		t.Errorf("option.conversation_mode 应为 %d，实际 %v", workConversationMode, cm)
+	}
+	aggParams, ok := option["aggregate_params"].(map[string]any)
+	if !ok {
+		t.Fatal("option.aggregate_params 缺失")
+	}
+	if aggConv, isString := aggParams["conversation_mode"].(string); !isString {
+		t.Errorf("aggregate_params.conversation_mode 必须序列化为 JSON 字符串，实际 %T=%v", aggParams["conversation_mode"], aggParams["conversation_mode"])
+	} else if aggConv != strconv.Itoa(workConversationMode) {
+		t.Errorf("aggregate_params.conversation_mode 应为 %q，实际 %q", strconv.Itoa(workConversationMode), aggConv)
 	}
 }

@@ -120,7 +120,11 @@ type completionOption struct {
 	// 会被以「参数不合法」拒绝。
 	NeedCreateConversation bool `json:"need_create_conversation"`
 
-	ConversationMode string `json:"conversation_mode,omitempty"`
+	// ConversationMode 是**整数**，写字符串会被上游以 710020202
+	// "common invalid param" 拒绝（HTTP 200 + SSE 错误帧，心跳先到、随后报错）。
+	// 实测：写成 "2" 必错，写 2 或不写都正常；aggregate_params 里的同名字段
+	// 反而是字符串，两处类型不同，不可互换。
+	ConversationMode int `json:"conversation_mode,omitempty"`
 
 	// ConversationInitOption 是会话初始化确认项，工作模式必带，缺它上游不建会话。
 	ConversationInitOption *conversationInitOption `json:"conversation_init_option,omitempty"`
@@ -444,7 +448,7 @@ func buildWorkOption(cfg Config, sa *StoredAuth, mode generationMode, localMessa
 		UniqueKey:              randomUUID(),
 		StartSeq:               0,
 		NeedCreateConversation: needCreate,
-		ConversationMode:       strconv.Itoa(workConversationMode),
+		ConversationMode:       workConversationMode,
 		IsOldUser:              true,
 		MessageStorageType:     0,
 		ConversationInitOption: &conversationInitOption{NeedAckConversation: true},

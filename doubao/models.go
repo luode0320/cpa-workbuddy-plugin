@@ -335,6 +335,93 @@ func catalogueModels() []pluginapi.ModelInfo {
 	return out
 }
 
+// testableAliases 返回活跃测试可选的模型别名。
+//
+// 只排除生成类（生图/生视频）：它们会真正触发上游生成，既耗额度又要等数十秒，
+// 失败原因还与账号不可用难以区分。能力别名与工作模式模型都保留，顺序固定为
+// 能力别名在前，同名条目以能力别名为准。
+// [参数] 无。
+// [返回] 别名列表。
+// 最近修改时间：2026-11-14 15:55:00；改动原因：新增，测试模型列表与宿主模型目录同源。
+func testableAliases() []modelAlias {
+	// 1. 能力别名只保留纯对话条目，技能别名会真正触发上游生成。
+	out := make([]modelAlias, 0, len(capabilityAliases)+len(workModelAliases))
+	seen := make(map[string]struct{}, len(capabilityAliases)+len(workModelAliases))
+	for _, alias := range capabilityAliases {
+		if alias.Skill != 0 {
+			continue
+		}
+		if _, dup := seen[strings.ToLower(alias.ID)]; dup {
+			continue
+		}
+		seen[strings.ToLower(alias.ID)] = struct{}{}
+		out = append(out, alias)
+	}
+
+	// 2. 工作模式模型追加在后，同名条目跳过以保留能力别名的语义。
+	for _, alias := range workModelAliases {
+		if _, dup := seen[strings.ToLower(alias.ID)]; dup {
+			continue
+		}
+		seen[strings.ToLower(alias.ID)] = struct{}{}
+		out = append(out, alias)
+	}
+	return out
+}
+
+// testableModelIDs 返回活跃测试可选的模型 id（含 doubao/ 前缀）。
+// [参数] 无。
+// [返回] 模型 id 列表。
+// 最近修改时间：2026-11-14 15:55:00；改动原因：新增，替代活跃测试里的局部模型列表。
+func testableModelIDs() []string {
+	aliases := testableAliases()
+	out := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		out = append(out, modelIDPrefix+alias.ID)
+	}
+	return out
+}
+
+// testableModelDetails 返回活跃测试可选模型的展示信息。
+//
+// 面板需要可读名：只给 doubao/deepseek-v4-flash 这类裸 id，用户分不清哪个是
+// 旗舰档、哪个是高速档。default 标记供面板给默认模型加注，避免用户误选。
+// [参数] 无。
+// [返回] 每项含 id / name / description / default。
+// 最近修改时间：2026-11-14 15:55:00；改动原因：新增，面板展示可读模型名。
+func testableModelDetails() []map[string]any {
+	aliases := testableAliases()
+	out := make([]map[string]any, 0, len(aliases))
+	for _, alias := range aliases {
+		out = append(out, map[string]any{
+			"id":          modelIDPrefix + alias.ID,
+			"name":        alias.DisplayName,
+			"description": alias.Description,
+			"default":     alias.ID == defaultWorkModelID,
+		})
+	}
+	return out
+}
+
+// aliasForTestModel 判断模型名是否属于可测试别名。
+//
+// 与 modeForModel 的区别：modeForModel 对未知名回落到工作模式默认模型（正式
+// 对话链路需要这个宽松语义），活跃测试必须严格——否则点上游内部代号会静默打到
+// 默认模型，界面显示「测试成功（模型: doubao/anceba）」，实际测的是 DeepSeek
+// V4 Flash，测试结果与所选模型无关。
+// [参数] requested: 客户端模型名（允许带 doubao/ 前缀与 :latest 后缀）。
+// [返回] 命中的别名与是否存在。
+// 最近修改时间：2026-11-14 15:55:00；改动原因：新增，活跃测试严格校验模型名。
+func aliasForTestModel(requested string) (modelAlias, bool) {
+	name := normalizeModelName(requested)
+	for _, alias := range testableAliases() {
+		if strings.EqualFold(name, alias.ID) {
+			return alias, true
+		}
+	}
+	return modelAlias{}, false
+}
+
 // modelInfoForAlias 把别名转换成宿主模型条目。
 // [参数] alias: 模型别名。
 // [返回] 宿主模型条目。
@@ -358,6 +445,21 @@ func modelInfoForAlias(alias modelAlias) pluginapi.ModelInfo {
 		info.Type = "video"
 	}
 	return info
+}
+
+// testModeForModel 把模型名展开成活跃测试用的生成模式。
+//
+// 与 modeForModel 的宽松回落不同，这里未命中别名时直接判失败：活跃测试要给用户
+// 「这个模型能不能用」的确切答案，静默替换模型会让结论失去意义。
+// [参数] requested: 客户端模型名。
+// [返回] 生成模式、命中的别名与是否命中。
+// 最近修改时间：2026-11-14 16:05:00；改动原因：新增，活跃测试严格解析模型名。
+func testModeForModel(requested string) (generationMode, modelAlias, bool) {
+	alias, ok := aliasForTestModel(requested)
+	if !ok {
+		return generationMode{}, modelAlias{}, false
+	}
+	return workModeForAlias(alias, true), alias, true
 }
 
 // filterExcludedModels 剔除宿主 oauth-excluded-models 中为本插件列出的模型。
