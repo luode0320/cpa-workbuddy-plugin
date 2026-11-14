@@ -13,7 +13,10 @@
 - 状态可见: `StoredAuth` 新增 `ms_token` 字段；`/accounts` 新增 `sign_state`（`ok` / `missing`）；面板在账号卡片「登录态」行下方对 `missing` 显示「未采集（需重新授权）」并给出补齐方式。
 - 兼容与迁移: 老账号（0.1.15 及之前导入）没有 `ms_token`，需在豆包已登录页面上点一次固定书签（或重新走一次授权）补齐；未补齐前仍会被上游按未签名拒绝，行为与 0.1.15 一致，不会更差。
 - 协议注释校正: `protocol.go` 文件头原写着「msToken 与 a_bogus 均不在必需参数中——上游接受无签名调用」，已改为实测结论并注明该记载的成因（当时样本账号恰好被投放为免签名）。
-- 验证: `python scripts/cgo-shim-build.py doubao` → build / vet / test 全绿；`sign_test.go` 三个用例用真实 SDK 断言「补齐 msToken + a_bogus」「连签两次 a_bogus 不同（防缓存短路）」「非上游地址不签名」；`panel.html` 两个 `<script>` 块 `node --check` 通过；生产 12 账号 `test-active` 复测在补齐 `ms_token` 后由「11 个失败」转为可用（详见 `doc/5-tests` 第 15 节）。
+- 验证: `python scripts/cgo-shim-build.py doubao` → build / vet / test 全绿；`sign_test.go` 三个用例用真实 SDK 断言「补齐 msToken + a_bogus」「连签两次 a_bogus 不同（防缓存短路）」「非上游地址不签名」；`panel.html` 两个 `<script>` 块 `node --check` 通过；哨兵把 `a_bogus=` 断言改为哨兵串后 `TestSignAddsMsTokenAndABogus` 如实 FAIL，恢复后全绿（证明新用例真实进编译）。
+- 生产发布(2026-11-15 01:29): CI run `43620812289`（`Release` success，仅 darwin/arm64 cancelled）→ `doubao-provider-v0.1.16` → registry `00f0ef8` → `plugin-store install` 200 / 2.678s → 热重载 `active_version=0.1.16 retired_version=0.1.15`；生产 `.so` sha256 `8f7716a1f6bff620ba129e76773b3895278e822ef99882acdb1b83cbeb9e74b9`（17498688 B）与本地 zip 内逐字节一致；13 插件启用态与发布前逐字段一致。
+- 生产签名链路验证(2026-11-15 01:35，临时注入 `ms_token` 后已回滚): 同一 body、同一 Cookie 下，带签名 → `http=200 ack=True`（错误码落到账号级 `-1` / `semantic_reasoning`），去掉签名 → `http=200 ack=False err=710022002`（未签名分支）。**插件侧生成的 `a_bogus` 已被上游接受**。12 个账号此刻仍在上游风控中，尚未观察到「补齐 ms_token 即成功出字」的成功态；验证用的临时 `ms_token` 已从三个账号文件恢复（`ms_token=None`、`cookies=11` 不变）。
+- 已知上限: 12 个账号的 `sign_state` 仍为 `missing`（本轮未做真实书签授权闭环）；`msToken` 过期（7 天）后需重新点一次书签；goja Runtime 串行，单次签名约 200ms，高并发下签名是瓶颈。
 
 ## 0.1.15 (2026-11-14)
 
