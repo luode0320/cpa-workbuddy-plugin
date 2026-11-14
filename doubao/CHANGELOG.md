@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.15 (2026-11-14)
+
+### Fix - 面板测试失败提示不再只回显上游原文（-1 与 710022002 给出账号级定位）
+
+- 现象(用户 2026-11-14 21:15 面板截图): 点「测试」对 `用户766588` 测 `doubao/deepseek-v4-flash`，toast 只显示「测试失败（模型: doubao/deepseek-v4-flash）：上游错误 -1：delegated input protocol violation」，看不出是插件问题、账号问题还是模型问题。
+- 定位(12 账号全矩阵 + 跨模型交叉 + 包体检索): 该串在上游 `error_code=-1` 时下发，插件只是经 `statusCodeHint` 兜底分支原样转述。同一账号换 `doubao/kimi-k3`、`doubao/auto` 仍报 `-1`，同一模型换 `欧皇小德子` / `用户158477` 则正常出字——**错误跟随账号、不跟随模型**。`delegated input protocol violation` / `protocol violation` 在豆包桌面端 `local_webcontents` 全量包体、插件仓库、宿主 checkout 三处均零命中，确认来自上游服务端。
+- 分布(生产 `POST /test-active`，`doubao/deepseek-v4-flash` 连跑 3 轮): 2 个账号成功（`doubao-adcd31d29873b4c8` 5.2/7.3/4.9s、`doubao-c754e5d56ed62480` 7.1/6.3/4.3s），6 个回 `710022002 当前服务访问频繁`，4 个回 `-1`（`doubao-489b6e70ebde9be1` / `doubao-aecd88a5b0aad93a` / `doubao-c0b2098a84b94d69` / `doubao-f37929bdf3a6a7dc`）。12 个账号的 `bot_id` 与 11 个 Cookie 键名完全一致，逐字段 diff 只有身份与时间字段不同，不存在 Cookie 缺失或账号文件结构差异。
+- 修复: `protocol.go` 的 `statusCodeHint` 为 `-1` 与 `710022002` 补可操作中文文案，明确指出「属账号级限制、Cookie 与登录态仍有效、换用其他账号即可恢复」，并区分于请求参数问题（`710020202`）与登录态失效（`710012001`）；未收录的码仍原样回显上游描述。`completion_test.go` 的 `TestStatusCodeHint` 补两条断言。
+- 不动的部分(刻意): `isAccountFailure` / `shouldRotate` 白名单不变。实测这两个码会同时落在多个账号上（12 个里 6 个 `710022002`、4 个 `-1`），一旦计入阶梯冷却会把整池逐个锁死，只剩 2 个健康账号承载全部流量；宿主 scheduler 已在插件返回错误后自行换号重试（生产日志同一 request id 连续试号并以 `failed=false` 收尾），插件层不重复烧预算。`test-active` 保持「单账号严格探针」语义，不改成 failover 跑法。
+- 真实可用性: 生产 `/v1/chat/completions` 对 `doubao/deepseek-v4-flash` 连测 6 次全部 `http=200` 且正文正确（`7`），单次 6.8~7.5s；面板「测试失败」只代表该单账号此刻不可用，不代表插件不可用。
+- 验证: `python scripts/cgo-shim-build.py doubao` → build / vet / test 全绿（`ok ... 5.7s`）；`gofmt -l` 对两个改动 `.go` 文件无输出；哨兵把 `-1` 期望改为「哨兵刻意失败串」后 `TestStatusCodeHint` 如实 FAIL，恢复后全绿，证明新断言真实进编译。
+
 ## 0.1.14 (2026-11-14)
 
 ### Feat - 签到状态与活动赠送额度改为账号卡片内联展示（取消独立区块）

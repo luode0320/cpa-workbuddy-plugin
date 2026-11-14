@@ -347,11 +347,13 @@ func TestBuildBusinessQueryComplete(t *testing.T) {
 // TestStatusCodeHint 校验上游错误码映射到可操作文案。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，错误文案回归。
+// 最近修改时间：2026-11-14 21:46:00；改动原因：补 -1 与 710022002 两条实测码的文案断言。
 func TestStatusCodeHint(t *testing.T) {
 	cases := map[int]string{
 		710012001: "重新导入",
 		710022004: "上游风控",
+		710022002: "频率限制",
+		-1:        "输入协议异常",
 		710020202: "Content-Type",
 		710010202: "重新导入账号",
 	}

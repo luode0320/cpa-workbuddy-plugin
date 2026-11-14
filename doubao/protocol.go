@@ -343,8 +343,9 @@ func (e *upstreamError) isRateLimit() bool {
 // 也就是说这不是网络抖动，等几分钟通常无效，只有换账号或等风控窗口解除。
 // [参数] code: 上游业务码；desc: 上游原始描述（可空）。
 // [返回] 中文提示。
-// 最近修改时间：2026-10-17；改动原因：限流提示改为可操作的账号级风控说明。
+// 最近修改时间：2026-11-14 21:42:00；改动原因：补 -1（账号级输入协议异常）与 710022002（账号级频率限制）两条实测码的可操作文案。
 func statusCodeHint(code int, desc string) string {
+	// 1. 已知业务码给可操作提示：区分「换账号可恢复」与「请求本身有问题」。
 	switch code {
 	case 0:
 		return ""
@@ -352,11 +353,17 @@ func statusCodeHint(code int, desc string) string {
 		return "登录态已失效，请在面板重新导入 Cookie"
 	case 710022004, 710022005:
 		return "账号触发上游风控（semantic_reasoning），非网络问题；该账号的推理请求被临时拦截，请换用其他账号或等待风控解除（账号信息与登录态本身仍有效）"
+	case 710022002:
+		return "上游提示该账号访问过于频繁（账号级频率限制），非插件问题；换用其他账号即可恢复，稍后重试同一账号通常仍被拒"
+	case -1:
+		return "上游判定该账号的输入协议异常（delegated input protocol violation），属账号级限制；该账号的 Cookie 与登录态仍有效，但推理请求被稳定拒绝，请换用其他账号（2026-11-14 实测：同账号跨模型稳定复现，与插件请求构造无关）"
 	case 710020202:
 		return "上游拒绝了请求参数：请确认 Content-Type 为 application/json 且请求体结构完整"
 	case 710010202:
 		return "上游返回系统错误：通常是 Cookie 与设备标识不匹配，建议重新导入账号"
 	}
+
+	// 2. 未收录的码原样回显，保留上游描述便于定位。
 	if desc == "" {
 		desc = "未知错误"
 	}
