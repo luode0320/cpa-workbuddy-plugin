@@ -15,13 +15,13 @@
   9. `coze-provider`：扣子 Coze（claw 对话 / WS 真流式 / 生图与积分路由红线）；
   10. `qwenwork-provider`：千问办公（Device Flow + PKCE / MaaS 短票据）；
   11. `workbuddy-token-usage`：统一 Token 用量统计与实时看板服务；
-  12. `doubao-provider`：豆包工作模式（agent_mode=1 PC 客户端管线；DeepSeek V4 / Kimi K3 / GLM 5.3 直连；书签一键授权 / Cookie 导入 + device_id 派生）。
+  12. `doubao-provider`：豆包工作模式（agent_mode=1 PC 客户端管线；DeepSeek V4 / Kimi K3 / GLM 5.3 直连；书签一键授权 / Cookie 导入 + device_id 派生；面板测试只下发插件别名目录）。
 - 非范围：CLIProxyAPI 核心服务本体；跨项目文件修改。
-- 已下线插件：`gemini-provider`（2026-10-11）、`notion-provider`（2026-10-22）。**`doubao-provider` 2026-10-22 下线、2026-11-14 以工作模式 0.1.7 重新上线、0.1.8 面板重写与导入导出、0.1.9 书签一键授权均已上线（生产已热重载）。**
+- 已下线插件：`gemini-provider`（2026-10-11）、`notion-provider`（2026-10-22）。**`doubao-provider` 2026-10-22 下线、2026-11-14 以工作模式 0.1.7 重新上线、0.1.8 面板重写与导入导出、0.1.9 书签一键授权、0.1.11 测试模型改别名目录 + conversation_mode 改整数均已上线（生产已热重载）。**
 
 ## 项目概况
 
-- 状态：活跃维护中。12 大插件全景（11 Provider + 1 用量统计）。**2026-11-14 doubao-provider 以工作模式管线 0.1.7 重新上线，0.1.8 面板重写与账号导入导出、0.1.9 书签一键授权（替代手工粘贴 Cookie）均已上线并热重载**。
+- 状态：活跃维护中。12 大插件全景（11 Provider + 1 用量统计）。**2026-11-14 doubao-provider 以工作模式管线 0.1.7 重新上线，0.1.8 面板重写与账号导入导出、0.1.9 书签一键授权（替代手工粘贴 Cookie）、0.1.11 面板测试模型改插件别名目录并修 conversation_mode 整数类型均已上线并热重载**。
 - **生产主机（2026-11-07 起）= 45.207.222.65（`cpa-server`，端口 18998），254（`cpa-server-new`）已弃用**：用户明示「254 已经放弃，改回 65 为主服务器」，全部域名已解析到 65，254 只剩 mysql+nginx（CPA 已停）。部署/验收一律打 65，管理密钥用插件配置 `cpa_management_key`，账号在 `auth-dir=/CLIProxyAPI/mysqlstore/mysqlstore/auths`（62 个）。
 - **2026-11-07 01:27 已在 65 完成全量对齐与启用**：11 个插件全部 `configured/registered/enabled=true` —— workbuddy 0.21.9（20 号）/ coze 0.7.4（23 号）/ qoderwork 0.12.6（2 号）/ workbuddy-ai 0.1.35（6 号）/ token-usage 0.2.8 / traework 0.5.7 / qoder-ai 0.1.35 / zcode 0.3.5 / copilot 0.1.12 / qwenwork 0.2.13 / cursor 0.1.7（首次安装）。install 前 5 个显示 `registered=false` 是「该版本 .so 从未加载」（config 里 enabled 本为 true），install 后日志为 `plugin loaded + plugin registered`，非 hot reload 形态。
 - **2026-11-07 19:40 当前生产版本（max_tokens 最小干预批次）**：workbuddy-ai **0.1.37** / qoder-ai **0.1.37** / qoderwork **0.13.5** / traework **0.5.13** / zcode **0.3.7** / qwenwork **0.2.15** —— 上述插件 `configured/registered/enabled/effective_enabled` 全 true，`.so` sha256 与 release zip 逐字节一致。**管理 API 端口是 8317（不是 18998，18998 是 sshd）**。
@@ -35,6 +35,19 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-14 15:55-16:25）：**doubao-provider 0.1.11：面板测试模型列表改为插件别名目录 + 工作模式 conversation_mode 改整数（生产热重载已生效）**：
+  - **用户指令**（m03346）：①「豆包面板的测试模型好像不太对, 认证文件管理中的是对的」②「豆包是获取不到额度的是吗?」。截图显示面板测试弹窗全是 `doubao/4tbp`、`doubao/anceba`、`doubao/ances brs` 这类上游代号，而宿主认证文件管理的模型列表正常。
+  - **根因一（模型列表）**：`doubao/active_ping.go` 的 `handleModelsQuery` 只把 `cachedUpstreamModels` 的上游代号当列表下发，完全不并入插件别名；宿主「支持的模型」走 `doubao/models.go` 的 `modelForAuth` → `catalogueWithUpstream`（别名在前、代号追加在后）所以正常。
+  - **根因二（更严重）**：`doubao/models.go` 的 `modeForModel` 对任何不认识的名字都回落 `defaultWorkModelID`，而 `runActiveTest` 复用它 ⇒ **点任何代号实际都打 deepseek-v4-flash**，成功消息只回显客户端名，测试结果完全是假的。
+  - **后端修复**：`models.go` 新增 `testableAliases`（排除 `Skill != 0` 的 image/video，避免真触发上游生成耗额度）、`testableModelIDs`、`testableModelDetails`（带 name/description/default）、`aliasForTestModel`（`EqualFold` 匹配）、`testModeForModel`；`active_ping.go` 的 `handleModelsQuery` 重写为 `{models, details, source:"aliases"}` + `upstream_models` 仅作对照 + notice 说明代号不参与测试；`runActiveTest` 开头严格 `testModeForModel` 解析，未命中返回「不支持的测试模型：…（请从模型列表中选择插件别名；上游内部代号无法映射到具体模型）」。
+  - **前端**：`panel.html` 的 `loadTestModels` 渲染 `mi-name`（显示名）+ `mi-id`（模型 ID）+ `ref-tag 默认` 徽标，`title` 取 description；另修掉编辑过程产生的 `}async function` 粘连。
+  - **顺带修的线上故障**：工作树里还有未提交的 `completion.go`(+6/−2) / `workmode_test.go`(+3/−2) —— 顶层 `option.conversation_mode` 由字符串改**整数**，修 `503 auth_unavailable`（上游 `710020202 common invalid param`，HTTP 200 + SSE 错误帧）。`aggregate_params` 里的同名字段**仍是字符串**，两处类型不同不可互换。
+  - **本地验证**：`cgo-shim-build.py doubao` 全绿（bump 前后各一次）；`go test -v` → **PASS=171 SKIP=13 FAIL=0**；定向 6 例 PASS；gofmt 五文件 diff=0；`scan_test_pollution.py` → POLLUTION: PASS（13 条全 EXEMPTED）；面板 `node --check` p0=p1=0、DOM 34 id / 21 refs / 17 handlers MISSING=[]；`static_owner_router.py` 命中 STYLE-01/02/03/04/08/09。
+  - **文档**：`doc/5-tests/2026-11-14_163000_doubao0.1.11面板测试模型与工作模式参数修复验证.md`（7584 B，9 条变异反证）、`doc/6-review/2026-11-14_163500_doubao0.1.11面板模型与工作模式参数_6-review.md`（`STYLE: PASS`）。
+  - **发布链**：提交 `0a0e47e`（12 文件 +415/−60）→ run 43574834136（`darwin/arm64` cancelled、5 平台 success、`Release: success`）→ release `doubao-provider-v0.1.11` id=445139832 **6 assets** → registry `1e47a5d`（5 artifacts，`validate-registry.py` 13 plugin OK）→ 远端 **Contents API** 核对 `sha 57ec22c3…` size 36728、`version=0.1.11`、五平台 sha256/size 与本地一致（raw.githubusercontent 仍是旧缓存）。
+  - **生产热重载**：`install?version=0.1.11` → `restart_required:false`；`hot reloaded active_version=0.1.11 retired_version=0.1.9`（16:24:19）；落盘 `doubao-provider-v0.1.11.so` **8261344 B** sha256 `70b115802326aa36d39e84b67f2d04362666a0758a5cf0858e2e3fdbb8682713` 与本地 zip 内 `.so` 逐字节一致；容器 `Up 2 days` **未重启**；发布前后启用态快照 **diff 为空**（copilot/cursor/qoder-ai/qwenwork/workbuddy-ai/zcode 六个仍停用，未改动）。
+  - **生产行为验收（决定性）**：`GET /models?auth_index=…` → `source=aliases`、**12 个别名**（`doubao/default`、`doubao/pro`、`doubao/deepseek-v4-flash` 为 default…）、`upstream_models` 26 个代号**零泄漏**进 models；`POST /test-active` 打 `doubao/deepseek-v4-flash` → `ok:true` 且消息回显 `→ 上游 person-deepseek-v4-1-flash-261017`；打 `doubao/ances brs` → `不支持的测试模型`（HTTP 200）；`POST /v1/chat/completions` 非流式 → 200 返回「你好」、`usage.estimated:true`。
+  - **旁证（额度问题）**：`/accounts` 现在 **2 个真实账号**（欧皇小德子 / 用户158477，`auth_state=ok`），`/export` 200 且返回完整凭据；豆包免费体验号上游不下发额度字段，故插件不做积分卡与签到。
 - 会话（2026-11-14 14:00-15:10）：**doubao-provider 0.1.9：书签一键授权替换手工粘贴 Cookie（生产热重载已生效）**：
   - **用户指令**（m02604）：「这个请学习coze的方案改造。」（附生产桥接页截图 `/v0/resource/plugins/doubao-provider/login?state=df8c8019-…`，标题「绑定豆包账号」+ 三步引导 + Cookie textarea）。诉求：不要让用户开开发者工具复制 Cookie。
   - **根因**：豆包 `sessionid` / `sid_guard` 是 **HttpOnly**，页面 JS 读不到，「页面脚本直接取 Cookie」在豆包不可行；可行路线是 `/passport/token/beat/v2/` 取 `x-tt-token` 再换 Set-Cookie（与 coze 同网关同一套）。
@@ -148,21 +161,3 @@
   - **生产行为验收（决定性）**：`POST /test-active` 打 `Qwen4-Max-Preview` → 200 / 0.323s，返回 `upstream_queued:true` + `retry_after_seconds:60` +「账号与凭据正常，属上游容量排队而非测试失败」；改造前同请求是红色「活跃测试失败」。
   - **文档**：`doc/4-bugs/2026-11-12_214500_…根因与修复.md` + `doc/3-实施/…_实施总览.md` + `doc/5-tests/…验证.md` + `doc/6-review/…_6-review.md`（`STYLE: PASS`）。
   - **同族未同步（需当轮授权）**：`qoder-ai/active_ping.go` 与 `qwenwork/active_ping.go` 结构同构可照搬；`workbuddy`/`workbuddy-ai` 探活只读首包 512 字节即判成功（排队帧会被误判成功），属另一独立问题。
-
-- 会话（2026-11-12 01:14-02:18）：**safeguard-killer 0.1.5 发布：成员模型真实名称直接进入智能分组（生产已生效）**：
-  - **用户诉求演进**：先问「workbuddy 的 cpa 插件有破甲版本吗」→ 装好后报「Safeguard Killer 不生效」→ 诊断出根因后裁定「改成只要配置模型名称，只要是这个模型的请求就进入这个插件」。
-  - **诊断（含一次自我纠错，重要教训）**：初判「三个破甲常量被抹成空操作」**错误**——`claudeCyberGatePrompt`(459 字符)/`Replacement`(323)、`RefusalRetryNudge`(224)/`Replacement`(91)、`ToolNotRun`(82/77)、`ToolInterrupted`(155/136)、`Fable51`(226)/`Fable5`(167) 全部互不相同且非空，替换逻辑完整有效。误判根因是**同一文件被 `read` 工具 / `Get-Content` / `git show` / Python 读出四种不同内容**（工具渲染污染，三次采样 sha256 恒为 `ECAEDC39…`/55421 字节）。**裁决铁律**：字面比对一律用 Python 读原始字节做布尔断言，不信任多层工具转述。
-  - **真实根因**：生产分组配置 `id: "1"`（不是模型名），成员是 11 个真实模型名；旧 `resolveTargetGroup` 只认分组 id → 客户端请求真实模型名全部漏过 → 面板「最近决策」恒为 **0**，`fallback_on_refusal` 一次未执行（四个全请求级开关仍在工作：剥污染头 / auto-mode 旁路 / 剥 system-reminder / 禁上游 fallback）。
-  - **实现（`groups.go` +56）**：新增 `groupServing`（按成员名反查分组）+ `rotateModels`（链路旋转到请求模型开头、其余环绕）；`resolveTargetGroup` 在 id 未命中后增加成员名分支。语义=请求哪个成员就先用哪个，被拒/失败/低配额才滚下一个。
-  - **递归安全性（宿主源码级证据，非推测）**：克隆 `router-for-me/CLIProxyAPI` 确认 `internal/pluginhost/host_callbacks.go:445-446` 把发起插件 id 同时写入 `SkipRouterPluginID`/`SkipInterceptorPluginID`，`sdk/api/handlers/handlers_routing.go:365,380` 据此跳过自身；`handlers_model_router_test.go:542` 有 `"was re-entered despite SkipRouterPluginID"` 断言守护。`executor_route.go:85-92` 注释明确 "without changing the requested model"。
-  - **验证**：cgo-shim build/vet/test 全绿；4 个新测试（含 `TestProductionStyleGroupEntersByMemberModel` 用生产同形数据）；哨兵 `TestSentinelGroupsZ` 确认进编译；2 组变异各被 3 条用例捕获；gofmt clean。
-  - **发布链**：commit `7c6da39`（6 文件 +156/-6，**路径限定提交**防并行会话污染）→ 本地 push 被 reject 因远端已前进到 `bb77f12`，`git merge-base --is-ancestor` 验证远端已含我的提交（并行会话 push 携带），**无需重推** → CI dispatch `allow_partial=true`，`Release` job success + release 实体 5 资产（`darwin/arm64` cancelled、`windows-arm64` 失败，已知平台缺件）→ 4/4 checksums OK → `publish-assets.py --allow-missing` → commit `e73eeea` → 远端验证 4/4 size+sha ALL PASS、无 0.1.4 残留。
-  - **生产部署**：`plugin-store/safeguard-killer/install?version=0.1.5&source=source-636fa01121af`（多源必须带 source，踩坑 60；源 id 从 `GET /v0/management/plugin-store` 现取，勿硬编码）。落盘 `.so` sha256 `ffc83bb4…b2d2ee` 与本地 zip **逐字节一致**；`hot reloaded active_version=0.1.5 retired_version=0.1.4`；容器 Up 自 2026-11-11T14:17Z、restarts=0（未重启）。
-  - **生产行为验收（决定性）**：请求成员 `DeepSeek-V4-Pro`（非流式「只回复：收到」）→ 插件接管并链式切换：`DeepSeek-V4-Pro`(11102 上游无此服务) → `Doubao-Seed-2.1-Pro`(model_not_found) → `GLM-5.3`(10605 排队) → `GLM-5.3-Flash`(11102) → **自动切到 `deepseek-v4.1-flash` 成功返回「收到」，finish_reason=stop**；响应含 `⚡ [Safeguard Killer] ` 通知。面板 decisions **0 → 13**。
-  - **遗留（用户侧配置）**：分组 11 个成员中 3 个模型名在宿主 `/v1/models`（共 50 个）中不存在——`Doubao-Seed-2.1-Pro`（doubao-provider 已于 2026-10-22 下线）、`hy4`、`qwen3.8-flash`（真实名 `qwen3.8-max`）。这些名在链路里只会白耗一次失败尝试，建议删除或改名。`DeepSeek-V4-Pro` 在列表内但上游报 11102（账号侧无该服务），与插件无关。
-
-- 会话（2026-11-12 08:12-21:20）：**大写模型名 11102 根因定位 + 两层修复（workbuddy 0.21.25）**：
-  - **根因（推翻「new-api 改写」假设）**：大写名不来自 new-api（`oneapi.channels.models` 全小写、`model_mapping` 空、`oneapi.abilities` 查大写返回 0 行、日志 `model=` 与 `alias=` 相同）。两层：① `safeguard-killer` group 成员名与 provider 注册 ID **大小写不一致**，而 `safeguard-killer/groups.go:137-150` `groupServing` 用 `strings.TrimSpace(model) == trimmed` **大小写敏感**精确匹配，命中即经 `rotateModels`（`:154-172`）劫持进 group；② CPA 路由对模型名**大小写不敏感**，但插件 `workbuddy/payload.go` 的 `rewriteModelInPlace`/`rewriteModelInBody` 用 `strings.EqualFold` 判等跳过重写、`workbuddy/models.go` 的 `resolveUpstreamModel` 查不到 alias 时直接 `return m` ⇒ 大写名原样透传大小写敏感的上游 → `11102 model service info not found`（HTTP 400）→ 按账号级故障逐个换号，**一次拼写问题放大成整池遍历**（60m 内 1196 请求 / 1014 失败 84.8%，11102 占 1007）。
-  - **修复**：① group `"1"` 成员改 8 项全小写 workbuddy 注册 ID（移除三不存在的 `Doubao-Seed-2.1-Pro`/`hy4`/`qwen3.8-flash`，`hy4` 真名 `hy4free`），备份 `config.yaml.bak-20261112_202935`；② `models.go` 新增归一表 `upstreamModelIDCache`（`ToLower(id)`→注册原样 ID）+ `canonicalUpstreamModelID`（**未命中只去空白原样返回，绝不猜大小写**），`resolveUpstreamModel` 三条返回路径全套，缓存刷新在**释放写锁之后**（持锁调用自死锁）；③ `payload.go` 两处改**逐字节精确相等**。新增 `model_case_normalize_test.go`（10 函数）。
-  - **两个假通过陷阱（重要）**：① 归一表未命中分支初版写成 `return canonicalUpstreamModelID(m)`（**自我递归**），被变异验证的 `fatal error: stack overflow`（`models.go:600`）暴露 → 改 `return m`；② 变异脚本 `replace(old,new,1)` 只改首个匹配，锚点出现两次 ⇒ 变异落在自递归行、fallback 从未被改 → **变异存活假通过**且 `restore` 把修复还原成自递归；脚本最终改为**校验锚点恰好命中 1 次**。
-  - **验证与发布**：`cgo-shim-build.py workbuddy` 全绿；**2 组变异均 KILLED** 且失败形态为断言 FAIL；代码 `8eae84b`（6 文件 +366/−11）；CI run 1614 `Release skipped`，`allow_partial=true` 重跑 run 1615 才 release。文档见 `doc/4-bugs/2026-11-12_010000_会话压缩阶段异常根因诊断.md`（含「部署后观察：外部会话改写 group 配置」小节）。知识库沉淀 `20-Knowledge/工程实践/忽略大小写的相等判断会短路规范化重写.md`。
