@@ -35,6 +35,18 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-14 15:00-16:45）：**10 插件面板「搜索框禁止浏览器表单历史自动填入」全链路发布 + 生产启用态零漂移（含 install 激活停用插件新铁律）**：
+  - **用户指令**（m00281）：「发布, 生产只重载我们依旧启用的, 其他的更新但是依旧保持不启用。这个发布生产的规则可以保持到项目中。」（起因 m00003「搜索不允许自动填入」）
+  - **改动**：10 个插件 `panel.html` 各加 `searchInputNoAutofill`（`autocomplete="off"` + 只读切 `autocomplete="new-password"` + 随机 `name`）；`panel.html` 走 `//go:embed` 编译进二进制，**HTML 不是运行时读盘，必须 bump 版本重发二进制**。
+  - **发布链**：提交 `fd0efca`（40 文件 +417/−35）→ 10 个 dispatch 全 204（`allow_partial:true`）→ 10/10 Release 就绪 → assets 各 5/6 zip（`darwin/arm64` 全 cancelled，与 registry 历史缺件一致，非本轮引入）→ registry（9 个 `publish-assets.py` + `219b00f` 修 workbuddy-ai 二次 dispatch 后 zip 字节变更指纹）。
+  - **新版本**：coze **0.7.7** / cursor **0.1.8** / doubao **0.1.11** / qoder-ai **0.1.40** / qoderwork **0.13.18** / qwenwork **0.2.16** / traework **0.5.57** / workbuddy-ai **0.1.40** / workbuddy **0.21.27** / zcode **0.3.8**。
+  - **生产 install**：启用组 5 个全部 `hot reloaded` —— doubao 0.1.11/retired 0.1.9（16:24:19）、coze 0.7.7/0.7.6（16:29:59）、qoderwork 0.13.18/0.13.17（16:30:04）、traework 0.5.57/0.5.56（16:30:08）、workbuddy 0.21.27/0.21.26（16:30:11）。
+  - **⚠️ 新铁律（实测）**：`plugin-store install` 会把**停用插件原地激活** —— cursor/qoder-ai/qwenwork/workbuddy-ai/zcode 5 个 install 后 `registered`/`enabled`/`effective_enabled` 从 false 全变 true（日志只有 `plugin loaded`+`plugin registered`，无 `hot reloaded`）→ 必须 `GET /v0/management/plugins/<id>/config` 备份 → 顶层 `enabled=false` 原样回写 `PUT .../config` → **回读确认**（qoder-ai 首轮 PUT 后仍为 true，重试一轮才成功）。
+  - **误操作事故与恢复**：探测端点时误打 `DELETE /v0/management/plugins/zcode-provider` → 200 `{"configured_removed":true,"file_deleted":true}`，同时删宿主配置与落盘 .so（日志 `plugin unloaded` 16:33:27）；重新 `install?version=0.3.8&source=source-636fa01121af` 恢复（16:33:48 loaded+registered），zcode 无账号文件故零数据损失。**已写入规则与踩坑 61：禁止用 DELETE 做停用。**
+  - **落盘校验**：10 个 `plugins/linux/amd64/<id>-v<ver>.so` 的 sha256 与本地 release zip 内 .so **10/10 一致**；容器内 `grep -ac searchInputNoAutofill` 逐个 **=1**（对照 `searchInput`=3~4），证明面板改动已真上生产。
+  - **终态**：13 插件快照与 install 前 `/tmp/plugins_snapshot_before.json` **逐字段 diff 为空（STATE_UNCHANGED）** —— 启用 7 = coze/doubao/qoderwork/traework/workbuddy/safeguard-killer/workbuddy-token-usage；停用 6 = copilot/cursor/qoder-ai/qwenwork/workbuddy-ai/zcode；账号 coze 23 / doubao 2 / qoderwork 5 / traework 61 / workbuddy 30；**容器未重启（Up 2 days）**。
+  - **规则沉淀**：`AGENTS.md` / `CLAUDE.md`「生产发布启用状态保持规则」校正版（`ade33e9` → `45c5ece`）+ `skills/project-cpa-workbuddy-plugin-release-rules/SKILL.md` Step 13 三步还原脚本 + 踩坑 61 + `PROJECT_MEMORY.md` 同步。临时脚本（33 个本地 `.rel_*.py` / `.verify_panel_js.cjs` + 服务器 `/tmp` 12 项 + 快照/备份目录）已全部清理。
+
 - 会话（2026-11-14 15:55-16:25）：**doubao-provider 0.1.11：面板测试模型列表改为插件别名目录 + 工作模式 conversation_mode 改整数（生产热重载已生效）**：
   - **用户指令**（m03346）：①「豆包面板的测试模型好像不太对, 认证文件管理中的是对的」②「豆包是获取不到额度的是吗?」。截图显示面板测试弹窗全是 `doubao/4tbp`、`doubao/anceba`、`doubao/ances brs` 这类上游代号，而宿主认证文件管理的模型列表正常。
   - **根因一（模型列表）**：`doubao/active_ping.go` 的 `handleModelsQuery` 只把 `cachedUpstreamModels` 的上游代号当列表下发，完全不并入插件别名；宿主「支持的模型」走 `doubao/models.go` 的 `modelForAuth` → `catalogueWithUpstream`（别名在前、代号追加在后）所以正常。
@@ -151,13 +163,3 @@
   - **生产行为验收（决定性）**：取 uid `399529bf-4251-4f08-b9a8-c0ca053c4b3d` 的**原始未转换记录**直接 POST `/import` → 200 `success:true`；落盘 `auth keys=['accessToken','domain','expiresAt','refreshToken']`、`expiresAt` 为 **int 1796910717**、`auth_raw` 残留 False。
   - **新踩坑**：① `registry.json` raw CDN 滞后 **4.5 分钟**，改用 GitHub Contents API（`/contents/registry.json?ref=main` + base64）才读到；② auth 文件在**容器内** `/root/.cli-proxy-api/`，容器内无 `python3`，需 `docker exec cat > /tmp/x.json` 拉到宿主再解析；③ 生产管理密钥在 `config.yaml` 第 **479** 行 `workbuddy-provider` 段的 `cpa_management_key`（9 字节明文），`remote-management.secret-key` 取不到（`rm_key_len=0`，用它 401）。
   - **遗留**：`darwin_arm64`/`windows_arm64` 缺件（按 `--allow-missing` 剔除槽位）；`doc/5-tests/` 与 `doc/6-review/` 未补验证与风格回归记录。
-
-- 会话（2026-11-12 21:09-22:10）：**qoderwork 0.13.17：面板「测试」把上游容量排队（10605 排队帧）与账号故障分开（生产已生效）**：
-  - **用户诉求**：贴生产面板截图 + 报错 `活跃测试失败 (模型: Qwen4-Max-Preview): upstream 200: 403: 10605: {"isQueued":true,"modelKey":"qmodel_latest","queueCount":1,"queueType":"p4","retryAfterSeconds":60,"serviceAvailable":true,...}`。
-  - **根因（非账号故障）**：该响应是上游**容量排队帧**（HTTP 200 + 顶层 `code=403` + 内嵌 10605/`isQueued`，`serviceAvailable=true`）。failover 侧早已正确拦截（`accountFailover.go:274` 排队帧 `return false` 不计数不冷却；`failover_disable.go` 不触发禁用），**缺陷只在用户呈现层**：`sendActivePingQoder` 把排队帧当普通错误抛，面板只显示红色「测试失败」+ 截断 200 字符的转义串，无法分辨「上游拥堵」与「账号坏了」。`Qwen4-Max-Preview` 走 `lookupUpstreamKey` 运行时映射到 `qmodel_latest`，无硬编码映射，属正常。
-  - **实现（3 文件 + 1 新测试，+223/−14）**：`policy.go` 新增 `queueFrameInfo`（8 字段与上游同名）、`waitSeconds()`（`retryAfterSeconds` 优先、回退 `waitTime`）、`parseQueueFrameInfo`（对每个 `{` 起点用 `json.NewDecoder` 试解，规避前缀不能整体 Unmarshal）；`active_ping.go` 新增 `*queueFrameError`（`Error()` 文本逐字不变供历史日志对照）+ `queueFrameNotice` + `buildActivePingFailure`；`panel.html` 结果渲染改**三态**（ok / warn / err）。**键名用 `upstream_queued` 不用 `queued`**——后者在本插件 `credits_handler.go:233`/`management.go:255` 是「后台刷新排队数」。**不做自动重试**（上游有 110 日调用次数上限，且 `defaultActivePingTimeout=20s` 装不下 60s 等待）。
-  - **验证**：cgo-shim 全绿（14.4s）；新增 7 测试 + 4 项既有排队帧回归 PASS；哨兵 `TestZZSentinelQueueFrameCompiled` 证实进编译；变异（`parseQueueFrameInfo` 改恒假）触发 FAIL；panel `new Function()` `blocks=2 bad=0`。
-  - **发布与生产**：`7c4527c`（11 文件 +815/−16）→ CI `43231575197` Release success → tag `qoderwork-provider-v0.13.17`（5 assets）→ registry `0791998`；热重载 `0.13.17`，`.so` sha256 `911c983e…34725d8`（8,363,872 B）与 zip 一致，面板 87,771 B 逐字节一致，容器未重启。
-  - **生产行为验收（决定性）**：`POST /test-active` 打 `Qwen4-Max-Preview` → 200 / 0.323s，返回 `upstream_queued:true` + `retry_after_seconds:60` +「账号与凭据正常，属上游容量排队而非测试失败」；改造前同请求是红色「活跃测试失败」。
-  - **文档**：`doc/4-bugs/2026-11-12_214500_…根因与修复.md` + `doc/3-实施/…_实施总览.md` + `doc/5-tests/…验证.md` + `doc/6-review/…_6-review.md`（`STYLE: PASS`）。
-  - **同族未同步（需当轮授权）**：`qoder-ai/active_ping.go` 与 `qwenwork/active_ping.go` 结构同构可照搬；`workbuddy`/`workbuddy-ai` 探活只读首包 512 字节即判成功（排队帧会被误判成功），属另一独立问题。
