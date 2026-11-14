@@ -15,13 +15,13 @@
   9. `coze-provider`：扣子 Coze（claw 对话 / WS 真流式 / 生图与积分路由红线）；
   10. `qwenwork-provider`：千问办公（Device Flow + PKCE / MaaS 短票据）；
   11. `workbuddy-token-usage`：统一 Token 用量统计与实时看板服务；
-  12. `doubao-provider`：豆包工作模式（agent_mode=1 PC 客户端管线；DeepSeek V4 / Kimi K3 / GLM 5.3 直连；Cookie 导入 + device_id 派生）。
+  12. `doubao-provider`：豆包工作模式（agent_mode=1 PC 客户端管线；DeepSeek V4 / Kimi K3 / GLM 5.3 直连；书签一键授权 / Cookie 导入 + device_id 派生）。
 - 非范围：CLIProxyAPI 核心服务本体；跨项目文件修改。
-- 已下线插件：`gemini-provider`（2026-10-11）、`notion-provider`（2026-10-22）。**`doubao-provider` 2026-10-22 下线、2026-11-14 以工作模式 0.1.7 重新上线、0.1.8 面板重写与导入导出已上线（生产已加载）。**
+- 已下线插件：`gemini-provider`（2026-10-11）、`notion-provider`（2026-10-22）。**`doubao-provider` 2026-10-22 下线、2026-11-14 以工作模式 0.1.7 重新上线、0.1.8 面板重写与导入导出、0.1.9 书签一键授权均已上线（生产已热重载）。**
 
 ## 项目概况
 
-- 状态：活跃维护中。12 大插件全景（11 Provider + 1 用量统计）。**2026-11-14 doubao-provider 以工作模式管线 0.1.7 重新上线，0.1.8 面板重写与账号导入导出已上线（生产已加载）**。
+- 状态：活跃维护中。12 大插件全景（11 Provider + 1 用量统计）。**2026-11-14 doubao-provider 以工作模式管线 0.1.7 重新上线，0.1.8 面板重写与账号导入导出、0.1.9 书签一键授权（替代手工粘贴 Cookie）均已上线并热重载**。
 - **生产主机（2026-11-07 起）= 45.207.222.65（`cpa-server`，端口 18998），254（`cpa-server-new`）已弃用**：用户明示「254 已经放弃，改回 65 为主服务器」，全部域名已解析到 65，254 只剩 mysql+nginx（CPA 已停）。部署/验收一律打 65，管理密钥用插件配置 `cpa_management_key`，账号在 `auth-dir=/CLIProxyAPI/mysqlstore/mysqlstore/auths`（62 个）。
 - **2026-11-07 01:27 已在 65 完成全量对齐与启用**：11 个插件全部 `configured/registered/enabled=true` —— workbuddy 0.21.9（20 号）/ coze 0.7.4（23 号）/ qoderwork 0.12.6（2 号）/ workbuddy-ai 0.1.35（6 号）/ token-usage 0.2.8 / traework 0.5.7 / qoder-ai 0.1.35 / zcode 0.3.5 / copilot 0.1.12 / qwenwork 0.2.13 / cursor 0.1.7（首次安装）。install 前 5 个显示 `registered=false` 是「该版本 .so 从未加载」（config 里 enabled 本为 true），install 后日志为 `plugin loaded + plugin registered`，非 hot reload 形态。
 - **2026-11-07 19:40 当前生产版本（max_tokens 最小干预批次）**：workbuddy-ai **0.1.37** / qoder-ai **0.1.37** / qoderwork **0.13.5** / traework **0.5.13** / zcode **0.3.7** / qwenwork **0.2.15** —— 上述插件 `configured/registered/enabled/effective_enabled` 全 true，`.so` sha256 与 release zip 逐字节一致。**管理 API 端口是 8317（不是 18998，18998 是 sshd）**。
@@ -34,6 +34,21 @@
 - 当前时间：2026-11-14 (GMT+8)
 
 ## 活动会话进展摘要
+
+- 会话（2026-11-14 14:00-15:10）：**doubao-provider 0.1.9：书签一键授权替换手工粘贴 Cookie（生产热重载已生效）**：
+  - **用户指令**（m02604）：「这个请学习coze的方案改造。」（附生产桥接页截图 `/v0/resource/plugins/doubao-provider/login?state=df8c8019-…`，标题「绑定豆包账号」+ 三步引导 + Cookie textarea）。诉求：不要让用户开开发者工具复制 Cookie。
+  - **根因**：豆包 `sessionid` / `sid_guard` 是 **HttpOnly**，页面 JS 读不到，「页面脚本直接取 Cookie」在豆包不可行；可行路线是 `/passport/token/beat/v2/` 取 `x-tt-token` 再换 Set-Cookie（与 coze 同网关同一套）。
+  - **后端**：新建 `doubao/tokenbeat.go`（271 行）—— `doTokenBeat`（POST `{}` + 头 `sdk-version: 2` + `x-tt-token` + webUserAgent + Referer，`LimitReader 1<<20`）、`exchangeTokenForCookies`（零 Set-Cookie 判失败）、`cookieHeaderFromJar`、`saveFromToken`（缺 `flow_cur_user_sec_id` 时用 `probeAccountInfo` 的 SecUserID 补齐后走 `saveCredentials`，与手工导入同一落盘口径，DeviceID/WebTabID/BotID 不重复生成）。
+  - **`doubao/login.go` 515 → 1027 行**：`callbackPath=/login/callback`、`callbackTokenHeader="X-Doubao-Token"`、`callbackErrorHeader="X-Doubao-Error"`；**令牌只走 fragment（`#token=`）+ 同源请求头，绝不进 query**（query 会写进宿主访问日志）；`handleLoginCallback` 严格/宽松双模（严格模式校验 state、重放短路返回「该授权已完成」、失败**一律 HTTP 200 + ok:false**，4xx 会让面板误判管理密钥失效）；无 state 的固定书签模式靠 `adoptPendingLoginSession` 认领 pending 会话让宿主弹窗自动关闭；`loginSession` 增 `lastError` 供 `handlePollLogin` 回显；桥接页三层通道（书签 / 一次性脚本 / 手工 Cookie 兜底）；`rememberPublicOrigin`（X-Forwarded-Host 优先，**回环不得覆盖已记录公网 origin**）+ `__CPA_ORIGIN__` 占位符由浏览器 `location.origin` 替换。
+  - **`doubao/management.go`**：Resources 3 → **4** 条（新增 `callbackPath`），`handleManagement` 入口加 `rememberPublicOrigin(req.Headers)`，GET `callbackPath` 走 `okEnvelope(handleLoginCallback(req))`。
+  - **`doubao/panel.html`**（1053 行 / 54280 B）：工具栏首位加 `#loginBtn`「豆包一键授权」→ `window.open("/v0/resource/plugins/doubao-provider/login","_blank","noopener")`（**不带 state 是刻意的**，书签要长期复用）；空态文案同步改。
+  - **本地验证**：`cgo-shim-build.py doubao` 全绿；`go test -v` → **PASS=169 SKIP=13 FAIL=0**（182 个 Test 函数，新增 `tokenbeat_test.go` 15 用例）；`node --check` 两 script 块 exit=0；DOM 34 id / 20 refs / 17 handlers MISSING=[]；gofmt clean；`scan_test_pollution.py` PASS；`static_owner_router.py` 命中 STYLE-01/02/03/04/05/08/09。
+  - **文档**：`doc/5-tests/2026-11-14_145800_doubao书签一键授权验证.md`、`doc/6-review/2026-11-14_145915_doubao书签一键授权_6-review.md`（`STYLE: PASS`）。
+  - **发布链**：提交 `8351418`（12 文件 +1562/−105）→ run 43569126788（`darwin/arm64` cancelled、5 平台 success、`Release: success`）→ release `doubao-provider-v0.1.9` id=445094935 **6 assets** → registry `3bbe775`（5 artifacts，`validate-registry.py` 13 plugin OK）→ 远端用 **Contents API** 核对 `version=0.1.9` 与五平台 sha256/size（raw.githubusercontent 仍是旧缓存，不能作判定依据）。
+  - **生产热重载**：`install?version=0.1.9` → `restart_required:false`；`hot reloaded active_version=0.1.9 retired_version=0.1.8`（15:08:35）；落盘 `/CLIProxyAPI/plugins/linux/amd64/doubao-provider-v0.1.9.so` **8250752 B** sha256 `aa9e64786d16b6e419839efb8734c1767941ede89ef6b6f6fc0849800a0c2019` 与本地 zip 逐字节一致；容器 `Up 2 days` **未重启**。
+  - **生产验收**：`/panel` 200（54280 B，命中 `enc::v2::`/`doubao-mgmt-key`/`豆包一键授权`/`openLoginBridge`）；`/login` 无 state 200（8443 B，命中 `bmLink`/`openDoubao`/`__CPA_ORIGIN__`/`passport/token/beat/v2/`）；`/login/callback` 无 state 200（3508 B，命中 `location.hash`/`X-Doubao-Token`）；带合法 state 的 `/login` 200 回显 `data-state`；未知 state → 200 + 「授权会话不存在或已过期」；`/accounts` 空、`/export` 200、`/export/zip` 404。
+  - **环境坑**：CPA 容器 `network=host` 且**容器内无 curl/wget/busybox/python3**，但宿主有 `/usr/bin/curl`；生产管理 API 必须 `ssh cpa-server` 后在宿主 curl 打 `http://127.0.0.1:8317/...`，`docker exec` 不可用。
+  - **遗留**：`/accounts` 仍为 0（宿主只在有账号时注册 `doubao/*` 模型）；书签一键授权的真实账号端到端尚未实测。
 
 - 会话（2026-11-14 02:40-03:30）：**doubao 0.1.8：面板重写为 workbuddy 同源形态 + 账号导入导出（生产热重载已生效）**：
   - **用户指令**（m01353）：「不要用户自己填密钥, 参考 workbuddy 面板来设计豆包的面板、导入、导出、账号等功能。」截图停在「加载账号失败：需要管理密钥」。
@@ -145,28 +160,6 @@
   - **生产部署**：`plugin-store/safeguard-killer/install?version=0.1.5&source=source-636fa01121af`（多源必须带 source，踩坑 60；源 id 从 `GET /v0/management/plugin-store` 现取，勿硬编码）。落盘 `.so` sha256 `ffc83bb4…b2d2ee` 与本地 zip **逐字节一致**；`hot reloaded active_version=0.1.5 retired_version=0.1.4`；容器 Up 自 2026-11-11T14:17Z、restarts=0（未重启）。
   - **生产行为验收（决定性）**：请求成员 `DeepSeek-V4-Pro`（非流式「只回复：收到」）→ 插件接管并链式切换：`DeepSeek-V4-Pro`(11102 上游无此服务) → `Doubao-Seed-2.1-Pro`(model_not_found) → `GLM-5.3`(10605 排队) → `GLM-5.3-Flash`(11102) → **自动切到 `deepseek-v4.1-flash` 成功返回「收到」，finish_reason=stop**；响应含 `⚡ [Safeguard Killer] ` 通知。面板 decisions **0 → 13**。
   - **遗留（用户侧配置）**：分组 11 个成员中 3 个模型名在宿主 `/v1/models`（共 50 个）中不存在——`Doubao-Seed-2.1-Pro`（doubao-provider 已于 2026-10-22 下线）、`hy4`、`qwen3.8-flash`（真实名 `qwen3.8-max`）。这些名在链路里只会白耗一次失败尝试，建议删除或改名。`DeepSeek-V4-Pro` 在列表内但上游报 11102（账号侧无该服务），与插件无关。
-
-- 会话（2026-11-12 00:52-01:45）：**会话压缩阶段异常归因 → content_filter 归入失败分类（workbuddy 0.21.24，未发布）**：
-  - **用户提问演进**：先报「session-3304f06f 到压缩就出问题」→ 追问「所以还是超时的问题是吗？」→ 裁定按 traework 0.5.48 的做法把 content_filter 归入失败分类。
-  - **归因（含自我纠错）**：初版判定「压缩来得太晚导致超时」**被数据推翻**——该会话 `inputTokens>75 万` 有 **108 次**、`>60 万` **313 次**绝大多数成功；turn 22 step 51-63 连续 13 步在 **795,749~800,068** 输入下全部成功；`idle timeout` 全程仅 **3 次**且每次被 `llm/retry` 当场救回，其中一次发生在 input 仅 **655** 的请求上，与规模无关。
-  - **真实主因（C6）**：`Response incomplete: content_filter` **42 次**，占全部 `finish=error` 的 **84%**（42/50），覆盖 **31/37** 个 turn，时间跨度 2026-11-10 23:24 → 11-12 00:55。**42/42 已产出正文**（14 次含 tool-call）——活干完了，末帧被判违规。文案来自上游 `incomplete_details.reason`（`pi-ai/.../openai-responses-shared.js:687-702`）。
-  - **压缩本身 3/3 全部成功闭合**（seq 160/173/4326，无 `error` 字段），与失败无因果；`shadowedRange` 倒序是 surface 端点 seq 的合法语义，非缺陷。
-  - **实现（4 文件 + 1 新测试）**：① `policy.go` 新增 `isContentModerationFailure`（三层形态 + 精确排除长度截断 + **防误判正常正文**）；② `failure_class.go` 新增**第 0.5 步**归 `failureScopeModelRateLimit`，排在账号级 4xx 之前（traework 0.5.46 未生效的根因）；③ `stream.go` 流式 emit 前记账 + `contentEmitted=true` 禁换号，非流式出口补记；④ `accountFailover.go` 修掉 scope 写死 `AuthModel`（会写盘禁用健康号）。
-  - **验证**：`cgo-shim-build.py workbuddy` build/vet/test 全绿；**3 组变异全部 KILLED**——分类改回 None、scope 写死 AuthModel（需桩化 `failoverResolveIndexFn`，否则假通过）、判据放宽为无条件认词（3 条防误判用例 FAIL）。
-  - **两个实测陷阱**：① `content_filter` 是 `finish_reason` **正常终止分片**，`sseErrorFrame` 捕获不到，只改分类函数完全无效；② 判据在每个流式分片上运行，正文即用户内容，自由子串会误伤（本仓库正是中文小说场景）。
-  - **文档**：`doc/4-bugs/2026-11-12_010000_会话压缩阶段异常根因诊断.md`（10 证据 / 6 项裁决 / 3 Mermaid，含 01:00→01:20 纠错记录）、`doc/3-实施/2026-11-12_013000_workbuddy内容审核归入失败分类实施总览.md`。
-  - **已收口**：0.21.24 于 11-12 01:56 热重载上线，六轮定时观察 `content_filter` 全程 0（生产无审核样本），新分支未经真实数据触发但零误伤。
-
-- 会话（2026-11-12 01:56-02:20）：**workbuddy 0.21.24 发布上线 + 生产观察**：
-  - **发布链**：CI run `43071825610` Release success（4 平台：darwin_amd64/linux_amd64/linux_arm64/windows_amd64；`darwin_arm64` 被取消、`windows_arm64` 构建失败，按 `--allow-missing` 剔除槽位）→ 资产 sha256 自校验 `ALL CHECKSUMS OK` → registry `d3356c8` → 生产 `plugin-store install` `status=installed, restart_required:false` → `hot reloaded active_version=0.21.24 retired_version=0.21.23`，**容器未重启**（Up 4 hours）。
-  - **一致性**：生产落盘 `.so` sha256 `e7ac1632bf6665aa…`（8,454,624 B）与本地 zip 内 `.so` **逐字节一致**；`strings` 确认新判据已入二进制（`"content_filter"` / `"content filter"` / `sensitive content` / `max_output_tokens` / `finish_reason: content_filter`）。
-  - **观察结论：无审核样本**（`content_filter` 命中 0，`docker logs` 与容器内 feed 双向确认）。窗口内失败全是 `11102`（大写模型名，走 HTTP 400 → `failureScopeNone`，与本轮改动无交集）；小写别名 `deepseek-v4-pro` **217 次全成功**。
-  - **误伤检查全通过**：部署后 workbuddy **0 个账号被失败禁用**；账号池 20 个、**16 个仍可路由**；4 个 disabled 全部是 credits 耗尽/低积分（`exhausted`/`low_credits`），无一为失败禁用。
-  - **旧实例干净退出**：`failover reconcile loop stopped` + `probe loop stopped: superseded by newer instance`，无僵尸巡检（对照 2026-11-08 coze 事故）。
-  - **观测口径修正（自身错误）**：首轮误判「feed 停止写入」，因查的是宿主机上的**过期副本**；真实写入在**容器内** `/CLIProxyAPI/data/token-usage-feed.ndjson`。**feed 必须在容器内查**；sidecar 与 feed 是两条独立路径，记账观测不受影响。
-  - **新增端到端用例** `workbuddy/content_filter_end_to_end_test.go`（提交 `d8d9eab`）：用生产真实分片形态串起「判据 → 分类 → 冷却落盘」+ 3 条反例守卫。**踩坑**：首版无守卫直接调 `recordSSEErrorFailureForModel`，反例立即被记成冷却（测试不忠实，生产五处调用点都有 `if isContentModerationFailure(...)` 包裹），已改为「先判据、后记账」。
-  - **定时观察**：`schedule-bad2541a`，2 小时间隔 × 6 次，判定标准为「出现 content_filter 日志 / sidecar mtime 推进到部署之后 ⇒ 新分支已触发；仍为 0 且无审核流量 ⇒ 报告无样本，不编造结论」。
-  - **追加观察（03:12-04:48）**：仍无审核样本。04:14 一次失败禁用（`workbuddy-7ee5e596`/`GLM-5.3-Flash`）经追踪 `content_filter` 命中 0、失败全为 11102、该号 `credits.total_remain=0`/`exhausted=True` ⇒ 与本轮改动无关。04:39 容器优雅重启（`ExitCode=0`、`OOMKilled=false`，非本轮操作）后仍加载 0.21.24。
 
 - 会话（2026-11-12 08:12-21:20）：**大写模型名 11102 根因定位 + 两层修复（workbuddy 0.21.25）**：
   - **根因（推翻「new-api 改写」假设）**：大写名不来自 new-api（`oneapi.channels.models` 全小写、`model_mapping` 空、`oneapi.abilities` 查大写返回 0 行、日志 `model=` 与 `alias=` 相同）。两层：① `safeguard-killer` group 成员名与 provider 注册 ID **大小写不一致**，而 `safeguard-killer/groups.go:137-150` `groupServing` 用 `strings.TrimSpace(model) == trimmed` **大小写敏感**精确匹配，命中即经 `rotateModels`（`:154-172`）劫持进 group；② CPA 路由对模型名**大小写不敏感**，但插件 `workbuddy/payload.go` 的 `rewriteModelInPlace`/`rewriteModelInBody` 用 `strings.EqualFold` 判等跳过重写、`workbuddy/models.go` 的 `resolveUpstreamModel` 查不到 alias 时直接 `return m` ⇒ 大写名原样透传大小写敏感的上游 → `11102 model service info not found`（HTTP 400）→ 按账号级故障逐个换号，**一次拼写问题放大成整池遍历**（60m 内 1196 请求 / 1014 失败 84.8%，11102 占 1007）。
