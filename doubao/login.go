@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -539,6 +540,13 @@ const callbackTokenHeader = "X-Doubao-Token"
 // callbackErrorHeader 是回调页同源上报失败原因时使用的请求头。
 const callbackErrorHeader = "X-Doubao-Error"
 
+// callbackMsTokenHeader 是回调页同源回传 msToken 时使用的请求头。
+//
+// msToken 取自豆包页面 localStorage.xmst，是 /chat/completion 的必需参数
+// （见 sign.go）。它和令牌同批回传：两者都只在页面上下文里可得，分两次
+// 采集会让用户重复操作。
+const callbackMsTokenHeader = "X-Doubao-MsToken"
+
 // handleLoginCallback 处理授权脚本回传的令牌。
 //
 // 脚本在豆包页面取到 x-tt-token 后跳到本路径，令牌放在 URL fragment 里。
@@ -565,6 +573,7 @@ func handleLoginCallback(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 
 	token := strings.TrimSpace(req.Headers.Get(callbackTokenHeader))
 	upstreamErr := strings.TrimSpace(req.Headers.Get(callbackErrorHeader))
+	msToken := strings.TrimSpace(req.Headers.Get(callbackMsTokenHeader))
 
 	// 首次打开：服务端拿不到 fragment，先返回接收页。
 	if token == "" && upstreamErr == "" {
@@ -604,6 +613,15 @@ func handleLoginCallback(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 			"ok":      false,
 			"message": errSave.Error(),
 		})
+	}
+	// 落盘后再补 msToken：兑换令牌时还拿不到它，而它是请求签名的必需项。
+	// 写失败不阻断授权——账号本身可用，只是请求会退回未签名分支。
+	if msToken != "" {
+		sa.MsToken = msToken
+		sa.UpdatedAt = time.Now().Format(time.RFC3339)
+		if errWrite := writeAuthFileDirect(sa.PhysicalPath, sa); errWrite != nil {
+			log.Printf("[doubao] save ms_token failed for %s: %v", sa.AuthID, errWrite)
+		}
 	}
 
 	if !strict {
@@ -659,12 +677,13 @@ func loginCallbackShell(state, detail string) pluginapi.ManagementResponse {
 	// 宽松模式（面板 / 固定书签）没有 state：不带该参数，服务端按无会话导入处理。
 	b.WriteString("var IMPORT=\"/v0/resource/plugins/" + providerName + callbackPath + "\"+(STATE?\"?state=\"+encodeURIComponent(STATE):\"\");")
 	b.WriteString("var p=new URLSearchParams(location.hash.replace(/^#/,\"\"));")
-	b.WriteString("var token=p.get(\"token\")||\"\";var err=p.get(\"err\")||\"\";")
+	b.WriteString("var token=p.get(\"token\")||\"\";var err=p.get(\"err\")||\"\";var mst=p.get(\"mst\")||\"\";")
 	b.WriteString("var box=document.getElementById(\"result\");")
 	b.WriteString("function show(text,cls){box.className=cls;box.textContent=text}")
 	b.WriteString("if(!token&&!err){show(\"未收到授权令牌，请回到管理页重新发起授权。\",\"err\")}else{")
 	b.WriteString("  var headers={};")
 	b.WriteString("  if(token){headers[\"" + callbackTokenHeader + "\"]=token}else{headers[\"" + callbackErrorHeader + "\"]=err}")
+	b.WriteString("  if(mst){headers[\"" + callbackMsTokenHeader + "\"]=mst}")
 	b.WriteString("  fetch(IMPORT,{method:\"GET\",cache:\"no-store\",headers:headers})")
 	b.WriteString("    .then(function(res){return res.json()})")
 	b.WriteString("    .then(function(d){")
@@ -917,9 +936,13 @@ func firstHeaderValue(raw string) string {
 // 脚本在豆包页面上下文执行，因此 fetch 天然带上登录 Cookie（credentials 必须
 // 显式设为 include：默认策略下不一定自动携带）。取到 x-tt-token 后跳转插件
 // 回调页；失败时把上游 message 一并带回，让回调页能显示可读原因。
+//
+// 同一次执行还要顺手带走 localStorage.xmst：它是 /chat/completion 必需的
+// msToken（有效期 7 天），插件自己换不出来（需要设备侧加密串），只能借助
+// 用户浏览器已有的值。
 // [参数] state: 授权会话标识。
 // [返回] 可粘贴执行的 JS 源码（含待替换的 origin 占位符）。
-// 最近修改时间：2026-11-14；改动原因：新增，脚本生成；回调域改占位符注入。
+// 最近修改时间：2026-11-15 01:10:00；改动原因：随令牌一起采集 msToken。
 func buildAuthScript(state string) string {
 	callback := "/v0/resource/plugins/" + providerName + callbackPath
 	var b strings.Builder
@@ -928,6 +951,7 @@ func buildAuthScript(state string) string {
 	b.WriteString("headers:{'sdk-version':'" + tokenBeatSDKVersion + "','Content-Type':'" + tokenBeatContentType + "'},body:'{}'});\n")
 	b.WriteString("  const j=await r.json().catch(()=>({}));\n")
 	b.WriteString("  const t=r.headers.get('x-tt-token');\n")
+	b.WriteString("  const ms=(()=>{try{return localStorage.getItem('xmst')||''}catch(e){return ''}})();\n")
 	b.WriteString("  const cb='")
 	b.WriteString(cpaOriginPlaceholder)
 	b.WriteString(callback)
@@ -939,7 +963,7 @@ func buildAuthScript(state string) string {
 	}
 	b.WriteString("';\n")
 	b.WriteString("  if(!t){location.href=cb+'#err='+encodeURIComponent((j&&j.data&&j.data.description)||(j&&j.message)||'no_token');return;}\n")
-	b.WriteString("  location.href=cb+'#token='+encodeURIComponent(t);\n")
+	b.WriteString("  location.href=cb+'#token='+encodeURIComponent(t)+'&mst='+encodeURIComponent(ms);\n")
 	b.WriteString("})()")
 	return b.String()
 }
@@ -959,9 +983,11 @@ func jsStringEscape(s string) string {
 // 15 分钟会话限制，也不需要每次授权前重新复制——这是「一次安装、之后
 // 一点即完成」的关键。代价是落盘结果无法直接回传给宿主弹窗（没有会话可
 // 登记），因此由 adoptPendingLoginSession 在服务端认领最近的待完成会话。
+//
+// 与 buildAuthScript 一样，顺手带上 localStorage.xmst 作为 msToken。
 // [参数] 无。
 // [返回] javascript: 开头的单行脚本（含待替换的 origin 占位符）。
-// 最近修改时间：2026-11-14；改动原因：新增，一次性书签授权。
+// 最近修改时间：2026-11-15 01:10:00；改动原因：随令牌一起采集 msToken。
 func buildBookmarkletScript() string {
 	callback := "/v0/resource/plugins/" + providerName + callbackPath
 	var b strings.Builder
@@ -971,10 +997,11 @@ func buildBookmarkletScript() string {
 	b.WriteString("const j=await r.json().catch(()=>({}));")
 	b.WriteString("const t=r.headers.get('x-tt-token');")
 	b.WriteString("if(!t){alert('未检测到豆包登录态：'+(((j&&j.data&&j.data.description)||(j&&j.message))||'请先在本页完成登录'));return}")
+	b.WriteString("const ms=(()=>{try{return localStorage.getItem('xmst')||''}catch(e){return ''}})();")
 	b.WriteString("location.href='")
 	b.WriteString(cpaOriginPlaceholder)
 	b.WriteString(callback)
-	b.WriteString("#token='+encodeURIComponent(t)")
+	b.WriteString("#token='+encodeURIComponent(t)+'&mst='+encodeURIComponent(ms)")
 	b.WriteString("}catch(e){alert('取令牌失败：'+e)}})()")
 	return b.String()
 }

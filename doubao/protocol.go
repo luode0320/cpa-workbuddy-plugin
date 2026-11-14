@@ -11,13 +11,19 @@ import (
 
 // 本文件集中定义豆包上游协议的常量与 query 参数集构造。
 //
-// 协议事实来源（2026-10-17）：Lxapk/DouBao-CPA-Plugin 的 protocol.go 源码 +
+// 协议事实来源（2026-10-17 初版）：Lxapk/DouBao-CPA-Plugin 的 protocol.go 源码 +
 // 本仓库浏览器实测网络日志交叉验证。关键结论：
 //   - 业务 API 必须携带完整 query 参数集，缺参会返回 {"code":0,"data":null}；
-//   - msToken 与 a_bogus 均不在必需参数中——上游接受无签名调用，
-//     这消除了重实现字节风控签名算法的必要；
+//   - `/chat/completion` 必须携带 msToken 与 a_bogus 两个风控签名参数。
+//     2026-11-15 控制实验（同一 URL/body，逐项增删）确认：两者都缺回
+//     710022002，只缺 a_bogus 回 710022004，填随机值等同缺失；msToken 取自
+//     页面 localStorage.xmst（7 天有效），a_bogus 每次请求现算（约 60~120 秒
+//     窗口）。签名实现在 sign.go，用内嵌 bdms-sdk 在进程内生成。
+//     旧记载「上游接受无签名调用」已证伪：当时样本账号恰好被投放为免签名。
 //   - IM 系端点（/im/*）的 Content-Type 必须是 "application/json; encoding=utf-8"；
 //     而 /chat/completion 相反，须用纯 "application/json"。
+//
+// 最近修改时间：2026-11-15 01:25:00；改动原因：修正 msToken/a_bogus 必需性记载。
 
 const (
 	// webUserAgent 是模拟网页端请求的 User-Agent。

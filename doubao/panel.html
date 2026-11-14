@@ -663,6 +663,9 @@ function card(a){
     (a.mobile?'<div class="row"><span class="k">手机</span><span class="v">'+esc(a.mobile)+'</span></div>':'')+
     '<div class="row"><span class="k">账号标识</span><span class="v">'+esc(a.sec_user_id||"-")+'</span></div>'+
     '<div class="row"><span class="k">登录态</span><span class="v '+(state==="expired"?"err":(state==="enabled"?"ok":"warn"))+'">'+(state==="expired"?"已过期":(state==="disabled"?"已禁用":"有效"))+'</span></div>'+
+    (a.sign_state==="missing"
+      ? '<div class="row"><span class="k">请求签名</span><span class="v err" title="缺少 msToken：该账号的对话请求会被上游按未签名拒绝，重新点一次授权书签即可补齐">未采集（需重新授权）</span></div>'
+      : '')+
     '<div class="row"><span class="k">创建时间</span><span class="v">'+esc(fmtCST(a.created_at)||"-")+'</span></div>'+
     '<div class="row"><span class="k">更新时间</span><span class="v">'+esc(fmtCST(a.updated_at)||"-")+'</span></div>'+
     checkinBlock(a)+

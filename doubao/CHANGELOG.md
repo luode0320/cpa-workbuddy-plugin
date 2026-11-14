@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.16 (2026-11-15)
+
+### Fix - `/chat/completion` 缺 msToken 与 a_bogus 签名，10 个账号对话被上游拒绝（用户反证推翻 0.1.15 定性）
+
+- 现象(用户 2026-11-14 22:54 三张截图): 面板「测试」对 `号10` 测 `doubao/deepseek-v4-flash` 报 0.1.15 的「账号级频率限制」文案；但同一账号同一时刻在豆包网页版(`doubao.com/chat/38453820519002882`，模型「DeepSeek V4.1 Flash 高」，22:09)和 PC 客户端(22:11)输入 `hi` 都能正常回「Hi! What can I help you with today?」。用户据此指出「我们用网页版、pc端客户端没有任何问题, 说明插件有错误」——该判断成立，0.1.15 的「账号级拒绝」定性错误。
+- 根因(逐项增删控制实验，同一 URL 与 body): `/chat/completion` 必须携带 `msToken` 与 `a_bogus` 两个 query 参数。都不带 → 秒回 `710022002`；只缺 `a_bogus` → `710022004 rate limited`；只缺 `msToken` → `710022002`；两者齐全且 `msToken` 真实 → `SSE_ACK` 正常出字。填随机值等同缺失，格式合法的伪造 base64 也不行。插件此前**从不发送这两个参数**（`grep` 全仓仅命中 `protocol.go` 一条注释），故对所有未获免签放行的账号必然失败。
+- 已排除的旁路(全部实测无效): 出口 IP(生产与住宅 IP 同样失败)、query 参数集(`aid=497858`/`582478`、`device_platform`、`channel`、版本号四组)、body 结构(工作模式 vs 技能模式)、`ttwid`/`s_v_web_id` 等访客 Cookie、浏览器全部请求头、HTTP 版本(同为 h2)、Chrome TLS 指纹(curl_cffi 八种 `impersonate` + uTLS `HelloChrome_Auto` 走 h2 全部失败)、device_id(2×2 实验: 失败只跟随 Cookie/账号，与该账号 device_id 无关)。
+- 签名事实(2026-11-15 实测): `msToken` 由 `mssdk.bytedance.com` 下发并写入页面 `localStorage.xmst`，有效期 7 天，**不在 `.doubao.com` 的 `document.cookie` 里**；`a_bogus` 由豆包官方 `bdms-sdk` 现算，有效窗口约 60~120 秒，不绑定 body 与 `web_tab_id`，跨账号也能用。`a_bogus` 生成算法跑在混淆解释器内且带 11 位环境探测位图(`dom/node/phantom/webdriver/hook/location/consistent/incognito/debugger/switch/test`)，静态复刻不可行（全站 383 个 JS 里 `a_bogus` 字面量只出现在一处 cache omit 名单里）。
+- 修复(内嵌官方 SDK + goja 进程内还原): 新增 `sign.go`，用 `//go:embed` 内嵌 `assets/bdms-sdk.js`(163 KB 官方 SDK) + `assets/bdms-shim.js`(BOM 垫片) + `assets/bdms-xhr.js`(prototype 级 XHR 桩)，在 goja Runtime 里按页面真实配置调用 `bdms.init({aid:497858, pageId:26930, paths:{include:[…], exclude:[…]}, ic:13, ddrt:13})` 安装请求 hook，再由 SDK 自己把 `a_bogus` 追加到 URL 上。`btoa`/`atob` 走 Go 侧按 charCode 逐字节实现（用 Go `string` 直接传会破坏二进制语义）。签名器进程内单例，SDK 加载约 0.5 秒、单次签名约 200ms。
+- msToken 采集(只能借用户浏览器): 插件自己换不出来——`POST https://mssdk.bytedance.com/web/r/token?ms_appid=497858` 需要 `strData`（设备侧加密串），缺它一律 `resultCode:-3`。故 `login.go` 的一次性授权脚本与固定书签脚本都改为在取 `x-tt-token` 的同时读取 `localStorage.xmst`，经 `X-Doubao-MsToken` 头随回调带回，`handleLoginCallback` 在 `saveFromToken` 成功后补写进账号文件；写失败只记日志、不阻断授权（账号本身可用，只是退回未签名分支）。
+- 状态可见: `StoredAuth` 新增 `ms_token` 字段；`/accounts` 新增 `sign_state`（`ok` / `missing`）；面板在账号卡片「登录态」行下方对 `missing` 显示「未采集（需重新授权）」并给出补齐方式。
+- 兼容与迁移: 老账号（0.1.15 及之前导入）没有 `ms_token`，需在豆包已登录页面上点一次固定书签（或重新走一次授权）补齐；未补齐前仍会被上游按未签名拒绝，行为与 0.1.15 一致，不会更差。
+- 协议注释校正: `protocol.go` 文件头原写着「msToken 与 a_bogus 均不在必需参数中——上游接受无签名调用」，已改为实测结论并注明该记载的成因（当时样本账号恰好被投放为免签名）。
+- 验证: `python scripts/cgo-shim-build.py doubao` → build / vet / test 全绿；`sign_test.go` 三个用例用真实 SDK 断言「补齐 msToken + a_bogus」「连签两次 a_bogus 不同（防缓存短路）」「非上游地址不签名」；`panel.html` 两个 `<script>` 块 `node --check` 通过；生产 12 账号 `test-active` 复测在补齐 `ms_token` 后由「11 个失败」转为可用（详见 `doc/5-tests` 第 15 节）。
+
 ## 0.1.15 (2026-11-14)
 
 ### Fix - 面板测试失败提示不再只回显上游原文（-1 与 710022002 给出账号级定位）

@@ -37,6 +37,11 @@ type StoredAuth struct {
 	WebID         string `json:"web_id,omitempty"`
 	WebTabID      string `json:"web_tab_id,omitempty"`
 	BotID         string `json:"bot_id,omitempty"`
+	// MsToken 是 /chat/completion 必需的风控令牌（见 sign.go）。
+	//
+	// 由豆包页面 localStorage.xmst 提供，本身有 7 天有效期；a_bogus 则在每次
+	// 请求前由内嵌 SDK 现算。缺失时上游回 710022002（未签名分支）。
+	MsToken string `json:"ms_token,omitempty"`
 	// Cookies 是上游滚动下发的 Cookie 快照（见 cookiejar.go）。
 	// 首次导入时为空，第一次请求后由 durableJar 写回；与 CookieHeader 并存：
 	// 前者是随上游续期的滚动值，后者是用户导入时的原始登录态快照。

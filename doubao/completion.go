@@ -808,9 +808,12 @@ func swapCompletionEndpoint(endpoint string) func() {
 //
 // 工作模式必须带客户端形态的 query 参数集（aid=582478、channel=win、
 // device_platform=web 等）；网页端参数集会让上游按网页端链路解析请求体。
-// [参数] sa: 账号（提供设备级标识）；workMode: 是否工作模式。
+//
+// 两条管线都必须补齐字节风控签名（msToken + a_bogus），否则上游直接回
+// 710022002「当前服务访问频繁」，与账号状态无关（见 sign.go）。
+// [参数] sa: 账号（提供设备级标识与 msToken）；workMode: 是否工作模式。
 // [返回] 完整 URL。
-// 最近修改时间：2026-11-14 02:45:00；改动原因：新增工作模式 query 分支。
+// 最近修改时间：2026-11-15 01:05:00；改动原因：补齐必需签名，消除 710022002。
 func completionURL(sa *StoredAuth, workMode bool) string {
 	// 1. 测试覆盖点优先，保证流式链路能在 httptest 下验证。
 	if completionEndpointOverride != "" {
@@ -818,10 +821,13 @@ func completionURL(sa *StoredAuth, workMode bool) string {
 	}
 
 	// 2. 按管线选参数集：工作模式走客户端 19 键，网页端走业务 query。
+	raw := endpointURL(sa, "/chat/completion", nil)
 	if workMode {
-		return clientEndpointURL(sa, "/chat/completion")
+		raw = clientEndpointURL(sa, "/chat/completion")
 	}
-	return endpointURL(sa, "/chat/completion", nil)
+
+	// 3. 签名在参数集之后做：a_bogus 覆盖整条 query，先签再改会失效。
+	return signChatCompletionURL(sa, raw)
 }
 
 // streamCompletion 发起一次 /chat/completion 请求并逐帧回调。

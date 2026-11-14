@@ -3,6 +3,10 @@
 *.sh text eol=lf
 *.bash text eol=lf
 
+# 豆包签名 SDK 及其垫片是 //go:embed 的运行时输入，必须是 LF：
+# 换成 CRLF 会改变被嵌入字节，与上游原文不一致。
+doubao/assets/*.js text eol=lf
+
 *.png binary
 *.jpg binary
 *.jpeg binary

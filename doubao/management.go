@@ -252,6 +252,10 @@ type accountSummary struct {
 	// AuthState 是登录态状态：ok（有效）/ expired（待重新授权）。
 	// 判定依据是账号文件中会话主 Cookie 是否仍在有效期内（见 cookiejar.go）。
 	AuthState string `json:"auth_state"`
+	// SignState 是请求签名状态：ok（已采集 msToken）/ missing（待重新授权补齐）。
+	// msToken 只能从用户浏览器页面采集，导入前就存在的老账号会缺失，
+	// 缺失时 /chat/completion 会被上游按未签名拒绝（见 sign.go）。
+	SignState string `json:"sign_state"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
@@ -277,12 +281,24 @@ func handleListAccounts() ([]byte, error) {
 			SecUserID:  maskIdentifier(acc.SecUserID),
 			Disabled:   acc.Disabled,
 			AuthState:  authStateOf(acc),
+			SignState:  signStateOf(acc),
 			CreatedAt:  acc.CreatedAt,
 			UpdatedAt:  acc.UpdatedAt,
 		})
 	}
 	body, _ := json.Marshal(map[string]any{"accounts": list, "count": len(list)})
 	return makeHTTPResponse(http.StatusOK, body)
+}
+
+// signStateOf 判定账号是否已采集到请求签名所需的 msToken。
+// [参数] sa: 账号结构。
+// [返回] "ok"（已采集）或 "missing"（待重新授权补齐）。
+// 最近修改时间：2026-11-15 01:30:00；改动原因：新增，签名缺失状态上报。
+func signStateOf(sa *StoredAuth) string {
+	if strings.TrimSpace(sa.MsToken) != "" {
+		return "ok"
+	}
+	return "missing"
 }
 
 // authStateOf 判定账号的登录态状态。
