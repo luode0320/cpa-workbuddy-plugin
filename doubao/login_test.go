@@ -215,7 +215,7 @@ func TestPollLoginRejectsUnknownState(t *testing.T) {
 // TestLoginBridgePageRendersForm 校验桥接页可用且不含未替换的模板残留。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，桥接页渲染验证。
+// 最近修改时间：2026-11-14；改动原因：主通道改为授权书签，断言同步到书签引导。
 func TestLoginBridgePageRendersForm(t *testing.T) {
 	isolateAccounts(t)
 	resetLoginSessions()
@@ -229,11 +229,22 @@ func TestLoginBridgePageRendersForm(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("桥接页应返回 200，实际 %d", resp.StatusCode)
 	}
-	if !strings.Contains(page, "绑定豆包账号") {
-		t.Fatal("桥接页应说明绑定流程")
+	if !strings.Contains(page, "授权豆包账号") {
+		t.Fatal("桥接页应说明授权流程")
 	}
+	// 主通道是书签：拖一次即可复用，用户不必再手工复制 HttpOnly Cookie。
+	if !strings.Contains(page, `id="bmLink"`) || !strings.Contains(page, "豆包一键授权") {
+		t.Fatal("桥接页必须提供可拖拽的授权书签")
+	}
+	if !strings.Contains(page, `id="openDoubao"`) {
+		t.Fatal("桥接页必须提供打开豆包的入口")
+	}
+	// 兜底通道保留：CSP 拦掉 javascript: 书签时仍要能完成授权。
 	if !strings.Contains(page, `id="cookie"`) || !strings.Contains(page, `id="submit"`) {
-		t.Fatal("桥接页必须包含 Cookie 输入框与提交按钮")
+		t.Fatal("桥接页必须保留 Cookie 兜底输入框与提交按钮")
+	}
+	if !strings.Contains(page, cpaOriginPlaceholder) {
+		t.Fatal("桥接页必须保留 origin 占位符，由页面脚本替换成实际访问域名")
 	}
 	if !strings.Contains(page, `data-provider="`+providerName+`"`) {
 		t.Fatal("桥接页必须声明 provider，供 JS 拼出管理 API 路径")
@@ -437,10 +448,14 @@ func TestLoginBridgeImportWithoutManagementKey(t *testing.T) {
 	}
 }
 
-// TestLoginBridgeImportRejectsBadInput 校验提交入口的三类拒绝路径。
+// TestLoginBridgeImportRejectsBadInput 校验提交入口的拒绝路径。
+//
+// 带 state 的严格模式才是宿主弹窗的回传通道：state 缺失/失效都必须拒绝，
+// 否则任何人都能拿一个裸请求往账号目录里写凭据。不带 state 的宽松模式
+// （面板独立入口）单独用 TestLoginBridgeImportLooseWithoutState 覆盖。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，免密钥入口的边界防护。
+// 最近修改时间：2026-11-14；改动原因：宽松模式放开缺 state，断言同步收窄到严格模式。
 func TestLoginBridgeImportRejectsBadInput(t *testing.T) {
 	isolateAccounts(t)
 	resetLoginSessions()
@@ -455,11 +470,6 @@ func TestLoginBridgeImportRejectsBadInput(t *testing.T) {
 		wantMsg string
 	}{
 		{
-			name:    "缺 state",
-			req:     pluginapi.ManagementRequest{Method: http.MethodGet, Headers: http.Header{loginBridgeImportHeader: []string{validCookieHeader}}},
-			wantMsg: "登录会话",
-		},
-		{
 			name:    "未知 state",
 			req:     pluginapi.ManagementRequest{Method: http.MethodGet, Query: url.Values{"state": []string{"not-exist"}}, Headers: http.Header{loginBridgeImportHeader: []string{validCookieHeader}}},
 			wantMsg: "登录会话",
@@ -467,6 +477,11 @@ func TestLoginBridgeImportRejectsBadInput(t *testing.T) {
 		{
 			name:    "缺 Cookie",
 			req:     pluginapi.ManagementRequest{Method: http.MethodGet, Query: url.Values{"state": []string{start.State}}},
+			wantMsg: "cookie",
+		},
+		{
+			name:    "宽松模式缺 Cookie",
+			req:     pluginapi.ManagementRequest{Method: http.MethodGet, Headers: http.Header{}},
 			wantMsg: "cookie",
 		},
 	}

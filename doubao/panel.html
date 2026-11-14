@@ -186,7 +186,7 @@ button.sec .spin{border-color:var(--fg);border-top-color:transparent}
 <body>
 <div class="wrap">
   <h1>豆包 Provider</h1>
-  <div class="sub">导入浏览器登录态后，本插件把豆包账号能力以 OpenAI 兼容接口提供给 CPA。</div>
+  <div class="sub">一键授权豆包账号后，本插件把豆包账号能力以 OpenAI 兼容接口提供给 CPA。</div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
     <div style="display:flex;gap:8px">
@@ -195,6 +195,7 @@ button.sec .spin{border-color:var(--fg);border-top-color:transparent}
     </div>
   </div>
   <div class="bar">
+    <button class="sec" id="loginBtn" onclick="openLoginBridge()" title="打开豆包一键授权页：拖一次书签，之后在豆包页面点一下书签即可完成授权">豆包一键授权</button>
     <button class="sec" id="importBtn" onclick="openImportModal()">导入凭证</button>
     <button class="sec" id="exportBtn" onclick="exportAuth(this)" title="导出全部账号凭证为单个 JSON 汇总文件，可直接再导入">导出凭证</button>
     <button class="sec" id="exportZipBtn" onclick="exportAuthZip(this)" title="导出为 zip，每个账号一个独立 JSON 文件，便于按账号分发或迁移">导出 ZIP</button>
@@ -621,7 +622,7 @@ async function load(){
     }
     lastAccounts=accounts;
     if(!accounts.length){
-      g.innerHTML='<div class="loading">暂无豆包账号，点击「导入凭证」粘贴浏览器 Cookie</div>';
+      g.innerHTML='<div class="loading">暂无豆包账号。点上方「豆包一键授权」即可接入（首次拖一次书签，之后登录完点一下书签即可）。</div>';
       renderSummary([]);
       updateFilterCounts([]);
       return;
@@ -636,6 +637,17 @@ async function load(){
     if(!lastAccounts.length) g.innerHTML='<div class="loading">'+esc(msg)+"</div>";
     else toast("加载账号失败，已保留上次数据","err",msg);
   }
+}
+
+/* ---------- 一键授权 ---------- */
+// 打开授权引导页：新标签页打开，不带 state。
+//
+// 不带 state 是刻意的：书签要能长期复用，不能把 15 分钟过期的一次性 state
+// 烤进书签内容。页面里的书签装一次即可，之后每次登录完点一下书签，
+// 回调会自动落盘并关掉宿主弹窗（有的话）。前缀必须与 providerName 逐字符一致，
+// 不能用 location.pathname 推导：面板可能嵌在宿主的管理页 iframe 里。
+function openLoginBridge(){
+  window.open("/v0/resource/plugins/doubao-provider/login","_blank","noopener");
 }
 
 /* ---------- 导入 ---------- */

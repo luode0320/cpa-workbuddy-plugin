@@ -62,7 +62,7 @@ type managementRegistrationResponse struct {
 // managementRegistration 声明插件对宿主暴露的管理路由与资源页。
 // [参数] 无。
 // [返回] 路由与资源注册结构。
-// 最近修改时间：2026-10-17；改动原因：新增登录态导入与账号启停路由。
+// 最近修改时间：2026-11-14；改动原因：新增授权回调页资源注册。
 func managementRegistration() managementRegistrationResponse {
 	base := "/plugins/" + providerName
 	return managementRegistrationResponse{
@@ -80,8 +80,9 @@ func managementRegistration() managementRegistrationResponse {
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "Doubao", Description: "豆包 Provider 管理面板：登录态导入、账号管理、状态诊断。"},
-			{Path: "/login", Description: "宿主「添加账号」弹窗打开的登录引导页（浏览器 Cookie 导入桥接）。"},
-			{Path: "/login/import", Description: "登录引导页的 Cookie 提交入口（免管理密钥，state 短时凭证）。"},
+			{Path: "/login", Description: "登录引导页：安装一次授权书签，之后在豆包页面点一下书签即可完成授权。"},
+			{Path: callbackPath, Description: "授权回调页：接收书签回传的令牌并兑换登录态（免管理密钥）。"},
+			{Path: "/login/import", Description: "授权失败时的手工兜底入口：提交浏览器 Cookie（免管理密钥，state 短时凭证）。"},
 		},
 	}
 }
@@ -128,7 +129,7 @@ func normalizeMgmtSubPath(rawPath string) (string, url.Values) {
 // handleManagement 分发插件管理路由。
 // [参数] raw: 宿主 management.handle 载荷。
 // [返回] 管理响应信封与错误。
-// 最近修改时间：2026-10-17；改动原因：新增导入与账号启停分发分支。
+// 最近修改时间：2026-11-14；改动原因：新增授权回调分发与公网来源记录。
 func handleManagement(raw []byte) ([]byte, error) {
 	var req pluginapi.ManagementRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -137,6 +138,10 @@ func handleManagement(raw []byte) ([]byte, error) {
 
 	subPath, urlQuery := normalizeMgmtSubPath(req.Path)
 	method := strings.ToUpper(req.Method)
+
+	// 插件跑在容器里看不到用户实际访问的域名，只能从请求头把公网来源记下来，
+	// 供 handleStartLogin 拼绝对回调地址、供桥接页生成可用的书签。
+	rememberPublicOrigin(req.Headers)
 
 	if method == http.MethodGet && (subPath == "/" || subPath == "/panel") {
 		return handlePanelPage(), nil
@@ -151,6 +156,12 @@ func handleManagement(raw []byte) ([]byte, error) {
 			state = strings.TrimSpace(urlQuery.Get("state"))
 		}
 		return okEnvelope(handleLoginBridge(state, req.Path))
+	}
+
+	// 授权脚本的回调入口：与 /login 分开。浏览器带 fragment 打开本路径时服务端
+	// 看不到令牌，由页面脚本再发一次同源请求，经自定义请求头回传。
+	if method == http.MethodGet && subPath == callbackPath {
+		return okEnvelope(handleLoginCallback(req))
 	}
 
 	// 桥接页的提交入口：宿主把 resource 请求强制改写为 GET 且不转发请求体，
