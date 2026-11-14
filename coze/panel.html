@@ -212,7 +212,7 @@ button.danger:hover{background:var(--err);color:#fff}
     <button class="sec" id="btnDisableAll" title="禁用全部账号（不再参与路由）">全部禁用</button>
     <button class="sec" id="btnExport" title="导出全部账号凭据为 JSON 备份文件，可通过「导入备份」恢复">导出备份</button>
     <button class="sec" id="btnImport" title="从「导出备份」生成的文件恢复账号（逐条写回，不经过上游换票）">导入备份</button>
-    <input id="searchInput" class="search" type="search" placeholder="搜索昵称 / 手机 / 账号标识" autocomplete="off">
+    <input id="searchInput" class="search" type="search" placeholder="搜索昵称 / 手机 / 账号标识" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other">
   </div>
 
   <div class="summary" id="sweepBox" style="display:none"></div>
@@ -1118,6 +1118,34 @@ document.addEventListener("keydown",e=>{
   if(document.getElementById("deleteModal").classList.contains("show"))closeDeleteModal();
   if(document.getElementById("importModal").classList.contains("show"))closeImportModal();
 });
+
+// 搜索框禁止浏览器自动填入：进入面板先清空历史恢复值，只有用户真主动输入才放行。
+// [参数] 无。
+// [返回] 无。
+// 最近修改时间：2026-11-14；改动原因：新增，修复浏览器表单历史把上次搜索词自动填回搜索框。
+(function searchInputNoAutofill(){
+  const el=document.getElementById("searchInput");
+  if(!el) return;
+  // 每次加载换一个随机 name，浏览器无法用表单历史命中这个输入框。
+  el.setAttribute("name","q"+Math.random().toString(36).slice(2,10));
+  el.setAttribute("autocomplete","off");
+  let typed=false;
+  el.addEventListener("pointerdown",()=>{typed=true;},{passive:true});
+  el.addEventListener("keydown",()=>{typed=true;});
+  el.addEventListener("focus",()=>{ if(!typed) el.value=""; });
+  const reset=()=>{
+    if(el.value!=="") el.value="";
+    if(currentSearch!==""){
+      if(typeof onSearchChange==="function") onSearchChange("");
+      else { currentSearch=""; if(typeof render==="function" && lastAccounts.length) render(); }
+    }
+  };
+  const resetIfUntouched=()=>{ if(!typed) reset(); };
+  resetIfUntouched();
+  // 浏览器可能在首帧之后才恢复历史值，短窗口内多清几轮。
+  [0,60,200,600,1200,2500].forEach(t=>setTimeout(resetIfUntouched,t));
+  window.addEventListener("pageshow",resetIfUntouched);
+})();
 
 /* 启动：先同步主题监听，再按是否已有密钥决定直接加载还是显示鉴权框。 */
 if(window.__cozeThemeSync)window.__cozeThemeSync();

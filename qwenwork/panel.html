@@ -224,7 +224,7 @@ button.danger:hover{background:var(--err);color:#fff}
     <button class="sec" id="importBtn" onclick="openImportModal()">导入 QwenWork 凭证</button>
     <button class="sec" id="exportBtn" onclick="exportAuth(this)" title="导出全部账号凭据为 JSON 备份，可通过导入恢复">导出备份</button>
     <button class="sec" id="exportZipBtn" onclick="exportAuthZip(this)" title="导出为 zip，每个账号一个独立 JSON 文件，便于按账号分发或迁移">导出 ZIP</button>
-    <input id="searchInput" class="search" type="search" placeholder="搜索昵称 / UID" oninput="onSearchChange(this.value)" autocomplete="off">
+    <input id="searchInput" class="search" type="search" placeholder="搜索昵称 / UID" oninput="onSearchChange(this.value)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other">
     <button class="sec sort-btn" id="sortBtn" onclick="toggleSort(this)" title="按可用积分切换升序/降序">积分 ↕</button>
 
     <span class="toggle" id="svtime"></span>
@@ -1262,6 +1262,33 @@ document.addEventListener("keydown",e=>{
   if(e.key=="Escape"&&document.getElementById("deleteModal").classList.contains("show")) closeDeleteModal();
   if(e.key=="Escape"&&document.getElementById("testModal").classList.contains("show")) closeTestModal();
 });
+// 搜索框禁止浏览器自动填入：进入面板先清空历史恢复值，只有用户真主动输入才放行。
+// [参数] 无。
+// [返回] 无。
+// 最近修改时间：2026-11-14；改动原因：新增，修复浏览器表单历史把上次搜索词自动填回搜索框。
+(function searchInputNoAutofill(){
+  const el=document.getElementById("searchInput");
+  if(!el) return;
+  // 每次加载换一个随机 name，浏览器无法用表单历史命中这个输入框。
+  el.setAttribute("name","q"+Math.random().toString(36).slice(2,10));
+  el.setAttribute("autocomplete","off");
+  let typed=false;
+  el.addEventListener("pointerdown",()=>{typed=true;},{passive:true});
+  el.addEventListener("keydown",()=>{typed=true;});
+  el.addEventListener("focus",()=>{ if(!typed) el.value=""; });
+  const reset=()=>{
+    if(el.value!=="") el.value="";
+    if(currentSearch!==""){
+      if(typeof onSearchChange==="function") onSearchChange("");
+      else { currentSearch=""; if(typeof render==="function" && lastAccounts.length) render(); }
+    }
+  };
+  const resetIfUntouched=()=>{ if(!typed) reset(); };
+  resetIfUntouched();
+  // 浏览器可能在首帧之后才恢复历史值，短窗口内多清几轮。
+  [0,60,200,600,1200,2500].forEach(t=>setTimeout(resetIfUntouched,t));
+  window.addEventListener("pageshow",resetIfUntouched);
+})();
 /* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
 if(window.__wbThemeSync)window.__wbThemeSync();
 if(getKey()){

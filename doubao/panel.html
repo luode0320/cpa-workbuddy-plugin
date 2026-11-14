@@ -137,6 +137,9 @@ button.sec .spin{border-color:var(--fg);border-top-color:transparent}
 .model-item{display:block;width:100%;text-align:left;background:var(--btn-sec);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:13px;font-family:ui-monospace,monospace;cursor:pointer;word-break:break-all}
 .model-item:hover{background:var(--btn-sec-hover);border-color:var(--acc)}
 .model-item:disabled{opacity:.5;cursor:default}
+.model-item .mi-name{display:block;font-family:inherit;font-size:13px;font-weight:600;color:var(--fg)}
+.model-item .mi-id{display:block;margin-top:2px;font-family:ui-monospace,monospace;font-size:11px;color:var(--mut);word-break:break-all}
+.ref-tag{display:inline-block;margin-left:6px;padding:0 6px;border-radius:999px;background:var(--acc-ring);color:var(--acc);font-family:inherit;font-size:11px;font-weight:500;line-height:16px;vertical-align:middle}
 </style>
 <script>
 /* Early theme sync (before body paint): mirror CPA parent data-theme when
@@ -199,7 +202,7 @@ button.sec .spin{border-color:var(--fg);border-top-color:transparent}
     <button class="sec" id="importBtn" onclick="openImportModal()">导入凭证</button>
     <button class="sec" id="exportBtn" onclick="exportAuth(this)" title="导出全部账号凭证为单个 JSON 汇总文件，可直接再导入">导出凭证</button>
     <button class="sec" id="exportZipBtn" onclick="exportAuthZip(this)" title="导出为 zip，每个账号一个独立 JSON 文件，便于按账号分发或迁移">导出 ZIP</button>
-    <input id="searchInput" class="search" type="search" placeholder="搜索 昵称 / 备注 / 账号标识" oninput="onSearchChange(this.value)" autocomplete="off">
+    <input id="searchInput" class="search" type="search" placeholder="搜索 昵称 / 备注 / 账号标识" oninput="onSearchChange(this.value)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other">
     <button class="sec sort-btn" id="sortBtn" onclick="toggleSort(this)" title="当前：创建时间倒序（新→旧），点击切账号标识升序">创建 ↓</button>
   </div>
   <div class="filter-bar" id="filterBar">
@@ -986,22 +989,28 @@ async function loadTestModels(authIndex, force){
       return;
     }
     const models=(d&&Array.isArray(d.models))?d.models.filter(m=>String(m||"").trim()):[];
-    // 上游清单读不到时后端会回落到内置能力别名；把原因如实显示出来，
-    // 否则用户会以为账号真的只有这几个模型。
+    // 模型目录与宿主「支持的模型」同源（插件别名），details 提供可读名、说明与默认标记；
+    // 上游内部代号无法映射到具体模型，后端只作为 upstream_models 附带，不参与测试。
+    const details={};
+    if(d&&Array.isArray(d.details)) d.details.forEach(x=>{if(x&&x.id)details[x.id]=x;});
     const notice=d&&d.notice?'<div class="hint">'+esc(d.notice)+'</div>':"";
     if(!models.length){
       list.innerHTML=notice+'<div class="hint">暂无可用模型</div>';
       return;
     }
-    list.innerHTML=notice+models.map(m=>'<button type="button" class="model-item" data-model="'+esc(m)+'">'+esc(m)+'</button>').join("")+
+    list.innerHTML=notice+models.map(m=>{
+      const meta=details[m]||{};
+      const title=meta.description?(' title="'+esc(meta.description)+'"'):"";
+      const label=meta.name?('<span class="mi-name">'+esc(meta.name)+(meta.default?'<span class="ref-tag">默认</span>':"")+'</span>'):"";
+      return '<button type="button" class="model-item" data-model="'+esc(m)+'"'+title+'>'+label+'<span class="mi-id">'+esc(m)+'</span></button>';
+    }).join("")+
       '<button type="button" class="sec" id="reloadModels" style="margin-top:6px">刷新模型清单</button>';
     const reload=document.getElementById("reloadModels");
     if(reload) reload.addEventListener("click",()=>loadTestModels(authIndex,true));
   }catch(e){
     list.innerHTML='<div class="hint" style="color:var(--err)">'+esc(e.message||String(e))+'</div>';
   }
-}
-async function runTestModel(btn){
+}async function runTestModel(btn){
   const authIndex=pendingTestAuthIndex;
   const model=btn&&btn.dataset?btn.dataset.model:"";
   if(!authIndex||!model)return;
@@ -1040,6 +1049,34 @@ document.addEventListener("keydown",e=>{
   if(document.getElementById("deleteModal").classList.contains("show")) closeDeleteModal();
   if(document.getElementById("testModal").classList.contains("show")) closeTestModal();
 });
+// 搜索框禁止浏览器自动填入：进入面板先清空历史恢复值，只有用户真主动输入才放行。
+// [参数] 无。
+// [返回] 无。
+// 最近修改时间：2026-11-14；改动原因：新增，修复浏览器表单历史把上次搜索词自动填回搜索框。
+(function searchInputNoAutofill(){
+  const el=document.getElementById("searchInput");
+  if(!el) return;
+  // 每次加载换一个随机 name，浏览器无法用表单历史命中这个输入框。
+  el.setAttribute("name","q"+Math.random().toString(36).slice(2,10));
+  el.setAttribute("autocomplete","off");
+  let typed=false;
+  el.addEventListener("pointerdown",()=>{typed=true;},{passive:true});
+  el.addEventListener("keydown",()=>{typed=true;});
+  el.addEventListener("focus",()=>{ if(!typed) el.value=""; });
+  const reset=()=>{
+    if(el.value!=="") el.value="";
+    if(currentSearch!==""){
+      if(typeof onSearchChange==="function") onSearchChange("");
+      else { currentSearch=""; if(typeof render==="function" && lastAccounts.length) render(); }
+    }
+  };
+  const resetIfUntouched=()=>{ if(!typed) reset(); };
+  resetIfUntouched();
+  // 浏览器可能在首帧之后才恢复历史值，短窗口内多清几轮。
+  [0,60,200,600,1200,2500].forEach(t=>setTimeout(resetIfUntouched,t));
+  window.addEventListener("pageshow",resetIfUntouched);
+})();
+
 /* 启动主题监听（父页 MutationObserver + 独立打开时的系统偏好监听）。 */
 if(window.__dbThemeSync)window.__dbThemeSync();
 if(getKey()){

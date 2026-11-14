@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.8 (2026-11-14)
+
+### Fix - 面板搜索框被浏览器表单历史自动填回上次搜索词
+
+- 缺陷(用户反馈 2026-11-14): 面板刷新后搜索框会自动填入上次的搜索词，账号列表被旧关键字过滤，看起来像账号丢失。根因是浏览器把 `type="search"` 输入框当成可记忆的表单字段，重载时用表单历史恢复 `value`，与 `autocomplete="off"` 无关——浏览器对同名字段的恢复不受该属性约束。
+- 修复: `panel.html` 新增 `searchInputNoAutofill()` 自执行函数——加载时把输入框 `name` 改成每次随机的 `q<random>`，浏览器无法用固定字段历史命中它；同时补齐 `autocorrect="off"`/`autocapitalize="off"`/`spellcheck="false"`/`data-form-type="other"`，压掉移动端与密码管理器启发式填充。
+- 放行真输入: 用 `pointerdown` / `keydown` 记录「用户确实操作过」，只有未操作过才在 `focus`、`pageshow` 与 0/60/200/600/1200/2500ms 六个短窗口内清空 `value` 并复位 `currentSearch` + 重渲染，避免浏览器在首帧之后才恢复历史值；用户主动输入的搜索词不会被清掉。
+- 影响范围: 仅面板前端——搜索输入框属性与上述自执行清理函数，账号列表渲染、筛选语义、签到/导入/导出等全部链路零改动；后端与插件协议无变化。
+- 验证: `python scripts/cgo-shim-build.py` build / vet / test 全绿；10 个插件面板同源改动逐一落地（`searchInputNoAutofill` 与 `data-form-type` 各命中 2 处）。
+
 ## 0.3.7
 
 ### Fix - 删除自研 max_tokens 控制，改为「显式值零干预」（对齐社区共识）
