@@ -320,7 +320,7 @@ func TestRunActiveTestTimeoutIsBounded(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- streamCompletion(ctx, completionTestAccount(), buildCompletionRequest(
-			completionTestAccount(), testPingText, textMode(), "", "", 0, true,
+			completionTestAccount(), testPingPrompt(), textMode(), "", "", 0, true,
 		), func(completionEvent) bool { return true })
 	}()
 

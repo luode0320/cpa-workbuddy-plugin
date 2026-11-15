@@ -13,8 +13,9 @@ import (
 func TestSignAddsMsTokenAndABogus(t *testing.T) {
 	const msTokenValue = "Zm9vYmFyLW1zLXRva2VuLXBsYWNlaG9sZGVyLXZhbHVl"
 	raw := doubaoSiteHost + "/chat/completion?aid=497858&device_platform=web&version_code=20800"
+	const sampleBody = `{"messages":[{"content_block":[{"block_type":10000}]}]}`
 
-	signed, errSign := getBrowserSigner().sign(raw, msTokenValue)
+	signed, errSign := getBrowserSigner().sign(raw, msTokenValue, sampleBody)
 	if errSign != nil {
 		t.Fatalf("签名失败：%v", errSign)
 	}
@@ -39,11 +40,11 @@ func TestSignAddsMsTokenAndABogus(t *testing.T) {
 // 最近修改时间：2026-11-15 01:20:00；改动原因：新增，签名非确定性回归。
 func TestSignIsStableAcrossCalls(t *testing.T) {
 	raw := doubaoSiteHost + "/chat/completion?aid=497858&web_platform=browser"
-	first, errFirst := getBrowserSigner().sign(raw, "token-a")
+	first, errFirst := getBrowserSigner().sign(raw, "token-a", "{}")
 	if errFirst != nil {
 		t.Fatalf("第一次签名失败：%v", errFirst)
 	}
-	second, errSecond := getBrowserSigner().sign(raw, "token-a")
+	second, errSecond := getBrowserSigner().sign(raw, "token-a", "{}")
 	if errSecond != nil {
 		t.Fatalf("第二次签名失败：%v", errSecond)
 	}
@@ -62,9 +63,34 @@ func TestSignIsStableAcrossCalls(t *testing.T) {
 func TestSignSkipsNonUpstreamURL(t *testing.T) {
 	sa := &StoredAuth{MsToken: "token-a"}
 	for _, raw := range []string{"http://127.0.0.1:8080/chat/completion", "https://example.com/x"} {
-		if got := signChatCompletionURL(sa, raw); got != raw {
+		if got := signChatCompletionURL(sa, raw, []byte("{}")); got != raw {
 			t.Fatalf("非上游地址不应签名，输入 %s 得到 %s", raw, got)
 		}
+	}
+}
+
+// TestSignCoversRequestBody 验证 a_bogus 覆盖请求体：同一 URL 换 body 必须换签名。
+//
+// 这是 0.1.23 的核心回归：旧实现固定 `x.send('{}')`，与真实 3.4KB 请求体不符，
+// 上游按真实 body 校验签名必然不一致，稳定回 -1 delegated input protocol violation。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-16 03:18:00；改动原因：新增，签名覆盖 body 回归。
+func TestSignCoversRequestBody(t *testing.T) {
+	raw := doubaoSiteHost + "/chat/completion?aid=497858&web_platform=browser"
+	const msTokenValue = "token-a"
+
+	small, errSmall := getBrowserSigner().sign(raw, msTokenValue, "{}")
+	if errSmall != nil {
+		t.Fatalf("小 body 签名失败：%v", errSmall)
+	}
+	large, errLarge := getBrowserSigner().sign(raw, msTokenValue, `{"messages":[{"text":"这是一个明显更长的请求体，用来验证签名覆盖 body"}]}`)
+	if errLarge != nil {
+		t.Fatalf("大 body 签名失败：%v", errLarge)
+	}
+
+	if valueAfter(small, "a_bogus=") == valueAfter(large, "a_bogus=") {
+		t.Fatal("换 body 后 a_bogus 必须变化：a_bogus 覆盖请求体，否则上游按真实 body 校验会判协议异常")
 	}
 }
 

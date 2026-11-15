@@ -356,14 +356,14 @@ func TestBuildBusinessQueryComplete(t *testing.T) {
 // TestStatusCodeHint 校验上游错误码映射到可操作文案。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-15 23:40:00；改动原因：-1 的成因改为「账号未投放工作模式」，断言同步并禁止再引导用户去改 agent_mode。
+// 最近修改时间：2026-11-16 05:22:00；改动原因：-1 的成因修正为「请求体缺网页默认值字段」，断言同步。
 func TestStatusCodeHint(t *testing.T) {
 	cases := map[int]string{
 		710012001: "重新导入",
 		710012000: "重新导入",
 		710022004: "设备指纹",
 		710022002: "s_v_web_id",
-		-1:        "没有被投放",
+		-1:        "委托输入协议",
 		710020202: "Content-Type",
 		710020702: "重放",
 		710022013: "签名",
@@ -374,9 +374,9 @@ func TestStatusCodeHint(t *testing.T) {
 			t.Errorf("错误码 %d 的提示应包含 %q，实际 %q", code, want, got)
 		}
 	}
-	// -1 与请求写法无关：提示里不得再把用户引向 agent_mode 这类请求字段。
-	if got := statusCodeHint(-1, ""); strings.Contains(got, "agent_mode") {
-		t.Errorf("错误码 -1 的提示不应引导用户改请求字段，实际 %q", got)
+	// -1 已不再把责任推给账号：提示里不得再出现「没有被投放」这类归因。
+	if got := statusCodeHint(-1, ""); strings.Contains(got, "没有被投放") {
+		t.Errorf("错误码 -1 的提示不应再声称账号未投放工作模式，实际 %q", got)
 	}
 	if got := statusCodeHint(999999, ""); !strings.Contains(got, "未知错误") {
 		t.Errorf("未知码应回落到通用提示，实际 %q", got)

@@ -46,12 +46,15 @@ type completionRequest struct {
 // 参考实现里，是本仓库对照浏览器真实请求逐字段消融定位出来的。
 //
 // last_section_id / last_message_index 是续接点：新会话可空，续接既有会话时必须带。
+//
+// 这两项不能用 omitempty：网页端新会话时显式发 last_section_id="" 与
+// last_message_index=null，省略后上游按「委托输入协议不符」回 -1（2026-11-16 消融）。
 type clientMeta struct {
 	LocalConversationID string       `json:"local_conversation_id"`
 	ConversationID      string       `json:"conversation_id"`
 	BotID               string       `json:"bot_id"`
-	LastSectionID       string       `json:"last_section_id,omitempty"`
-	LastMessageIndex    int64        `json:"last_message_index,omitempty"`
+	LastSectionID       string       `json:"last_section_id"`
+	LastMessageIndex    *int64       `json:"last_message_index"`
 	LocalPermissions    []permission `json:"local_permissions,omitempty"`
 }
 
@@ -141,13 +144,45 @@ type completionOption struct {
 	// MessageStorageType 是消息存储类型，工作模式固定 0。
 	MessageStorageType int `json:"message_storage_type"`
 
-	// Ext 是工作模式专属的内层扩展字典（与顶层 ext 互斥）。
-	Ext map[string]string `json:"ext,omitempty"`
+	// 以下字段一律不写 omitempty：网页端每次都会把它们显式发出去，
+	// 省略后上游会按「委托输入协议不符」直接回 -1（2026-11-16 逐项消融确认）。
+	ClickClearContext     bool           `json:"click_clear_context"`
+	ConnectorInfoList     []any          `json:"connector_info_list"`
+	DisableSSECache       bool           `json:"disable_sse_cache"`
+	EditQueryID           []any          `json:"edit_query_id"`
+	FromSuggest           bool           `json:"from_suggest"`
+	IsAIPlayground        bool           `json:"is_ai_playground"`
+	IsFromClickOption     bool           `json:"is_from_click_option"`
+	IsFromClickSoftlink   bool           `json:"is_from_click_softlink"`
+	IsRegen               bool           `json:"is_regen"`
+	IsReplace             bool           `json:"is_replace"`
+	IsSelectText          bool           `json:"is_select_text"`
+	MessageFrom           int            `json:"message_from"`
+	NoReplaceForRegen     bool           `json:"no_replace_for_regen"`
+	RegenInstruction      string         `json:"regen_instruction"`
+	RegenQueryID          []any          `json:"regen_query_id"`
+	ResendForRegen        bool           `json:"resend_for_regen"`
+	SceneType             int            `json:"scene_type"`
+	SelectTextAction      string         `json:"select_text_action"`
+	SharedAppID           string         `json:"shared_app_id"`
+	SharedAppName         string         `json:"shared_app_name"`
+	RelatedDeletedMessage map[string]any `json:"related_deleted_message_ids"`
+
+	// RecoveryOption 是恢复/重试参数，网页端每次都带（且 req_create_time_sec 为当前秒）。
+	RecoveryOption recoveryOption `json:"recovery_option"`
+}
+
+// recoveryOption 是网页端的恢复选项段。
+type recoveryOption struct {
+	IsRecovery          bool  `json:"is_recovery"`
+	ReqCreateTimeSec    int64 `json:"req_create_time_sec"`
+	AppendSSEEventScene int   `json:"append_sse_event_scene"`
 }
 
 // conversationInitOption 是会话初始化确认项。
 type conversationInitOption struct {
-	NeedAckConversation bool `json:"need_ack_conversation"`
+	ProjectID           string `json:"project_id"`
+	NeedAckConversation bool   `json:"need_ack_conversation"`
 }
 
 // conversationInitExt 是会话初始化扩展参数。
@@ -159,65 +194,29 @@ type conversationInitExt struct {
 }
 
 // agentTaskParam 描述 agent 运行环境，工作模式在 initExt 与 general_task_param 两处复用。
+//
+// 网页来源必须六个字段全部留空（runtime_type 为 1）：网页版没有本地沙箱，
+// 填上客户端字段会被上游判成「桌面端协议」并与实际来源不符。
 type agentTaskParam struct {
-	RuntimeType     int    `json:"runtime_type"`
-	SandboxAuthType int    `json:"sandbox_auth_type"`
-	DeviceName      string `json:"device_name"`
-	FolderName      string `json:"folder_name"`
-	LocalAppID      string `json:"local_app_id"`
-	LocalDeviceID   string `json:"local_device_id"`
-	Workspace       string `json:"workspace"`
-}
-
-// agentTaskParamChange 标记任务参数是否发生变更，首轮三项全 false。
-type agentTaskParamChange struct {
-	RuntimeChanged         bool `json:"runtime_changed"`
-	DeviceChanged          bool `json:"device_changed"`
-	SandboxAuthTypeChanged bool `json:"sandbox_auth_type_changed"`
-}
-
-// agentWorkspace 描述本地工作区映射。
-type agentWorkspace struct {
-	AgentWorkspace  string   `json:"agent_workspace"`
-	LocalSkillPaths []string `json:"local_skill_paths"`
-}
-
-// clientOption 描述客户端能力与沙箱会话，工作模式必带。
-type clientOption struct {
-	EnableSandbox    bool           `json:"enable_sandbox"`
-	OS               string         `json:"os"`
-	SharedFolderPath []string       `json:"shared_folder_path"`
-	AgentWorkspace   agentWorkspace `json:"agent_workspace"`
-	ClientEnvID      string         `json:"client_env_id"`
-	SandboxID        string         `json:"sandbox_id"`
-	SandboxAuthType  int            `json:"sandbox_auth_type"`
+	RuntimeType   int    `json:"runtime_type"`
+	FolderName    string `json:"folder_name"`
+	DeviceName    string `json:"device_name"`
+	Workspace     string `json:"workspace"`
+	LocalAppID    string `json:"local_app_id"`
+	LocalDeviceID string `json:"local_device_id"`
 }
 
 // generalTaskParam 是工作模式的任务参数总成。
+//
+// 网页版只上报这六个字段；客户端专属的 client_option / task_input_json /
+// agent_task_param_change / need_modify_conversation 一律不出现。
 type generalTaskParam struct {
-	Action                 int                  `json:"action"`
-	ThreadLocalMessageID   []string             `json:"thread_local_message_id"`
-	ClientOption           clientOption         `json:"client_option"`
-	RuntimeType            int                  `json:"runtime_type"`
-	AgentTaskParam         agentTaskParam       `json:"agent_task_param"`
-	AgentTaskParamChange   agentTaskParamChange `json:"agent_task_param_change"`
-	NeedModifyConversation bool                 `json:"need_modify_conversation"`
-	TaskInputJSON          string               `json:"task_input_json"`
-}
-
-// agentsMD 是任务输入里的项目说明文件声明。
-type agentsMD struct {
-	Files []any `json:"files"`
-	State int   `json:"state"`
-}
-
-// taskInput 是 task_input_json 反序列化前的结构。
-type taskInput struct {
-	AgentsMD        agentsMD       `json:"agents_md"`
-	SchemaVersion   int            `json:"schema_version"`
-	HomeDir         string         `json:"home_dir"`
-	ProjectContext  map[string]any `json:"project_context"`
-	LocalConnectors []any          `json:"localConnectors"`
+	Action               int            `json:"action"`
+	ThreadLocalMessageID []string       `json:"thread_local_message_id"`
+	ProjectID            string         `json:"project_id"`
+	RuntimeType          int            `json:"runtime_type"`
+	AgentTaskParam       agentTaskParam `json:"agent_task_param"`
+	ServerDoCompare      bool           `json:"server_do_compare"`
 }
 
 // aggregateParams 是生成路径选择参数。
@@ -270,13 +269,18 @@ func buildCompletionRequest(sa *StoredAuth, text string, mode generationMode, co
 
 	// 1. 先落地消息块：工作模式的 general_task_param 必须回指同一个消息 id。
 	localMessageID := randomUUID()
+	// 新会话（未给续接点）显式发 null，与浏览器一致。
+	var lastIndex *int64
+	if lastMessageIndex > 0 {
+		lastIndex = &lastMessageIndex
+	}
 	body := &completionRequest{
 		ClientMeta: clientMeta{
 			LocalConversationID: "local_" + randomUUID(),
 			ConversationID:      conversationID,
 			BotID:               botID,
 			LastSectionID:       lastSectionID,
-			LastMessageIndex:    lastMessageIndex,
+			LastMessageIndex:    lastIndex,
 			LocalPermissions:    localPermissionsFor(mode.WorkMode),
 		},
 		Messages: []completionMsg{{
@@ -296,9 +300,11 @@ func buildCompletionRequest(sa *StoredAuth, text string, mode generationMode, co
 		UserContext: []any{},
 	}
 
-	// 2. 按管线分别组装 option：工作模式的 ext 在 option 内部，技能模式在顶层。
+	// 2. 按管线分别组装 option：两条管线的扩展都放在顶层 ext。
 	if mode.WorkMode {
 		body.Option = buildWorkOption(cfg, sa, mode, localMessageID, needCreate)
+		generalTaskJSON, _ := json.Marshal(body.Option.GeneralTaskParam)
+		body.Ext = workModeExt(string(generalTaskJSON))
 		return body
 	}
 	body.Option = buildSkillOption(mode, needCreate)
@@ -308,17 +314,16 @@ func buildCompletionRequest(sa *StoredAuth, text string, mode generationMode, co
 
 // localPermissionsFor 返回本地权限声明列表。
 //
-// 工作模式客户端上报 status=1（已授权）；网页端技能链路历史上报 3，两者都被
-// 上游接受。改动会破坏已验证的生成链路，故按管线分别保持。
-// [参数] workMode: 是否工作模式。
+// 两条管线都上报 status=3：这是网页端真实取值（浏览器抓包 confirmed）。
+// 旧实现工作模式报 1，来自「客户端已授权」的错误推断，会让网页来源的
+// 工作模式请求被判成客户端协议（-1 delegated input protocol violation）。
+// [参数] workMode: 是否工作模式（保留入参以表明取值与管线无关）。
 // [返回] 权限声明列表。
-// 最近修改时间：2026-11-14 02:30:00；改动原因：新增，按管线区分权限上报值。
+// 最近修改时间：2026-11-16 01:44:00；改动原因：统一上报 3，与真实网页对齐。
 func localPermissionsFor(workMode bool) []permission {
-	// 1. 按管线选上报值：工作模式 1，网页端技能链路 3。
-	status := 3
-	if workMode {
-		status = 1
-	}
+	// 1. 两条管线同值；保留入参只是为了让调用点语义清楚。
+	_ = workMode
+	const status = 3
 
 	// 2. 三条权限同名同值，缺一条会被上游当能力声明不完整。
 	return []permission{
@@ -362,7 +367,18 @@ func buildSkillOption(mode generationMode, needCreate bool) completionOption {
 	option.SSERecvEventOptions.SupportChunkDelta = true
 	option.SupportLazyFetchStream = true
 
-	// 3. 生成请求必须显式点名 skill，否则上游按普通对话处理。
+	// 3. 网页端每次都会显式发送这些默认值段，省略会让上游按「委托输入协议不符」拒绝。
+	option.ConnectorInfoList = []any{}
+	option.EditQueryID = []any{}
+	option.RegenQueryID = []any{}
+	option.RelatedDeletedMessage = map[string]any{}
+	option.RecoveryOption = recoveryOption{
+		IsRecovery:          false,
+		ReqCreateTimeSec:    time.Now().Unix(),
+		AppendSSEEventScene: 0,
+	}
+
+	// 4. 生成请求必须显式点名 skill，否则上游按普通对话处理。
 	if mode.Skill > 0 {
 		option.AggregateParams.MentionSkillList = fmt.Sprintf("[%d]", mode.Skill)
 	}
@@ -427,16 +443,8 @@ func buildWorkOption(cfg Config, sa *StoredAuth, mode generationMode, localMessa
 		totalWindow = cfg.WorkTotalWindow
 	}
 
-	// 1. 组装 agent 任务参数：initExt 与 general_task_param 复用同一份内容。
-	taskParam := agentTaskParam{
-		RuntimeType:     2,
-		SandboxAuthType: 1,
-		DeviceName:      workDeviceName(),
-		FolderName:      "",
-		LocalAppID:      doubaoClientAID,
-		LocalDeviceID:   deviceIDFor(sa),
-		Workspace:       cfg.WorkWorkspace,
-	}
+	// 1. 组装 agent 任务参数：网页来源六字段全空，runtime_type 固定 1。
+	taskParam := agentTaskParam{RuntimeType: 1}
 	taskParamJSON, _ := json.Marshal(taskParam)
 
 	// 2. 组装 option 主体：三处 model_item_key 必须取同一个值。
@@ -481,72 +489,48 @@ func buildWorkOption(cfg Config, sa *StoredAuth, mode generationMode, localMessa
 	option.SSERecvEventOptions.SupportChunkDelta = true
 	option.SupportLazyFetchStream = true
 
-	// 3. 组装 general_task_param，并原样序列化一份写进 option.ext。
-	generalTask := generalTaskParam{
-		Action:                 0,
-		ThreadLocalMessageID:   []string{localMessageID},
-		ClientOption:           buildClientOption(cfg),
-		RuntimeType:            2,
-		AgentTaskParam:         taskParam,
-		AgentTaskParamChange:   agentTaskParamChange{},
-		NeedModifyConversation: false,
-		TaskInputJSON:          buildTaskInputJSON(cfg.WorkWorkspace),
+	// 3. 补齐网页端每次都会显式发送的默认值段：缺这些键上游按「委托输入协议不符」
+	//    直接回 -1（2026-11-16 消融：只补这些默认值就让 -1 变回 710022004）。
+	option.ConnectorInfoList = []any{}
+	option.EditQueryID = []any{}
+	option.RegenQueryID = []any{}
+	option.RelatedDeletedMessage = map[string]any{}
+	option.RecoveryOption = recoveryOption{
+		IsRecovery:          false,
+		ReqCreateTimeSec:    time.Now().Unix(),
+		AppendSSEEventScene: 0,
 	}
-	option.GeneralTaskParam = &generalTask
-	generalTaskJSON, _ := json.Marshal(generalTask)
-	option.Ext = map[string]string{
-		"general_task_param":            string(generalTaskJSON),
-		"use_deep_think":                strconv.Itoa(needDeepThinkOn),
-		"agent_mode":                    "1",
-		"is_finish":                     "1",
-		"conversation_init_option":      "{\"need_ack_conversation\":true}",
-		"commerce_credit_config_enable": "0",
+
+	// 4. 组装 general_task_param；网页来源不带任何客户端沙箱字段。
+	option.GeneralTaskParam = &generalTaskParam{
+		Action:               0,
+		ThreadLocalMessageID: []string{localMessageID},
+		ProjectID:            "",
+		RuntimeType:          1,
+		AgentTaskParam:       taskParam,
+		ServerDoCompare:      true,
 	}
 	return option
 }
 
-// buildClientOption 构造客户端沙箱选项。
+// workModeExt 返回工作模式的顶层 ext 段。
 //
-// enable_sandbox 必须跟随配置：headless 宿主机上开启会让上游等待本地沙箱
-// 握手，请求一直挂到超时。
-// [参数] cfg: 运行期配置。
-// [返回] 客户端选项。
-// 最近修改时间：2026-11-14 02:30:00；改动原因：新增，工作模式客户端能力声明。
-func buildClientOption(cfg Config) clientOption {
-	// 1. 只在声明了工作目录时才上报共享目录，避免虚构路径。
-	shared := []string{}
-	if cfg.WorkWorkspace != "" {
-		shared = append(shared, cfg.WorkWorkspace)
+// 网页版把扩展放在**顶层** ext（不是 option.ext），共 8 键；缺 sub_conv_firstmet_type
+// 会被上游判成非网页来源。conversation_init_option 必须是带 project_id 的 JSON 串。
+// [参数] generalTaskJSON: 已序列化的 general_task_param 串。
+// [返回] 顶层 ext 字典。
+// 最近修改时间：2026-11-16 01:45:00；改动原因：新增，工作模式扩展搬到顶层并与真实网页对齐。
+func workModeExt(generalTaskJSON string) map[string]string {
+	return map[string]string{
+		"general_task_param":            generalTaskJSON,
+		"use_deep_think":                strconv.Itoa(needDeepThinkOn),
+		"agent_mode":                    "1",
+		"conversation_init_option":      "{\"project_id\":\"\",\"need_ack_conversation\":true}",
+		"sub_conv_firstmet_type":        "1",
+		"collection_id":                 "",
+		"is_finish":                     "1",
+		"commerce_credit_config_enable": "0",
 	}
-	return clientOption{
-		EnableSandbox:    cfg.WorkEnableSandbox,
-		OS:               workClientOS,
-		SharedFolderPath: shared,
-		AgentWorkspace: agentWorkspace{
-			AgentWorkspace:  cfg.WorkWorkspace,
-			LocalSkillPaths: []string{},
-		},
-		// 2. 沙箱标识每轮新生成，上游按它归属本地沙箱会话。
-		ClientEnvID:     randomUUID(),
-		SandboxID:       "sandbox-" + randomUUID(),
-		SandboxAuthType: 1,
-	}
-}
-
-// buildTaskInputJSON 构造 task_input_json 字段。
-// [参数] workspace: 工作目录；为空时 home_dir 留空，不虚构路径。
-// [返回] 序列化后的任务输入 JSON 字符串。
-// 最近修改时间：2026-11-14 02:30:00；改动原因：新增，工作模式任务输入声明。
-func buildTaskInputJSON(workspace string) string {
-	// 1. 任务输入只声明 schema 与空挂载点，不含真实文件清单。
-	payload, _ := json.Marshal(taskInput{
-		AgentsMD:        agentsMD{Files: []any{}, State: 2},
-		SchemaVersion:   1,
-		HomeDir:         workHomeDir(workspace),
-		ProjectContext:  map[string]any{},
-		LocalConnectors: []any{},
-	})
-	return string(payload)
 }
 
 // completionEvent 是一条解码后的 SSE 事件。
@@ -771,28 +755,18 @@ func newUpstreamClient(sa *StoredAuth, timeout time.Duration) (*http.Client, *du
 
 // applyUpstreamHeaders 设置业务端点所需的请求头。
 //
-// 工作模式按豆包桌面客户端的指纹上报：换 UA、带双值 agw-js-conv / last-event-id /
-// x-flow-trace。上游靠这组头识别客户端形态，缺了会按网页端处理并回落到网页端模型。
-// [参数] req: 请求；workMode: 是否工作模式。
+// 两条管线都用网页端 UA 与单值 agw-js-conv：工作模式在网页版里就是网页来源，
+// 换客户端 UA 会被上游按「桌面端协议」解析请求体，与实际 body 形状不符，
+// 直接回 -1 delegated input protocol violation（2026-11-16 实测）。
+// [参数] req: 请求；workMode: 是否工作模式（保留入参以表明取值与管线无关）。
 // [返回] 无。
-// 最近修改时间：2026-11-14 02:45:00；改动原因：新增工作模式客户端指纹分支。
+// 最近修改时间：2026-11-16 01:46:00；改动原因：取消客户端指纹头，统一按网页端上报。
 func applyUpstreamHeaders(req *http.Request, workMode bool) {
-	// 1. 两条管线共用来源与 Referer，只是 UA 不同。
-	if workMode {
-		req.Header.Set("User-Agent", clientUserAgent)
-	} else {
-		req.Header.Set("User-Agent", webUserAgent)
-	}
+	// 1. 两条管线同源同版本，只上报网页端那一套。
+	_ = workMode
+	req.Header.Set("User-Agent", webUserAgent)
 	req.Header.Set("Origin", doubaoSiteHost)
 	req.Header.Set("Referer", doubaoSiteHost+"/chat/")
-
-	// 2. 客户端形态独有三枚风控头，网页端只上报单值 agw-js-conv。
-	if workMode {
-		req.Header.Set("agw-js-conv", clientAgwJsConv)
-		req.Header.Set("last-event-id", clientLastEventID)
-		req.Header.Set("x-flow-trace", flowTraceHeader)
-		return
-	}
 	req.Header.Set("Agw-Js-Conv", "str")
 }
 
@@ -812,28 +786,24 @@ func swapCompletionEndpoint(endpoint string) func() {
 
 // completionURL 返回对话端点完整地址（测试可通过 swapCompletionEndpoint 覆盖）。
 //
-// 工作模式必须带客户端形态的 query 参数集（aid=582478、channel=win、
-// device_platform=web 等）；网页端参数集会让上游按网页端链路解析请求体。
+// 两条管线都用网页端参数集：工作模式在浏览器里就是网页来源（aid=497858、
+// doubao_device_platform=web、web_platform=browser）。用客户端参数集会让上游
+// 按桌面端协议解析，与实际 body 形状不符，直接回 -1（2026-11-16 实测）。
 //
 // 两条管线都必须补齐字节风控签名（msToken + a_bogus），否则上游直接回
 // 710022002「当前服务访问频繁」，与账号状态无关（见 sign.go）。
-// [参数] sa: 账号（提供设备级标识与 msToken）；workMode: 是否工作模式。
+// [参数] sa: 账号（提供设备级标识与 msToken）；workMode: 是否工作模式（保留入参以表明取值与管线无关）；body: 即将发送的请求体（a_bogus 覆盖 body）。
 // [返回] 完整 URL。
-// 最近修改时间：2026-11-15 01:05:00；改动原因：补齐必需签名，消除 710022002。
-func completionURL(sa *StoredAuth, workMode bool) string {
+// 最近修改时间：2026-11-16 03:16:00；改动原因：a_bogus 把请求体算进签名，签名必须拿到真实 body。
+func completionURL(sa *StoredAuth, workMode bool, body []byte) string {
 	// 1. 测试覆盖点优先，保证流式链路能在 httptest 下验证。
 	if completionEndpointOverride != "" {
 		return completionEndpointOverride
 	}
 
-	// 2. 按管线选参数集：工作模式走客户端 19 键，网页端走业务 query。
-	raw := endpointURL(sa, "/chat/completion", nil)
-	if workMode {
-		raw = clientEndpointURL(sa, "/chat/completion")
-	}
-
-	// 3. 签名在参数集之后做：a_bogus 覆盖整条 query，先签再改会失效。
-	return signChatCompletionURL(sa, raw)
+	// 2. 两条管线同一参数集；签名在参数集之后做，先签再改会失效。
+	_ = workMode
+	return signChatCompletionURL(sa, endpointURL(sa, "/chat/completion", nil), body)
 }
 
 // streamCompletion 发起一次 /chat/completion 请求并逐帧回调。
@@ -850,7 +820,7 @@ func streamCompletion(ctx context.Context, sa *StoredAuth, body *completionReque
 		return fmt.Errorf("编码请求失败：%w", errMarshal)
 	}
 
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, completionURL(sa, workMode), bytes.NewReader(raw))
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, completionURL(sa, workMode, raw), bytes.NewReader(raw))
 	if errReq != nil {
 		return fmt.Errorf("构造请求失败：%w", errReq)
 	}

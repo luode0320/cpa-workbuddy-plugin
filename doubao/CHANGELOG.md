@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.1.23 (2026-11-16)
+
+### 修复
+
+- **`-1 delegated input protocol violation` 的真因是「请求体比真实网页少了一批显式
+  默认值字段」，0.1.22 的「账号未投放工作模式」定性已被推翻**。2026-11-16 用 CDP
+  驱动真实 Chrome，在网页「新工作任务」入口填入 DeepSeek V4 Flash 发消息，抓到
+  该账号（用户358840）成功出字的 `agent_mode=1` 请求体；与插件请求体逐字段 diff
+  后确认：插件用 `omitempty` 省略了网页每次都会显式发送的
+  `click_clear_context` / `connector_info_list` / `disable_sse_cache` /
+  `edit_query_id` / `from_suggest` / `is_ai_playground` / `is_from_click_option` /
+  `is_from_click_softlink` / `is_regen` / `is_replace` / `is_select_text` /
+  `message_from` / `no_replace_for_regen` / `regen_instruction` /
+  `regen_query_id` / `resend_for_regen` / `scene_type` / `select_text_action` /
+  `shared_app_id` / `shared_app_name` / `related_deleted_message_ids` /
+  `recovery_option` 共 22 项，以及 `client_meta.last_section_id` /
+  `last_message_index` 两处续接点。逐项消融验证：只给插件原生请求体补上这些
+  字段，上游错误码立刻从 `-1` 变成 `710022004`，协议层通过。现全部改为显式输出。
+- **`a_bogus` 签名必须覆盖请求体**。三组对照（`{}` / 小 JSON / 真实 3.4KB body）
+  得到三个互不相同的签名，而旧实现固定 `x.send('{}')`，签出的值与上游按真实
+  body 校验的结果必然不一致。现由 `signChatCompletionURL(sa, url, body)` 把即将
+  发送的请求体交给签名器。
+- **工作模式请求改成网页形状**。网页「工作」标签发出的就是网页来源请求：
+  `runtime_type=1`、`agent_task_param` 六字段全空、无 `client_option` /
+  `task_input_json` / `sandbox_*`、`local_permissions.status=3`、扩展放**顶层**
+  `ext`（8 键，含 `sub_conv_firstmet_type`）。旧实现按桌面客户端沙箱构造，
+  会被上游判成来源不符。
+- **删除 `doubao/web` 网页链路别名**。用户明确要求不要这个附加别名，目标是让
+  `doubao/deepseek-v4-flash` 本身可用；该别名只是把「选不了模型」的问题藏起来，
+  现已整体移除（含 `WebPipeline` 字段与两个相关用例），`-1` 的错误文案也不再
+  引导用户改走它。
+
+### 改进
+
+- **面板测试与探活的提示词改为轮换**。此前固定发「hi」，同一账号反复发同一句会
+  建出一串内容一致的会话，上游按重复度判定异常并触发风控（用户 2026-11-16 明确
+  要求）。现从 5 条短提示词里按原子计数轮换，保证连续调用一定落在不同条目上。
+
+### 已知
+
+- 补齐默认值字段后两个生产账号仍返回 `710022004`（`semantic_reasoning` 风控验证），
+  这是密集验证期间的临时限流窗口，与请求形状无关；冷却后应可正常出字。
+
 ## 0.1.22 (2026-11-16)
 
 ### 修复

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net/url"
-	"os"
 	"strings"
 )
 
@@ -33,6 +32,10 @@ import (
 
 const (
 	// webUserAgent 是模拟网页端请求的 User-Agent。
+	//
+	// 主版本号必须与内置签名 SDK 的口径一致：签名算法把它们编码进 a_bogus，
+	// 与请求头版本不一致时上游按「协议不符」直接回 -1（2026-11-16 实测：
+	// 改成 Chrome/157 + 3.45.7 后两个账号同时从可用变为 -1）。
 	webUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 	// doubaoAID 是豆包网页端的应用标识。
@@ -41,7 +44,7 @@ const (
 	// doubaoVersionCode 是客户端版本编码。
 	doubaoVersionCode = "20800"
 
-	// doubaoPCVersion 是 PC 客户端版本号。
+	// doubaoPCVersion 是网页端版本号，必须与内置签名 SDK 口径一致。
 	doubaoPCVersion = "3.41.4"
 
 	// defaultBotID 是豆包默认助手 ID（realm 级常量）。
@@ -77,34 +80,6 @@ const (
 	// skillVideoGen 是视频生成能力的上游 skill id。
 	skillVideoGen = 5
 
-	// clientUserAgent 是豆包 PC 客户端（Samantha 桌面端）的 User-Agent。
-	//
-	// 工作模式的 /chat/completion 只对客户端形态放行：用网页端 UA 会被上游
-	// 按普通网页对话处理，agent_mode 被忽略且不进入 agent 管线。
-	clientUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.7727.149 SamanthaDoubao/2.30.1"
-
-	// doubaoClientAID 是 PC 客户端的应用标识（网页端为 497858，两者不同）。
-	doubaoClientAID = "582478"
-
-	// doubaoClientPCVersion 是 PC 客户端版本号；工作模式能力按客户端版本放行。
-	doubaoClientPCVersion = "2.30.1"
-
-	// doubaoClientRuntimeVersion 是客户端内置 runtime 的版本号。
-	doubaoClientRuntimeVersion = "3.37.4"
-
-	// doubaoClientChromiumVersion 是客户端 Chromium 内核版本。
-	doubaoClientChromiumVersion = "147.0.7727.149"
-
-	// flowTraceHeader 是客户端固定下发的链路追踪头；上游不校验其真实性，
-	// 缺失时部分风控分支会拒绝请求。
-	flowTraceHeader = "04-0000000000000000000000000000000-0000000000000000-01"
-
-	// clientLastEventID 是客户端固定下发的 last-event-id 头（字面量 "undefined"）。
-	clientLastEventID = "undefined"
-
-	// clientAgwJsConv 是客户端 agw-js-conv 头取值（逗号后带空格，与网页端 "str" 不同）。
-	clientAgwJsConv = "str, str"
-
 	// workConversationMode 是工作模式会话的 conversation_mode 取值。
 	//
 	// 上游用该字段区分会话类型：2 = 工作任务（agent 管线），0 = 普通对话。
@@ -125,13 +100,7 @@ const (
 	// needDeepThinkOn 是开启深度思考时 need_deep_think 的取值（10001 = 开启）。
 	needDeepThinkOn = 10001
 
-	// workClientOS 是工作模式 client_option.os 的取值（上游只认 Windows 客户端）。
-	workClientOS = "Windows"
-
-	// workClientFallbackName 是取不到主机名时上报的客户端设备名。
-	workClientFallbackName = "USER"
-
-	// workWorkspaceMarker 是客户端工作目录标记，home_dir 取它之前的部分。
+	// workWorkspaceMarker 是客户端工作目录标记。
 	workWorkspaceMarker = "\\Doubao"
 )
 
@@ -217,63 +186,6 @@ func buildBusinessQuery(deviceID, webID, webTabID, fp string, extra map[string]s
 // 最近修改时间：2026-11-15 22:05:00；改动原因：随 query 一并带上账号真实 fp。
 func endpointURL(sa *StoredAuth, path string, extra map[string]string) string {
 	return doubaoSiteHost + path + "?" + buildBusinessQuery(sa.DeviceID, sa.WebID, sa.WebTabID, fingerprintOf(sa), extra)
-}
-
-// buildClientQuery 构造 PC 客户端形态的 query 参数集。
-//
-// 与 buildBusinessQuery 的差异不是风格问题而是协议事实：客户端的 aid / 版本号 /
-// device_platform / web_platform 全部不同，且强制要求 fp、runtime、chromium_version
-// 等网页端没有的键；把这些键塞进网页端参数集会让 /alice/* 业务端点判为非法客户端。
-// 因此两条参数集并存：业务端点走网页端，/chat/completion 走客户端。
-//
-// device_id / tea_uuid 同源（由 deviceIDFor 派生并随账号持久化），web_tab_id 每次请求
-// 换新 UUID；fp 必须是账号在浏览器里真实用过的那一串 s_v_web_id，自己拼不算数。
-// [参数] deviceID: 设备标识；webID: web 会话标识；fp: 设备指纹（账号真实 s_v_web_id，可空）。
-// [返回] 编码后的 query 字符串。
-// 最近修改时间：2026-11-15 22:05:00；改动原因：fp 改用账号真实值，不再由 device_id 拼假。
-func buildClientQuery(deviceID, webID, fp string) string {
-	// 1. 账号与渠道：aid 必须是客户端口径，网页端 aid 会被判为非客户端请求。
-	q := url.Values{}
-	q.Set("aid", doubaoClientAID)
-	q.Set("real_aid", doubaoClientAID)
-	q.Set("channel", "win")
-	q.Set("client_platform", "pc_client")
-	q.Set("device_platform", "web")
-	q.Set("doubao_device_platform", "desktop")
-	q.Set("doubao_pc_version", doubaoClientPCVersion)
-	q.Set("pc_version", doubaoClientPCVersion)
-	q.Set("pkg_type", "release_version")
-	q.Set("language", "zh")
-	q.Set("region", "CN")
-	q.Set("sys_region", "CN")
-	// 2. 运行时与版本：上游按版本放行模型清单，版本号必须与 UA 一致。
-	q.Set("runtime", "web")
-	q.Set("runtime_version", doubaoClientRuntimeVersion)
-	q.Set("samantha_web", "1")
-	q.Set("use-olympus-account", "1")
-	q.Set("version_code", doubaoVersionCode)
-	q.Set("web_platform", "desktop")
-	// 3. 设备级标识：fp 必须是账号在浏览器里真实用过的 s_v_web_id（缺它会判设备劫持），
-	//    tea_uuid 与 device_id 同源，web_tab_id 每轮换新。
-	q.Set("chromium_version", doubaoClientChromiumVersion)
-	q.Set("device_id", deviceID)
-	if fp != "" {
-		q.Set("fp", fp)
-	}
-	q.Set("tea_uuid", deviceID)
-	if webID != "" {
-		q.Set("web_id", webID)
-	}
-	q.Set("web_tab_id", randomUUID())
-	return q.Encode()
-}
-
-// clientEndpointURL 拼接客户端形态端点完整 URL。
-// [参数] sa: 账号（提供设备级标识）；path: 端点路径。
-// [返回] 完整 URL。
-// 最近修改时间：2026-11-15 22:05:00；改动原因：随 query 一并带上账号真实 fp。
-func clientEndpointURL(sa *StoredAuth, path string) string {
-	return doubaoSiteHost + path + "?" + buildClientQuery(deviceIDFor(sa), sa.WebID, fingerprintOf(sa))
 }
 
 // fingerprintOf 返回账号真实的设备指纹（浏览器 tea SDK 生成的 s_v_web_id）。
@@ -405,14 +317,13 @@ func statusCodeHint(code int, desc string) string {
 	case 710022002:
 		return "上游拒绝了这次请求：常见原因是该账号未采集 s_v_web_id（fp 缺失）、或短时间内重复请求过多。请重新点一次授权书签补采设备指纹，并等待 1~2 分钟再试"
 	case -1:
-		// 2026-11-15 五模型 × 双管线矩阵实测：该码只跟账号走，与模型、请求体字段、
-		// 设备指纹都无关——同一个账号换五个模型全回 -1，而同一个账号切到网页
-		// 技能管线立刻出字；另一个账号在同一工作模式下正常出字。因此它不是
-		// 「请求写错了」，而是「这个账号没有被投放到工作模式（客户端）链路」。
-		// 这里刻意不做自动降级：技能管线不认 model_item_key（补 conversation_init_ext
-		// 也无效，实测回复恒为 Seed 基座），静默降级会把用户选的 Kimi / GLM 偷偷换成
-		// 别的模型，比直接报错更糟。改用显式别名 doubao/web，让用户自己选这条路。
-		return "该账号没有被投放到豆包客户端（工作模式）链路，不是请求写错也不是限流：同一个账号换任何模型都回这个码，而它在网页版里可以正常对话。请把模型改成 doubao/web（网页链路，由上游按网页端默认模型回复），或换用已开通工作模式的账号"
+		// 2026-11-16 结论修正：这个码不是「账号未投放工作模式」，而是插件把请求体
+		// 构造得比真实网页少了一批字段。真实浏览器在网页「工作」标签下发的
+		// agent_mode=1 请求能正常出字，逐项消融后确认上游要求 option 里的
+		// click_clear_context / connector_info_list / recovery_option 等默认值字段
+		// 必须显式存在，省略即判「委托输入协议不符」。插件已补齐这些字段，
+		// 若仍出现本码，说明请求体被外部改回旧形状或上游再次收紧校验。
+		return "上游判定请求体不符合网页端的委托输入协议：插件已按真实网页补齐默认值字段，若仍出现请确认用的是最新版本；怀疑被上游收紧校验时请附上游 log_id 反馈"
 	case 710020202:
 		return "上游拒绝了请求参数：请确认 Content-Type 为 application/json 且请求体结构完整"
 	case 710020702:
@@ -467,49 +378,6 @@ func buildAccountInfoQuery() string {
 	q.Set("sdk_version", accountInfoSDKVersion)
 	q.Set("doubao_from", "inject_html")
 	return q.Encode()
-}
-
-// workDeviceName 返回工作模式上报的客户端设备名。
-//
-// 上游把 device_name 当作沙箱主机标识；取不到主机名时用固定占位，
-// 不虚构随机值——同一账号每次换设备名会被风控归因为多设备登录。
-// [参数] 无。
-// [返回] 设备名。
-// 最近修改时间：2026-11-14 03:05:00；改动原因：新增，工作模式设备名来源。
-func workDeviceName() string {
-	// 1. 取宿主主机名，取不到就用固定回退名。
-	name, errHost := os.Hostname()
-	if errHost != nil {
-		return workClientFallbackName
-	}
-
-	// 2. 空主机名同样回退，避免把空串报给上游。
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return workClientFallbackName
-	}
-	return name
-}
-
-// workHomeDir 从工作目录推导客户端 home_dir。
-//
-// 客户端把 home_dir 报成工作目录中「\Doubao」段之前的部分；没有该标记时留空，
-// 与客户端在自定义目录下的行为一致。
-// [参数] workspace: 工作目录。
-// [返回] home_dir；无法推导时为空串。
-// 最近修改时间：2026-11-14 03:05:00；改动原因：新增，工作模式任务输入的 home_dir。
-func workHomeDir(workspace string) string {
-	// 1. 未声明工作目录时 home_dir 留空，不虚构路径。
-	workspace = strings.TrimSpace(workspace)
-	if workspace == "" {
-		return ""
-	}
-
-	// 2. 有「\Doubao」标记时取其前段，其余情况留空。
-	if idx := strings.Index(workspace, workWorkspaceMarker); idx > 0 {
-		return workspace[:idx]
-	}
-	return ""
 }
 
 // atoiSafe 把纯数字字符串转成整数，遇非数字字符即停止。

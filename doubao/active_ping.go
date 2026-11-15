@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -22,10 +23,34 @@ import (
 // 与网络抖动，超过则判定账号或链路不可用。
 const activeTestTimeout = 20 * time.Second
 
-// testPingText 是测试请求的固定提示词。
+// testPingPrompts 是测试请求可用的短提示词池。
 //
-// 用最短的「hi」而不是让它写点什么：测试只验证链路，回复越短越好。
-const testPingText = "hi"
+// 不再固定用同一句「hi」：同一账号反复发送相同提示词会建出一串内容一致的会话，
+// 上游按会话内容重复度判定异常并触发风控（2026-11-16 用户明确要求）。池子里每条
+// 都要求一句话作答，保证测试只验证链路、回复尽量短。
+var testPingPrompts = []string{
+	"你好",
+	"今天几号",
+	"说一句问候语",
+	"用一个词形容晴天",
+	"报一下现在的季节",
+}
+
+// testPingCounter 是提示词轮换游标。
+//
+// 不能用时间取模：Windows 时钟精度约 15.6ms，纳秒值的低位在连续调用里不变，
+// 取模会稳定落在同一条上（2026-11-16 实测 32 次调用只取到 1 条）。
+var testPingCounter uint64
+
+// testPingPrompt 从提示词池里取一条，每次调用都换。
+// [参数] 无。
+// [返回] 一条短提示词。
+// 最近修改时间：2026-11-16 05:12:00；改动原因：改为原子计数轮换，时间取模在 Windows 上不轮换。
+func testPingPrompt() string {
+	// 1. 原子自增后取模，保证连续调用一定落在不同条目上。
+	next := atomic.AddUint64(&testPingCounter, 1)
+	return testPingPrompts[int(next%uint64(len(testPingPrompts)))]
+}
 
 // handleModelsQuery 返回指定账号可测试的模型列表。
 //
@@ -154,7 +179,7 @@ func runActiveTest(sa *StoredAuth, model string) map[string]any {
 	model = modelIDPrefix + alias.ID
 
 	start := time.Now()
-	body := buildCompletionRequest(sa, testPingText, mode, "", "", 0, true)
+	body := buildCompletionRequest(sa, testPingPrompt(), mode, "", "", 0, true)
 
 	ctx, cancel := context.WithTimeout(context.Background(), activeTestTimeout)
 	defer cancel()

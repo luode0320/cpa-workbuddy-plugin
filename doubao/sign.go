@@ -92,10 +92,10 @@ func getBrowserSigner() *browserSigner {
 //
 // msToken 由调用方从账号里带进来（页面 localStorage.xmst 的值）；SDK 只负责
 // 生成 a_bogus。签名失败时原样返回入参 URL，由上游错误码驱动后续换号。
-// [参数] rawURL: 待签名的完整 URL；msToken: 账号保存的 msToken（可空）。
+// [参数] rawURL: 待签名 URL；msToken: 账号令牌；body: 即将发送的请求体。
 // [返回] 签名后的 URL（失败时原样返回）与错误。
-// 最近修改时间：2026-11-15 01:00:00；改动原因：新增，签名唯一出口。
-func (s *browserSigner) sign(rawURL, msToken string) (string, error) {
+// 最近修改时间：2026-11-16 03:15:00；改动原因：a_bogus 覆盖请求体，签名必须喂真实 body。
+func (s *browserSigner) sign(rawURL, msToken, body string) (string, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		return "", fmt.Errorf("待签名 URL 为空")
@@ -121,7 +121,11 @@ func (s *browserSigner) sign(rawURL, msToken string) (string, error) {
 	}
 
 	// 2. 触发一次被 SDK hook 的 XHR，取它改写后的最终 URL。
+	//    a_bogus 把请求体一起算进签名：喂空对象会让算出的值对不上真实 body，
+	//    上游直接回 -1 delegated input protocol violation（2026-11-16 三组对照：
+	//    {} / 小 JSON / 真实 3.4KB body 得到三个互不相同的 a_bogus）。
 	_ = s.vm.Set("__signURL", target)
+	_ = s.vm.Set("__signBody", body)
 	signed, errRun := s.run(signRequestScript)
 	if errRun != nil {
 		return rawURL, errRun
@@ -214,13 +218,16 @@ func (s *browserSigner) run(script string) (string, error) {
 }
 
 // signRequestScript 触发一次签名 XHR 并取回改写后的 URL。
+//
+// body 必须是即将真实发送的请求体：a_bogus 覆盖 body 内容，喂空对象算出的签名
+// 与上游按真实 body 校验的结果不一致，会稳定触发 -1。
 const signRequestScript = `(function(){
   try {
     var x = new XMLHttpRequest();
     x.open('POST', __signURL, true);
     x.setRequestHeader('Content-Type','application/json');
     x.setRequestHeader('Accept','text/event-stream');
-    x.send('{}');
+    x.send(__signBody || '');
   } catch(e) { return 'ERR ' + (e && e.stack || e); }
   return (window.__lastXhr && window.__lastXhr.url) || 'NO_URL';
 })()`
@@ -277,10 +284,10 @@ func bindSignHelpers(vm *goja.Runtime) {
 //
 // 只对真实上游地址签名：测试覆盖点（httptest）直接跳过，避免测试依赖 SDK。
 // 签名失败不阻断请求——返回原 URL，让上游错误码驱动换号与冷却判定。
-// [参数] sa: 账号（提供 msToken）；rawURL: 待签名 URL。
+// [参数] sa: 账号（提供 msToken）；rawURL: 待签名 URL；body: 即将发送的请求体。
 // [返回] 签名后的 URL。
-// 最近修改时间：2026-11-15 01:00:00；改动原因：新增，对话端点签名入口。
-func signChatCompletionURL(sa *StoredAuth, rawURL string) string {
+// 最近修改时间：2026-11-16 03:15:00；改动原因：a_bogus 把请求体算进签名，必须把真实 body 交给签名器。
+func signChatCompletionURL(sa *StoredAuth, rawURL string, body []byte) string {
 	if sa == nil || strings.TrimSpace(rawURL) == "" {
 		return rawURL
 	}
@@ -289,7 +296,7 @@ func signChatCompletionURL(sa *StoredAuth, rawURL string) string {
 		return rawURL
 	}
 
-	signed, errSign := getBrowserSigner().sign(rawURL, sa.MsToken)
+	signed, errSign := getBrowserSigner().sign(rawURL, sa.MsToken, string(body))
 	if errSign != nil || strings.TrimSpace(signed) == "" {
 		return rawURL
 	}
