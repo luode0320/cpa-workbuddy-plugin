@@ -197,7 +197,12 @@ func runActiveTest(sa *StoredAuth, model string) map[string]any {
 	}
 
 	log.Printf("[doubao] manual active test success for %s with model %s (took %v)", sa.AuthID, model, elapsed)
-	message := fmt.Sprintf("活跃成功 (模型: %s → 上游 %s, 耗时: %v)", model, mode.ModelItemKey, elapsed)
+	// 网页链路别名没有 model_item_key（技能管线不认它），此时不能拼出空的上游模型名。
+	upstream := strings.TrimSpace(mode.ModelItemKey)
+	if upstream == "" {
+		upstream = "网页链路默认模型"
+	}
+	message := fmt.Sprintf("活跃成功 (模型: %s → 上游 %s, 耗时: %v)", model, upstream, elapsed)
 	if p := strings.TrimSpace(preview); p != "" {
 		message += "：" + truncateText(p, 40)
 	}

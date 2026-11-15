@@ -25,7 +25,7 @@ func TestCatalogueAliases(t *testing.T) {
 	if len(models) != catalogueSize() {
 		t.Fatalf("应暴露 %d 个别名，实际 %d", catalogueSize(), len(models))
 	}
-	want := []string{"doubao/default", "doubao/pro", "doubao/image", "doubao/video"}
+	want := []string{"doubao/default", "doubao/pro", "doubao/image", "doubao/video", "doubao/web"}
 	got := make(map[string]bool, len(models))
 	for _, m := range models {
 		got[m.ID] = true
@@ -91,6 +91,69 @@ func TestModeForModel(t *testing.T) {
 	// 未知名透传为文本模式：上游会忽略未知模型并回落账号默认。
 	if m := modeForModel("some-internal-code"); m.Skill != 0 || m.Kind != "text" {
 		t.Errorf("未知名应回落文本模式，实际 %+v", m)
+	}
+}
+
+// TestModeForModelWebPipeline 校验网页链路别名不进工作模式。
+//
+// 这条别名存在的意义就是「账号没被投放到工作模式时也能用」：一旦它被解析成
+// WorkMode=true，那一类账号依旧会被上游回 -1，别名等于失效。同时它的
+// model_item_key 必须留空——技能管线不认它，填了只会让人误以为选了具体模型。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-15 23:55:00；改动原因：新增，网页链路别名解析回归。
+func TestModeForModelWebPipeline(t *testing.T) {
+	mode := modeForModel("doubao/web")
+	if mode.WorkMode {
+		t.Errorf("doubao/web 必须走网页链路，不得进工作模式：%+v", mode)
+	}
+	if mode.Kind != "text" || mode.Skill != 0 {
+		t.Errorf("doubao/web 应为纯文本对话模式，实际 %+v", mode)
+	}
+	if mode.ModelItemKey != "" {
+		t.Errorf("doubao/web 不得携带 model_item_key（技能管线不认它），实际 %q", mode.ModelItemKey)
+	}
+
+	// 大写与无前缀写法同样命中，避免用户手输时静默退回工作模式。
+	for _, name := range []string{"DOUBAO/WEB", "web", "doubao/web:latest"} {
+		if m := modeForModel(name); m.WorkMode {
+			t.Errorf("%s 也应解析为网页链路，实际 %+v", name, m)
+		}
+	}
+
+	// 工作模式模型必须保持原样：新增别名不得把其它模型的管线也带走。
+	if m := modeForModel("doubao/deepseek-v4-flash"); !m.WorkMode {
+		t.Errorf("工作模式模型的解析不受新别名影响，实际 %+v", m)
+	}
+}
+
+// TestWebPipelineAliasReachesTestableList 校验网页链路别名出现在面板测试列表。
+//
+// 这类账号恰恰是最需要被测试的：用户点「测试」时得能选中它来确认逃生通道可用。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-15 23:55:00；改动原因：新增，别名可测试性回归。
+func TestWebPipelineAliasReachesTestableList(t *testing.T) {
+	found := false
+	for _, id := range testableModelIDs() {
+		if id == modelIDPrefix+"web" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("面板测试列表必须含 %sweb，实际 %v", modelIDPrefix, testableModelIDs())
+	}
+
+	mode, alias, ok := testModeForModel("doubao/web")
+	if !ok {
+		t.Fatal("doubao/web 应被活跃测试接受")
+	}
+	if mode.WorkMode {
+		t.Errorf("活跃测试里 doubao/web 也必须走网页链路，实际 %+v", mode)
+	}
+	if alias.ID != "web" {
+		t.Errorf("命中的别名应为 web，实际 %q", alias.ID)
 	}
 }
 

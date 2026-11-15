@@ -30,6 +30,14 @@ type modelAlias struct {
 	Description string
 	// Skill 是该别名需要激活的上游 skill，0 表示普通对话。
 	Skill int
+	// WebPipeline 表示该别名义上是网页链路（agent_mode=2），不走工作模式。
+	//
+	// 用途：部分账号没有被投放到豆包客户端（工作模式）链路，任何模型都回
+	// -1 delegated input protocol violation（见 statusCodeHint 的 -1 分支），
+	// 只有网页链路能用。这类账号需要一条**显式**可选的逃生通道，而不是让插件
+	// 在工作模式失败后偷偷换管线——技能链路不认 model_item_key，静默降级会把
+	// 用户选的 Kimi / GLM 换成上游默认模型。
+	WebPipeline bool
 	// ModelItemKey 是工作模式的上游模型主键；空表示该别名不暴露工作模式模型。
 	ModelItemKey string
 	// MemoryProfile 是上游记忆档位，必须与 TotalWindow 配对使用。
@@ -67,6 +75,12 @@ var capabilityAliases = []modelAlias{
 		DisplayName: "视频生成",
 		Description: "生成视频。视频地址以文本与 media 扩展字段返回。",
 		Skill:       skillVideoGen,
+	},
+	{
+		ID:          "web",
+		DisplayName: "网页链路（兼容模式）",
+		Description: "走豆包网页链路（agent_mode=2）。部分账号没有被投放到客户端（工作模式）链路，用工作模式模型会稳定报「没有被投放」，改用本别名即可正常对话；代价是无法指定具体模型，由上游按网页端默认模型回复。",
+		WebPipeline: true,
 	},
 }
 
@@ -216,12 +230,19 @@ func modeForModel(requested string) generationMode {
 		}
 	}
 
-	// 2. 工作模式模型名直连客户端管线。
+	// 2. 网页链路别名：显式要求走 agent_mode=2，不进工作模式分支。
+	for _, alias := range capabilityAliases {
+		if alias.WebPipeline && strings.EqualFold(name, alias.ID) {
+			return workModeForAlias(alias, false)
+		}
+	}
+
+	// 3. 工作模式模型名直连客户端管线。
 	if alias, ok := aliasForWorkModel(name); ok {
 		return workModeForAlias(alias, true)
 	}
 
-	// 3. 纯对话的默认语义由工作模式默认模型承接，未知模型名同样回落。
+	// 4. 纯对话的默认语义由工作模式默认模型承接，未知模型名同样回落。
 	for _, alias := range capabilityAliases {
 		if strings.EqualFold(name, alias.ID) {
 			return workModeForAlias(alias, true)
@@ -247,11 +268,12 @@ func aliasForWorkModel(name string) (modelAlias, bool) {
 
 // workModeForAlias 把别名展开成一次请求的生成模式。
 //
-// 技能别名的 Skill 必须保留：生图/生视频只能走网页端 skill 管线；其余别名
-// 统一走工作模式，model_item_key 为空时由工作模式默认模型兜住。
+// 技能别名的 Skill 必须保留：生图/生视频只能走网页端 skill 管线；网页链路别名
+// 与能力别名一样走 agent_mode=2，不填工作模式字段；其余别名统一走工作模式，
+// model_item_key 为空时由工作模式默认模型兜住。
 // [参数] alias: 命中的别名；allowWorkMode: 是否允许走工作模式管线。
 // [返回] 生成模式。
-// 最近修改时间：2026-11-14 02:05:00；改动原因：新增，别名为空字段补齐配置默认值。
+// 最近修改时间：2026-11-15 23:55:00；改动原因：新增网页链路别名分支，允许账号在未投放工作模式时显式改走 agent_mode=2。
 func workModeForAlias(alias modelAlias, allowWorkMode bool) generationMode {
 	// 1. 技能别名只保留 skill，工作模式字段一律不填。
 	if alias.Skill != 0 {
@@ -265,6 +287,15 @@ func workModeForAlias(alias modelAlias, allowWorkMode bool) generationMode {
 		MemoryProfile:   alias.MemoryProfile,
 		TotalWindow:     alias.TotalWindow,
 		ReasoningEffort: alias.ReasoningEffort,
+	}
+	// 3. 网页链路别名显式不进工作模式：技能管线不认 model_item_key，填了也不会生效，
+	//    留着只会让人误以为选了模型。
+	if alias.WebPipeline {
+		mode.ModelItemKey = ""
+		mode.MemoryProfile = ""
+		mode.TotalWindow = ""
+		mode.ReasoningEffort = ""
+		return mode
 	}
 	if !allowWorkMode {
 		return mode

@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.1.22 (2026-11-16)
+
+### 修复
+
+- **`-1 delegated input protocol violation` 的真义是「该账号没有被投放到客户端
+  （工作模式）链路」，不是请求体字段写错**。2026-11-15 深夜做五模型 × 双管线
+  矩阵实测：同一个账号（用户358840）换 `doubao/auto` / `doubao-2.1-pro` /
+  `doubao/deepseek-v4-flash` / `doubao/kimi-k3` / `doubao/glm-5.3` 五个模型，
+  工作模式全部回 `-1`；而同一个账号切到网页技能管线（`agent_mode=2`）立刻出字；
+  另一个账号（欧皇小德子）在同一工作模式下正常出字。因此这个码只跟账号走。
+  0.1.20 / 0.1.21 的文案「实测多由工作模式 agent_mode=1 触发，请改用技能模式」
+  会让用户误以为是请求写法问题，现改为直接说明账号未被投放，并给出两条出路。
+- **新增显式网页链路别名 `doubao/web`（`agent_mode=2`）**，让这类账号有一条
+  看得见的逃生通道。**刻意不做自动降级**：技能管线不认 `model_item_key`
+  （补 `conversation_init_ext` 也无效，实测回复恒为 Seed 基座），静默降级会把
+  用户选的 Kimi / GLM 换成上游默认模型，比直接报错更糟。
+
+### 新增
+
+- `modelAlias` 增加 `WebPipeline` 标记，`doubao/web` 走该分支；能力别名目录、
+  可测试别名列表、面板展示列表都自动包含它（`testableAliases` 只排除生成类，
+  网页链路别名不是生成类）。
+- `workModeForAlias` 对网页链路别名显式清空 `ModelItemKey` / `MemoryProfile` /
+  `TotalWindow` / `ReasoningEffort`：这几个字段在 `agent_mode=2` 下无效，留着
+  只会让人误以为选了模型。
+- 活跃测试成功消息对空 `model_item_key` 回落显示「网页链路默认模型」，不再拼出
+  `→ 上游 ` 这样的空档。
+
+### 验证
+
+- 双管线对照（用户358840，45 秒间隔，连跑两轮一致）：
+
+  | 管线 | `agent_mode` | 结果 |
+  | --- | --- | --- |
+  | 工作模式（`doubao/deepseek-v4-flash`） | 1 | `-1 delegated input protocol violation` |
+  | 网页链路（`doubao/web`） | 2 | 出字 `"Hi"` |
+
+- 四象限矩阵（45 秒间隔）：`OH_WORK` 出字 6.2s / `OH_SKILL` 出字 2.0s /
+  `U358840_WORK` 623ms 回 `-1` / `U358840_SKILL` 出字 1.1s。
+- 上游 `model_id` / `model_type` 字段复核：技能模式换 `model_item_key` 后上游仍
+  恒报 `"38"`，无法区分模型；配合模型自述（`key=0 → Seed大模型`、
+  `key=person-kimi-k3-261111 → Seed大模型基座`）确认技能管线不认该字段。
+- 端到端（欧皇小德子，90 秒间隔）：`doubao/deepseek-v4-flash` 出字 8.08s、
+  `doubao/web` 出字 1.49s，两条管线都正常。
+- 哨兵（把 `if alias.WebPipeline {` 改成 `if false && alias.WebPipeline {`）：
+  `TestWebPipelineAliasReachesTestableList` 失败并打印
+  `实际 {Skill:0 Kind:text ModelItemKey:person-deepseek-v4-1-flash-261017 … WorkMode:true}`。
+
+### 其它
+
+- `TestStatusCodeHint` 的 `-1` 断言改为「没有被投放」，并新增守卫：提示里不得
+  再出现 `agent_mode`，防止文案回退成「让用户改请求字段」。
+- 新增 `TestModeForModelWebPipeline`（四种写法都命中、且不得带走其它模型）与
+  `TestWebPipelineAliasReachesTestableList`（活跃测试也必须走网页链路）。
+
+### 已知上限
+
+- `doubao/web` 无法指定具体模型，由上游按网页端默认模型回复。这是上游
+  `agent_mode=2` 的固有限制，不是插件可以绕过的。
+- 账号是否被投放工作模式由上游决定，插件只能检测并给出口，不能改变投放状态。
+- 该账号族在同一时段还会回 `710022004 semantic_reasoning`（设备指纹被判定不一致），
+  需冷却后复验；与本次 `-1` 的修复相互独立。
+
 ## 0.1.21 (2026-11-15)
 
 ### 修复
