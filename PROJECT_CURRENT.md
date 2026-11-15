@@ -15,9 +15,9 @@
   9. `coze-provider`：扣子 Coze（claw 对话 / WS 真流式 / 生图与积分路由红线）；
   10. `qwenwork-provider`：千问办公（Device Flow + PKCE / MaaS 短票据）；
   11. `workbuddy-token-usage`：统一 Token 用量统计与实时看板服务；
-  12. `doubao-provider`：豆包工作模式（agent_mode=1 PC 客户端管线；DeepSeek V4 / Kimi K3 / GLM 5.3 直连；书签一键授权 / Cookie 导入 + device_id 派生；面板测试只下发插件别名目录）。
+  12. `doubao-provider`：豆包工作模式（agent_mode=1 PC 客户端管线）+ 网页链路兼容别名 `doubao/web`（agent_mode=2，供未投放工作模式的账号使用，无法指定具体模型）；DeepSeek V4 / Kimi K3 / GLM 5.3 直连；书签一键授权（采集 `s_v_web_id` 作真实 `fp`）/ Cookie 导入 + device_id 派生；面板测试只下发插件别名目录。
 - 非范围：CLIProxyAPI 核心服务本体；跨项目文件修改。
-- 已下线插件：`gemini-provider`（2026-10-11）、`notion-provider`（2026-10-22）。**`doubao-provider` 2026-10-22 下线、2026-11-14 以工作模式 0.1.7 重新上线、0.1.8 面板重写与导入导出、0.1.9 书签一键授权、0.1.11 测试模型改别名目录 + conversation_mode 改整数均已上线（生产已热重载）。**
+- 已下线插件：`gemini-provider`（2026-10-11）、`notion-provider`（2026-10-22）。**`doubao-provider` 2026-10-22 下线、2026-11-14 以工作模式 0.1.7 重新上线；0.1.8 面板重写与导入导出、0.1.9 书签一键授权、0.1.11 测试模型改别名目录 + conversation_mode 改整数、0.1.19 出站 session 组过滤（后被 0.1.21 撤销）、0.1.20 错误码文案改写、0.1.21 真实设备指纹 `s_v_web_id` 采集、0.1.22 新增网页链路别名 `doubao/web` —— 均已上线并热重载，生产 `active_version=0.1.22`。**
 
 ## 项目概况
 
@@ -31,7 +31,7 @@
 - **2026-11-08 14:51 traework 升级 0.5.18 → 0.5.19**（下行 usage 帧缺失修复，`hot reloaded active_version=0.5.19 retired 0.5.18`，落盘 sha256 `27d74d19…` 与 release zip 逐字节一致；容器未重启）。同刻 workbuddy 0.21.15 / qoderwork 0.13.12 由并行会话上线。
 - 2026-10-25 历史发布批（已过期，仅存档）：zcode 0.3.1 / qoderwork 0.12.1 / traework 0.5.1 / workbuddy 0.21.2 / cursor 0.1.6 / qoder-ai 0.1.31 / coze 0.6.2 / qwenwork 0.2.9 / copilot 0.1.11 / workbuddy-ai 0.1.30 / token-usage 0.2.8（细节见 git log 与 CHANGELOG）。
 - 活动工作区：F:\cpa-plugin
-- 当前时间：2026-11-14 (GMT+8)
+- 当前时间：2026-11-16 (GMT+8)
 
 ## 活动会话进展摘要
 
