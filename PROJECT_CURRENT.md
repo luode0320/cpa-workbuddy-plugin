@@ -35,6 +35,16 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-15 18:30 - 2026-11-16 00:35）：**doubao-provider 0.1.19 → 0.1.22：面板测试长期失败的真因是「设备指纹 fp 伪造」+「-1 是账号未投放工作模式」（四版全部上线）**：
+  - **用户指令链**：m08136「还是有问题」→ m08590「网页可以成功了, 但是重新授权后, 测试还是不行, 看到时判断有问题了」→ m08844「你的测试肯定有问题, 因为我们手动打开网页发生 hi, 不会有任何人工验证, 而你发送 hi 就有人工验证, 说明你发送的参数是有问题的」→ m08934「开始改」→ m09466「欧皇小德子的号是可以用了, 但是新增了一个号"用户358840", 又不行了, 但网页可以正常请求」→ m09567「我们豆包插件的不同模型会走不同的模式, 需要注意」。
+  - **0.1.19（已上线，方向错）**：把 4 条 session Cookie 当出站黑名单剔除 + ttwid 预热，错误码从 `710022004` 变成 `710022002`。后来的四象限证明该修复方向错误。
+  - **0.1.20（已上线，定性错）**：把 `710022004 semantic_reasoning` 判成「上游下发人工语义选图验证码」，依据是 CDP 真实页面弹出九宫格且 `log_id` 与 SSE `decision.log_id` 逐字符一致。该次验证用的是「全新 Chrome profile + 注入账号 cookie」，指纹与账号未绑定，属自造假象。
+  - **0.1.21（已上线且真实生效）**：真因是 `protocol.go:275 deviceIDFor` 用 `sha256(CookieHeader+AuthID)` 派生 18 位假设备号，`buildClientQuery` 又拼成 `fp=\"verify_\"+deviceID`。四轮交替实测：假 device_id + 账号真实 `fp` → 出字；假 device_id + 格式合法的随机 fp → `710022004`。故只采集真实 `s_v_web_id` 作 fp（授权书签新增 `svw` 回传链路），并撤销 0.1.19 的 session 组过滤。上线后欧皇小德子面板测试**首次真实出字**（`{\"elapsed\":\"4.369s\",\"ok\":true,...：Hi}`）。
+  - **0.1.22（已上线）**：新号「用户358840」报 `-1 delegated input protocol violation`。双管线 / 四象限 / 五模型三层矩阵（各 30~45 秒间隔、连跑两轮）证明 `-1` 只跟账号走、与模型和请求字段无关，真义是「该账号未被投放到客户端（工作模式）链路」。第一版写的「失败即降级技能模式」被用户 m09567 一句提醒推翻：技能管线不认 `model_item_key`（`key=0`→"Seed大模型"、`key=person-kimi-k3-261111`→"Seed大模型基座"，补 `conversation_init_ext` 也无效），静默降级等于偷偷换模型，已 `git checkout` 撤销。改为新增显式别名 `doubao/web`（`modelAlias.WebPipeline`），命中即走 `agent_mode=2` 并清空 `ModelItemKey`/`MemoryProfile`/`TotalWindow`/`ReasoningEffort`。
+  - **发布与验收**：提交 `8593f88`（0.1.21，16 files +691/−185）→ `d5ca011`（0.1.22，11 files +448/−13）→ registry `b60fe23` / `f1d61bd` → 记忆 `0fa4899`。两版 CI 的 `Release` job 均 success（`darwin/arm64` 均 cancelled，5 平台 `ALL CHECKSUMS OK`）；生产 install 两版均 **TRY 0 即 200**，热重载 `active_version=0.1.22 retired_version=0.1.21`（`2026-11-16 00:23:43`），落盘 `.so` sha256 `6f73d0e2f1d24114ea7c4cd35fd5e95faafacd3ddacb6fdcd432f49d431b5400` / 17,519,840 B 与本地 zip 一致。
+  - **生产现状（00:35 复核）**：欧皇小德子 `doubao/web` → `{\"ok\":true,\"elapsed\":\"1.931s\",...：Hi}`、`doubao/deepseek-v4-flash` → 4.716s 出字；用户358840 `doubao/deepseek-v4-flash` → 新文案「该账号没有被投放到豆包客户端（工作模式）链路…请把模型改成 doubao/web」，`doubao/web` → 落到 `710022004` 设备指纹文案（该号被密集实验打进风控窗口，待冷却复验）。
+  - **铁律**：① 错误码归因必须做「同账号换模型 / 换管线」矩阵，单次对照会把账号级限制误判成请求写法问题；② 任何「失败就自动换管线」的兜底都要先验证换过去的管线是否语义等价；③ 两条管线是硬隔离的（工作模式走客户端 query，网页链路走业务 query），一条通不蕴含另一条通；④ 用全新浏览器 profile + 注入 cookie 复现出来的现象不能当作上游行为证据。
+  - **未覆盖**：用户358840 用 `doubao/web` 的稳定出字未取证；上游按什么规则决定「投放」未知（账号年龄 / 地区 / 引导任务都可能是因素），插件只能检测不能改变；面板仍无「该账号是否支持工作模式」的状态位。
 - 会话（2026-11-14 15:00-16:45）：**10 插件面板「搜索框禁止浏览器表单历史自动填入」全链路发布 + 生产启用态零漂移（含 install 激活停用插件新铁律）**：
   - **用户指令**（m00281）：「发布, 生产只重载我们依旧启用的, 其他的更新但是依旧保持不启用。这个发布生产的规则可以保持到项目中。」（起因 m00003「搜索不允许自动填入」）
   - **改动**：10 个插件 `panel.html` 各加 `searchInputNoAutofill`（`autocomplete="off"` + 只读切 `autocomplete="new-password"` + 随机 `name`）；`panel.html` 走 `//go:embed` 编译进二进制，**HTML 不是运行时读盘，必须 bump 版本重发二进制**。
@@ -153,13 +163,3 @@
   - **生产验收（决定性）**：`deepseek-v4-pro`+300 → 200 `model=deepseek-v4-pro` `finish=stop` 无切换；`hy4free`+300 → 200 `finish=length` `reasoning_len=449` 无切换；分组场景 `id=sg-trunc-test`（单成员 hy4free）+300 → 200 `finish=stop` 正文「请提问」**SK切换=False**（修复前必降级到 glm-5.3-flash）。验证分组已删除，`groups` 回读 `[]`。
   - **新踩坑**：① dispatch CI **前必须先 commit+push**，否则构建远端 HEAD、产物不含本地修复；② `plugin-store install` 多源同 id 返回 409 `plugin_store_source_required`，须带 `&source=<id>`（源 id 现取勿硬编码）；③ ssh 用 `cpa-server` 别名（root / 18998 / IdentityFile 已配），`luode@IP` 会 Permission denied。
   - **文档**：`doc/4-bugs/2026-11-12_230000_SafeguardKiller分组劫持破甲退化为换模型根因与修复.md`（172 行），提交 `c7f0c54`。**遗留**：分组是否重建与中性 codename 待裁定；其它 provider 插件是否有同构空响应判据待同族同步。
-
-- 会话（2026-11-12 22:05-22:52）：**workbuddy 0.21.26：导入原生兼容第三方 `auth_raw`/`profile_raw` 记录（已发布 + 生产验收通过）**：
-  - **用户诉求**：先报「work10.json 导入到 wokrbuddy 失败了」，裁定「改成可导入的给我们手动导入就可以了」，拿到转换产物后进一步要求「把 wokrbuddy 的导入兼容一下这种格式的 json，下次我们就不用手动转换手动导入了」。
-  - **根因（非插件 bug）**：第三方导出是**顶层数组 + `auth_raw`/`profile_raw` 嵌套 + `access_token` 蛇形命名**，而 `workbuddy/main.go:510 parseStored` 只认「顶层有 `auth` 键的嵌套形态」与「扁平 `accessToken`」⇒ 逐条 `parse_error: missing accessToken`。
-  - **实现（6 文件 +267/−6）**：新建 `workbuddy/auth_thirdparty.go`（`thirdPartyRecord`、`isThirdPartyStored` 认 `auth_raw`/`profile_raw`/`access_token` 任一键、`parseThirdPartyStored`、`epochsToSeconds` 用 `>1e11` 判毫秒）；`parseStored` 改**三分支分发**（嵌套 / 第三方 / 扁平），末尾统一校验 accessToken；`panel.html:266` 导入提示补第三方形态；`VERSION`+`main.go:359` = 0.21.26；新增 `test/workbuddy/auth_thirdparty_test.go` 5 用例。**不动 panel 的 `expandCredentials`**——转换收敛在 `parseStored` 一处，导入、认领、执行、导出回读等 10 个调用点自动受益。
-  - **验证**：cgo-shim 全绿（34.078s）；真实 `work10.json` 10 条逐条过 `parseStored` 输出 `verified 10/10`（`expiresAt=1796910717` 秒级、`domain=www.workbuddy.cn`、at/rtLen 1539/1540 全对）；gofmt 干净、panel `node --check` exit=0。
-  - **发布与生产**：`fabbed3` → CI `43238620141` Release success（4 assets `ALL CHECKSUMS OK`）→ registry `adf788c`。热重载 `active_version=0.21.26`，落盘 `.so` 8,466,976 B sha256 `fca9f155…70cca` 与 zip 一致，`grep -a -c auth_raw`=3；面板 200/86919 B 含 `auth_raw`；账号池 30 个、work10 的 10 个 uid **10/10 已在生产**。
-  - **生产行为验收（决定性）**：取 uid `399529bf-4251-4f08-b9a8-c0ca053c4b3d` 的**原始未转换记录**直接 POST `/import` → 200 `success:true`；落盘 `auth keys=['accessToken','domain','expiresAt','refreshToken']`、`expiresAt` 为 **int 1796910717**、`auth_raw` 残留 False。
-  - **新踩坑**：① `registry.json` raw CDN 滞后 **4.5 分钟**，改用 GitHub Contents API（`/contents/registry.json?ref=main` + base64）才读到；② auth 文件在**容器内** `/root/.cli-proxy-api/`，容器内无 `python3`，需 `docker exec cat > /tmp/x.json` 拉到宿主再解析；③ 生产管理密钥在 `config.yaml` 第 **479** 行 `workbuddy-provider` 段的 `cpa_management_key`（9 字节明文），`remote-management.secret-key` 取不到（`rm_key_len=0`，用它 401）。
-  - **遗留**：`darwin_arm64`/`windows_arm64` 缺件（按 `--allow-missing` 剔除槽位）；`doc/5-tests/` 与 `doc/6-review/` 未补验证与风格回归记录。
