@@ -356,13 +356,13 @@ func TestBuildBusinessQueryComplete(t *testing.T) {
 // TestStatusCodeHint 校验上游错误码映射到可操作文案。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-16 05:22:00；改动原因：-1 的成因修正为「请求体缺网页默认值字段」，断言同步。
+// 最近修改时间：2026-11-16 06:10:00；改动原因：710022004 的成因改回「人机验证」，710022002 去掉 fp 归因，断言同步。
 func TestStatusCodeHint(t *testing.T) {
 	cases := map[int]string{
 		710012001: "重新导入",
 		710012000: "重新导入",
-		710022004: "设备指纹",
-		710022002: "s_v_web_id",
+		710022004: "人机验证",
+		710022002: "访问频繁",
 		-1:        "委托输入协议",
 		710020202: "Content-Type",
 		710020702: "重放",
@@ -378,8 +378,61 @@ func TestStatusCodeHint(t *testing.T) {
 	if got := statusCodeHint(-1, ""); strings.Contains(got, "没有被投放") {
 		t.Errorf("错误码 -1 的提示不应再声称账号未投放工作模式，实际 %q", got)
 	}
+	// 710022004 曾在 0.1.21 被误归因为设备指纹：不得再让人去重新点授权书签。
+	if got := statusCodeHint(710022004, ""); strings.Contains(got, "授权书签") || strings.Contains(got, "设备指纹") {
+		t.Errorf("710022004 的提示不应再归因设备指纹或要求重新授权，实际 %q", got)
+	}
 	if got := statusCodeHint(999999, ""); !strings.Contains(got, "未知错误") {
 		t.Errorf("未知码应回落到通用提示，实际 %q", got)
+	}
+}
+
+// TestStreamErrorHintReadsVerifyDecision 校验带 decision 的验证帧被识别为人机验证。
+//
+// 710022004 的 error_msg 写的是 "rate limited"，光看码和文案会误判成限流；
+// 真正的成因在 extra.decision（type=verify / subtype=semantic_reasoning）。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-16 06:10:00；改动原因：新增，验证帧口径回归。
+func TestStreamErrorHintReadsVerifyDecision(t *testing.T) {
+	// 1. 真实帧：decision 是嵌套 JSON 字符串，必须被解出来并按人机验证给文案。
+	verifyFrame := `{"error_code":710022004,"error_msg":"rate limited","extra":{"decision":"{\"code\":\"10000\",\"from\":\"shark_admin\",\"type\":\"verify\",\"region\":\"cn\",\"subtype\":\"semantic_reasoning\",\"log_id\":\"20261116055224CD36C03412A894E2F020\",\"verify_scene\":\"doubao_message_web\"}","ack":"1"}}`
+	e, ok := parseStreamError([]byte(verifyFrame))
+	if !ok {
+		t.Fatal("验证帧应被解析为错误")
+	}
+	d := e.verifyOf()
+	if d == nil {
+		t.Fatal("verifyOf 应识别 type=verify 的 decision")
+	}
+	if d.Subtype != "semantic_reasoning" || d.LogID != "20261116055224CD36C03412A894E2F020" {
+		t.Fatalf("decision 字段解析不符：%+v", d)
+	}
+	msg := streamErrorHint(e)
+	for _, want := range []string{"人机验证", "语义选图", "20261116055224CD36C03412A894E2F020"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("验证帧提示应包含 %q，实际 %q", want, msg)
+		}
+	}
+
+	// 2. 没有 decision 的同码帧只能走兜底：文案里不能编造验证场景。
+	plainFrame := `{"error_code":710022004,"error_msg":"rate limited"}`
+	e2, ok2 := parseStreamError([]byte(plainFrame))
+	if !ok2 {
+		t.Fatal("无 decision 的错误帧同样应被解析")
+	}
+	if e2.verifyOf() != nil {
+		t.Error("没有 decision 时 verifyOf 必须返回 nil")
+	}
+
+	// 3. decision 不是 verify 时不得套用验证文案。
+	otherFrame := `{"error_code":710022004,"error_msg":"rate limited","extra":{"decision":"{\"type\":\"throttle\"}"}}`
+	e3, ok3 := parseStreamError([]byte(otherFrame))
+	if !ok3 {
+		t.Fatal("throttle 帧应被解析")
+	}
+	if e3.verifyOf() != nil {
+		t.Error("decision.type 不是 verify 时 verifyOf 必须返回 nil")
 	}
 }
 

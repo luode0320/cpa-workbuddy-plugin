@@ -87,13 +87,13 @@ func TestRunActiveTestStopsOnFirstFrame(t *testing.T) {
 
 // TestRunActiveTestRejectsStreamError 校验 HTTP 200 下的错误帧被判为失败。
 //
-// 上游用 STREAM_ERROR 表达额度耗尽/限流，只看「有字节流出」会把死号判成活跃。
+// 上游用 STREAM_ERROR 表达额度耗尽/限流/人机验证，只看「有字节流出」会把死号判成活跃。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-15 22:55:00；改动原因：710022004 的成因改为设备指纹不匹配，断言同步。
+// 最近修改时间：2026-11-16 06:10:00；改动原因：710022004 的成因改回人机验证，断言同步。
 func TestRunActiveTestRejectsStreamError(t *testing.T) {
 	frames := []string{
-		"event: STREAM_ERROR\ndata: {\"error_code\":710022004,\"error_msg\":\"rate limited\"}\n\n",
+		"event: STREAM_ERROR\ndata: {\"error_code\":710022004,\"error_msg\":\"rate limited\",\"extra\":{\"decision\":\"{\\\"type\\\":\\\"verify\\\",\\\"subtype\\\":\\\"semantic_reasoning\\\",\\\"log_id\\\":\\\"20261116055224CD36C03412A894E2F020\\\"}\",\"ack\":\"1\"}}\n\n",
 	}
 	srv := activePingSSEServer(t, frames)
 	defer srv.Close()
@@ -104,8 +104,11 @@ func TestRunActiveTestRejectsStreamError(t *testing.T) {
 		t.Fatalf("错误帧被误判为成功：%+v", res)
 	}
 	msg, _ := res["error"].(string)
-	if !strings.Contains(msg, "设备指纹") {
-		t.Fatalf("错误提示应含可操作说明，实际 %q", msg)
+	if !strings.Contains(msg, "人机验证") {
+		t.Fatalf("错误提示应说明是人机验证，实际 %q", msg)
+	}
+	if !strings.Contains(msg, "20261116055224CD36C03412A894E2F020") {
+		t.Fatalf("错误提示应带上游 log_id 便于对账，实际 %q", msg)
 	}
 }
 

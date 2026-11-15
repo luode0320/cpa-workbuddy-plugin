@@ -194,7 +194,7 @@ func runActiveTest(sa *StoredAuth, model string) map[string]any {
 		switch ev.Name {
 		case "STREAM_ERROR", "ERROR":
 			if e, ok := parseStreamError(ev.Data); ok {
-				streamErr = &upstreamError{Code: e.ErrorCode, Message: statusCodeHint(e.ErrorCode, e.ErrorMsg)}
+				streamErr = &upstreamError{Code: e.ErrorCode, Message: streamErrorHint(e)}
 			}
 			return false
 

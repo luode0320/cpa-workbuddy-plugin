@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.24 (2026-11-16)
+
+### 修复
+
+- **`710022004` 的真因是「人机验证（语义选图）」，0.1.21 起的「设备指纹不匹配」
+  归因是错的**。解析上游返回的 `extra.decision` 才看到真实语义：
+  `{"code":"10000","from":"shark_admin","type":"verify","subtype":"semantic_reasoning",
+  "log_id":"…","verify_scene":"doubao_message_web"}` —— `type=verify` 说明这是上游对
+  该账号弹的人机验证，既不是限流，也与 `s_v_web_id` 无关。用 CDP 驱动真实 Chrome
+  在同一账号上发消息，页面中央当场弹出九宫格验证码（标题「用于身体锻炼的物品」），
+  iframe 指向 `rmc.bytedance.com/verifycenter/captcha/v2`，左下角明文 log_id 与 SSE
+  的 `decision.log_id` 完全一致。0.1.20 当时的判断是对的，0.1.21 只看了错误码和
+  `error_msg` 就把它推翻，方向错了。
+- **错误文案不再把用户引向无效动作**。`710022004` / `710022005` 改为「上游要求该
+  账号完成人机验证（语义选图）：请在浏览器里登录同一账号，在豆包网页任意发一句话，
+  按弹出的九宫格完成一次验证；验证通过后账号即恢复，不需要重新授权」；`710022002`
+  去掉「未采集 s_v_web_id」的归因，改成「上游判定这次请求过频」，并提示降低测试频率。
+- **`streamError` 解析 `extra.decision`**。新增 `verifyOf()` 判定 `type=verify` 并取出
+  `subtype` / `log_id` / `verify_scene`，新增 `streamErrorHint()` 统一生成提示；
+  `collectCompletion` 与 `runActiveTest` 都改用它，验证态的错误信息会带上游 `log_id`，
+  可与浏览器里看到的验证码对账。
+
+### 已知
+
+- 该验证码是「语义选图九宫格 + 拖拽投放 + 严格时限」，脚本化拖拽实测会提示「验证
+  超时，请根据提示重新操作」，只能由真人在浏览器里过一次；过掉之前该账号的每个请求
+  都会被拦，切换账号是插件侧唯一有效的应对。
+- 同一账号在真实网页的「工作」标签（`agent_mode=1` + DeepSeek 模型 key）也会被弹同一
+  张验证码，所以当前失败与插件请求形状无关。
+
+# Changelog
+
 ## 0.1.23 (2026-11-16)
 
 ### 修复

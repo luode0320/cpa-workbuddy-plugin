@@ -663,15 +663,75 @@ type messageContentBody struct {
 }
 
 // streamError 是 STREAM_ERROR 事件的负载。
+//
+// extra.decision 是关键：710022004 看起来像限流（error_msg 写的就是 "rate limited"），
+// 实际是上游弹的人机验证，判定依据全在 decision 里（type=verify /
+// subtype=semantic_reasoning / log_id）。不解析它就只能靠错误码猜成因，
+// 0.1.21 正是这样把「人机验证」误判成「设备指纹不匹配」的。
 type streamError struct {
 	ErrorCode int    `json:"error_code"`
 	ErrorMsg  string `json:"error_msg"`
+	Extra     struct {
+		Decision string `json:"decision"`
+		Ack      string `json:"ack"`
+	} `json:"extra"`
+}
+
+// verifyDecision 是 extra.decision 里与「人机验证」相关的那部分字段。
+//
+// 上游把 decision 编成一段 JSON 字符串塞在 extra 里，字段名与含义见
+// 2026-11-16 实测帧：type=verify、subtype=semantic_reasoning、
+// from=shark_admin、verify_scene=doubao_message_web。
+type verifyDecision struct {
+	Code        string `json:"code"`
+	From        string `json:"from"`
+	Type        string `json:"type"`
+	Subtype     string `json:"subtype"`
+	Region      string `json:"region"`
+	LogID       string `json:"log_id"`
+	VerifyScene string `json:"verify_scene"`
+}
+
+// verifyOf 解析 extra.decision，判定这次失败是否由人机验证触发。
+// [参数] 无。
+// [返回] 人机验证信息；不是验证帧或解析失败时返回 nil。
+// 最近修改时间：2026-11-16 06:05:00；改动原因：新增，710022004 的真实成因要靠 decision 判定。
+func (e *streamError) verifyOf() *verifyDecision {
+	// 1. decision 是嵌套 JSON 字符串，空串直接排除。
+	raw := strings.TrimSpace(e.Extra.Decision)
+	if raw == "" {
+		return nil
+	}
+
+	// 2. 只认 type=verify，其他决策类型不改变提示口径。
+	var d verifyDecision
+	if json.Unmarshal([]byte(raw), &d) != nil || d.Type != "verify" {
+		return nil
+	}
+	return &d
+}
+
+// streamErrorHint 把 STREAM_ERROR 帧翻译成面向用户的文案。
+//
+// 有 decision 的验证帧优先走验证文案：错误码本身（710022004）在两种成因下
+// 完全相同，只有 decision 能区分「人机验证」与「真的被限流」。
+// [参数] e: 已解析的错误帧。
+// [返回] 中文提示。
+// 最近修改时间：2026-11-16 06:05:00；改动原因：新增，验证帧按 decision 给专项文案。
+func streamErrorHint(e *streamError) string {
+	// 1. 人机验证帧：说清要做什么，并带上游 log_id 便于对账。
+	if d := e.verifyOf(); d != nil {
+		return fmt.Sprintf("上游要求人机验证（%s，语义选图）：该账号已进入验证态，需要在浏览器里登录同一账号并手动完成一次验证（豆包网页任意发一句话，弹出的九宫格按要求拖图即可）；验证通过后账号即恢复，无需重新授权。上游 log_id=%s，verify_scene=%s", d.Subtype, d.LogID, d.VerifyScene)
+	}
+
+	// 2. 其他错误帧沿用错误码文案。
+	return statusCodeHint(e.ErrorCode, e.ErrorMsg)
 }
 
 // parseStreamError 解码 STREAM_ERROR 事件。
 // [参数] data: 事件负载。
 // [返回] 错误结构；不是错误帧时第二返回值为 false。
-// 最近修改时间：2026-10-17；改动原因：新增，流内业务错误识别。
+// 最近修改时间：2026-11-16 06:00:00；改动原因：新增 extra.decision 解析，用于区分人机验证与限流。
 func parseStreamError(data []byte) (*streamError, bool) {
 	var e streamError
 	if json.Unmarshal(data, &e) != nil || e.ErrorCode == 0 {
@@ -1070,7 +1130,7 @@ func collectCompletion(ctx context.Context, sa *StoredAuth, text string, mode ge
 
 		case "STREAM_ERROR", "ERROR":
 			if e, ok := parseStreamError(ev.Data); ok {
-				streamErr = &upstreamError{Code: e.ErrorCode, Message: statusCodeHint(e.ErrorCode, e.ErrorMsg)}
+				streamErr = &upstreamError{Code: e.ErrorCode, Message: streamErrorHint(e)}
 				return false
 			}
 
