@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.18 (2026-11-15)
+
+### Fix - 授权回调因判据端点 TLS 握手超时直接失败，一次性令牌被白白消耗
+
+- 现象(用户 2026-11-15 13:10 截图 + 错误原文): 点「豆包一键授权」后浏览器跳到 `login/callback`，页面标题「授权失败」、正文「接收失败」，错误原文是 `判据请求失败：Get "https://accounts.doubao.com/passport/account/info/v2/?…": net/http: TLS handshake timeout`。生产日志显示该次回调耗时 **10.128s** —— 与 Go 默认 `http.Transport.TLSHandshakeTimeout = 10s` 完全吻合；12 个账号文件的 `updated_at` 全部未变、`ms_token len=0`，说明这次授权连账号都没落盘，不是「采到了写不进去」。
+- 根因: 插件三处 HTTP 入口（判据 `probeAccountInfoAgainst`、令牌兑换 `doTokenBeat`、上游 `newUpstreamClient`）都写 `&http.Client{Timeout: …}` 字面量，Transport 为空 → 全部落到 `http.DefaultTransport`，握手超时被固定为 10s 且无法调整；同时判据请求**没有重试**。豆包 CDN（`accounts.doubao.com` 共 15 个 A 记录）存在节点级偶发黑洞：单次握手卡满 10s 即抛错，而一次性 `x-tt-token` 已被消耗、无法重来，整条授权就此判死。
+- 排除过程(全部实测正常，排除链路故障): 宿主机 `curl` 判据端点 6 次全部 200，`tls` 0.085~1.19s，`remote_ip` 在 4 个节点间轮换；容器内 DNS 两个 A 记录解析 5~7ms；容器内 `openssl s_client` 握手 0.098s；自建 Go 探针把 15 个 A 记录逐个 `tcp`+`tls` 全测一遍 → **`BAD_COUNT=0/15`**，最慢节点 `120.221.208.214` 只是 `tcp=3.091s`；与插件同款「默认 Transport + `client.Timeout=30s`」串行 40 次 `ok=40 err=0`（仅 `#10 3.108s` 偏慢）、并发 10 路×4 轮 `ok=40`。结论：不是持续不可达，而是**单次握手的抖动窗口正好撞上 10s 硬上限**。
+- 修复: 新增 `transport.go` 集中定义上游传输层——`sharedUpstreamTransport` 是独立 `*http.Transport` 实例（不复用 `http.DefaultTransport`，避免改它波及全进程），显式设置 `DialContext` 拨号超时 10s、`TLSHandshakeTimeout` **20s**（默认值的两倍，足以让慢节点跑完而不让黑洞无限挂）、`MaxIdleConns` / `IdleConnTimeout`；`newUpstreamHTTPClient(timeout)` 作为唯一构造入口，三处调用点全部改为使用它。
+- 重试策略(区分幂等性，避免重复消费令牌): `doIdempotent` 用于判据 GET，传输层失败最多尝试 3 次、间隔 400ms；`doUnsentSafe` 用于令牌兑换 POST，**只在「请求肯定没发出去」时重试**（`requestNeverSent` 判定拨号失败与 TLS 握手超时），握手完成后的任何失败一次即放弃——无法判断上游是否已消费令牌时，宁可失败也不能重复打同一枚令牌。两者共用 `doWithRetry` 内核，带 `GetBody` 的请求在重试时重建读指针。
+- 上层取消不重试: `context.Canceled` / `context.DeadlineExceeded` 立即返回，用户关页面或插件卸载时不做无谓等待。
+- 测试: 新增 `transport_test.go` 六个用例——`TestSharedTransportHandshakeTimeoutWidened`（必须自建实例、握手超时必须严格大于默认 10s、必须自定义 `DialContext`）、`TestNewUpstreamHTTPClientUsesSharedTransport`、`TestDoIdempotentRetriesTransportError`（前两次握手失败第三次成功，尝试次数 == 3）、`TestDoUnsentSafeStopsAfterHandshakeDone`（连接重置只打 1 次）、`TestRequestNeverSentClassification`（五类错误分类）、`TestProbeUsesSharedTransportAgainstRealServer`（httptest 下判据语义未被破坏）。哨兵把握手超时改回 10s 后 `TestSharedTransportHandshakeTimeoutWidened` 如实 FAIL（`握手超时 10s 未超过默认 Transport 的 10s`），恢复后全绿。
+- 兼容: 只放宽传输层参数与增加重试，不改任何请求内容、判据逻辑与落盘路径；`tokenbeat` 与 `completion` 的业务分支保持原样。
+- 已知上限: 重试只能吸收「单次抖动」，若某个 CDN 节点持续 20s 以上不可用仍会失败；`requestNeverSent` 对 TLS 握手超时按 transport 的错误文本判定，Go 升级若改动该文案需同步维护。
+
 ## 0.1.17 (2026-11-15)
 
 ### Fix - 补齐 ms_token 后写盘必然失败，面板长期显示「请求签名未采集」

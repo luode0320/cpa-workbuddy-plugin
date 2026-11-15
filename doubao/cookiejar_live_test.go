@@ -15,14 +15,17 @@ import (
 // 默认跳过（CI 无网络），设 DOUBAO_LIVE_TEST=1 才执行。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，真实 Set-Cookie 捕获（通过标准①）。
+// 最近修改时间：2026-11-15 13:30:00；改动原因：改用共享传输层，避免 10s 握手超时让本用例假失败。
 func TestDurableJarLiveTTWidSetCookie(t *testing.T) {
 	if os.Getenv("DOUBAO_LIVE_TEST") != "1" {
 		t.Skip("设 DOUBAO_LIVE_TEST=1 才执行真实上游探测")
 	}
 
 	jar := newDurableJar()
-	client := &http.Client{Jar: jar, Timeout: 20 * time.Second}
+	// 走共享传输层：本用例打的是 accounts.doubao.com，与授权判据同一个 CDN，
+	// 默认 Transport 的 10s 握手超时会让这条只为验证 Jar 的用例假失败。
+	client := newUpstreamHTTPClient(20 * time.Second)
+	client.Jar = jar
 	req, errReq := http.NewRequest(http.MethodGet,
 		"https://accounts.doubao.com/ttwid/check/?aid=497858&device_platform=web&region=CN&sys_region=CN", nil)
 	if errReq != nil {

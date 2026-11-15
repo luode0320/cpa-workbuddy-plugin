@@ -211,7 +211,7 @@ func probeAccountInfo(c *credentials, timeout time.Duration) (*credentials, erro
 // 与 probeAccountInfo 分离是为了让测试可指向 httptest 服务端，避免真实网络依赖。
 // [参数] c: 待探测凭据；endpoint: 完整判据端点 URL；timeout: 请求超时。
 // [返回] 更新后的凭据与错误。
-// 最近修改时间：2026-10-17；改动原因：新增，判据核心逻辑与端点解析解耦。
+// 最近修改时间：2026-11-15 13:26:00；改动原因：改用共享传输层并对握手抖动重试。
 func probeAccountInfoAgainst(c *credentials, endpoint string, timeout time.Duration) (*credentials, error) {
 	if c == nil {
 		return nil, fmt.Errorf("凭据为空")
@@ -228,8 +228,10 @@ func probeAccountInfoAgainst(c *credentials, endpoint string, timeout time.Durat
 	req.Header.Set("User-Agent", webUserAgent)
 	req.Header.Set("Referer", doubaoSiteHost+"/")
 
-	client := &http.Client{Timeout: timeout}
-	resp, errDo := client.Do(req)
+	// 判据是幂等 GET：CDN 节点级握手抖动时换一次连接就能通，必须重试。
+	// 不重试会让一次偶发黑洞直接判死整条授权，而一次性令牌已被消耗、无法重来。
+	client := newUpstreamHTTPClient(timeout)
+	resp, errDo := doIdempotent(req, client)
 	if errDo != nil {
 		return nil, fmt.Errorf("判据请求失败：%w", errDo)
 	}

@@ -749,7 +749,7 @@ func scanSSE(r io.Reader, onEvent func(completionEvent) bool) error {
 // （见 cookiejar.go）。已落盘的快照优先，首次导入的账号用原始 header 播种。
 // [参数] sa: 账号；timeout: 客户端超时，0 表示不设（流式请求由 context 约束）。
 // [返回] HTTP 客户端与 Jar。
-// 最近修改时间：2026-10-17；改动原因：新增，统一上游传输入口。
+// 最近修改时间：2026-11-15 13:28:00；改动原因：改用共享传输层，修正 10s 握手超时。
 func newUpstreamClient(sa *StoredAuth, timeout time.Duration) (*http.Client, *durableJar) {
 	jar := newDurableJar()
 	if len(sa.Cookies) > 0 {
@@ -760,7 +760,9 @@ func newUpstreamClient(sa *StoredAuth, timeout time.Duration) (*http.Client, *du
 	if sa.PhysicalPath != "" {
 		jar.bind(sa.PhysicalPath)
 	}
-	return &http.Client{Jar: jar, Timeout: timeout}, jar
+	// 流式请求同样走共享传输层：默认 Transport 的 10s 握手超时会让慢节点
+	// 直接断连，而回复可能已在上游开始生成、无法重来。
+	return &http.Client{Jar: jar, Transport: sharedUpstreamTransport, Timeout: timeout}, jar
 }
 
 // applyUpstreamHeaders 设置业务端点所需的请求头。

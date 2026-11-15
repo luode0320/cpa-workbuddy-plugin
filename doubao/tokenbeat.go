@@ -137,8 +137,10 @@ func doTokenBeat(token string) (*tokenBeatResponse, []*http.Cookie, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	client := &http.Client{Timeout: timeout}
-	resp, errDo := client.Do(req)
+	// 令牌只能兑换一次：只有「请求根本没发出去」（拨号失败 / TLS 握手超时）
+	// 才重试，握手完成后的任何失败都如实上报，避免重复消费令牌。
+	client := newUpstreamHTTPClient(timeout)
+	resp, errDo := doUnsentSafe(req, client)
 	if errDo != nil {
 		return nil, nil, fmt.Errorf("令牌请求失败：%w", errDo)
 	}
