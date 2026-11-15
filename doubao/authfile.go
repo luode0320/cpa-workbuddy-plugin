@@ -33,10 +33,19 @@ type StoredAuth struct {
 	UserID        int64  `json:"user_id,omitempty"`
 	ScreenName    string `json:"screen_name,omitempty"`
 	Mobile        string `json:"mobile,omitempty"`
-	DeviceID      string `json:"device_id,omitempty"`
-	WebID         string `json:"web_id,omitempty"`
-	WebTabID      string `json:"web_tab_id,omitempty"`
-	BotID         string `json:"bot_id,omitempty"`
+	// 设备指纹四元组：fp（s_v_web_id）必须原样采集，其余三项由插件派生。
+	//
+	// 上游对 /chat/completion 做设备级归因：query 里的 fp 必须与账号在浏览器里
+	// 真实用过的那一串一致，否则稳定回 710022004 semantic_reasoning（带 session
+	// 组）或 710022002（不带）。2026-11-15 四轮交替实测（全部带真实 session 组）：
+	// 假 device_id + 格式合法的随机 fp → 710022004；假 device_id + 账号真实 fp →
+	// 出字；复验两次均成功。也就是说 fp 是必需项，device_id / web_id / tea_uuid
+	// 用插件自己派生的稳定值即可（见 protocol.go 的 deviceIDFor 与 fingerprintOf）。
+	DeviceID string `json:"device_id,omitempty"`
+	WebID    string `json:"web_id,omitempty"`
+	SVWebID  string `json:"s_v_web_id,omitempty"`
+	WebTabID string `json:"web_tab_id,omitempty"`
+	BotID    string `json:"bot_id,omitempty"`
 	// MsToken 是 /chat/completion 必需的风控令牌（见 sign.go）。
 	//
 	// 由豆包页面 localStorage.xmst 提供，本身有 7 天有效期；a_bogus 则在每次
@@ -498,13 +507,18 @@ func saveCredentials(header, label string, timeout time.Duration) (*StoredAuth, 
 		ScreenName:    probed.ScreenName,
 		Mobile:        probed.Mobile,
 		BotID:         defaultBotID,
-		Label:         label,
-		Disabled:      false,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		// 设备指纹从凭据里就地采集：s_v_web_id 是浏览器 tea SDK 写的设备级
+		// Cookie，导入时若带了就必须原样保留，它是推理链路能否出字的必需项
+		// （见 fingerprintOf）。老凭据里没有该字段时留空，由重新授权补采。
+		SVWebID:   cookieValue(probed.CookieHeader, "s_v_web_id"),
+		Label:     label,
+		Disabled:  false,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
-	// 导入即固化设备标识：工作模式每次请求都要带 device_id / fp / tea_uuid，
-	// 同一账号换标识会被上游按多设备登录归因，必须与账号一起持久化。
+	// 设备标识必须在账号生命周期内保持不变：工作模式每次请求都要带
+	// device_id / tea_uuid，同一账号换标识会被上游按多设备登录归因，
+	// 必须与账号一起持久化（派生规则见 deviceIDFor）。
 	sa.DeviceID = deviceIDFor(sa)
 	sa.WebID = strings.TrimSpace(sa.WebID)
 	sa.WebTabID = randomUUID()

@@ -23,7 +23,13 @@ import (
 //   - IM 系端点（/im/*）的 Content-Type 必须是 "application/json; encoding=utf-8"；
 //     而 /chat/completion 相反，须用纯 "application/json"。
 //
-// 最近修改时间：2026-11-15 01:25:00；改动原因：修正 msToken/a_bogus 必需性记载。
+//   - 设备指纹是更前置的判据（2026-11-15 四象限实测）：`fp` 必须是账号在浏览器里
+//     真实用过的 `s_v_web_id`，自己拼的假值一律回 710022004；真实 fp 下不带签名也能
+//     出字，因此上面那条「签名必需」只在假 fp 的前提下成立，签名在真实 fp 下的独立
+//     影响尚未分离。采集链路见 login.go 的 callbackSVWebIDHeader，读取入口见
+//     fingerprintOf。
+//
+// 最近修改时间：2026-11-15 22:55:00；改动原因：补记设备指纹是更前置的判据。
 
 const (
 	// webUserAgent 是模拟网页端请求的 User-Agent。
@@ -170,10 +176,10 @@ func textMode() generationMode {
 // device_id / web_id / tea_uuid 是设备级标识，需与凭据一同持久化；
 // 多账号若共用同一组标识可能被上游关联（见需求 GAP-004）。
 // [参数] deviceID: 设备标识；webID: web 会话标识（同时用作 tea_uuid）；
-// webTabID: 标签页标识；extra: 端点专属附加参数。
+// webTabID: 标签页标识；fp: 设备指纹（账号真实 s_v_web_id，可空）；extra: 端点专属附加参数。
 // [返回] 编码后的 query 字符串。
-// 最近修改时间：2026-10-17；改动原因：新增，业务 API 参数集。
-func buildBusinessQuery(deviceID, webID, webTabID string, extra map[string]string) string {
+// 最近修改时间：2026-11-15 22:05:00；改动原因：补 fp，实测它是推理端点的必需项。
+func buildBusinessQuery(deviceID, webID, webTabID, fp string, extra map[string]string) string {
 	q := url.Values{}
 	q.Set("version_code", doubaoVersionCode)
 	q.Set("language", "zh")
@@ -195,6 +201,9 @@ func buildBusinessQuery(deviceID, webID, webTabID string, extra map[string]strin
 	if webTabID != "" {
 		q.Set("web_tab_id", webTabID)
 	}
+	if fp != "" {
+		q.Set("fp", fp)
+	}
 	q.Set("flow_im_arch", "v2")
 	for k, v := range extra {
 		q.Set(k, v)
@@ -205,9 +214,9 @@ func buildBusinessQuery(deviceID, webID, webTabID string, extra map[string]strin
 // endpointURL 拼接业务端点完整 URL。
 // [参数] sa: 账号（提供设备级标识）；path: 端点路径；extra: 附加 query 参数。
 // [返回] 完整 URL。
-// 最近修改时间：2026-10-17；改动原因：新增，业务端点地址构造。
+// 最近修改时间：2026-11-15 22:05:00；改动原因：随 query 一并带上账号真实 fp。
 func endpointURL(sa *StoredAuth, path string, extra map[string]string) string {
-	return doubaoSiteHost + path + "?" + buildBusinessQuery(sa.DeviceID, sa.WebID, sa.WebTabID, extra)
+	return doubaoSiteHost + path + "?" + buildBusinessQuery(sa.DeviceID, sa.WebID, sa.WebTabID, fingerprintOf(sa), extra)
 }
 
 // buildClientQuery 构造 PC 客户端形态的 query 参数集。
@@ -217,12 +226,12 @@ func endpointURL(sa *StoredAuth, path string, extra map[string]string) string {
 // 等网页端没有的键；把这些键塞进网页端参数集会让 /alice/* 业务端点判为非法客户端。
 // 因此两条参数集并存：业务端点走网页端，/chat/completion 走客户端。
 //
-// device_id / fp / tea_uuid 三者同源（fp 为 "verify_" 前缀），web_tab_id 每次请求
-// 换新 UUID——它们共同构成客户端的设备指纹三元组。
-// [参数] deviceID: 设备标识；webID: web 会话标识。
+// device_id / tea_uuid 同源（由 deviceIDFor 派生并随账号持久化），web_tab_id 每次请求
+// 换新 UUID；fp 必须是账号在浏览器里真实用过的那一串 s_v_web_id，自己拼不算数。
+// [参数] deviceID: 设备标识；webID: web 会话标识；fp: 设备指纹（账号真实 s_v_web_id，可空）。
 // [返回] 编码后的 query 字符串。
-// 最近修改时间：2026-11-14 01:35:00；改动原因：新增，工作模式客户端参数集。
-func buildClientQuery(deviceID, webID string) string {
+// 最近修改时间：2026-11-15 22:05:00；改动原因：fp 改用账号真实值，不再由 device_id 拼假。
+func buildClientQuery(deviceID, webID, fp string) string {
 	// 1. 账号与渠道：aid 必须是客户端口径，网页端 aid 会被判为非客户端请求。
 	q := url.Values{}
 	q.Set("aid", doubaoClientAID)
@@ -244,10 +253,13 @@ func buildClientQuery(deviceID, webID string) string {
 	q.Set("use-olympus-account", "1")
 	q.Set("version_code", doubaoVersionCode)
 	q.Set("web_platform", "desktop")
-	// 3. 设备级标识：fp / tea_uuid 均派生自 device_id，web_tab_id 每轮换新。
+	// 3. 设备级标识：fp 必须是账号在浏览器里真实用过的 s_v_web_id（缺它会判设备劫持），
+	//    tea_uuid 与 device_id 同源，web_tab_id 每轮换新。
 	q.Set("chromium_version", doubaoClientChromiumVersion)
 	q.Set("device_id", deviceID)
-	q.Set("fp", "verify_"+deviceID)
+	if fp != "" {
+		q.Set("fp", fp)
+	}
 	q.Set("tea_uuid", deviceID)
 	if webID != "" {
 		q.Set("web_id", webID)
@@ -259,9 +271,30 @@ func buildClientQuery(deviceID, webID string) string {
 // clientEndpointURL 拼接客户端形态端点完整 URL。
 // [参数] sa: 账号（提供设备级标识）；path: 端点路径。
 // [返回] 完整 URL。
-// 最近修改时间：2026-11-14 01:35:00；改动原因：新增，工作模式端点地址构造。
+// 最近修改时间：2026-11-15 22:05:00；改动原因：随 query 一并带上账号真实 fp。
 func clientEndpointURL(sa *StoredAuth, path string) string {
-	return doubaoSiteHost + path + "?" + buildClientQuery(deviceIDFor(sa), sa.WebID)
+	return doubaoSiteHost + path + "?" + buildClientQuery(deviceIDFor(sa), sa.WebID, fingerprintOf(sa))
+}
+
+// fingerprintOf 返回账号真实的设备指纹（浏览器 tea SDK 生成的 s_v_web_id）。
+//
+// 为什么不能自己拼：上游对 /chat/completion 做设备级归因，fp 必须与账号在浏览器
+// 里真实用过的那一串一致。2026-11-15 四轮交替实测（全部带真实 session 组）：
+//   - 假 device_id + 格式合法的随机 fp → 710022004 semantic_reasoning；
+//   - 假 device_id + 账号真实 fp        → 出字（device_id 反而是次要的）；
+//   - 复验两次均成功，说明 fp 是这条链路的必需项。
+//
+// 旧实现用 "verify_"+deviceID 拼假 fp，等于每次都告诉上游「这是一台没见过的设备」，
+// 因此自 0.1.2 起面板测试长期报 710022004。老账号没有采集过该字段时返回空串，
+// query 里就不带 fp（退回旧行为），由重新授权补采。
+// [参数] sa: 账号。
+// [返回] 非空时返回 fp；未采集时返回空串。
+// 最近修改时间：2026-11-15 22:05:00；改动原因：新增，统一从账号取真实设备指纹。
+func fingerprintOf(sa *StoredAuth) string {
+	if sa == nil {
+		return ""
+	}
+	return strings.TrimSpace(sa.SVWebID)
 }
 
 // deviceIDFor 返回账号的稳定设备标识，缺失时就地派生并落盘。
@@ -329,13 +362,13 @@ func (e *upstreamError) isAuthFailure() bool {
 
 // isRateLimit 判断错误是否意味着「换一个账号就能继续」。
 //
-// 名字沿用历史叫法，实际语义是「账号级、可换号绕过」：710022004 并不是限流，
-// 而是上游给该账号下发了一次人工语义选图验证码（详见 statusCodeHint 注释）。
-// 两者归到同一类的理由是处理动作一致 —— 冷却该账号、切到其他账号，
-// 直到有人在浏览器里替它把验证码过掉。
+// 名字沿用历史叫法，实际语义是「账号级、可换号绕过」：710022004 不是限流，
+// 而是上游判定该请求的设备指纹与账号在浏览器里真实用过的那一组不一致
+// （详见 statusCodeHint 注释）。归到同一类的理由是处理动作一致 —— 冷却该账号、
+// 切到其他账号，直到有人把该账号的 `s_v_web_id` 采集回来。
 // [参数] 无。
 // [返回] 属于账号级可绕过故障时返回 true。
-// 最近修改时间：2026-11-15 19:05:00；改动原因：补注释说明 710022004 实为人工验证码，分类保留但语义澄清。
+// 最近修改时间：2026-11-15 22:55:00；改动原因：710022004 的真因改为设备指纹不匹配，注释同步。
 func (e *upstreamError) isRateLimit() bool {
 	if e.StatusCode == 429 {
 		return true
@@ -348,17 +381,18 @@ func (e *upstreamError) isRateLimit() bool {
 // 码值来自实测与上游客户端行为：直接回显数字对用户没有意义，
 // 提示里写清「该查什么」。
 //
-// 710022004 的真义是「上游下发了一次人工语义选图验证码」，不是账号风控、
-// 不是环境风险、也不是限流。2026-11-15 深夜用真实 Chrome 驱动网页 UI 取证：
-// SSE 里的 `decision.subtype=semantic_reasoning` 与 `verify_scene=doubao_message_web`
-// 对应页面上弹出的「请选择符合描述的图片并拖拽到下方」验证码，且
-// `decision.log_id` 与验证码面板左下角打印的编号逐字符一致
-// （实测 `2026111518494167B16C48BACA19D0275C`）。网页端能出字是因为有真人点图；
-// 插件没有任何人工环节，因此必须引导用户去浏览器完成一次验证。
-// 验证码有时限（实测第二轮拖拽期间即提示「验证超时」），所以不能靠慢速自动化补救。
+// 710022004 的真义是「登录态是真的，但设备指纹对不上」，不是账号风控、不是环境风险、
+// 也不是限流。上游对 /chat/completion 做设备级归因：`fp`（浏览器 tea SDK 写入的
+// `s_v_web_id`）必须与账号在浏览器里真实用过的那一串一致，否则判定「别人拿着你的
+// 会话在冒充浏览器」。2026-11-15 四象限交替实测：真实 fp + 保留 session 组稳定出字，
+// 假 fp（`"verify_"+deviceID`）即使格式合法也一律 710022004。
+//
+// 历史教训（不要重犯）：0.1.19 曾把成因记到「出站 session Cookie 组」头上，
+// 0.1.20 又记到「人工语义选图验证码」头上，两次都是把 fp 真伪与另一个变量混在一起
+// 做对照得出的。0.1.21 起两条一起改：fp 改用账号真实 `s_v_web_id`，session 组恢复出站。
 // [参数] code: 上游业务码；desc: 上游原始描述（可空）。
 // [返回] 中文提示。
-// 最近修改时间：2026-11-15 19:05:00；改动原因：按网页 UI 取证结论改写 710022004 / 710022002 文案，改为引导人工过验证码，并补 710022013 的实测说明。
+// 最近修改时间：2026-11-15 22:55:00；改动原因：710022004 / 710022002 的成因改为设备指纹不匹配，撤销上一版「人工验证码」口径。
 func statusCodeHint(code int, desc string) string {
 	// 1. 已知业务码给可操作提示：区分「换账号可恢复」与「请求本身有问题」。
 	switch code {
@@ -367,9 +401,9 @@ func statusCodeHint(code int, desc string) string {
 	case 710012001, 710012000:
 		return "登录态已失效，请在面板重新导入 Cookie"
 	case 710022004, 710022005:
-		return "上游要求人工完成一次「语义选图」验证码（semantic_reasoning），与账号密码、Cookie、网络都无关：请在浏览器打开 www.doubao.com 用同一账号登录并随便发一条消息，按页面弹出的九宫格提示把符合条件的图片拖到下方「拖拽到这里」后提交，验证通过后本插件即可继续使用"
+		return "上游判定该账号的设备指纹与浏览器里真实用过的那一组不一致（semantic_reasoning），不是账号风控也不是限流：请重新点一次授权书签，让插件采集到该账号的 s_v_web_id；老账号没有这个值时请求不带 fp，会被持续拒绝"
 	case 710022002:
-		return "上游对同一账号的请求过快，也常与上一次未完成的人机验证同时出现：等待 1~2 分钟再试，或在浏览器用该账号发一条消息完成可能弹出的验证码"
+		return "上游拒绝了这次请求：常见原因是该账号未采集 s_v_web_id（fp 缺失）、或短时间内重复请求过多。请重新点一次授权书签补采设备指纹，并等待 1~2 分钟再试"
 	case -1:
 		return "上游判定输入协议异常（delegated input protocol violation）；实测多由工作模式 agent_mode=1 触发，请改用技能模式或等待上游恢复"
 	case 710020202:

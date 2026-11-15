@@ -34,27 +34,14 @@ const warmUpTimeout = 8 * time.Second
 // 与 credentials.go 的必需字段口径一致：任一存在且未过期即视为会话仍在。
 // 全部缺失说明用户已登出或会话被上游回收，此时应上报「待重新授权」。
 //
-// 注意：这组名字同时是**禁止发往 www.doubao.com 的黑名单**（见
-// blockedHostCookieNames）。判据端点要它们，对话端点见它们就拒，两个口径必须分开。
+// 这组名字只用于「登录态是否还在」的判定，**不再参与出站过滤**：0.1.19 曾把
+// 它们当黑名单从推理请求里剔除，2026-11-15 四象限交替实测证明那是错的
+// （见 Cookies 注释），0.1.21 起恢复原样出站。
 var sessionCookieNames = []string{"sessionid", "sessionid_ss", "sid_tt", "sid_guard"}
 
-// blockedHostCookieNames 是绝不能出现在 www.doubao.com 请求里的 Cookie 名。
+// fallbackSessionCookieName 是 Jar 缺少站点访客 Cookie 时用于替代的公共 Cookie 名。
 //
-// 实测（2026-11-15，生产机房 IP + Chrome uTLS 指纹 + 真实网页版 body，无签名）：
-//   - 浏览器自己发往 /chat/completion 的 12 条 Cookie 里**没有任何一条** session 组；
-//   - 只要往这 12 条里加入 sessionid / sessionid_ss / sid_tt / sid_guard 任意一条，
-//     上游立刻回 710022004 rate limited，decision.subtype=semantic_reasoning；
-//   - 逐一删除 24 条里的单条 session Cookie 仍是 710022004，删满这 4 条才恢复出字。
-//
-// 也就是说：这四条是「账号持有登录态的凭据」，一旦随推理请求发出去，风控就把
-// 请求判定成「脚本拿着网页会话在冒充浏览器」，与账号是否健康无关。因此 Jar 在
-// 发往站点域名时必须过滤它们，仅在判据/令牌端点（accounts.doubao.com）保留。
-var blockedHostCookieNames = []string{"sessionid", "sessionid_ss", "sid_tt", "sid_guard"}
-
-// fallbackSessionCookieName 是无会话 Cookie 时用于替代的公共 Cookie 名。
-//
-// 去掉 4 条 session 后如果什么都不补，请求会拿到空响应（实测 0.16s、零事件）；
-// 只补 ttwid 即可稳定出字（STREAM_CHUNK 14~15），补 s_v_web_id 单独无效。
+// 站点首页会下发 ttwid；新账号的凭据里通常没有它，预热一次即可补上。
 const fallbackSessionCookieName = "ttwid"
 
 // savedCookie 是 Jar 中一条被持久化的 Cookie。
@@ -98,34 +85,37 @@ func newDurableJar() *durableJar {
 
 // Cookies 返回对指定 URL 生效的 Cookie（委托标准 Jar）。
 //
-// 发往站点域名时过滤掉 session 组：这四条会让 /chat/completion 被判
-// 710022004 semantic_reasoning（依据见 blockedHostCookieNames 注释）。
+// 站点域名缺站点访客 Cookie（ttwid）时补一条：新账号凭据里通常没有它，
+// 少这条会让推理请求拿到空响应（实测 0.16s、零事件）。
+//
+// 这里**不过滤 session 组**。0.1.19 曾把 sessionid / sessionid_ss / sid_tt /
+// sid_guard 当黑名单剔除，依据是「带上就回 710022004」；2026-11-15 四象限
+// 交替实测推翻了那个对照：真正让请求被判风控的是 fp 用了插件自己拼的假值
+// （见 protocol.go 的 fingerprintOf），会话组反而是出字的必要条件。当时的
+// 消融把两个变量混在一起改，所以把「假 fp」的锅记到了 session 组头上。
 // [参数] u: 目标 URL。
 // [返回] 生效的 Cookie 列表。
-// 最近修改时间：2026-11-15 15:52:00；改动原因：新增站点域名的会话 Cookie 过滤。
+// 最近修改时间：2026-11-15 22:10:00；改动原因：取消 session 组出站过滤，只保留 ttwid 兜底。
 func (j *durableJar) Cookies(u *url.URL) []*http.Cookie {
 	cookies := j.base.Cookies(u)
 	if u == nil || !isSiteHost(u.Hostname()) {
 		return cookies
 	}
-	// 1. 站点域名先剔除 session 组，再确认替代会话 Cookie 是否还在。
-	filtered := filterHostCookies(cookies)
-	// 2. 过滤后若一条 ttwid 都没有，补一条：实测只删不补会拿到空响应（0.16s、零事件），
-	//    这种静默失败比报错更难查，因此即使过滤结果为空也要走兜底。
-	if !hasFallbackSessionCookie(filtered) {
-		filtered = j.withFallbackCookie(filtered)
+	// 1. 站点域名确认替代会话 Cookie 是否还在，不在就补一条。
+	if !hasFallbackSessionCookie(cookies) {
+		cookies = j.withFallbackCookie(cookies)
 	}
-	return filtered
+	return cookies
 }
 
-// withFallbackCookie 在出站 Cookie 里补一条替代会话的公共 Cookie。
+// withFallbackCookie 在出站 Cookie 里补一条站点访客 Cookie（ttwid）。
 //
-// 依据（2026-11-15 实测）：账号 11 条 Cookie 去掉 4 条 session 后直接请求，
-// 生产端 0.16s 返回零事件；补一条 ttwid 即稳定出字。ttwid 由站点自己下发，
-// 不在账号凭据里时从 Jar 的其它记录中借用同名值。
-// [参数] cookies: 已过滤的 Cookie 列表。
-// [返回] 补入 ttwid 后的列表。
-// 最近修改时间：2026-11-15 15:52:00；改动原因：新增，替代会话 Cookie 兜底。
+// 依据（2026-11-15 实测）：账号凭据里通常没有 ttwid（它是站点首页下发的访客
+// Cookie），缺这条时推理请求会拿到零事件的空响应；从 Jar 的其它记录里借用
+// 同名值补上即可恢复出字。
+// [参数] cookies: 当前生效的 Cookie 列表。
+// [返回] 补入 ttwid 后的列表（无可用值时原样返回）。
+// 最近修改时间：2026-11-15 22:10:00；改动原因：注释口径同步，兜底本身不变。
 func (j *durableJar) withFallbackCookie(cookies []*http.Cookie) []*http.Cookie {
 	j.mu.Lock()
 	value := ""
@@ -148,7 +138,7 @@ func (j *durableJar) withFallbackCookie(cookies []*http.Cookie) []*http.Cookie {
 // isSiteHost 判断主机名是否属于业务站点（www.doubao.com）。
 // [参数] host: URL 的 Hostname()。
 // [返回] 属于站点域名时返回 true。
-// 最近修改时间：2026-11-15 15:52:00；改动原因：新增，站点域名判别，供 Cookie 过滤分流。
+// 最近修改时间：2026-11-15 22:10:00；改动原因：注释口径同步，判定本身不变。
 func isSiteHost(host string) bool {
 	return strings.EqualFold(strings.TrimPrefix(host, "."), strings.TrimPrefix(siteHostname, "."))
 }
@@ -160,12 +150,12 @@ var siteWarmUpOverride string
 // warmUpFallbackCookie 在 Jar 缺少 ttwid 时先访问一次站点首页把它取回来。
 //
 // 为什么要这一步：推理请求必须带一条 ttwid 才会出字（依据见
-// blockedHostCookieNames 注释）。账号凭据里通常没有它，因为它是站点首页
+// fallbackSessionCookieName 注释）。账号凭据里通常没有它，因为它是站点首页
 // 下发的访客 Cookie。这里用同一份凭据访问 /chat/ 让上游下发，再落入 Jar，
 // 随后的 persist 会把它一并写回账号文件，下一次就不必再预热。
 // [参数] jar: 目标 Jar；timeout: 单次请求超时。
 // [返回] 预热错误；已有 ttwid 或预热失败时返回 nil（不阻断主链路）。
-// 最近修改时间：2026-11-15 15:56:00；改动原因：新增，自动补齐替代会话 Cookie。
+// 最近修改时间：2026-11-15 22:10:00；改动原因：注释口径同步，行为不变。
 func warmUpFallbackCookie(jar *durableJar, timeout time.Duration) error {
 	if jar == nil || jar.hasFallbackCookie() {
 		return nil
@@ -332,44 +322,6 @@ func isSessionCookieName(name string) bool {
 		}
 	}
 	return false
-}
-
-// isBlockedHostCookieName 判断 Cookie 是否禁止发往站点域名。
-// [参数] name: Cookie 名。
-// [返回] 属于黑名单时返回 true。
-// 最近修改时间：2026-11-15 15:52:00；改动原因：新增，站点域名 Cookie 黑名单判定。
-func isBlockedHostCookieName(name string) bool {
-	for _, n := range blockedHostCookieNames {
-		if strings.EqualFold(name, n) {
-			return true
-		}
-	}
-	return false
-}
-
-// filterHostCookies 剔除发往站点域名时会导致风控的 Cookie。
-//
-// 为什么要在出站前过滤而不是在导入时丢弃：判据端点（accounts.doubao.com）
-// 与令牌兑换都必须带 session 组才能识别账号身份，只有 /chat/completion 这条
-// 推理链路不能带。故保留在 Jar 里、只在这一条链路的出站 Cookie 上剔除。
-// [参数] cookies: Jar 为该 URL 选出的 Cookie。
-// [返回] 过滤后的 Cookie（原切片无被剔除项时原样返回）。
-// 最近修改时间：2026-11-15 15:52:00；改动原因：新增，推理出站 Cookie 过滤。
-func filterHostCookies(cookies []*http.Cookie) []*http.Cookie {
-	if len(cookies) == 0 {
-		return cookies
-	}
-	out := make([]*http.Cookie, 0, len(cookies))
-	for _, c := range cookies {
-		if isBlockedHostCookieName(c.Name) {
-			continue
-		}
-		out = append(out, c)
-	}
-	if len(out) == len(cookies) {
-		return cookies
-	}
-	return out
 }
 
 // hasFallbackSessionCookie 判断导出 Cookie 里是否已含替代会话的公共 Cookie。

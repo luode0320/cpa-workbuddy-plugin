@@ -547,6 +547,15 @@ const callbackErrorHeader = "X-Doubao-Error"
 // 采集会让用户重复操作。
 const callbackMsTokenHeader = "X-Doubao-MsToken"
 
+// callbackSVWebIDHeader 是回调页同源回传设备指纹时使用的请求头。
+//
+// s_v_web_id 是豆包页面 tea SDK 写下的设备级 Cookie，值形如
+// verify_<14位>_<22位>_<4位>_<4位>_<4位>_<10位>。上游对 /chat/completion
+// 做设备级归因：请求 query 里的 fp 必须与账号在浏览器里真实用过的那一串
+// 一致，否则稳定回 710022004 semantic_reasoning（带 session 组）或
+// 710022002（不带）。插件自己拼不出它，只能在授权时从页面 Cookie 里读。
+const callbackSVWebIDHeader = "X-Doubao-SVWebID"
+
 // handleLoginCallback 处理授权脚本回传的令牌。
 //
 // 脚本在豆包页面取到 x-tt-token 后跳到本路径，令牌放在 URL fragment 里。
@@ -574,6 +583,7 @@ func handleLoginCallback(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 	token := strings.TrimSpace(req.Headers.Get(callbackTokenHeader))
 	upstreamErr := strings.TrimSpace(req.Headers.Get(callbackErrorHeader))
 	msToken := strings.TrimSpace(req.Headers.Get(callbackMsTokenHeader))
+	svWebID := strings.TrimSpace(req.Headers.Get(callbackSVWebIDHeader))
 
 	// 首次打开：服务端拿不到 fragment，先返回接收页。
 	if token == "" && upstreamErr == "" {
@@ -614,24 +624,31 @@ func handleLoginCallback(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 			"message": errSave.Error(),
 		})
 	}
-	// 落盘后再补 msToken：兑换令牌时还拿不到它，而它是请求签名的必需项。
-	// 写失败不阻断授权——账号本身可用，只是请求会退回未签名分支。
+	// 落盘后再补页面侧才拿得到的字段：兑换令牌时还拿不到它们。
+	//   - msToken 是请求签名的必需项，缺了会退回未签名分支；
+	//   - s_v_web_id 是设备指纹，缺了会被上游按「陌生设备」判风控。
+	// 写失败不阻断授权——账号本身可用，只是对应能力降级。
 	if msToken != "" {
 		sa.MsToken = msToken
+	}
+	if svWebID != "" {
+		sa.SVWebID = svWebID
+	}
+	if msToken != "" || svWebID != "" {
 		sa.UpdatedAt = time.Now().Format(time.RFC3339)
 		// 目标路径必须重新向宿主解析：saveFromToken 刚落盘时宿主可能还没把物理
-		// 路径回填给这个结构体，沿用旧值会把 ms_token 写进插件本地副本，而面板
+		// 路径回填给这个结构体，沿用旧值会把新增字段写进插件本地副本，而面板
 		// 读的是宿主凭据目录里那一份——表现为「授权成功但签名始终未采集」。
 		targetPath := resolveAuthFilePath(sa.AuthID, sa.PhysicalPath)
 		if errWrite := writeAuthFileDirect(targetPath, sa); errWrite != nil {
-			log.Printf("[doubao] save ms_token failed for %s: %v", sa.AuthID, errWrite)
+			log.Printf("[doubao] save login extras failed for %s: %v", sa.AuthID, errWrite)
 		} else {
-			log.Printf("[doubao] ms_token saved for %s (len=%d, path=%s)", sa.AuthID, len(msToken), sa.PhysicalPath)
+			log.Printf("[doubao] login extras saved for %s (ms_token_len=%d, fp_len=%d, path=%s)", sa.AuthID, len(msToken), len(svWebID), sa.PhysicalPath)
 		}
 	} else {
-		// 缺 msToken 时不该静默：0.1.16 之前拖进书签栏的书签不会采集它，
+		// 缺字段时不该静默：0.1.16 之前拖进书签栏的书签不会采集它们，
 		// 用户只会在面板看到「未采集」却不知道为什么。
-		log.Printf("[doubao] ms_token missing for %s: 授权脚本未回传（多半是书签栏里仍挂着 0.1.16 之前的旧书签）", sa.AuthID)
+		log.Printf("[doubao] login extras missing for %s: 授权脚本未回传（多半是书签栏里仍挂着旧版书签）", sa.AuthID)
 	}
 
 	if !strict {
@@ -687,13 +704,14 @@ func loginCallbackShell(state, detail string) pluginapi.ManagementResponse {
 	// 宽松模式（面板 / 固定书签）没有 state：不带该参数，服务端按无会话导入处理。
 	b.WriteString("var IMPORT=\"/v0/resource/plugins/" + providerName + callbackPath + "\"+(STATE?\"?state=\"+encodeURIComponent(STATE):\"\");")
 	b.WriteString("var p=new URLSearchParams(location.hash.replace(/^#/,\"\"));")
-	b.WriteString("var token=p.get(\"token\")||\"\";var err=p.get(\"err\")||\"\";var mst=p.get(\"mst\")||\"\";")
+	b.WriteString("var token=p.get(\"token\")||\"\";var err=p.get(\"err\")||\"\";var mst=p.get(\"mst\")||\"\";var svw=p.get(\"svw\")||\"\";")
 	b.WriteString("var box=document.getElementById(\"result\");")
 	b.WriteString("function show(text,cls){box.className=cls;box.textContent=text}")
 	b.WriteString("if(!token&&!err){show(\"未收到授权令牌，请回到管理页重新发起授权。\",\"err\")}else{")
 	b.WriteString("  var headers={};")
 	b.WriteString("  if(token){headers[\"" + callbackTokenHeader + "\"]=token}else{headers[\"" + callbackErrorHeader + "\"]=err}")
 	b.WriteString("  if(mst){headers[\"" + callbackMsTokenHeader + "\"]=mst}")
+	b.WriteString("  if(svw){headers[\"" + callbackSVWebIDHeader + "\"]=svw}")
 	b.WriteString("  fetch(IMPORT,{method:\"GET\",cache:\"no-store\",headers:headers})")
 	b.WriteString("    .then(function(res){return res.json()})")
 	b.WriteString("    .then(function(d){")
@@ -947,12 +965,14 @@ func firstHeaderValue(raw string) string {
 // 显式设为 include：默认策略下不一定自动携带）。取到 x-tt-token 后跳转插件
 // 回调页；失败时把上游 message 一并带回，让回调页能显示可读原因。
 //
-// 同一次执行还要顺手带走 localStorage.xmst：它是 /chat/completion 必需的
-// msToken（有效期 7 天），插件自己换不出来（需要设备侧加密串），只能借助
-// 用户浏览器已有的值。
+// 同一次执行还要顺手带走两个页面侧才有的值：
+//   - localStorage.xmst：/chat/completion 必需的 msToken（有效期 7 天）；
+//   - Cookie 里的 s_v_web_id：设备指纹，插件自己拼不出（见 callbackSVWebIDHeader）。
+//
+// 两者都只能借助用户浏览器已有的值，因此随令牌一次回传。
 // [参数] state: 授权会话标识。
 // [返回] 可粘贴执行的 JS 源码（含待替换的 origin 占位符）。
-// 最近修改时间：2026-11-15 01:10:00；改动原因：随令牌一起采集 msToken。
+// 最近修改时间：2026-11-15 22:20:00；改动原因：随令牌一起采集设备指纹 s_v_web_id。
 func buildAuthScript(state string) string {
 	callback := "/v0/resource/plugins/" + providerName + callbackPath
 	var b strings.Builder
@@ -962,6 +982,7 @@ func buildAuthScript(state string) string {
 	b.WriteString("  const j=await r.json().catch(()=>({}));\n")
 	b.WriteString("  const t=r.headers.get('x-tt-token');\n")
 	b.WriteString("  const ms=(()=>{try{return localStorage.getItem('xmst')||''}catch(e){return ''}})();\n")
+	b.WriteString("  const svw=(()=>{try{const m=document.cookie.match(/(?:^|;\\s*)s_v_web_id=([^;]*)/);return m?decodeURIComponent(m[1]):''}catch(e){return ''}})();\n")
 	b.WriteString("  const cb='")
 	b.WriteString(cpaOriginPlaceholder)
 	b.WriteString(callback)
@@ -973,7 +994,7 @@ func buildAuthScript(state string) string {
 	}
 	b.WriteString("';\n")
 	b.WriteString("  if(!t){location.href=cb+'#err='+encodeURIComponent((j&&j.data&&j.data.description)||(j&&j.message)||'no_token');return;}\n")
-	b.WriteString("  location.href=cb+'#token='+encodeURIComponent(t)+'&mst='+encodeURIComponent(ms);\n")
+	b.WriteString("  location.href=cb+'#token='+encodeURIComponent(t)+'&mst='+encodeURIComponent(ms)+'&svw='+encodeURIComponent(svw);\n")
 	b.WriteString("})()")
 	return b.String()
 }
@@ -994,10 +1015,10 @@ func jsStringEscape(s string) string {
 // 一点即完成」的关键。代价是落盘结果无法直接回传给宿主弹窗（没有会话可
 // 登记），因此由 adoptPendingLoginSession 在服务端认领最近的待完成会话。
 //
-// 与 buildAuthScript 一样，顺手带上 localStorage.xmst 作为 msToken。
+// 与 buildAuthScript 一样，顺手带上 localStorage.xmst 与 s_v_web_id。
 // [参数] 无。
 // [返回] javascript: 开头的单行脚本（含待替换的 origin 占位符）。
-// 最近修改时间：2026-11-15 01:10:00；改动原因：随令牌一起采集 msToken。
+// 最近修改时间：2026-11-15 22:20:00；改动原因：随令牌一起采集设备指纹 s_v_web_id。
 func buildBookmarkletScript() string {
 	callback := "/v0/resource/plugins/" + providerName + callbackPath
 	var b strings.Builder
@@ -1008,10 +1029,11 @@ func buildBookmarkletScript() string {
 	b.WriteString("const t=r.headers.get('x-tt-token');")
 	b.WriteString("if(!t){alert('未检测到豆包登录态：'+(((j&&j.data&&j.data.description)||(j&&j.message))||'请先在本页完成登录'));return}")
 	b.WriteString("const ms=(()=>{try{return localStorage.getItem('xmst')||''}catch(e){return ''}})();")
+	b.WriteString("const svw=(()=>{try{const m=document.cookie.match(/(?:^|;\\s*)s_v_web_id=([^;]*)/);return m?decodeURIComponent(m[1]):''}catch(e){return ''}})();")
 	b.WriteString("location.href='")
 	b.WriteString(cpaOriginPlaceholder)
 	b.WriteString(callback)
-	b.WriteString("#token='+encodeURIComponent(t)+'&mst='+encodeURIComponent(ms)")
+	b.WriteString("#token='+encodeURIComponent(t)+'&mst='+encodeURIComponent(ms)+'&svw='+encodeURIComponent(svw)")
 	b.WriteString("}catch(e){alert('取令牌失败：'+e)}})()")
 	return b.String()
 }

@@ -12,7 +12,7 @@ import (
 // workTestAccount 构造一份工作模式测试账号（值为假数据）。
 // [参数] 无。
 // [返回] 账号指针。
-// 最近修改时间：2026-11-14 03:50:00；改动原因：新增，工作模式用例共用账号。
+// 最近修改时间：2026-11-15 22:32:00；改动原因：补设备指纹，覆盖 fp 透传路径。
 func workTestAccount() *StoredAuth {
 	return &StoredAuth{
 		Type:         providerName,
@@ -22,6 +22,7 @@ func workTestAccount() *StoredAuth {
 		BotID:        defaultBotID,
 		DeviceID:     "7300000000000000001",
 		WebID:        "7300000000000000002",
+		SVWebID:      testSVWebID,
 	}
 }
 
@@ -184,9 +185,14 @@ func TestWorkModePermissionsDiffersFromWeb(t *testing.T) {
 // 会让上游按网页端解析请求体，工作模式字段被静默忽略。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-14 03:50:00；改动原因：新增，客户端参数集回归。
+// 最近修改时间：2026-11-15 22:15:00；改动原因：fp 改为账号真实值透传，断言同步。
 func TestBuildClientQueryIsClientShaped(t *testing.T) {
-	values, errParse := url.ParseQuery(buildClientQuery("7300000000000000001", "7300000000000000002"))
+	const (
+		deviceID = "7300000000000000001"
+		webID    = "7300000000000000002"
+		realFP   = "verify_mw0wsekp_ccwh9CR4_Zdvn_4DXn_9y0B_qJcT8bxtinwc"
+	)
+	values, errParse := url.ParseQuery(buildClientQuery(deviceID, webID, realFP))
 	if errParse != nil {
 		t.Fatalf("query 应为合法编码：%v", errParse)
 	}
@@ -201,10 +207,10 @@ func TestBuildClientQueryIsClientShaped(t *testing.T) {
 		"runtime":                "web",
 		"runtime_version":        doubaoClientRuntimeVersion,
 		"chromium_version":       doubaoClientChromiumVersion,
-		"device_id":              "7300000000000000001",
-		"fp":                     "verify_7300000000000000001",
-		"tea_uuid":               "7300000000000000001",
-		"web_id":                 "7300000000000000002",
+		"device_id":              deviceID,
+		"fp":                     realFP,
+		"tea_uuid":               deviceID,
+		"web_id":                 webID,
 	}
 	for key, expect := range want {
 		if got := values.Get(key); got != expect {
@@ -219,13 +225,30 @@ func TestBuildClientQueryIsClientShaped(t *testing.T) {
 	}
 }
 
+// TestBuildClientQueryOmitsFPWhenAbsent 校验未采集 fp 时不写空参数。
+//
+// 老账号没有 s_v_web_id；此时宁可少一个参数，也不要发一个空 fp 让上游
+// 把它当成「设备指纹为空」再判一次风控。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-15 22:15:00；改动原因：新增，未采集 fp 的降级回归。
+func TestBuildClientQueryOmitsFPWhenAbsent(t *testing.T) {
+	values, errParse := url.ParseQuery(buildClientQuery("7300000000000000001", "", ""))
+	if errParse != nil {
+		t.Fatalf("query 应为合法编码：%v", errParse)
+	}
+	if _, found := values["fp"]; found {
+		t.Errorf("未采集 fp 时不应出现 fp 参数，实际 %q", values.Get("fp"))
+	}
+}
+
 // TestBuildClientQueryRotatesTabID 校验 web_tab_id 每次请求都换新。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-14 03:50:00；改动原因：新增，标签页标识轮换回归。
+// 最近修改时间：2026-11-15 22:15:00；改动原因：调用签名随 fp 参数同步。
 func TestBuildClientQueryRotatesTabID(t *testing.T) {
-	first, _ := url.ParseQuery(buildClientQuery("7300000000000000001", ""))
-	second, _ := url.ParseQuery(buildClientQuery("7300000000000000001", ""))
+	first, _ := url.ParseQuery(buildClientQuery("7300000000000000001", "", ""))
+	second, _ := url.ParseQuery(buildClientQuery("7300000000000000001", "", ""))
 	if first.Get("web_tab_id") == second.Get("web_tab_id") {
 		t.Error("web_tab_id 每次请求必须换新 UUID")
 	}
@@ -318,6 +341,55 @@ func TestDeviceIDForIsStable(t *testing.T) {
 	present := &StoredAuth{AuthID: doubaoAuthFilePrefix + "dev2", CookieHeader: validCookieHeader, DeviceID: "7300000000000000009"}
 	if got := deviceIDFor(present); got != "7300000000000000009" {
 		t.Errorf("已有设备号不应被改写，实际 %q", got)
+	}
+}
+
+// TestEndpointURLCarriesRealFingerprint 校验两条管线的 URL 都带上账号真实 fp。
+//
+// 这是 0.1.21 的核心回归点：fp 一旦退回 "verify_"+deviceID 的假值，请求会被
+// 上游按陌生设备判风控，稳定回 710022004 / 710022002（见 fingerprintOf 注释）。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-15 22:34:00；改动原因：新增，fp 透传回归。
+func TestEndpointURLCarriesRealFingerprint(t *testing.T) {
+	sa := workTestAccount()
+
+	workURL := clientEndpointURL(sa, "/chat/completion")
+	if !strings.Contains(workURL, "fp="+url.QueryEscape(testSVWebID)) {
+		t.Errorf("工作模式 URL 必须带账号真实 fp，实际 %s", workURL)
+	}
+	if strings.Contains(workURL, "verify_"+sa.DeviceID) {
+		t.Errorf("工作模式 URL 不得再出现由 device_id 拼出的假 fp，实际 %s", workURL)
+	}
+
+	webURL := endpointURL(sa, "/chat/completion", nil)
+	if !strings.Contains(webURL, "fp="+url.QueryEscape(testSVWebID)) {
+		t.Errorf("网页模式 URL 必须带账号真实 fp，实际 %s", webURL)
+	}
+
+	// 老账号没有采集过 fp：两条管线都应省略该参数，而不是发一个空值。
+	bare := &StoredAuth{AuthID: doubaoAuthFilePrefix + "nofp", CookieHeader: validCookieHeader, DeviceID: "7300000000000000003"}
+	if got := clientEndpointURL(bare, "/chat/completion"); strings.Contains(got, "fp=") {
+		t.Errorf("未采集 fp 时不应出现 fp 参数，实际 %s", got)
+	}
+	if got := endpointURL(bare, "/chat/completion", nil); strings.Contains(got, "fp=") {
+		t.Errorf("未采集 fp 时不应出现 fp 参数，实际 %s", got)
+	}
+}
+
+// TestFingerprintOfReadsAccountField 校验 fp 只从账号字段读，不做任何派生。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-15 22:34:00；改动原因：新增，设备指纹取值口径回归。
+func TestFingerprintOfReadsAccountField(t *testing.T) {
+	if got := fingerprintOf(nil); got != "" {
+		t.Errorf("空账号应返回空串，实际 %q", got)
+	}
+	if got := fingerprintOf(&StoredAuth{DeviceID: "7300000000000000001"}); got != "" {
+		t.Errorf("未采集时应返回空串，不能拿 device_id 顶替，实际 %q", got)
+	}
+	if got := fingerprintOf(&StoredAuth{SVWebID: "  " + testSVWebID + "  "}); got != testSVWebID {
+		t.Errorf("应返回去空白后的账号值，实际 %q", got)
 	}
 }
 

@@ -157,7 +157,7 @@ func TestSaveFromTokenWritesAccount(t *testing.T) {
 // TestBuildBookmarkletScriptKeepOriginPlaceholder 校验书签保留 origin 占位符。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-14；改动原因：新增，书签必须能在任意域名下复用。
+// 最近修改时间：2026-11-15 22:40:00；改动原因：脚本新增读取 s_v_web_id，Cookie 断言口径同步。
 func TestBuildBookmarkletScriptKeepOriginPlaceholder(t *testing.T) {
 	script := buildBookmarkletScript()
 	if !strings.HasPrefix(script, "javascript:") {
@@ -172,8 +172,36 @@ func TestBuildBookmarkletScriptKeepOriginPlaceholder(t *testing.T) {
 	if !strings.Contains(script, callbackPath) {
 		t.Fatalf("书签必须跳回回调路径 %q", callbackPath)
 	}
-	if strings.Contains(script, "cookie") && !strings.Contains(script, "credentials") {
-		t.Fatal("书签不应读取或上传 Cookie")
+	// 只允许从 document.cookie 里取设备指纹 s_v_web_id：它是推理链路的必需项，
+	// 插件自己拼不出。会话 Cookie（sessionid 等）一律不得读取或上传。
+	if strings.Contains(script, "document.cookie") && !strings.Contains(script, "s_v_web_id") {
+		t.Fatal("读取 document.cookie 只能是为了取 s_v_web_id")
+	}
+	for _, forbidden := range []string{"sessionid", "sid_tt", "sid_guard"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("书签不应读取会话 Cookie %q", forbidden)
+		}
+	}
+}
+
+// TestBuildAuthScriptCarriesFingerprint 校验两个脚本都回传设备指纹。
+//
+// s_v_web_id 只在页面上下文可得；采集不到会让推理请求退回「陌生设备」分支，
+// 因此必须在授权时随令牌一起带走。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-15 22:40:00；改动原因：新增，设备指纹采集回归。
+func TestBuildAuthScriptCarriesFingerprint(t *testing.T) {
+	for name, script := range map[string]string{
+		"一次性脚本": buildAuthScript("state-abc"),
+		"固定书签":  buildBookmarkletScript(),
+	} {
+		if !strings.Contains(script, "s_v_web_id") {
+			t.Fatalf("%s 必须读取 s_v_web_id，实际 %q", name, truncateForTest(script))
+		}
+		if !strings.Contains(script, "svw=") {
+			t.Fatalf("%s 必须把设备指纹带回回调页，实际 %q", name, truncateForTest(script))
+		}
 	}
 }
 

@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.1.21 (2026-11-15)
+
+### 修复
+
+- **推理请求被判风控的真因是设备指纹：`fp` 用了插件自己拼的假值**。上游对
+  `/chat/completion` 做设备级归因，`fp`（浏览器 tea SDK 写入的 `s_v_web_id`）
+  必须与账号在浏览器里真实用过的那一串一致。旧实现用 `"verify_"+deviceID`
+  拼假指纹，等于每次请求都在告诉上游「这是一台没见过的设备」，
+  因此自 0.1.2 起面板测试长期报 `710022004 semantic_reasoning`。
+  现改为从账号字段 `s_v_web_id` 读取真实指纹，两条 query 管线
+  （网页口径 `buildBusinessQuery` 与客户端口径 `buildClientQuery`）都带上它。
+- **撤销 0.1.19 的 session 组出站过滤**。0.1.19 把 `sessionid` / `sessionid_ss` /
+  `sid_tt` / `sid_guard` 当黑名单从推理请求里剔除，依据是「带上就回 `710022004`」。
+  2026-11-15 四象限交替实测推翻了那个对照：真正让请求被判风控的是假 `fp`，
+  会话组反而是出字的必要条件。当时的消融把「fp 真伪」与「有无会话组」两个变量
+  混在一起改，所以把假 `fp` 的锅记到了会话组头上。现在会话组恢复原样出站，
+  只保留「Jar 缺站点访客 Cookie 时补一条 `ttwid`」的兜底。
+
+### 新增
+
+- **授权链路采集设备指纹**。`s_v_web_id` 只在页面上下文可得，插件无法自行生成：
+  `X-Doubao-SVWebID` 请求头 + 回调页 `svw` 片段 + `buildAuthScript` /
+  `buildBookmarkletScript` 里的 `document.cookie` 读取，一并把值带回并写入账号文件
+  （`StoredAuth.SVWebID`，JSON 键 `s_v_web_id`）。
+  老账号没有该字段时 query 不带 `fp`（退回旧行为），重新点一次授权书签即可补采。
+
+### 验证
+
+- 四轮交替消融（全部保留真实 session 组，40 秒间隔）：
+
+  | 用例 | `device_id` 等三项 | `fp` | 结果 |
+  | --- | --- | --- | --- |
+  | A | 插件派生假值 | 格式合法的随机串 | `710022004 semantic_reasoning` |
+  | B | 插件派生假值 | 账号真实 `s_v_web_id` | 出字（3.9s / 29 事件） |
+  | C | 浏览器真实值 | 账号真实 `s_v_web_id` | 出字（3.9s / 29 事件） |
+  | D | 插件派生假值 | 账号真实 `s_v_web_id` | 出字（3.7s / 27 事件） |
+
+  → `fp` 是必需项；`device_id` / `web_id` / `tea_uuid` 用插件派生的稳定值即可，
+  `tz_name` 与 `pc_version` 非必需。因此 `deviceIDFor` 的派生逻辑保持不变。
+- 逐项消融（保留 session 组）：只换三个标识不带 `fp` → `710022004`；
+  补上 `fp` → 出字；再加 `tz_name` / `pc_version` → 仍出字。
+- 四象限对照（设备指纹真伪 × 会话组有无）：
+
+  | | 带 session 组 | 无 session 组 |
+  | --- | --- | --- |
+  | 真实 `fp` | 出字 | `710022002` |
+  | 假 `fp` | `710022004 semantic_reasoning` | `710022002` |
+
+- 哨兵 A（把 `fingerprintOf` 改回 `"verify_"+sa.DeviceID`）：
+  `TestEndpointURLCarriesRealFingerprint` 与 `TestFingerprintOfReadsAccountField` 全部失败。
+- 哨兵 B（在 `Cookies` 里重新剔除 session 组）：
+  `TestCookiesKeepsSessionCookiesForSiteHost` 失败并打印缺失的 `"sessionid"`。
+
+### 其它
+
+- `statusCodeHint` 里 `710022004` / `710022002` 的文案同步改口径：从「人工验证码」改为
+  「设备指纹与浏览器不一致 / 未采集 `s_v_web_id`」，并直接给出「重新点一次授权书签」的动作。
+- `protocol.go` 文件头补一条：设备指纹是比 `msToken` / `a_bogus` 更前置的判据；
+  真实 fp 下不带签名也能出字，因此旧的「签名必需」只在假 fp 前提下成立。
+- `isRateLimit` 的分类不变（710022004 / 710022005 / HTTP 429 仍走账号冷却换号），
+  只把注释里的成因从「人工验证码」改成「设备指纹不匹配」。
+
+### 已知上限
+
+- **必须重新授权一次**：`s_v_web_id` 只能从页面采集，未重新授权的账号仍不带 `fp`，
+  依旧是 `710022002`。面板上暂时看不到该字段的采集状态（`signStateOf` 仍只判 `ms_token`）。
+- 假 `device_id` + 真 `fp` 能出字只是当前观测结果，上游若改为强绑定 `device_id`，
+  仍需把 `device_id` / `web_id` / `tea_uuid` 一并改成采集真实值。
+- 0.1.20 把 `710022004` 归因为「人工语义选图验证码」，那是实验方法造成的假象：
+  当时用全新 Chrome profile 注入账号 Cookie，浏览器指纹与账号不匹配才触发验证码；
+  用户日常 profile 从不弹验证码。该段结论作废，以本段为准。
+
 ## 0.1.20 (2026-11-15)
 
 ### 修复

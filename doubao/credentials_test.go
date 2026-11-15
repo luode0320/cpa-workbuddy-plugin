@@ -14,7 +14,13 @@ import (
 )
 
 // validCookieHeader 构造一份字段齐备的 Cookie header（值均为测试假值）。
-const validCookieHeader = "flow_cur_user_sec_id=test_sec_user_handle_value; sessionid=test_session_value; ttwid=test_ttwid_value"
+//
+// 带 s_v_web_id：它是导入时必须原样保留的设备指纹（见 fingerprintOf），
+// 少了它 saveCredentials 的采集分支就没法被真实覆盖到。
+const validCookieHeader = "flow_cur_user_sec_id=test_sec_user_handle_value; sessionid=test_session_value; ttwid=test_ttwid_value; s_v_web_id=" + testSVWebID
+
+// testSVWebID 是测试用的设备指纹，形态与浏览器 tea SDK 生成的一致。
+const testSVWebID = "verify_testdev_xk2DPzRL_IIpP_40qz_97pL_Aqr8m7CPUnXS"
 
 // TestParseCredentialsValid 校验合法 Cookie 的解析结果。
 // [参数] t: 测试上下文。
@@ -194,7 +200,7 @@ func TestAuthIDForStable(t *testing.T) {
 // TestSaveCredentialsWritesFile 校验导入成功后凭据落盘且字段完整。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，导入主链路落盘验证。
+// 最近修改时间：2026-11-15 22:30:00；改动原因：补设备指纹采集断言。
 func TestSaveCredentialsWritesFile(t *testing.T) {
 	dir := t.TempDir()
 	setAccountsDir(dir)
@@ -217,6 +223,10 @@ func TestSaveCredentialsWritesFile(t *testing.T) {
 	if sa.Label != "落盘测试" {
 		t.Errorf("未指定备注名时应回退昵称，实际 %q", sa.Label)
 	}
+	// 设备指纹由凭据就地采集：它是推理链路能否出字的必需项（见 fingerprintOf）。
+	if sa.SVWebID != testSVWebID {
+		t.Errorf("应从凭据采集设备指纹，实际 %q", sa.SVWebID)
+	}
 
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 1 {
@@ -232,6 +242,9 @@ func TestSaveCredentialsWritesFile(t *testing.T) {
 	}
 	if back.BotID == "" {
 		t.Error("落盘文件应带默认 bot_id")
+	}
+	if back.SVWebID != testSVWebID {
+		t.Errorf("落盘文件应保留设备指纹，实际 %q", back.SVWebID)
 	}
 }
 

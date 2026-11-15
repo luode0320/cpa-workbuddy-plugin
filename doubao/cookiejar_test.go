@@ -399,41 +399,41 @@ func TestAuthStateOf(t *testing.T) {
 	}
 }
 
-// TestCookiesFiltersSessionCookiesForSiteHost 校验发往站点域名时剔除 session 组。
+// TestCookiesKeepsSessionCookiesForSiteHost 校验发往站点域名时保留 session 组。
 //
-// 这是 0.1.19 的核心回归点：session 组一旦随推理请求发出，上游稳定回
-// 710022004 semantic_reasoning（生产实测，见 blockedHostCookieNames 注释）。
+// 0.1.21 的回归点：0.1.19 曾把 sessionid / sessionid_ss / sid_tt / sid_guard
+// 当黑名单从推理请求里剔除，导致请求退化成「匿名设备」稳定回 710022002。
+// 2026-11-15 四象限交替实测证明真正的原因是 fp 用了插件自拼的假值，会话组
+// 反而是出字的必要条件，因此这里断言它们必须原样发出去。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-15 15:58:00；改动原因：新增，出站 Cookie 过滤回归。
-func TestCookiesFiltersSessionCookiesForSiteHost(t *testing.T) {
+// 最近修改时间：2026-11-15 22:10:00；改动原因：断言方向翻转，出站不再过滤 session 组。
+func TestCookiesKeepsSessionCookiesForSiteHost(t *testing.T) {
 	j := newDurableJar()
-	j.seedFromHeader("flow_cur_user_sec_id=sec_v; sessionid=s1; sessionid_ss=s2; sid_tt=s3; sid_guard=s4; uid_tt=u1; ttwid=tw_v", doubaoSiteHost+"/")
+	j.seedFromHeader("flow_cur_user_sec_id=sec_v; sessionid=s1; sessionid_ss=s2; sid_tt=s3; sid_guard=s4; uid_tt=u1", doubaoSiteHost+"/")
 
-	siteURL := mustURL(t, doubaoSiteHost+"/chat/completion")
-	got := j.Cookies(siteURL)
 	seen := map[string]bool{}
-	for _, c := range got {
-		if isBlockedHostCookieName(c.Name) {
-			t.Fatalf("发往站点域名时不应带 session 组，实际出现 %q", c.Name)
-		}
+	for _, c := range j.Cookies(mustURL(t, doubaoSiteHost+"/chat/completion")) {
 		seen[c.Name] = true
 	}
-	if !seen["flow_cur_user_sec_id"] || !seen["uid_tt"] {
-		t.Fatalf("非 session Cookie 应保留，实际 %v", seen)
+	for _, name := range []string{"sessionid", "sessionid_ss", "sid_tt", "sid_guard"} {
+		if !seen[name] {
+			t.Fatalf("发往站点域名时必须保留 %q，实际 %v", name, seen)
+		}
 	}
-	if !seen["ttwid"] {
-		t.Fatalf("替代会话 Cookie 应存在，实际 %v", seen)
+	if !seen["flow_cur_user_sec_id"] || !seen["uid_tt"] {
+		t.Fatalf("非 session Cookie 同样应保留，实际 %v", seen)
 	}
 }
 
 // TestCookiesKeepsSessionCookiesForAccountHost 校验判据端点仍能拿到 session 组。
 //
-// 两个端点口径相反：accounts.doubao.com 靠 session 组识别账号身份，
-// 若在导入/判据阶段就把它丢掉，授权会直接失败。
+// 判据端点（accounts.doubao.com）靠 session 组识别账号身份，若在导入/判据阶段
+// 就把它丢掉，授权会直接失败。站点域名与判据域名的选 Cookie 逻辑走同一个 Jar，
+// 这里一并锁定，避免以后为修推理链路把判据链路带坏。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-15 15:58:00；改动原因：新增，判据端点不过滤的回归。
+// 最近修改时间：2026-11-15 22:10:00；改动原因：理由口径同步，断言不变。
 func TestCookiesKeepsSessionCookiesForAccountHost(t *testing.T) {
 	j := newDurableJar()
 	j.seedFromHeader("flow_cur_user_sec_id=sec_v; sessionid=s1; sid_tt=s3", accountInfoHost+"/")
@@ -448,13 +448,13 @@ func TestCookiesKeepsSessionCookiesForAccountHost(t *testing.T) {
 	}
 }
 
-// TestCookiesInjectsFallbackCookieWhenMissing 校验缺 ttwid 时补出替代会话 Cookie。
+// TestCookiesInjectsFallbackCookieWhenMissing 校验缺 ttwid 时补出访客 Cookie。
 //
-// 实测只删 session 不补 ttwid 会拿到空响应（0.16s、零事件）；该分支保证
-// 账号凭据里没有 ttwid 时也不会退化成静默失败。
+// 账号凭据里通常没有 ttwid（它是站点首页下发的访客 Cookie）；缺这条时推理
+// 请求会拿到空响应（0.16s、零事件），该分支保证不会退化成静默失败。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-15 15:58:00；改动原因：新增，替代会话 Cookie 兜底回归。
+// 最近修改时间：2026-11-15 22:10:00；改动原因：注释口径同步，断言不变。
 func TestCookiesInjectsFallbackCookieWhenMissing(t *testing.T) {
 	j := newDurableJar()
 	// ttwid 只写在 accounts 域名下，站点域名选不到它，必须由兜底逻辑补出。
@@ -468,14 +468,14 @@ func TestCookiesInjectsFallbackCookieWhenMissing(t *testing.T) {
 		}
 	}
 	if !hasTw {
-		t.Fatalf("缺 ttwid 时应补出替代会话 Cookie，实际 %v", cookieNamesOf(got))
+		t.Fatalf("缺 ttwid 时应补出访客 Cookie，实际 %v", cookieNamesOf(got))
 	}
 }
 
 // TestCookiesSkipsFallbackWhenAlreadyPresent 校验已有 ttwid 时不重复补。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-15 15:58:00；改动原因：新增，重复注入防护回归。
+// 最近修改时间：2026-11-15 22:10:00；改动原因：注释口径同步，断言不变。
 func TestCookiesSkipsFallbackWhenAlreadyPresent(t *testing.T) {
 	j := newDurableJar()
 	j.seedFromHeader("flow_cur_user_sec_id=sec_v; sessionid=s1; ttwid=tw_site", doubaoSiteHost+"/")

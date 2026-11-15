@@ -326,14 +326,16 @@ func TestStreamCompletionUsesPlainJSONContentType(t *testing.T) {
 // 缺参会返回 {"code":0,"data":null}（HTTP 200 但无数据），必须补齐整个常量块。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，query 契约锁定。
+// 最近修改时间：2026-11-15 22:18:00；改动原因：调用签名随 fp 参数同步，并断言 fp 透传。
 func TestBuildBusinessQueryComplete(t *testing.T) {
-	q := buildBusinessQuery("dev-1", "web-1", "tab-1", nil)
+	const realFP = "verify_mw0wsekp_ccwh9CR4_Zdvn_4DXn_9y0B_qJcT8bxtinwc"
+	q := buildBusinessQuery("dev-1", "web-1", "tab-1", realFP, nil)
 	for _, key := range []string{
 		"version_code", "language", "device_platform", "doubao_device_platform",
 		"aid", "real_aid", "pkg_type", "device_id", "pc_version", "doubao_pc_version",
 		"web_id", "tea_uuid", "region", "sys_region", "samantha_web",
 		"web_platform", "use-olympus-account", "web_tab_id", "flow_im_arch",
+		"fp",
 	} {
 		if !strings.Contains(q, key+"=") {
 			t.Errorf("query 缺少必需参数 %s：%s", key, q)
@@ -342,18 +344,25 @@ func TestBuildBusinessQueryComplete(t *testing.T) {
 	if !strings.Contains(q, "tea_uuid=web-1") {
 		t.Errorf("tea_uuid 应与 web_id 同值，实际 %s", q)
 	}
+	if !strings.Contains(q, "fp="+realFP) {
+		t.Errorf("fp 应原样透传账号真实值，实际 %s", q)
+	}
+	// 未采集 fp 时不应出现空参数：空值会被上游当成「设备指纹为空」再判一次风控。
+	if bare := buildBusinessQuery("dev-1", "web-1", "tab-1", "", nil); strings.Contains(bare, "fp=") {
+		t.Errorf("未采集 fp 时不应出现 fp 参数，实际 %s", bare)
+	}
 }
 
 // TestStatusCodeHint 校验上游错误码映射到可操作文案。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-15 19:05:00；改动原因：按网页 UI 取证结论把 710022004 改成「人工验证码」口径、710022002 补验证提示。
+// 最近修改时间：2026-11-15 22:55:00；改动原因：710022004 / 710022002 的成因改为设备指纹不匹配，断言同步。
 func TestStatusCodeHint(t *testing.T) {
 	cases := map[int]string{
 		710012001: "重新导入",
 		710012000: "重新导入",
-		710022004: "验证码",
-		710022002: "请求过快",
+		710022004: "设备指纹",
+		710022002: "s_v_web_id",
 		-1:        "输入协议异常",
 		710020202: "Content-Type",
 		710020702: "重放",
