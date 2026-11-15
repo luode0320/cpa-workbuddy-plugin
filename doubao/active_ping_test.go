@@ -104,7 +104,7 @@ func TestRunActiveTestRejectsStreamError(t *testing.T) {
 		t.Fatalf("错误帧被误判为成功：%+v", res)
 	}
 	msg, _ := res["error"].(string)
-	if !strings.Contains(msg, "上游风控") {
+	if !strings.Contains(msg, "环境风险") {
 		t.Fatalf("错误提示应含可操作说明，实际 %q", msg)
 	}
 }

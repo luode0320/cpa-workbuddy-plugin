@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.1.19 (2026-11-15)
+
+### 修复
+
+- **出站 Cookie 过滤：4 条 session Cookie 会让推理请求被上游判风控**。`sessionid` /
+  `sessionid_ss` / `sid_tt` / `sid_guard` 只要出现在发往 `www.doubao.com` 的请求里，
+  上游就稳定回 `710022004 rate limited` 且 `decision.subtype=semantic_reasoning`，
+  与请求内容无关。插件此前把导入的 Cookie 原样发给所有域名，导致整池账号 100% 失败。
+  现按域名分流：站点域名剔除这 4 条，判据端点（`accounts.doubao.com`）与令牌兑换
+  仍保留（它们靠 session 组识别账号身份）。
+
+### 新增
+
+- **替代会话 Cookie 自动预热**。实测只删 4 条 session 而不补 `ttwid` 会拿到
+  **空响应**（0.16s、零事件），比报错更难排查。`newUpstreamClient` 在播种后检查
+  Jar 是否已有 `ttwid`，没有就 GET 一次 `/chat/` 让站点下发并落盘；
+  失败只记录不阻断，请求仍会发出。
+
+### 验证
+
+- 生产端 uTLS（Chrome 指纹 + HTTP/2）精确消融：24 条全量 → `710022004`；
+  去掉 5 条 session 组 → `TEXT=true STREAM_CHUNK:14`；单条 `sessionid` 加回 12 条
+  → `710022004`。`session_tlb_tag` 单独无害。
+- 修复后插件真实路径出站 Cookie：9 条、`blocked=0`、含 `ttwid`；
+  判据端点仍保留 session 组（`ACCT_COUNT=1` 只含预热得到的 ttwid 属预期，
+  该端点主要看流量而非 Jar 内容）。
+- 生产复测：出站 Cookie 修正前稳定 `710022004 semantic_reasoning`，
+  修正后该错误码**不再出现**，改为 `710022002`（频率限制）或无错误仅心跳。
+- 新增 7 个用例覆盖过滤、判据端点豁免、兜底注入、预热幂等与预热取回；
+  哨兵验证（把 `filterHostCookies` 换成直通）触发 `TestCookiesFiltersSessionCookiesForSiteHost` 失败。
+
+### 已知上限
+
+- 修正后 4 条 session Cookie 不再触发 `semantic_reasoning`，但**单账号短时间多打仍会撞
+  `710022002` 频率阈值**，端到端出字需在冷却窗口内单次请求。
+- 技能模式（`agent_mode=2`）+ 网页 query 在浏览器页面上下文内可稳定出字；
+  裸 HTTP 下仍只到心跳，页面环境以外的判据（未知）尚未完全分离。
+
 ## 0.1.18 (2026-11-15)
 
 ### Fix - 授权回调因判据端点 TLS 握手超时直接失败，一次性令牌被白白消耗

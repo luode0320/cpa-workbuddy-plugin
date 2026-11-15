@@ -2,9 +2,12 @@ package main
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -393,5 +396,167 @@ func TestAuthStateOf(t *testing.T) {
 	}
 	if got := authStateOf(expiredSnapshot); got != "expired" {
 		t.Errorf("快照会话过期时应上报 expired，实际 %q", got)
+	}
+}
+
+// TestCookiesFiltersSessionCookiesForSiteHost 校验发往站点域名时剔除 session 组。
+//
+// 这是 0.1.19 的核心回归点：session 组一旦随推理请求发出，上游稳定回
+// 710022004 semantic_reasoning（生产实测，见 blockedHostCookieNames 注释）。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-15 15:58:00；改动原因：新增，出站 Cookie 过滤回归。
+func TestCookiesFiltersSessionCookiesForSiteHost(t *testing.T) {
+	j := newDurableJar()
+	j.seedFromHeader("flow_cur_user_sec_id=sec_v; sessionid=s1; sessionid_ss=s2; sid_tt=s3; sid_guard=s4; uid_tt=u1; ttwid=tw_v", doubaoSiteHost+"/")
+
+	siteURL := mustURL(t, doubaoSiteHost+"/chat/completion")
+	got := j.Cookies(siteURL)
+	seen := map[string]bool{}
+	for _, c := range got {
+		if isBlockedHostCookieName(c.Name) {
+			t.Fatalf("发往站点域名时不应带 session 组，实际出现 %q", c.Name)
+		}
+		seen[c.Name] = true
+	}
+	if !seen["flow_cur_user_sec_id"] || !seen["uid_tt"] {
+		t.Fatalf("非 session Cookie 应保留，实际 %v", seen)
+	}
+	if !seen["ttwid"] {
+		t.Fatalf("替代会话 Cookie 应存在，实际 %v", seen)
+	}
+}
+
+// TestCookiesKeepsSessionCookiesForAccountHost 校验判据端点仍能拿到 session 组。
+//
+// 两个端点口径相反：accounts.doubao.com 靠 session 组识别账号身份，
+// 若在导入/判据阶段就把它丢掉，授权会直接失败。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-15 15:58:00；改动原因：新增，判据端点不过滤的回归。
+func TestCookiesKeepsSessionCookiesForAccountHost(t *testing.T) {
+	j := newDurableJar()
+	j.seedFromHeader("flow_cur_user_sec_id=sec_v; sessionid=s1; sid_tt=s3", accountInfoHost+"/")
+
+	got := j.Cookies(mustURL(t, accountInfoHost+"/passport/account/info/v2/"))
+	seen := map[string]bool{}
+	for _, c := range got {
+		seen[c.Name] = true
+	}
+	if !seen["sessionid"] || !seen["sid_tt"] {
+		t.Fatalf("判据端点必须保留 session 组，实际 %v", seen)
+	}
+}
+
+// TestCookiesInjectsFallbackCookieWhenMissing 校验缺 ttwid 时补出替代会话 Cookie。
+//
+// 实测只删 session 不补 ttwid 会拿到空响应（0.16s、零事件）；该分支保证
+// 账号凭据里没有 ttwid 时也不会退化成静默失败。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-15 15:58:00；改动原因：新增，替代会话 Cookie 兜底回归。
+func TestCookiesInjectsFallbackCookieWhenMissing(t *testing.T) {
+	j := newDurableJar()
+	// ttwid 只写在 accounts 域名下，站点域名选不到它，必须由兜底逻辑补出。
+	j.seedFromHeader("flow_cur_user_sec_id=sec_v; sessionid=s1; ttwid=tw_from_account", accountInfoHost+"/")
+
+	got := j.Cookies(mustURL(t, doubaoSiteHost+"/chat/completion"))
+	hasTw := false
+	for _, c := range got {
+		if c.Name == fallbackSessionCookieName && strings.TrimSpace(c.Value) != "" {
+			hasTw = true
+		}
+	}
+	if !hasTw {
+		t.Fatalf("缺 ttwid 时应补出替代会话 Cookie，实际 %v", cookieNamesOf(got))
+	}
+}
+
+// TestCookiesSkipsFallbackWhenAlreadyPresent 校验已有 ttwid 时不重复补。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-15 15:58:00；改动原因：新增，重复注入防护回归。
+func TestCookiesSkipsFallbackWhenAlreadyPresent(t *testing.T) {
+	j := newDurableJar()
+	j.seedFromHeader("flow_cur_user_sec_id=sec_v; sessionid=s1; ttwid=tw_site", doubaoSiteHost+"/")
+
+	count := 0
+	for _, c := range j.Cookies(mustURL(t, doubaoSiteHost+"/chat/completion")) {
+		if c.Name == fallbackSessionCookieName {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("ttwid 应恰好 1 条，实际 %d", count)
+	}
+}
+
+// cookieNamesOf 提取 Cookie 名列表，供失败信息使用。
+// [参数] cookies: Cookie 列表。
+// [返回] 名列表。
+// 最近修改时间：2026-11-15 15:58:00；改动原因：新增，测试辅助。
+func cookieNamesOf(cookies []*http.Cookie) []string {
+	out := make([]string, 0, len(cookies))
+	for _, c := range cookies {
+		out = append(out, c.Name)
+	}
+	return out
+}
+
+// TestWarmUpFallbackCookieFetchesTtwid 校验缺 ttwid 时预热能把它取回来。
+//
+// 用 httptest 顶替站点：上游在首页响应里下发 ttwid，Jar 捕获后应能被站点域名选中。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-15 16:04:00；改动原因：新增，预热补 Cookie 回归。
+func TestWarmUpFallbackCookieFetchesTtwid(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: fallbackSessionCookieName, Value: "tw_from_warmup", Path: "/"})
+		_, _ = w.Write([]byte("<html>ok</html>"))
+	}))
+	defer srv.Close()
+
+	prev := siteWarmUpOverride
+	siteWarmUpOverride = srv.URL
+	defer func() { siteWarmUpOverride = prev }()
+
+	j := newDurableJar()
+	j.seedFromHeader("flow_cur_user_sec_id=sec_v; sessionid=s1", doubaoSiteHost+"/")
+	if err := warmUpFallbackCookie(j, 3*time.Second); err != nil {
+		t.Fatalf("预热不应失败：%v", err)
+	}
+	hasTw := false
+	for _, c := range j.Cookies(mustURL(t, doubaoSiteHost+"/chat/completion")) {
+		if c.Name == fallbackSessionCookieName && c.Value == "tw_from_warmup" {
+			hasTw = true
+		}
+	}
+	if !hasTw {
+		t.Fatalf("预热后站点域名应能选中 ttwid，实际 %v", cookieNamesOf(j.Cookies(mustURL(t, doubaoSiteHost+"/chat/completion"))))
+	}
+}
+
+// TestWarmUpFallbackCookieSkipsWhenPresent 校验已有 ttwid 时不再发预热请求。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-15 16:04:00；改动原因：新增，预热幂等回归。
+func TestWarmUpFallbackCookieSkipsWhenPresent(t *testing.T) {
+	hit := int32(0)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hit, 1)
+	}))
+	defer srv.Close()
+
+	prev := siteWarmUpOverride
+	siteWarmUpOverride = srv.URL
+	defer func() { siteWarmUpOverride = prev }()
+
+	j := newDurableJar()
+	j.seedFromHeader("flow_cur_user_sec_id=sec_v; ttwid=tw_present", doubaoSiteHost+"/")
+	if err := warmUpFallbackCookie(j, 3*time.Second); err != nil {
+		t.Fatalf("已有 ttwid 时不应报错：%v", err)
+	}
+	if n := atomic.LoadInt32(&hit); n != 0 {
+		t.Fatalf("已有 ttwid 时不应预热，实际请求 %d 次", n)
 	}
 }

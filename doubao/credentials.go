@@ -40,6 +40,10 @@ const (
 
 	// doubaoSiteHost 是业务 API 域名。
 	doubaoSiteHost = "https://www.doubao.com"
+
+	// siteHostname 是 doubaoSiteHost 的主机名，供 Cookie 分流判定直接比较。
+	// 与 doubaoSiteHost 必须保持一致，测试用例会断言两者同步。
+	siteHostname = "www.doubao.com"
 )
 
 // credentials 代表一份豆包登录态凭据。
