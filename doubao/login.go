@@ -619,9 +619,19 @@ func handleLoginCallback(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 	if msToken != "" {
 		sa.MsToken = msToken
 		sa.UpdatedAt = time.Now().Format(time.RFC3339)
-		if errWrite := writeAuthFileDirect(sa.PhysicalPath, sa); errWrite != nil {
+		// 目标路径必须重新向宿主解析：saveFromToken 刚落盘时宿主可能还没把物理
+		// 路径回填给这个结构体，沿用旧值会把 ms_token 写进插件本地副本，而面板
+		// 读的是宿主凭据目录里那一份——表现为「授权成功但签名始终未采集」。
+		targetPath := resolveAuthFilePath(sa.AuthID, sa.PhysicalPath)
+		if errWrite := writeAuthFileDirect(targetPath, sa); errWrite != nil {
 			log.Printf("[doubao] save ms_token failed for %s: %v", sa.AuthID, errWrite)
+		} else {
+			log.Printf("[doubao] ms_token saved for %s (len=%d, path=%s)", sa.AuthID, len(msToken), sa.PhysicalPath)
 		}
+	} else {
+		// 缺 msToken 时不该静默：0.1.16 之前拖进书签栏的书签不会采集它，
+		// 用户只会在面板看到「未采集」却不知道为什么。
+		log.Printf("[doubao] ms_token missing for %s: 授权脚本未回传（多半是书签栏里仍挂着 0.1.16 之前的旧书签）", sa.AuthID)
 	}
 
 	if !strict {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.17 (2026-11-15)
+
+### Fix - 补齐 ms_token 后写盘必然失败，面板长期显示「请求签名未采集」
+
+- 现象(用户 2026-11-15 12:16 截图 + 12:21 反馈「我们已经用了新的授权书签, 还是这样」): 用 0.1.16 的新书签重新授权，账号 `updated_at` 确实刷新到 `2026-11-15T12:16:27+08:00`（说明令牌兑换与落盘都成功了），但 `请求签名` 仍是「未采集（需重新授权）」，12 个账号无一例外。
+- 生产日志(决定性证据): `2026/11/15 12:16:27 [doubao] save ms_token failed for doubao-adcd31d29873b4c8: 不安全的凭据文件路径：` —— 冒号后为空。据此可判定 `msToken` **确实取到了**（`if msToken != ""` 才进写分支），失败的是落盘路径。
+- 根因: `login.go` 用 `writeAuthFileDirect(sa.PhysicalPath, sa)` 补写 msToken，而 `saveCredentials` 构造 `StoredAuth` 时从不给 `PhysicalPath` 赋值、落盘后也不回填，该字段恒为空串；空路径被 `isSafeDoubaoAuthPath` 判为不安全直接拒绝。0.1.16 新增的采集链路因此从头到尾没生效过。
+- 第二层根因(更隐蔽): 即便路径不为空，插件写的是自己账号目录 `~/.antigravity_cockpit/doubao_accounts/`，而面板读的是**宿主凭据目录**（生产为 `/usr/local/src/cli-proxy-api/auths/`）。仅修空路径仍会出现「写成功但面板还是未采集」。
+- 修复: 新增 `resolveAuthFilePath(authID, physicalPath)` 作为「凭据到底写哪儿」的唯一判据——显式路径 > 账号自带物理路径 > 按文件名向宿主 `host.auth.list` + `host.auth.get` 回查真实路径 > 退回插件账号目录；`writeAuthFileDirect` 在 `filePath` 为空时自动调用它，落盘后把真实路径回填进 `auth.PhysicalPath`，并把「宿主已注册」的物理路径也同步回填，保证后续追加写入（ms_token、Cookie 续期）打到同一份文件。`login.go` 补写 msToken 前显式 `resolveAuthFilePath(sa.AuthID, sa.PhysicalPath)`。
+- 并发安全: 路径解析会走宿主 RPC 再间接调 `getAccountsDir()`（内部拿 `authFilesMu` 读锁），而写盘要拿写锁；`sync.RWMutex` 不可重入，先前的写法会自锁。本轮把路径解析与宿主同步移出临界区，写盘收敛到 `writeCredentialFile` 独占锁。
+- 可观测性: 补写 msToken 增加成功日志（`ms_token saved for <id> (len=…, path=…)`），并对「msToken 为空」明确记日志指出多半是书签栏里仍挂着 0.1.16 之前的旧书签——原实现头为空时连日志都不打，故障静默。
+- 兼容: 老账号无需改数据；重新点一次书签即可补齐。已采集过 `ms_token` 的账号不受影响（路径解析对非空路径直接透传）。
+- 测试: 新增 `TestWriteAuthFileDirectResolvesEmptyPath`（显式传空路径必须落盘成功、`ms_token` 必须保留、物理路径必须回填、回填后二次写入不得产生第二份文件）；哨兵把路径解析换成固定非法串后该用例如实 FAIL，恢复后全绿；`python scripts/cgo-shim-build.py doubao` build / vet / test 全绿。
+
 ## 0.1.16 (2026-11-15)
 
 ### Fix - `/chat/completion` 缺 msToken 与 a_bogus 签名，10 个账号对话被上游拒绝（用户反证推翻 0.1.15 定性）

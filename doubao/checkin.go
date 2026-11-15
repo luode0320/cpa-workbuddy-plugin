@@ -558,12 +558,17 @@ func postCampaignJSON(ctx context.Context, sa *StoredAuth, path string, payload 
 // campaignCodeHint 把活动接口业务码翻成可操作的中文提示。
 // [参数] code: 上游业务码。
 // [返回] 中文提示。
-// 最近修改时间：2026-11-14 19:30:00；改动原因：710010702 定性为平台侧投放拒绝，不再表述成可换渠道自救。
+// 最近修改时间：2026-11-15 12:39:00；改动原因：code=2 实测语义是「该账号未被投放到此活动」，原文案误报「活动已下线」。
 func campaignCodeHint(code int) string {
 	// 1. 只覆盖已知可操作码，其余原样回显业务码便于排查。
 	switch code {
 	case 2:
-		return "签到活动已下线或已换季"
+		// 实测（2026-11-15 12:39，生产直连三个账号）：`/alice/ug/campaign/v3/detail/`
+		// 对未获投放的账号回 {"data":null,"code":2,"message":"campaign not found"}，
+		// 而同一时刻同一 `campaign_group_code` 对被投放账号正常返回完整任务列表。
+		// 因此这是**账号级投放差异**，不是活动下线——写成「已下线」会把用户引向
+		// 等待平台恢复，而实际永远等不到，正确动作是换号。
+		return "该账号未被投放到这个签到活动（同批次其他账号可正常签到），换用其他账号即可"
 	case 710012001:
 		return "登录态已失效，请在面板重新导入 Cookie"
 	case 710010702:

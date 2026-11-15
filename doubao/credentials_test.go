@@ -376,6 +376,58 @@ func TestIsSafeDoubaoAuthPath(t *testing.T) {
 	}
 }
 
+// TestWriteAuthFileDirectResolvesEmptyPath 校验路径为空时仍能把凭据写进账号目录。
+//
+// 回归背景（2026-11-15 生产故障）：给账号补写 ms_token 时调用
+// writeAuthFileDirect(sa.PhysicalPath, sa)，而 saveFromToken 返回的结构体里
+// PhysicalPath 为空，落盘被安全闸门拒绝，日志只剩「不安全的凭据文件路径：」，
+// 面板因此长期显示「请求签名未采集」。本用例锁定「空路径必须自动解析」。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-15 12:35:00；改动原因：新增，锁定空路径自动解析。
+func TestWriteAuthFileDirectResolvesEmptyPath(t *testing.T) {
+	dir := t.TempDir()
+	setAccountsDir(dir)
+	defer setAccountsDir("")
+
+	sa := &StoredAuth{
+		AuthID:       doubaoAuthFilePrefix + "emptypath",
+		CookieHeader: validCookieHeader,
+		Label:        "空路径落盘",
+		MsToken:      "ms-token-for-empty-path-case",
+	}
+	// 显式传空路径：修复前这里必然返回「不安全的凭据文件路径」。
+	if err := writeAuthFileDirect("", sa); err != nil {
+		t.Fatalf("路径为空时应自动解析并落盘，实际报错：%v", err)
+	}
+
+	want := filepath.Join(dir, sa.AuthID+".json")
+	raw, errRead := os.ReadFile(want)
+	if errRead != nil {
+		t.Fatalf("应写入 %s，读取失败：%v", want, errRead)
+	}
+	var back StoredAuth
+	if errUnmarshal := json.Unmarshal(raw, &back); errUnmarshal != nil {
+		t.Fatalf("落盘文件应为合法 JSON：%v", errUnmarshal)
+	}
+	if back.MsToken != sa.MsToken {
+		t.Errorf("落盘应保留 ms_token，实际 %q", back.MsToken)
+	}
+	if sa.PhysicalPath != want {
+		t.Errorf("落盘后应回填物理路径为 %q，实际 %q", want, sa.PhysicalPath)
+	}
+
+	// 回填后再写一次（模拟 Cookie 续期）：必须命中同一份文件而不是新建副本。
+	sa.MsToken = "ms-token-second-round"
+	if err := writeAuthFileDirect(sa.PhysicalPath, sa); err != nil {
+		t.Fatalf("回填路径后再次落盘应成功：%v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("同一账号只应有一份凭据文件，实际 %d 个", len(entries))
+	}
+}
+
 // TestProbeAccountInfoLiveRejectsGarbage 走真实生产路径对真实判据端点做负向验证。
 //
 // 与 TestProbeAccountInfoRejectsGarbage 的区别：本用例不替换端点，真实走

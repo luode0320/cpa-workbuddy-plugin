@@ -129,6 +129,10 @@ func TestFetchCampaignDetailParsesDailySignin(t *testing.T) {
 }
 
 // TestFetchCampaignDetailRejectsBusinessCode 校验业务码非 0 时按失败处理。
+//
+// 断言口径随 2026-11-15 12:39 的实测修正：上游对未获投放的账号回
+// `{"code":2,"message":"campaign not found"}`，是账号级投放差异而非活动下线，
+// 提示必须引导「换号」而不是让用户干等平台恢复。
 func TestFetchCampaignDetailRejectsBusinessCode(t *testing.T) {
 	_, restore := newCheckinStub(t, map[string]string{
 		checkinDetailPath: `{"code":2,"msg":"campaign not found"}`,
@@ -137,8 +141,8 @@ func TestFetchCampaignDetailRejectsBusinessCode(t *testing.T) {
 
 	if _, err := fetchCampaignDetail(t.Context(), checkinTestAccount()); err == nil {
 		t.Fatalf("业务码 2 必须返回错误")
-	} else if !strings.Contains(err.Error(), "已下线或已换季") {
-		t.Errorf("活动下线应有可操作提示，实际 %v", err)
+	} else if !strings.Contains(err.Error(), "未被投放") {
+		t.Errorf("未获投放应有可操作提示，实际 %v", err)
 	}
 }
 
@@ -360,9 +364,14 @@ func TestCheckinStatusForReportsQuota(t *testing.T) {
 }
 
 // TestCampaignCodeHintCoversKeyCodes 校验关键业务码都有可操作提示。
+//
+// code=2 的语义在 2026-11-15 12:39 实测修正：`/alice/ug/campaign/v3/detail/` 对
+// 未获投放的账号回 `{"data":null,"code":2,"message":"campaign not found"}`，而同一
+// 时刻同一 `campaign_group_code` 对被投放账号正常返回完整任务列表——是账号级投放
+// 差异，不是活动下线。断言据此改为「未被投放」。
 func TestCampaignCodeHintCoversKeyCodes(t *testing.T) {
 	cases := map[int]string{
-		2:         "已下线或已换季",
+		2:         "未被投放",
 		710012001: "登录态已失效",
 		710010702: "投放策略拒绝",
 	}

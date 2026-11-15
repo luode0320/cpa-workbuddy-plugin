@@ -110,7 +110,7 @@ func isDoubaoAuthFileName(name string) bool {
 // isSafeDoubaoAuthPath 校验文件路径前缀与路径穿越。
 // [参数] path: 待校验路径。
 // [返回] 安全时返回 true。
-// 最近修改时间：2026-10-17；改动原因：新增，落盘路径安全闸门。
+// 最近修改时间：2026-11-15 12:25:00；改动原因：放行宿主凭据目录下的绝对路径（旧实现只看文件名，宿主路径同样满足）。
 func isSafeDoubaoAuthPath(path string) bool {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -127,14 +127,92 @@ func isSafeDoubaoAuthPath(path string) bool {
 	return base == filepath.Base(filepath.Clean(path))
 }
 
-// writeAuthFileDirect 原子落盘写入账号凭据 JSON 文件，并在宿主在线时同步。
-// [参数] filePath: 目标文件路径；auth: 账号结构。
-// [返回] 写入错误。
-// 最近修改时间：2026-10-17；改动原因：新增，凭据物理落盘（不走 host.auth.save 以免丢未知字段）。
-func writeAuthFileDirect(filePath string, auth *StoredAuth) error {
-	authFilesMu.Lock()
-	defer authFilesMu.Unlock()
+// resolveAuthFilePath 解析账号凭据的真实落盘路径。
+//
+// 宿主在线时账号真源是宿主凭据目录（面板读的就是它），插件只能拿相对文件名；
+// 宿主不可用时退回插件自己的账号目录。旧实现让调用方直接传 sa.PhysicalPath，
+// 而 saveCredentials 从不回填该字段，导致追加写入 ms_token 时路径为空、
+// 被安全闸门拒绝（2026-11-15 生产日志：「不安全的凭据文件路径：」后为空）。
+// [参数] authID: 账号标识；physicalPath: 已知物理路径，可为空。
+// [返回] 可用于落盘的绝对路径。
+// 最近修改时间：2026-11-15 12:25:00；改动原因：新增，收敛「凭据文件到底写哪儿」这一唯一判据。
+func resolveAuthFilePath(authID, physicalPath string) string {
+	physicalPath = strings.TrimSpace(physicalPath)
+	if physicalPath != "" {
+		return physicalPath
+	}
 
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return ""
+	}
+	if !strings.HasSuffix(authID, ".json") {
+		authID += ".json"
+	}
+	fileName := filepath.Base(authID)
+
+	// 1. 宿主在线时按文件名回查真实路径，保证写的是面板读的那一份。
+	if hostPath := hostAuthFilePathByName(fileName); hostPath != "" {
+		return hostPath
+	}
+
+	// 2. 宿主不可用：退回插件账号目录。
+	return filepath.Join(getAccountsDir(), fileName)
+}
+
+// hostAuthFilePathByName 按文件名向宿主回查凭据文件绝对路径。
+// [参数] fileName: 凭据文件名（含 .json）。
+// [返回] 命中时返回宿主路径，未命中或宿主不可用返回空串。
+// 最近修改时间：2026-11-15 12:25:00；改动原因：新增，宿主凭据目录定位。
+func hostAuthFilePathByName(fileName string) string {
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" {
+		return ""
+	}
+	raw, errCall := hostCall(pluginabi.MethodHostAuthList, nil)
+	if errCall != nil {
+		return ""
+	}
+	var env envelope
+	if errUnmarshal := json.Unmarshal(raw, &env); errUnmarshal != nil || !env.OK {
+		return ""
+	}
+	var list rpcHostAuthListResponse
+	if errUnmarshal := json.Unmarshal(env.Result, &list); errUnmarshal != nil {
+		return ""
+	}
+	for _, entry := range list.Files {
+		if !strings.EqualFold(filepath.Base(entry.Name), fileName) {
+			continue
+		}
+		getBody, errMarshal := json.Marshal(map[string]string{"auth_index": entry.AuthIndex})
+		if errMarshal != nil {
+			continue
+		}
+		rawGet, errGet := hostCall(pluginabi.MethodHostAuthGet, getBody)
+		if errGet != nil {
+			continue
+		}
+		var getEnv envelope
+		if errUnmarshal := json.Unmarshal(rawGet, &getEnv); errUnmarshal != nil || !getEnv.OK {
+			continue
+		}
+		var getResp rpcHostAuthGetResponse
+		if errUnmarshal := json.Unmarshal(getEnv.Result, &getResp); errUnmarshal != nil {
+			continue
+		}
+		if strings.TrimSpace(getResp.Path) != "" {
+			return getResp.Path
+		}
+	}
+	return ""
+}
+
+// writeAuthFileDirect 原子落盘写入账号凭据 JSON 文件，并在宿主在线时同步。
+// [参数] filePath: 目标文件路径，可为空（此时按账号标识解析真实路径）；auth: 账号结构。
+// [返回] 写入错误。
+// 最近修改时间：2026-11-15 12:30:00；改动原因：路径为空时自动解析，修掉「保存 ms_token 必然失败」；同时把 RPC 移出写锁避免自锁。
+func writeAuthFileDirect(filePath string, auth *StoredAuth) error {
 	if auth.Type == "" {
 		auth.Type = providerName
 	}
@@ -142,9 +220,16 @@ func writeAuthFileDirect(filePath string, auth *StoredAuth) error {
 		auth.Provider = providerName
 	}
 
-	targetPath := filePath
-	if auth.PhysicalPath != "" && isSafeDoubaoAuthPath(auth.PhysicalPath) {
+	// 1. 路径解析必须在锁外完成：解析过程会走宿主 RPC 与 getAccountsDir，
+	//    后者自己拿 authFilesMu 读锁，而本函数随后要拿写锁——RWMutex 不可
+	//    重入，持锁调用会自锁。
+	hadPhysicalPath := isSafeDoubaoAuthPath(auth.PhysicalPath)
+	targetPath := strings.TrimSpace(filePath)
+	if targetPath == "" && hadPhysicalPath {
 		targetPath = auth.PhysicalPath
+	}
+	if targetPath == "" {
+		targetPath = resolveAuthFilePath(auth.AuthID, "")
 	}
 	if !isSafeDoubaoAuthPath(targetPath) {
 		return fmt.Errorf("不安全的凭据文件路径：%s", targetPath)
@@ -154,6 +239,34 @@ func writeAuthFileDirect(filePath string, auth *StoredAuth) error {
 	if errMarshal != nil {
 		return fmt.Errorf("序列化凭据失败：%w", errMarshal)
 	}
+
+	// 2. 只在真正写盘期间持锁，缩短临界区。
+	if errWrite := writeCredentialFile(targetPath, data); errWrite != nil {
+		return errWrite
+	}
+
+	// 3. 宿主尚未接管该凭据时先注册，再把物理路径改成宿主那一份：后续追加
+	//    写入（ms_token、Cookie 续期）必须打到面板真正读取的文件上。
+	if !hadPhysicalPath && !auth.Disabled {
+		if errSave := hostAuthSaveJSON(filepath.Base(targetPath), data); errSave == nil {
+			if hostPath := hostAuthFilePathByName(filepath.Base(targetPath)); hostPath != "" {
+				auth.PhysicalPath = hostPath
+				return nil
+			}
+		}
+	}
+
+	auth.PhysicalPath = targetPath
+	return nil
+}
+
+// writeCredentialFile 在持锁状态下把凭据字节原子写入目标路径。
+// [参数] targetPath: 目标文件路径；data: 已序列化的凭据 JSON。
+// [返回] 写入错误。
+// 最近修改时间：2026-11-15 12:30:00；改动原因：从 writeAuthFileDirect 拆出，隔离临界区。
+func writeCredentialFile(targetPath string, data []byte) error {
+	authFilesMu.Lock()
+	defer authFilesMu.Unlock()
 
 	dir := filepath.Dir(targetPath)
 	if errMkdir := os.MkdirAll(dir, 0755); errMkdir != nil {
@@ -167,11 +280,6 @@ func writeAuthFileDirect(filePath string, auth *StoredAuth) error {
 	if errRename := os.Rename(tmpFile, targetPath); errRename != nil {
 		_ = os.Remove(tmpFile)
 		return fmt.Errorf("重命名临时文件失败：%w", errRename)
-	}
-
-	// 宿主可用且尚未关联物理路径时，通过 host.auth.save 同步注册。
-	if auth.PhysicalPath == "" && !auth.Disabled {
-		_ = hostAuthSaveJSON(filepath.Base(targetPath), data)
 	}
 	return nil
 }
