@@ -90,7 +90,7 @@ func TestRunActiveTestStopsOnFirstFrame(t *testing.T) {
 // 上游用 STREAM_ERROR 表达额度耗尽/限流，只看「有字节流出」会把死号判成活跃。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，HTTP 200 假成功防护。
+// 最近修改时间：2026-11-15 19:05:00；改动原因：710022004 的提示改为「人工验证码」口径，断言同步。
 func TestRunActiveTestRejectsStreamError(t *testing.T) {
 	frames := []string{
 		"event: STREAM_ERROR\ndata: {\"error_code\":710022004,\"error_msg\":\"rate limited\"}\n\n",
@@ -104,7 +104,7 @@ func TestRunActiveTestRejectsStreamError(t *testing.T) {
 		t.Fatalf("错误帧被误判为成功：%+v", res)
 	}
 	msg, _ := res["error"].(string)
-	if !strings.Contains(msg, "环境风险") {
+	if !strings.Contains(msg, "验证码") {
 		t.Fatalf("错误提示应含可操作说明，实际 %q", msg)
 	}
 }
