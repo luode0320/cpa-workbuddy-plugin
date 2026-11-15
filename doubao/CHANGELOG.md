@@ -13,6 +13,8 @@
 - 可观测性: 补写 msToken 增加成功日志（`ms_token saved for <id> (len=…, path=…)`），并对「msToken 为空」明确记日志指出多半是书签栏里仍挂着 0.1.16 之前的旧书签——原实现头为空时连日志都不打，故障静默。
 - 兼容: 老账号无需改数据；重新点一次书签即可补齐。已采集过 `ms_token` 的账号不受影响（路径解析对非空路径直接透传）。
 - 测试: 新增 `TestWriteAuthFileDirectResolvesEmptyPath`（显式传空路径必须落盘成功、`ms_token` 必须保留、物理路径必须回填、回填后二次写入不得产生第二份文件）；哨兵把路径解析换成固定非法串后该用例如实 FAIL，恢复后全绿；`python scripts/cgo-shim-build.py doubao` build / vet / test 全绿。
+- 生产发布(2026-11-15 12:56): CI run `43678186057`（`Release` success，5 平台，`darwin/arm64` 按惯例 cancelled）→ `doubao-provider-v0.1.17` → registry `8a74c5d` → `plugin-store install` 200（第 7 次重试成功，前 6 次回 `502 plugin_manifest_invalid / direct plugin version "0.1.17" not found`，属 registry CDN 缓存尚未刷新）→ 热重载 `[2026-11-15 12:56:08] active_version=0.1.17 retired_version=0.1.16`；生产 `.so` sha256 `36be78f8c525aa72bd84f7658aca8a11f0ef289153737d7aeee86a4430fd0824`（17506880 B）与本地 zip 内逐字节一致；13 插件启用态快照 diff 为空（`STATE_UNCHANGED`）。
+- 待用户补齐: 生产 12 个账号 `sign_state` 仍全为 `missing`（老账号未采过 `ms_token`），且此刻同时处于 `-1` / `semantic_reasoning` / `710022002` 三种上游风控分支；需用户再点一次授权书签，届时日志应出现 `[doubao] ms_token saved for <auth_id> (len=…, path=/usr/local/src/cli-proxy-api/auths/…)`。
 
 ## 0.1.16 (2026-11-15)
 
