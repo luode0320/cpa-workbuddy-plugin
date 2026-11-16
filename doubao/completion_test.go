@@ -356,14 +356,14 @@ func TestBuildBusinessQueryComplete(t *testing.T) {
 // TestStatusCodeHint 校验上游错误码映射到可操作文案。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-16 06:10:00；改动原因：710022004 的成因改回「人机验证」，710022002 去掉 fp 归因，断言同步。
+// 最近修改时间：2026-11-16 21:26:00；改动原因：-1 的成因改为「该账号未投放工作模式」，断言同步方向反转。
 func TestStatusCodeHint(t *testing.T) {
 	cases := map[int]string{
 		710012001: "重新导入",
 		710012000: "重新导入",
 		710022004: "人机验证",
 		710022002: "访问频繁",
-		-1:        "委托输入协议",
+		-1:        "没有被投放",
 		710020202: "Content-Type",
 		710020702: "重放",
 		710022013: "签名",
@@ -374,9 +374,14 @@ func TestStatusCodeHint(t *testing.T) {
 			t.Errorf("错误码 %d 的提示应包含 %q，实际 %q", code, want, got)
 		}
 	}
-	// -1 已不再把责任推给账号：提示里不得再出现「没有被投放」这类归因。
-	if got := statusCodeHint(-1, ""); strings.Contains(got, "没有被投放") {
-		t.Errorf("错误码 -1 的提示不应再声称账号未投放工作模式，实际 %q", got)
+	// -1 的成因是账号未投放工作模式，不再是「请求体写错」：提示里不得再让用户
+	// 去怀疑插件版本或请求体形状，那会把排查引向无效方向。
+	if got := statusCodeHint(-1, ""); strings.Contains(got, "请求体") || strings.Contains(got, "最新版本") {
+		t.Errorf("错误码 -1 的提示不应再归因请求体或建议升级版本，实际 %q", got)
+	}
+	// -1 必须给出可操作动作，否则用户只知道失败不知道怎么办。
+	if got := statusCodeHint(-1, ""); !strings.Contains(got, "其他账号") {
+		t.Errorf("错误码 -1 的提示必须给出换号这一可操作动作，实际 %q", got)
 	}
 	// 710022004 曾在 0.1.21 被误归因为设备指纹：不得再让人去重新点授权书签。
 	if got := statusCodeHint(710022004, ""); strings.Contains(got, "授权书签") || strings.Contains(got, "设备指纹") {

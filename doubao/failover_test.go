@@ -79,6 +79,7 @@ func TestIsAccountFailureClassification(t *testing.T) {
 		{"禁止 403", 403, 0, true},
 		{"流内登录失效", 200, 710012001, true},
 		{"流内限流", 200, 710022004, true},
+		{"工作模式未投放不冷却", 200, -1, false},
 		{"业务 400 不计入", 400, 0, false},
 		{"业务 404 不计入", 404, 0, false},
 	}
@@ -105,6 +106,7 @@ func TestShouldRotateClassification(t *testing.T) {
 		{"401 换号", 401, 0, true},
 		{"403 换号", 403, 0, true},
 		{"流内限流换号", 200, 710022004, true},
+		{"工作模式未投放换号", 200, -1, true},
 		{"500 不烧预算", 500, 0, false},
 		{"传输错误不烧预算", 0, 0, false},
 		{"业务 400 不换号", 400, 0, false},
@@ -164,6 +166,33 @@ func TestNoteAccountFailureIgnoresBusiness400(t *testing.T) {
 	}
 	if isAccountCoolingDown(authID) {
 		t.Fatal("业务 400 后账号不应进入冷却")
+	}
+}
+
+// TestNoteAccountFailureIgnoresWorkModeUndelivered 校验 -1 不进入账号冷却。
+//
+// -1 只否掉工作模式（agent_mode=1），同账号的技能模式（agent_mode=2）仍然可用。
+// 若把它计入冷却，整个账号会被跳过 60 秒起，连能用的技能模式也一起打不通。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-16 21:33:00；改动原因：新增，锁定「-1 只换号不冷却」的边界。
+func TestNoteAccountFailureIgnoresWorkModeUndelivered(t *testing.T) {
+	resetFailoverStates()
+	t.Cleanup(resetFailoverStates)
+
+	const authID = "doubao-undelivered"
+	if noteAccountFailure(authID, http.StatusOK, -1) {
+		t.Fatal("-1 不应计入账号冷却：它只否掉工作模式，同账号技能模式仍可用")
+	}
+	if accountFailureCount(authID) != 0 {
+		t.Errorf("-1 后失败次数应保持 0，实际 %d", accountFailureCount(authID))
+	}
+	if isAccountCoolingDown(authID) {
+		t.Fatal("-1 后账号不应进入冷却")
+	}
+	// 但同一次请求内必须换号，否则工作模式永远打在这个账号上。
+	if !shouldRotate(http.StatusOK, -1) {
+		t.Fatal("-1 必须在同请求内换号，让工作模式落到已投放账号")
 	}
 }
 

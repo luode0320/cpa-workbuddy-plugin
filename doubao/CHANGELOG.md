@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.25 (2026-11-16)
+
+### 修复
+
+- **`-1 delegated input protocol violation` 的真因是「该账号没有被投放到豆包工作模式」，
+  0.1.23 的「请求体缺默认值字段」定性是错的**。三步铁证：① 同账号在真实浏览器点
+  网页「工作」标签发同一请求，也回同一帧
+  `{"error_code":-1,"error_msg":"delegated input protocol violation","extra":{"is_replay":"false"}}`；
+  ② 把浏览器原样抓到的 body（含 `reasoning_effort=3`、`messages[].content_block[].extra_info`
+  等全部字段）原封不动重放，健康账号正常出字、本账号仍回 `-1`；③ `launch` 端点（页面
+  原生 `fetch` + 页面原生签名，非插件请求）对两个账号返回的 `data.ug_campaign_info`
+  不同：健康账号有 `campaign_group_code=pc_incentive_task_mvp_v3`（`material_map` 里标题
+  「免费用豆包工作」、`schema` 指向 `/pc/agent-explore`），本账号该字段为空串、
+  `material_map` 整个缺失。0.1.22 的定性方向是对的，0.1.23 用插件自己的请求体消融
+  得出的结论属于把相关当因果。
+- **错误文案不再把用户引向无效动作**。`-1` 改为「该账号没有被投放到豆包工作模式
+  （上游活动 `pc_incentive_task_mvp_v3` 未覆盖此账号），请求本身没有问题：请在面板
+  改用其他账号，或在豆包电脑版参与「免费用豆包工作」活动后重试」；不再让用户怀疑
+  插件版本或请求体形状。
+- **`-1` 纳入同请求换号，但不计入账号冷却**。工作模式请求打到未投放账号时立刻换到
+  下一个账号（否则每次都要手动切号）；但 `-1` 只否掉 `agent_mode=1`，同账号的技能
+  模式（`agent_mode=2`）完全正常，若计入冷却会把整个账号跳过 60 秒起，连能用的技能
+  模式一起打不通。分类依据因此拆开：`shouldRotate` 含 `-1`，`isAccountFailure` 不含。
+
+### 已知
+
+- 结论已用「真实浏览器同账号同请求」交叉验证，排除请求体、设备标识（`device_id` /
+  `web_id` 回退旧值）、`model_item_key`（换成 Seed 基座 `"0"`）、`gd_random` cookie、
+  客户端参数集（`aid=582478` / `desktop` / `2.30.1`）、签名来源（页面 SDK 现签）等
+  全部变量。
+- 账号是否被投放该活动属上游灰度事实，插件侧无法自助加入：活动页
+  `/pc/agent-explore` 只提供「去下载」豆包电脑版，网页端无法参与。
+
 ## 0.1.24 (2026-11-16)
 
 ### 修复

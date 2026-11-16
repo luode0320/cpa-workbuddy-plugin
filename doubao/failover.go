@@ -64,10 +64,17 @@ func failoverCooldownFor(count int) time.Duration {
 // isAccountFailure 判断一次失败是否应计入账号冷却。
 //
 // 计入：传输层失败（status 0）、5xx、429、402（额度耗尽）、401/403（登录态失效）。
+// 另计入两个「流内账号级」业务码：710012001（登录失效）、710022004/710022005
+// （该账号被人机验证拦下）。
 // 不计入：400 等业务错误——请求本身有问题，换号无意义且会误伤健康账号。
+//
+// -1（该账号未投放工作模式）刻意不计入冷却，只在当次请求内换号：它只否掉
+// 工作模式（agent_mode=1），同一账号的技能模式（agent_mode=2）完全正常。
+// 若把它计入冷却，账号会被整体跳过 60 秒起，连能用的技能模式也一起打不通，
+// 属于用一个局部故障毒化整号。
 // [参数] status: HTTP 状态码；code: 上游业务码（可为 0）。
 // [返回] 应计入时返回 true。
-// 最近修改时间：2026-10-17；改动原因：新增，失败分类。
+// 最近修改时间：2026-11-16 21:32:00；改动原因：-1 不纳入账号冷却，避免连带封死同账号可用的技能模式。
 func isAccountFailure(status, code int) bool {
 	if status == 0 || status >= 500 {
 		return true
@@ -85,9 +92,11 @@ func isAccountFailure(status, code int) bool {
 //
 // 429 与登录态失效值得立刻换号（换号即可恢复）；5xx 与传输错误只记冷却、
 // 不在同请求内烧预算——它们往往是上游整体抖动，换号也大概率失败。
+// -1（工作模式未投放）属于账号维度事实：换到已投放的账号立刻可用，值得当次换号，
+// 但只换号、不冷却（见 isAccountFailure 的说明）。
 // [参数] status: HTTP 状态码；code: 上游业务码。
 // [返回] 应换号时返回 true。
-// 最近修改时间：2026-10-17；改动原因：新增，同请求换号判定。
+// 最近修改时间：2026-11-16 21:32:00；改动原因：-1 纳入同请求换号，使工作模式请求能自动落到已投放账号。
 func shouldRotate(status, code int) bool {
 	if status == http.StatusTooManyRequests || status == http.StatusPaymentRequired {
 		return true
@@ -95,7 +104,7 @@ func shouldRotate(status, code int) bool {
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return true
 	}
-	return code == 710012001 || code == 710022004 || code == 710022005
+	return code == 710012001 || code == 710022004 || code == 710022005 || code == -1
 }
 
 // noteAccountFailure 递增连续失败计数并施加阶梯冷却。

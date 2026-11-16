@@ -47,8 +47,10 @@ type completionRequest struct {
 //
 // last_section_id / last_message_index 是续接点：新会话可空，续接既有会话时必须带。
 //
-// 这两项不能用 omitempty：网页端新会话时显式发 last_section_id="" 与
-// last_message_index=null，省略后上游按「委托输入协议不符」回 -1（2026-11-16 消融）。
+// 这两项不用 omitempty 是为了与浏览器抓到的请求逐字节对齐（网页新会话时显式发
+// last_section_id="" 与 last_message_index=null）。注意：早期曾把省略它们当成
+// -1「委托输入协议不符」的成因，2026-11-16 21:20 已证伪 —— 真实浏览器原样 body
+// 在未投放工作模式的账号上同样回 -1，故 -1 与请求体字段无关。
 type clientMeta struct {
 	LocalConversationID string       `json:"local_conversation_id"`
 	ConversationID      string       `json:"conversation_id"`
@@ -144,8 +146,8 @@ type completionOption struct {
 	// MessageStorageType 是消息存储类型，工作模式固定 0。
 	MessageStorageType int `json:"message_storage_type"`
 
-	// 以下字段一律不写 omitempty：网页端每次都会把它们显式发出去，
-	// 省略后上游会按「委托输入协议不符」直接回 -1（2026-11-16 逐项消融确认）。
+	// 以下字段一律不写 omitempty：网页端每次都会把它们显式发出去，逐字节对齐
+	// 真实请求，避免任何「形状差异」成为排查噪音（2026-11-16 抓包对齐）。
 	ClickClearContext     bool           `json:"click_clear_context"`
 	ConnectorInfoList     []any          `json:"connector_info_list"`
 	DisableSSECache       bool           `json:"disable_sse_cache"`
@@ -367,7 +369,7 @@ func buildSkillOption(mode generationMode, needCreate bool) completionOption {
 	option.SSERecvEventOptions.SupportChunkDelta = true
 	option.SupportLazyFetchStream = true
 
-	// 3. 网页端每次都会显式发送这些默认值段，省略会让上游按「委托输入协议不符」拒绝。
+	// 3. 网页端每次都会显式发送这些默认值段，逐字节对齐真实请求。
 	option.ConnectorInfoList = []any{}
 	option.EditQueryID = []any{}
 	option.RegenQueryID = []any{}
