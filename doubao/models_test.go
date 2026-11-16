@@ -8,24 +8,24 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// catalogueSize 返回目录应有条目数（能力别名 + 工作模式模型，假设无重名）。
+// catalogueSize 返回目录应有条目数（能力别名，假设无重名）。
 // [参数] 无。
 // [返回] 条目数。
-// 最近修改时间：2026-11-14 03:30:00；改动原因：新增，目录数量断言不再硬编码。
+// 最近修改时间：2026-11-17 00:55:00；改动原因：工作模式模型目录删除，只剩能力别名。
 func catalogueSize() int {
-	return len(capabilityAliases) + len(workModelAliases)
+	return len(capabilityAliases)
 }
 
-// TestCatalogueAliases 校验目录覆盖四个能力别名与全部工作模式模型。
+// TestCatalogueAliases 校验目录只暴露 image 与 video 两条能力别名。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-14 03:30:00；改动原因：目录合并工作模式模型，断言改为按目录长度校验。
+// 最近修改时间：2026-11-17 00:55:00；改动原因：插件改为图片与视频专用，断言收敛为两条别名。
 func TestCatalogueAliases(t *testing.T) {
 	models := catalogueModels()
 	if len(models) != catalogueSize() {
 		t.Fatalf("应暴露 %d 个别名，实际 %d", catalogueSize(), len(models))
 	}
-	want := []string{"doubao/default", "doubao/pro", "doubao/image", "doubao/video"}
+	want := []string{"doubao/image", "doubao/video"}
 	got := make(map[string]bool, len(models))
 	for _, m := range models {
 		got[m.ID] = true
@@ -39,58 +39,58 @@ func TestCatalogueAliases(t *testing.T) {
 			t.Errorf("%s 缺少展示名或描述", m.ID)
 		}
 	}
+	if len(got) != len(want) {
+		t.Errorf("目录不应有额外别名，实际 %v", got)
+	}
 	for _, id := range want {
 		if !got[id] {
 			t.Errorf("目录缺少别名 %s", id)
 		}
 	}
-	// 工作模式模型必须逐条出现，否则客户端选不到该模型。
-	for _, alias := range workModelAliases {
-		if !got[modelIDPrefix+alias.ID] {
-			t.Errorf("目录缺少工作模式模型 %s", modelIDPrefix+alias.ID)
+}
+
+// TestCatalogueAliasTypes 校验两条别名在 /v1/models 中的类型标记。
+//
+// 宿主按 Type 决定客户端如何展示与调用：生图与生视频被标成 chat 会让客户端
+// 当成对话模型，把图片地址塞进正文。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 00:55:00；改动原因：工作模式模型删除后类型标记成为唯一分类依据。
+func TestCatalogueAliasTypes(t *testing.T) {
+	want := map[string]string{
+		"doubao/image": "image",
+		"doubao/video": "video",
+	}
+	for _, m := range catalogueModels() {
+		expect, ok := want[m.ID]
+		if !ok {
+			t.Fatalf("目录出现未预期别名 %s", m.ID)
+		}
+		if m.Type != expect {
+			t.Errorf("%s 的 type 应为 %s，实际 %q", m.ID, expect, m.Type)
 		}
 	}
 }
 
-// TestSkillForModel 校验别名到上游 skill 的映射。
+// TestModeForModel 校验模型名到生成模式的严格解析。
+//
+// 目录外一律返回 ok=false：插件只做生图与生视频，静默回落会让调用方把「模型名
+// 写错」误判成「账号不可用」。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，skill 映射回归。
-func TestSkillForModel(t *testing.T) {
-	cases := map[string]int{
-		"doubao/default":      0,
-		"doubao/pro":          0,
-		"doubao/image":        skillImageGen,
-		"doubao/video":        skillVideoGen,
-		"doubao/image:latest": skillImageGen,
-		"DOUBAO/IMAGE":        skillImageGen,
-		"image":               skillImageGen,
-		"unknown-model":       0,
-	}
-	for name, want := range cases {
-		if got := skillForModel(name); got != want {
-			t.Errorf("%s 的 skill 应为 %d，实际 %d", name, want, got)
-		}
-	}
-}
-
-// TestModeForModel 校验模型名到生成模式的解析。
-// [参数] t: 测试上下文。
-// [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，模式解析回归。
+// 最近修改时间：2026-11-17 00:55:00；改动原因：未知名由回落改为失败，断言随之反转。
 func TestModeForModel(t *testing.T) {
-	if m := modeForModel("doubao/image"); m.Skill != skillImageGen || m.Kind != "image" {
-		t.Errorf("doubao/image 应解析为生图模式，实际 %+v", m)
+	if m, ok := modeForModel("doubao/image"); !ok || m.Skill != skillImageGen || m.Kind != "image" {
+		t.Errorf("doubao/image 应解析为生图模式，实际 %+v ok=%v", m, ok)
 	}
-	if m := modeForModel("doubao/video"); m.Skill != skillVideoGen || m.Kind != "video" {
-		t.Errorf("doubao/video 应解析为生视频模式，实际 %+v", m)
+	if m, ok := modeForModel("doubao/video"); !ok || m.Skill != skillVideoGen || m.Kind != "video" {
+		t.Errorf("doubao/video 应解析为生视频模式，实际 %+v ok=%v", m, ok)
 	}
-	if m := modeForModel("doubao/default"); m.Skill != 0 || m.Kind != "text" {
-		t.Errorf("doubao/default 应解析为文本模式，实际 %+v", m)
-	}
-	// 未知名透传为文本模式：上游会忽略未知模型并回落账号默认。
-	if m := modeForModel("some-internal-code"); m.Skill != 0 || m.Kind != "text" {
-		t.Errorf("未知名应回落文本模式，实际 %+v", m)
+	// 已删除的对话别名与上游内部代号都必须判失败。
+	for _, name := range []string{"doubao/default", "doubao/pro", "doubao/deepseek-v4-flash", "some-internal-code", ""} {
+		if m, ok := modeForModel(name); ok {
+			t.Errorf("%q 不在目录内，必须判失败，实际 %+v", name, m)
+		}
 	}
 }
 
@@ -115,7 +115,7 @@ func TestNormalizeModelName(t *testing.T) {
 // TestFilterExcludedModels 校验宿主排除配置生效。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，AC-003 排除模型要求。
+// 最近修改时间：2026-11-17 00:55:00；改动原因：目录只剩两条别名，排除用例改用 doubao/video。
 func TestFilterExcludedModels(t *testing.T) {
 	all := catalogueModels()
 
@@ -144,7 +144,7 @@ func TestFilterExcludedModels(t *testing.T) {
 
 	// provider 键大小写不同也应生效。
 	host2 := pluginapi.HostConfigSummary{
-		ExcludedModels: map[string][]string{"DOUBAO-PROVIDER": {"doubao/pro"}},
+		ExcludedModels: map[string][]string{"DOUBAO-PROVIDER": {"doubao/video"}},
 	}
 	if got := filterExcludedModels(all, host2); len(got) != len(all)-1 {
 		t.Errorf("provider 键大小写不敏感匹配应生效，实际剩 %d 条", len(got))
@@ -230,5 +230,18 @@ func TestModelForAuthReturnsCatalogue(t *testing.T) {
 	_ = json.Unmarshal(raw, &env)
 	if len(env.Result.Models) != catalogueSize() {
 		t.Fatalf("应返回 %d 个模型，实际 %d", catalogueSize(), len(env.Result.Models))
+	}
+}
+
+// TestDefaultModelIDIsTestable 校验默认模型别名属于可测试目录。
+//
+// test-active 未指定模型时会拼出 modelIDPrefix+defaultModelID：该名字必须能在
+// testableAliases 里命中，否则面板点「测试」会直接报「不支持的测试模型」。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 00:55:00；改动原因：新增，锁死默认别名与可测试目录的一致性。
+func TestDefaultModelIDIsTestable(t *testing.T) {
+	if _, ok := aliasForTestModel(modelIDPrefix + defaultModelID); !ok {
+		t.Fatalf("默认别名 %s 必须可测试，实际不可测", modelIDPrefix+defaultModelID)
 	}
 }

@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.1.26 (2026-11-17)
+
+### 变更
+
+- **插件改为「只做图片与视频生成」**：工作模式对话、技能文本对话、每日签到、额度查询
+  全部删除。模型目录只剩 `doubao/image` 与 `doubao/video`；未知名一律报「不支持的模型」，
+  不再回落到任何默认模型。删掉的代码：`checkin.go` 及其测试、`workModelAliases` 十条、
+  `buildWorkOption` / `workModeExt`、工作模式七个常量、`atoiSafe`、`Config` 里七项 `work_*`。
+- **视频从「只回参数确认」变为真能返回可下载地址**，走两段式且额度只由调用方的第二次
+  请求触发：
+  1. 首轮 `doubao/video` 回参数确认文本，响应体带 `conversation_id` / `section_id` /
+     `message_index` 三个续接点；
+  2. 调用方把这三字段放进请求体再发一次，插件构造确认轮请求；
+  3. 插件经 `/im/chain/single` 轮询取回 `download_url`，实测约 150 秒。
+- 确认轮请求形态与真实网页逐字段对齐：新增顶层 `chat_ability`（`ability_type=17`、
+  `ability_param` 是字符串套 JSON）、`client_meta` 去掉 `local_conversation_id`、
+  `option` 去掉 `agent_mode` 键、`ext` 换成 5 键、`general_task_param` 换成对象形态、
+  消息块补 `extra_info`。`chat_ability` 由请求构造器注入，漏了只会回确认文本。
+- 视频产物结构按真实响应重写：地址取 `download_url`（不是 `url`），宽高是**字符串**，
+  `video_model` 是字符串套 JSON，封面在 `cover.image_preview` / `cover.image_thumb`。
+  地址缺失时退到 `video_list` 里分辨率最高的那条（`main_url` 是 base64）。
+
+### 修复
+
+- **`/im/*` 族端点的 Content-Type 与 `/chat/completion` 正好相反**：前者必须
+  `application/json; encoding=utf-8`，缺了会被上游以 `712012002`「不支持编码类型」
+  直接拒绝；共用一份请求头必然有一边失败。已拆成 `postChainJSON`。
+- 会话续接点原先恒为空：`collectCompletion` 只接 `conversationID`，`last_section_id`
+  与 `last_message_index` 永远是空值与 0。新增 `resumePoint` 与
+  `collectCompletionWithResume`，四条执行路径（非流式 / 流式 / 失败重试 / 活跃测试）全部贯通。
+  确认轮依赖这三个字段，缺了就等于每次开新会话，永远停在确认页。
+
+### 已知
+
+- 视频必须由调用方显式发第二次请求：插件不替你花额度。首轮只回参数确认。
+- 视频生成约 1~5 分钟，`download_url` 带 `url_expire`，过期需重新生成。
+- 轮询预算 6 分钟；超时会报「稍后可用同一 conversation_id 重试」。
+- 存量部署的 `config.yaml` 里留着旧的 `work_*` 七项不会报错，yaml 会宽松忽略。
+
 ## 0.1.25 (2026-11-16)
 
 ### 修复

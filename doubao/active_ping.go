@@ -55,13 +55,13 @@ func testPingPrompt() string {
 // handleModelsQuery 返回指定账号可测试的模型列表。
 //
 // 列表来源固定为插件别名目录（与宿主 modelForAuth 暴露的 /v1/models 同源），
-// 而不是上游内部代号：代号既不在能力别名也不在工作模式别名里，选中后只能回落
-// 到工作模式默认模型，「测试成功」与所选模型无关。上游代号仍随附在
-// upstream_models 供排障对照，但不作为可点击项。
+// 而不是上游内部代号：代号不在能力别名里，选中后只能报「不支持的测试模型」，
+// 结论与所选模型无关。上游代号仍随附在 upstream_models 供排障对照，但不作为
+// 可点击项。
 // [参数] req: 管理请求，query 参数 auth_index 指定账号；force=1 强制刷新上游清单。
 // [返回] {models, details, source, upstream_models, upstream_error, notice}；
 // 缺少 auth_index 或账号不存在时返回 {error}。
-// 最近修改时间：2026-11-14 16:05:00；改动原因：模型列表改为插件别名目录，上游代号仅作对照。
+// 最近修改时间：2026-11-17 01:07:00；改动原因：工作模式别名删除，注释只提能力别名。
 func handleModelsQuery(req pluginapi.ManagementRequest) map[string]any {
 	authIndex := ""
 	if vals := req.Query["auth_index"]; len(vals) > 0 {
@@ -87,7 +87,7 @@ func handleModelsQuery(req pluginapi.ManagementRequest) map[string]any {
 		"source":  "aliases",
 	}
 
-	// 2. 上游代号只作对照展示：它们无法映射到工作模式模型主键。
+	// 2. 上游代号只作对照展示：它们无法映射到插件的图片或视频别名。
 	upstream, errDiscover := cachedUpstreamModels(sa, force)
 	if errDiscover != nil {
 		res["upstream_error"] = errDiscover.Error()
@@ -105,10 +105,10 @@ func handleModelsQuery(req pluginapi.ManagementRequest) map[string]any {
 
 // handleTestActive 处理面板「测试」按钮发起的单账号活跃测试。
 //
-// 请求体：{auth_index, model?}。model 为空时使用目录里的第一个文本模型。
+// 请求体：{auth_index, model?}。model 为空时使用 defaultModelID。
 // [参数] req: 管理请求。
 // [返回] 测试结果；失败时带 error 字段。
-// 最近修改时间：2026-10-17；改动原因：新增，手动活跃测试入口。
+// 最近修改时间：2026-11-17 00:48:00；改动原因：工作模式默认模型删除，默认值改为 defaultModelID。
 func handleTestActive(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
@@ -127,7 +127,7 @@ func handleTestActive(req pluginapi.ManagementRequest) map[string]any {
 
 	model := strings.TrimSpace(body.Model)
 	if model == "" {
-		model = modelIDPrefix + defaultWorkModelID
+		model = modelIDPrefix + defaultModelID
 	}
 	return runActiveTest(sa, model)
 }
@@ -222,12 +222,9 @@ func runActiveTest(sa *StoredAuth, model string) map[string]any {
 	}
 
 	log.Printf("[doubao] manual active test success for %s with model %s (took %v)", sa.AuthID, model, elapsed)
-	// 网页链路别名没有 model_item_key（技能管线不认它），此时不能拼出空的上游模型名。
-	upstream := strings.TrimSpace(mode.ModelItemKey)
-	if upstream == "" {
-		upstream = "网页链路默认模型"
-	}
-	message := fmt.Sprintf("活跃成功 (模型: %s → 上游 %s, 耗时: %v)", model, upstream, elapsed)
+	// 图片与视频管线不带 model_item_key（skill 管线不认它），回显能力类型即可：
+	// 上游真实模型名要等产物帧回来才拿得到，测试成功时未必已经拿到。
+	message := fmt.Sprintf("活跃成功 (模型: %s, 能力: %s, 耗时: %v)", model, mode.Kind, elapsed)
 	if p := strings.TrimSpace(preview); p != "" {
 		message += "：" + truncateText(p, 40)
 	}

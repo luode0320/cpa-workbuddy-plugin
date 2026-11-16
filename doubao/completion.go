@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -28,14 +27,33 @@ import (
 // 与 /im/* 族相反，本端点 Content-Type 必须是纯 "application/json"。
 
 // completionRequest 是 /chat/completion 的请求体。
+//
+// 首轮与确认轮共用一个结构体，靠两个可选字段区分：ChatAbility 只在确认轮出现，
+// 首轮为 nil 因而不序列化。
 type completionRequest struct {
 	ClientMeta  clientMeta       `json:"client_meta"`
 	Messages    []completionMsg  `json:"messages"`
 	Option      completionOption `json:"option"`
 	UserContext []any            `json:"user_context"`
-	// Ext 是技能模式的顶层扩展（agent_mode=2 专用）；工作模式把扩展放进
-	// option.ext，顶层留空即不输出，避免两种形态同时出现。
+	// Ext 是技能管线的顶层扩展（agent_mode=2）：网页端把扩展放在顶层而非
+	// option 内部，两处同名不同层级，串了就整段失效。
 	Ext map[string]string `json:"ext,omitempty"`
+	// ChatAbility 只在视频确认轮出现，是「真正开跑」的开关。
+	//
+	// 首轮只回一段参数确认文本，不同步产生任何产物；带上该字段重发才会转成
+	// 异步视频任务（2026-11-17 抓包对比首轮与确认轮，唯一新增的顶层键）。
+	ChatAbility *chatAbility `json:"chat_ability,omitempty"`
+}
+
+// chatAbility 是视频确认轮的能力声明。
+//
+// AbilityParam 是**字符串套 JSON**（与 video_model 同一套路数），真实网页就是
+// 这么发的，拆成嵌套对象反而与抓包不一致。
+type chatAbility struct {
+	// AbilityType 是能力类型，视频生成固定 17。
+	AbilityType int `json:"ability_type"`
+	// AbilityParam 是字符串化参数，见 videoAbilityParam。
+	AbilityParam string `json:"ability_param"`
 }
 
 // clientMeta 把请求锚定到一个会话。
@@ -52,7 +70,11 @@ type completionRequest struct {
 // -1「委托输入协议不符」的成因，2026-11-16 21:20 已证伪 —— 真实浏览器原样 body
 // 在未投放工作模式的账号上同样回 -1，故 -1 与请求体字段无关。
 type clientMeta struct {
-	LocalConversationID string       `json:"local_conversation_id"`
+	// LocalConversationID 用 omitempty：新会话必填（缺失会被 710020202 拒），
+	// 但视频确认轮的浏览器请求里**根本没有这个键**，只有续接用的
+	// conversation_id / last_section_id / last_message_index。新会话路径始终会
+	// 填一个非空值，所以 omitempty 只在确认轮起作用。
+	LocalConversationID string       `json:"local_conversation_id,omitempty"`
 	ConversationID      string       `json:"conversation_id"`
 	BotID               string       `json:"bot_id"`
 	LastSectionID       string       `json:"last_section_id"`
@@ -81,6 +103,8 @@ type requestBlock struct {
 	ParentID     string           `json:"parent_id"`
 	MetaInfo     []any            `json:"meta_info"`
 	AppendFields []any            `json:"append_fields"`
+	// ExtraInfo 是块级扩展：真实网页每块都发一个空对象，缺了不报错但形状不一致。
+	ExtraInfo map[string]any `json:"extra_info"`
 }
 
 // requestBlockBody 是上行块体。
@@ -104,9 +128,11 @@ type completionOption struct {
 	CollectID         string `json:"collect_id"`
 	IsAudio           bool   `json:"is_audio"`
 	AnswerWithSuggest bool   `json:"answer_with_suggest"`
-	AgentMode         int    `json:"agent_mode"`
-	TTSSwitch         bool   `json:"tts_switch"`
-	NeedDeepThink     int    `json:"need_deep_think"`
+	// AgentMode 用 omitempty：确认轮的真实请求里没有这个键，写 0 会多出一个
+	// 首轮没有的字段，与抓包不一致。
+	AgentMode     int  `json:"agent_mode,omitempty"`
+	TTSSwitch     bool `json:"tts_switch"`
+	NeedDeepThink int  `json:"need_deep_think"`
 
 	// AggregateParams 是必需项，mode_id 缺失会让请求退回纯聊天路径。
 	AggregateParams aggregateParams `json:"aggregate_params"`
@@ -124,27 +150,6 @@ type completionOption struct {
 	// NeedCreateConversation 要求上游分配新会话；空 conversation_id 且不带它
 	// 会被以「参数不合法」拒绝。
 	NeedCreateConversation bool `json:"need_create_conversation"`
-
-	// ConversationMode 是**整数**，写字符串会被上游以 710020202
-	// "common invalid param" 拒绝（HTTP 200 + SSE 错误帧，心跳先到、随后报错）。
-	// 实测：写成 "2" 必错，写 2 或不写都正常；aggregate_params 里的同名字段
-	// 反而是字符串，两处类型不同，不可互换。
-	ConversationMode int `json:"conversation_mode,omitempty"`
-
-	// ConversationInitOption 是会话初始化确认项，工作模式必带，缺它上游不建会话。
-	ConversationInitOption *conversationInitOption `json:"conversation_init_option,omitempty"`
-
-	// ConversationInitExt 承载模型主键与 agent 任务参数，工作模式必带。
-	ConversationInitExt *conversationInitExt `json:"conversation_init_ext,omitempty"`
-
-	// GeneralTaskParam 是工作模式的 agent 任务参数，技能模式不出现。
-	GeneralTaskParam *generalTaskParam `json:"general_task_param,omitempty"`
-
-	// IsOldUser 标记老用户，工作模式必带且恒为 true。
-	IsOldUser bool `json:"is_old_user,omitempty"`
-
-	// MessageStorageType 是消息存储类型，工作模式固定 0。
-	MessageStorageType int `json:"message_storage_type"`
 
 	// 以下字段一律不写 omitempty：网页端每次都会把它们显式发出去，逐字节对齐
 	// 真实请求，避免任何「形状差异」成为排查噪音（2026-11-16 抓包对齐）。
@@ -172,6 +177,32 @@ type completionOption struct {
 
 	// RecoveryOption 是恢复/重试参数，网页端每次都带（且 req_create_time_sec 为当前秒）。
 	RecoveryOption recoveryOption `json:"recovery_option"`
+
+	// GeneralTaskParam 只在视频确认轮出现，值是对象（首轮是 nil，因而不序列化）。
+	//
+	// 首轮的同名数据放在顶层 Ext["general_task_param"]（字符串），两处层级与类型
+	// 都不同；确认轮把它搬进 option 且改成对象，同时 ext 里也留一份字符串副本。
+	GeneralTaskParam *generalTaskParamPayload `json:"general_task_param,omitempty"`
+
+	// IsOldUser / MessageStorageType 仅确认轮出现：真实确认轮 option 里这两个键
+	// 有值（true / 0），首轮没有。用指针区分「未设置」与「显式零值」。
+	IsOldUser          *bool `json:"is_old_user,omitempty"`
+	MessageStorageType *int  `json:"message_storage_type,omitempty"`
+}
+
+// generalTaskParamPayload 是确认轮 option.general_task_param 的对象形态。
+//
+// 四个键与真实确认轮逐字对齐；首轮的字符串版本多一层 agent_task_param_change，
+// 两者不是同一份数据，不能复用构造逻辑。
+type generalTaskParamPayload struct {
+	// RuntimeType 是运行类型，确认轮固定 0（首轮字符串版本也是 0）。
+	RuntimeType int `json:"runtime_type"`
+	// AgentTaskParam 确认轮恒为空对象。
+	AgentTaskParam map[string]any `json:"agent_task_param"`
+	// ProjectID 确认轮恒为空串。
+	ProjectID string `json:"project_id"`
+	// ServerDoCompare 确认轮为 true。
+	ServerDoCompare bool `json:"server_do_compare"`
 }
 
 // recoveryOption 是网页端的恢复选项段。
@@ -179,46 +210,6 @@ type recoveryOption struct {
 	IsRecovery          bool  `json:"is_recovery"`
 	ReqCreateTimeSec    int64 `json:"req_create_time_sec"`
 	AppendSSEEventScene int   `json:"append_sse_event_scene"`
-}
-
-// conversationInitOption 是会话初始化确认项。
-type conversationInitOption struct {
-	ProjectID           string `json:"project_id"`
-	NeedAckConversation bool   `json:"need_ack_conversation"`
-}
-
-// conversationInitExt 是会话初始化扩展参数。
-type conversationInitExt struct {
-	ModelItemKey    string `json:"model_item_key"`
-	ReasoningEffort string `json:"reasoning_effort"`
-	ModeID          string `json:"mode_id"`
-	AgentTaskParam  string `json:"agent_task_param"`
-}
-
-// agentTaskParam 描述 agent 运行环境，工作模式在 initExt 与 general_task_param 两处复用。
-//
-// 网页来源必须六个字段全部留空（runtime_type 为 1）：网页版没有本地沙箱，
-// 填上客户端字段会被上游判成「桌面端协议」并与实际来源不符。
-type agentTaskParam struct {
-	RuntimeType   int    `json:"runtime_type"`
-	FolderName    string `json:"folder_name"`
-	DeviceName    string `json:"device_name"`
-	Workspace     string `json:"workspace"`
-	LocalAppID    string `json:"local_app_id"`
-	LocalDeviceID string `json:"local_device_id"`
-}
-
-// generalTaskParam 是工作模式的任务参数总成。
-//
-// 网页版只上报这六个字段；客户端专属的 client_option / task_input_json /
-// agent_task_param_change / need_modify_conversation 一律不出现。
-type generalTaskParam struct {
-	Action               int            `json:"action"`
-	ThreadLocalMessageID []string       `json:"thread_local_message_id"`
-	ProjectID            string         `json:"project_id"`
-	RuntimeType          int            `json:"runtime_type"`
-	AgentTaskParam       agentTaskParam `json:"agent_task_param"`
-	ServerDoCompare      bool           `json:"server_do_compare"`
 }
 
 // aggregateParams 是生成路径选择参数。
@@ -251,39 +242,56 @@ func nowMillis() int64 {
 
 // buildCompletionRequest 组装一轮对话的请求体。
 //
-// mode.WorkMode 决定走哪条上游管线：true 时按客户端工作模式构造
-// （agent_mode=1，模型由 model_item_key 决定）；false 时按网页端技能模式构造
-// （agent_mode=2，靠 mention_skill_list 触发生成管线）。
+// 只有一条上游管线：网页端技能模式（agent_mode=2），靠 mention_skill_list 触发
+// 生图或生视频。会话续接点照常透传——视频要做「首轮确认 + 次轮出片」，第二轮
+// 必须能指回同一个 conversation 与 section，否则上游只当新对话处理。
+//
+// 续接点非空即认定为视频确认轮（confirm=true），此时改用确认轮形态：option 走
+// buildConfirmOption、ext 走 confirmExt、client_meta 不带 local_conversation_id。
+// 调用方若确实要在既有会话里发普通技能请求，用 buildCompletionRequestWith 显式
+// 指定 confirm=false。
 // [参数] sa: 账号（提供 bot_id）；text: 用户文本；mode: 生成模式；
 // conversationID / lastSectionID / lastMessageIndex: 会话续接点；
 // needCreate: 是否请求上游分配新会话。
 // [返回] 请求体。
-// 最近修改时间：2026-11-14 02:30:00；改动原因：拆分工作模式与技能模式两条构造分支。
+// 最近修改时间：2026-11-17 01:38:00；改动原因：按续接点区分确认轮形态。
 func buildCompletionRequest(sa *StoredAuth, text string, mode generationMode, conversationID, lastSectionID string, lastMessageIndex int64, needCreate bool) *completionRequest {
-	cfg := currentConfig()
+	resume := resumePoint{ConversationID: conversationID, SectionID: lastSectionID, MessageIndex: lastMessageIndex}
+	return buildCompletionRequestWith(sa, text, mode, resume, needCreate, !resume.isZero())
+}
+
+// buildCompletionRequestWith 组装请求体，并显式指定是否为确认轮。
+// [参数] sa: 账号；text: 用户文本；mode: 生成模式；resume: 会话续接点；
+// needCreate: 是否新建会话；confirm: 是否使用视频确认轮形态。
+// [返回] 请求体。
+// 最近修改时间：2026-11-17 01:38:00；改动原因：新增，把确认轮形态显式化。
+func buildCompletionRequestWith(sa *StoredAuth, text string, mode generationMode, resume resumePoint, needCreate bool, confirm bool) *completionRequest {
 	botID := strings.TrimSpace(sa.BotID)
-	if botID == "" {
-		botID = strings.TrimSpace(cfg.WorkBotID)
-	}
 	if botID == "" {
 		botID = defaultBotID
 	}
 
-	// 1. 先落地消息块：工作模式的 general_task_param 必须回指同一个消息 id。
+	// 1. 先落地消息块：消息 id 由本地生成，上游只做透传回显。
 	localMessageID := randomUUID()
 	// 新会话（未给续接点）显式发 null，与浏览器一致。
 	var lastIndex *int64
-	if lastMessageIndex > 0 {
-		lastIndex = &lastMessageIndex
+	if resume.MessageIndex > 0 {
+		messageIndex := resume.MessageIndex
+		lastIndex = &messageIndex
+	}
+	// 确认轮的浏览器请求里没有 local_conversation_id，留空并由 omitempty 省略。
+	localConversationID := ""
+	if !confirm {
+		localConversationID = "local_" + randomUUID()
 	}
 	body := &completionRequest{
 		ClientMeta: clientMeta{
-			LocalConversationID: "local_" + randomUUID(),
-			ConversationID:      conversationID,
+			LocalConversationID: localConversationID,
+			ConversationID:      resume.ConversationID,
 			BotID:               botID,
-			LastSectionID:       lastSectionID,
+			LastSectionID:       resume.SectionID,
 			LastMessageIndex:    lastIndex,
-			LocalPermissions:    localPermissionsFor(mode.WorkMode),
+			LocalPermissions:    localPermissionsFor(),
 		},
 		Messages: []completionMsg{{
 			LocalMessageID: localMessageID,
@@ -294,6 +302,7 @@ func buildCompletionRequest(sa *StoredAuth, text string, mode generationMode, co
 				ParentID:     "",
 				MetaInfo:     []any{},
 				AppendFields: []any{},
+				ExtraInfo:    map[string]any{},
 				Content: requestBlockBody{
 					TextBlock: &textBlockPayload{Text: text},
 				},
@@ -302,11 +311,13 @@ func buildCompletionRequest(sa *StoredAuth, text string, mode generationMode, co
 		UserContext: []any{},
 	}
 
-	// 2. 按管线分别组装 option：两条管线的扩展都放在顶层 ext。
-	if mode.WorkMode {
-		body.Option = buildWorkOption(cfg, sa, mode, localMessageID, needCreate)
-		generalTaskJSON, _ := json.Marshal(body.Option.GeneralTaskParam)
-		body.Ext = workModeExt(string(generalTaskJSON))
+	// 2. 组装 option 与顶层 ext：两条形态不可混用。
+	if confirm {
+		body.Option = buildConfirmOption(mode, needCreate)
+		body.Ext = confirmExt()
+		// chat_ability 是确认轮「真正开跑」的唯一开关，必须由构造器负责注入：
+		// 交给调用方手工挂会漏，漏了就只剩一段确认文本、不产生任何产物。
+		body.ChatAbility = buildVideoConfirmAbility(text, videoConfirmRatio, videoConfirmModel, videoConfirmResolution, videoConfirmDuration)
 		return body
 	}
 	body.Option = buildSkillOption(mode, needCreate)
@@ -316,15 +327,14 @@ func buildCompletionRequest(sa *StoredAuth, text string, mode generationMode, co
 
 // localPermissionsFor 返回本地权限声明列表。
 //
-// 两条管线都上报 status=3：这是网页端真实取值（浏览器抓包 confirmed）。
-// 旧实现工作模式报 1，来自「客户端已授权」的错误推断，会让网页来源的
-// 工作模式请求被判成客户端协议（-1 delegated input protocol violation）。
-// [参数] workMode: 是否工作模式（保留入参以表明取值与管线无关）。
+// status=3 是网页端真实取值（浏览器抓包 confirmed）。旧实现曾给工作模式报 1，
+// 来自「客户端已授权」的错误推断，会让网页来源的请求被判成客户端协议
+// （-1 delegated input protocol violation，2026-11-16 实测）。
+// [参数] 无。
 // [返回] 权限声明列表。
-// 最近修改时间：2026-11-16 01:44:00；改动原因：统一上报 3，与真实网页对齐。
-func localPermissionsFor(workMode bool) []permission {
-	// 1. 两条管线同值；保留入参只是为了让调用点语义清楚。
-	_ = workMode
+// 最近修改时间：2026-11-17 00:55:00；改动原因：工作模式删除，去掉无意义的入参。
+func localPermissionsFor() []permission {
+	// 1. 固定取值，与真实网页对齐。
 	const status = 3
 
 	// 2. 三条权限同名同值，缺一条会被上游当能力声明不完整。
@@ -388,8 +398,7 @@ func buildSkillOption(mode generationMode, needCreate bool) completionOption {
 }
 
 // skillExt 返回网页端技能链路的顶层 ext 段。
-//
-// 该字典只有技能链路使用；工作模式的 ext 在 option 内部，两者互斥。
+// 网页端把扩展放在**顶层** ext（不是 option.ext），首轮共 6 键。
 // [参数] 无。
 // [返回] ext 字典。
 // 最近修改时间：2026-11-14 02:30:00；改动原因：从 buildCompletionRequest 抽出，取值不变。
@@ -417,82 +426,54 @@ func skillExt() map[string]string {
 	}
 }
 
-// buildWorkOption 构造工作模式（agent_mode=1）的 option 段。
+// buildConfirmOption 构造视频确认轮的 option 段。
 //
-// 六个必填项缺一不可：agent_mode=1、conversation_mode=2、need_deep_think=10001、
-// conversation_init_option、conversation_init_ext、general_task_param。
-// model_item_key 必须同时出现在 conversation_init_ext、model_config、
-// aggregate_params 三处，任一处缺失或不一致都会让上游回落到账号默认模型。
-// [参数] cfg: 运行期配置；mode: 生成模式（提供模型主键与档位）；
-// localMessageID: 本轮消息 id，供 general_task_param 回指；needCreate: 是否新建会话。
+// 确认轮与首轮不是同一份形态（2026-11-17 抓包逐字段对比）：
+//   - agent_mode 键整个不出现（首轮是 2）；
+//   - aggregate_params 六个路径字段全为空串（首轮是 mode_id=1 / agent_mode=2 …）；
+//   - model_config 只留空 model_item_key 与空 map，没有 reasoning_effort；
+//   - need_create_conversation=false（必须续接既有会话）；
+//   - 多出 general_task_param 对象、is_old_user、message_storage_type 三项。
+//
+// 上游只认「续接点 + chat_ability」这一组合来真正开跑，路径参数留空是它的正常
+// 形态；照首轮那样填满反而会被当成新的一轮对话。
+// [参数] mode: 生成模式（仅用于注释语义，确认轮不写路径参数）；needCreate 恒 false。
 // [返回] option 段。
-// 最近修改时间：2026-11-14 02:30:00；改动原因：新增，落地豆包客户端工作模式协议。
-func buildWorkOption(cfg Config, sa *StoredAuth, mode generationMode, localMessageID string, needCreate bool) completionOption {
-	modeID := strings.TrimSpace(cfg.WorkModeID)
-	if modeID == "" {
-		modeID = defaultWorkModeID
-	}
-	effort := strings.TrimSpace(mode.ReasoningEffort)
-	if effort == "" {
-		effort = defaultWorkReasoningEffort
-	}
-	memoryProfile := strings.TrimSpace(mode.MemoryProfile)
-	if memoryProfile == "" {
-		memoryProfile = cfg.WorkMemoryProfile
-	}
-	totalWindow := strings.TrimSpace(mode.TotalWindow)
-	if totalWindow == "" {
-		totalWindow = cfg.WorkTotalWindow
-	}
-
-	// 1. 组装 agent 任务参数：网页来源六字段全空，runtime_type 固定 1。
-	taskParam := agentTaskParam{RuntimeType: 1}
-	taskParamJSON, _ := json.Marshal(taskParam)
-
-	// 2. 组装 option 主体：三处 model_item_key 必须取同一个值。
+// 最近修改时间：2026-11-17 01:36:00；改动原因：新增，视频两段式的第二段形态。
+func buildConfirmOption(mode generationMode, needCreate bool) completionOption {
+	// 1. 基础字段与技能轮同源，但路径参数一律留空。
 	option := completionOption{
-		CreateTimeMS:           nowMillis(),
-		AnswerWithSuggest:      false,
-		AgentMode:              1,
-		NeedDeepThink:          needDeepThinkOn,
-		UniqueKey:              randomUUID(),
-		StartSeq:               0,
-		NeedCreateConversation: needCreate,
-		ConversationMode:       workConversationMode,
-		IsOldUser:              true,
-		MessageStorageType:     0,
-		ConversationInitOption: &conversationInitOption{NeedAckConversation: true},
-		ConversationInitExt: &conversationInitExt{
-			ModelItemKey:    mode.ModelItemKey,
-			ReasoningEffort: effort,
-			ModeID:          modeID,
-			AgentTaskParam:  string(taskParamJSON),
-		},
-		ModelConfig: modelConfig{
-			ModelItemKey: mode.ModelItemKey,
-			ModelExtraParams: map[string]any{
-				"memory_profile":    memoryProfile,
-				"total_window_size": totalWindow,
-			},
-			ReasoningEffort: atoiSafe(effort),
-		},
+		CreateTimeMS:  nowMillis(),
+		NeedDeepThink: 0,
 		AggregateParams: aggregateParams{
 			MentionSkillList:  "[]",
 			MentionPluginList: "[]",
 			MentionExt:        "[{}]",
-			ConversationMode:  strconv.Itoa(workConversationMode),
-			ModeID:            modeID,
-			ModelItemKey:      mode.ModelItemKey,
-			AgentMode:         "1",
-			ReasoningEffort:   effort,
-			ProviderID:        "",
+		},
+		ModelConfig: modelConfig{
+			ModelItemKey:     "",
+			ModelExtraParams: map[string]any{},
+		},
+		UniqueKey:              randomUUID(),
+		NeedCreateConversation: needCreate,
+		GeneralTaskParam: &generalTaskParamPayload{
+			RuntimeType:     0,
+			AgentTaskParam:  map[string]any{},
+			ProjectID:       "",
+			ServerDoCompare: true,
 		},
 	}
+	// 2. 两个流式开关与首轮一致，否则拿不到增量帧。
 	option.SSERecvEventOptions.SupportChunkDelta = true
 	option.SupportLazyFetchStream = true
 
-	// 3. 补齐网页端每次都会显式发送的默认值段：缺这些键上游按「委托输入协议不符」
-	//    直接回 -1（2026-11-16 消融：只补这些默认值就让 -1 变回 710022004）。
+	// 3. 三个「仅确认轮出现」的标量：显式置值，靠指针与 omitempty 表达存在性。
+	isOldUser := true
+	storageType := 0
+	option.IsOldUser = &isOldUser
+	option.MessageStorageType = &storageType
+
+	// 4. 网页端默认值段与首轮一致。
 	option.ConnectorInfoList = []any{}
 	option.EditQueryID = []any{}
 	option.RegenQueryID = []any{}
@@ -502,36 +483,57 @@ func buildWorkOption(cfg Config, sa *StoredAuth, mode generationMode, localMessa
 		ReqCreateTimeSec:    time.Now().Unix(),
 		AppendSSEEventScene: 0,
 	}
-
-	// 4. 组装 general_task_param；网页来源不带任何客户端沙箱字段。
-	option.GeneralTaskParam = &generalTaskParam{
-		Action:               0,
-		ThreadLocalMessageID: []string{localMessageID},
-		ProjectID:            "",
-		RuntimeType:          1,
-		AgentTaskParam:       taskParam,
-		ServerDoCompare:      true,
-	}
+	// 5. 确认轮不点名 skill：走的是 chat_ability 而不是 mention_skill_list。
+	_ = mode
 	return option
 }
 
-// workModeExt 返回工作模式的顶层 ext 段。
+// confirmExt 返回视频确认轮的顶层 ext 段。
 //
-// 网页版把扩展放在**顶层** ext（不是 option.ext），共 8 键；缺 sub_conv_firstmet_type
-// 会被上游判成非网页来源。conversation_init_option 必须是带 project_id 的 JSON 串。
-// [参数] generalTaskJSON: 已序列化的 general_task_param 串。
-// [返回] 顶层 ext 字典。
-// 最近修改时间：2026-11-16 01:45:00；改动原因：新增，工作模式扩展搬到顶层并与真实网页对齐。
-func workModeExt(generalTaskJSON string) map[string]string {
+// 与首轮 skillExt 的差异：没有 agent_mode / use_deep_think / sub_conv_firstmet_type，
+// 多一个 answer_with_suggest="0"，且 general_task_param 换成确认轮那份对象序列化。
+// [参数] 无。
+// [返回] ext 字典。
+// 最近修改时间：2026-11-17 01:36:00；改动原因：新增，确认轮 ext 只有 5 键。
+func confirmExt() map[string]string {
+	taskParam, _ := json.Marshal(generalTaskParamPayload{
+		RuntimeType:     0,
+		AgentTaskParam:  map[string]any{},
+		ProjectID:       "",
+		ServerDoCompare: true,
+	})
 	return map[string]string{
-		"general_task_param":            generalTaskJSON,
-		"use_deep_think":                strconv.Itoa(needDeepThinkOn),
-		"agent_mode":                    "1",
-		"conversation_init_option":      "{\"project_id\":\"\",\"need_ack_conversation\":true}",
-		"sub_conv_firstmet_type":        "1",
+		"answer_with_suggest":           "0",
+		"general_task_param":            string(taskParam),
 		"collection_id":                 "",
 		"is_finish":                     "1",
 		"commerce_credit_config_enable": "0",
+	}
+}
+
+// buildVideoConfirmAbility 组装视频确认轮的 chat_ability。
+//
+// ability_param 是**字符串套 JSON**：真实网页这么发，拆成对象会与抓包不一致。
+// reply_message_format 里的 %s 是上游回填视频描述的位置，不是本地格式化占位，
+// 必须原样送出。
+// [参数] text: 用户在确认轮输入的文本（真实网页原样回填进 user_input_content）；
+// ratio / model / resolution: 首轮确认文本里给出的三个参数；duration: 秒数。
+// [返回] 能力声明。
+// 最近修改时间：2026-11-17 01:36:00；改动原因：新增，视频真正开跑的开关。
+func buildVideoConfirmAbility(text, ratio, model, resolution string, duration int) *chatAbility {
+	param, _ := json.Marshal(map[string]any{
+		"ratio":      ratio,
+		"model":      model,
+		"duration":   duration,
+		"resolution": resolution,
+		"input_box_content": map[string]any{
+			"user_input_content":   text,
+			"reply_message_format": "生成视频：%s",
+		},
+	})
+	return &chatAbility{
+		AbilityType:  abilityTypeVideoGen,
+		AbilityParam: string(param),
 	}
 }
 
@@ -817,15 +819,14 @@ func newUpstreamClient(sa *StoredAuth, timeout time.Duration) (*http.Client, *du
 
 // applyUpstreamHeaders 设置业务端点所需的请求头。
 //
-// 两条管线都用网页端 UA 与单值 agw-js-conv：工作模式在网页版里就是网页来源，
-// 换客户端 UA 会被上游按「桌面端协议」解析请求体，与实际 body 形状不符，
-// 直接回 -1 delegated input protocol violation（2026-11-16 实测）。
-// [参数] req: 请求；workMode: 是否工作模式（保留入参以表明取值与管线无关）。
+// 固定用网页端 UA 与单值 agw-js-conv：换客户端 UA 会被上游按「桌面端协议」
+// 解析请求体，与实际 body 形状不符，直接回 -1 delegated input protocol
+// violation（2026-11-16 实测）。
+// [参数] req: 请求。
 // [返回] 无。
-// 最近修改时间：2026-11-16 01:46:00；改动原因：取消客户端指纹头，统一按网页端上报。
-func applyUpstreamHeaders(req *http.Request, workMode bool) {
-	// 1. 两条管线同源同版本，只上报网页端那一套。
-	_ = workMode
+// 最近修改时间：2026-11-17 00:55:00；改动原因：工作模式删除，去掉无意义的入参。
+func applyUpstreamHeaders(req *http.Request) {
+	// 1. 只上报网页端那一套。
 	req.Header.Set("User-Agent", webUserAgent)
 	req.Header.Set("Origin", doubaoSiteHost)
 	req.Header.Set("Referer", doubaoSiteHost+"/chat/")
@@ -848,23 +849,22 @@ func swapCompletionEndpoint(endpoint string) func() {
 
 // completionURL 返回对话端点完整地址（测试可通过 swapCompletionEndpoint 覆盖）。
 //
-// 两条管线都用网页端参数集：工作模式在浏览器里就是网页来源（aid=497858、
-// doubao_device_platform=web、web_platform=browser）。用客户端参数集会让上游
-// 按桌面端协议解析，与实际 body 形状不符，直接回 -1（2026-11-16 实测）。
+// 用网页端参数集（aid=497858、doubao_device_platform=web、web_platform=browser）：
+// 换客户端参数集会让上游按桌面端协议解析，与实际 body 形状不符，直接回 -1
+// （2026-11-16 实测）。
 //
-// 两条管线都必须补齐字节风控签名（msToken + a_bogus），否则上游直接回
-// 710022002「当前服务访问频繁」，与账号状态无关（见 sign.go）。
-// [参数] sa: 账号（提供设备级标识与 msToken）；workMode: 是否工作模式（保留入参以表明取值与管线无关）；body: 即将发送的请求体（a_bogus 覆盖 body）。
+// 必须补齐字节风控签名（msToken + a_bogus），否则上游直接回 710022002
+// 「当前服务访问频繁」，与账号状态无关（见 sign.go）。
+// [参数] sa: 账号（提供设备级标识与 msToken）；body: 即将发送的请求体（a_bogus 覆盖 body）。
 // [返回] 完整 URL。
-// 最近修改时间：2026-11-16 03:16:00；改动原因：a_bogus 把请求体算进签名，签名必须拿到真实 body。
-func completionURL(sa *StoredAuth, workMode bool, body []byte) string {
+// 最近修改时间：2026-11-17 00:55:00；改动原因：工作模式删除，去掉无意义的入参。
+func completionURL(sa *StoredAuth, body []byte) string {
 	// 1. 测试覆盖点优先，保证流式链路能在 httptest 下验证。
 	if completionEndpointOverride != "" {
 		return completionEndpointOverride
 	}
 
-	// 2. 两条管线同一参数集；签名在参数集之后做，先签再改会失效。
-	_ = workMode
+	// 2. 参数集固定；签名在参数集之后做，先签再改会失效。
 	return signChatCompletionURL(sa, endpointURL(sa, "/chat/completion", nil), body)
 }
 
@@ -875,21 +875,20 @@ func completionURL(sa *StoredAuth, workMode bool, body []byte) string {
 // [返回] 请求或读取错误。
 // 最近修改时间：2026-10-17；改动原因：新增，SSE 上游调用。
 func streamCompletion(ctx context.Context, sa *StoredAuth, body *completionRequest, onEvent func(completionEvent) bool) error {
-	// 1. 由请求体反推管线：agent_mode=1 即工作模式，URL 与请求头都要跟着切换。
-	workMode := body.Option.AgentMode == 1
+	// 1. 先编码请求体：签名要吃真实 body，必须先序列化再签。
 	raw, errMarshal := json.Marshal(body)
 	if errMarshal != nil {
 		return fmt.Errorf("编码请求失败：%w", errMarshal)
 	}
 
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, completionURL(sa, workMode, raw), bytes.NewReader(raw))
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, completionURL(sa, raw), bytes.NewReader(raw))
 	if errReq != nil {
 		return fmt.Errorf("构造请求失败：%w", errReq)
 	}
 	// 与 /im/* 相反：本端点只接受纯 application/json。
 	req.Header.Set("Content-Type", contentTypeJSON)
 	req.Header.Set("Accept", "text/event-stream")
-	applyUpstreamHeaders(req, workMode)
+	applyUpstreamHeaders(req)
 
 	// 2. 流式请求不设客户端超时，回复可能持续数分钟，由 ctx 约束。
 	client, jar := newUpstreamClient(sa, 0)
@@ -958,7 +957,7 @@ func postBusinessJSON(ctx context.Context, sa *StoredAuth, path string, raw []by
 	}
 	req.Header.Set("Content-Type", contentTypeJSON)
 	req.Header.Set("Accept", "application/json")
-	applyUpstreamHeaders(req, false)
+	applyUpstreamHeaders(req)
 
 	// 2. 请求结束后把滚动下发的 Cookie 落盘，失败不影响本次结果。
 	client, jar := newUpstreamClient(sa, time.Duration(currentConfig().TimeoutSeconds)*time.Second)
@@ -984,6 +983,28 @@ func postBusinessJSON(ctx context.Context, sa *StoredAuth, path string, raw []by
 	return body, nil
 }
 
+// resumePoint 是会话续接点：指回上一条提问，让上游把新消息接在同一个 section 下。
+//
+// 视频是两段式的：首轮只回参数确认，次轮要「接着上一句说」。次轮的请求体里
+// agent_mode / conversation_mode / model_item_key 全部留空，上游完全靠这三个
+// 字段找回上下文（2026-11-17 抓包确认）。新会话时三个字段都为空，语义不变。
+type resumePoint struct {
+	// ConversationID 是上游分配的会话 id。
+	ConversationID string
+	// SectionID 是上一条回复所在分节 id。
+	SectionID string
+	// MessageIndex 是上一条提问在会话中的序号，0 表示不带。
+	MessageIndex int64
+}
+
+// isZero 判断是否为「新会话」。
+// [参数] 无。
+// [返回] 三个字段全空时返回 true。
+// 最近修改时间：2026-11-17 01:30:00；改动原因：新增，续接点判空。
+func (r resumePoint) isZero() bool {
+	return strings.TrimSpace(r.ConversationID) == "" && strings.TrimSpace(r.SectionID) == "" && r.MessageIndex == 0
+}
+
 // completionResult 是一次对话的聚合结果。
 type completionResult struct {
 	// Text 是可见回复正文。
@@ -1000,7 +1021,32 @@ type completionResult struct {
 	Assets []creationAsset
 }
 
-// collectCompletion 执行一轮对话并聚合完整结果。
+// resumePointOf 把聚合结果收敛成下一轮可用的续接点。
+// [参数] 无。
+// [返回] 续接点。
+// 最近修改时间：2026-11-17 01:30:00；改动原因：新增，回程续接点。
+func (r *completionResult) resumePointOf() resumePoint {
+	if r == nil {
+		return resumePoint{}
+	}
+	return resumePoint{ConversationID: r.ConversationID, SectionID: r.SectionID, MessageIndex: r.MessageIndex}
+}
+
+// collectCompletion 执行一轮新会话对话并聚合完整结果。
+//
+// 这是 collectCompletionWithResume 的新会话特例：不带续接点、要求上游新建会话。
+// 保留这个签名是因为大量用例与测试替身只关心「发一句话拿回复」，让它们也被迫
+// 构造空续接点没有收益。
+// [参数] ctx: 上下文；sa: 账号；text: 用户文本；mode: 生成模式；
+// conversationID: 会话 id（空表示新会话）；needCreate: 是否要求上游新建会话；
+// onDelta: 文本增量回调。
+// [返回] 聚合结果与错误。
+// 最近修改时间：2026-11-17 01:32:00；改动原因：新增续接点版主函数，本函数改为委托。
+func collectCompletion(ctx context.Context, sa *StoredAuth, text string, mode generationMode, conversationID string, needCreate bool, onDelta func(string)) (*completionResult, error) {
+	return collectCompletionWithResume(ctx, sa, text, mode, resumePoint{ConversationID: conversationID}, needCreate, onDelta)
+}
+
+// collectCompletionWithResume 执行一轮对话并聚合完整结果。
 //
 // 文本聚合口径（2026-10-17 实测确认）：回复正文分散在多种事件里，必须按到达顺序
 // 累加——STREAM_MSG_NOTIFY 的首块、STREAM_CHUNK 的 patch、CHUNK_DELTA 的 text
@@ -1008,24 +1054,29 @@ type completionResult struct {
 // 提问回显**（message.user_type=1），把它计入会把问题拼进回答；只有 user_type=2
 // 的整消息才是助手回复，可作最终权威值覆盖累加结果。
 //
+// 续接点是视频两段式的前提：次轮的 agent_mode / conversation_mode /
+// model_item_key 全部留空，上游只靠 conversation_id + section_id +
+// message_index 找回上下文（2026-11-17 抓包确认）。三个字段缺一个都会让次轮
+// 变成一条孤立的新消息，参数确认永远等不到「开始生成」。
+//
 // onDelta 非空时，每收到一段文本增量回调一次（流式调用方使用）。
 // [参数] ctx: 上下文；sa: 账号；text: 用户文本；mode: 生成模式；
-// conversationID: 会话 id（空表示新会话）；needCreate: 是否要求上游新建会话；
+// resume: 会话续接点（零值表示新会话）；needCreate: 是否要求上游新建会话；
 // onDelta: 文本增量回调。
 // [返回] 聚合结果与错误。
-// 最近修改时间：2026-10-17；改动原因：新增，TASK-004 流解析聚合。
-func collectCompletion(ctx context.Context, sa *StoredAuth, text string, mode generationMode, conversationID string, needCreate bool, onDelta func(string)) (*completionResult, error) {
-	// 1. 组装请求体：mode 决定走工作模式还是技能模式管线。
-	body := buildCompletionRequest(sa, text, mode, conversationID, "", 0, needCreate)
+// 最近修改时间：2026-11-17 01:32:00；改动原因：新增，会话续接点贯穿。
+func collectCompletionWithResume(ctx context.Context, sa *StoredAuth, text string, mode generationMode, resume resumePoint, needCreate bool, onDelta func(string)) (*completionResult, error) {
+	// 1. 组装请求体：mode 只决定激活哪个 skill（生图 / 生视频）。
+	body := buildCompletionRequest(sa, text, mode, resume.ConversationID, resume.SectionID, resume.MessageIndex, needCreate)
 
 	var (
 		textBuf   strings.Builder
 		fullText  string
 		reasoning strings.Builder
 		assets    []creationAsset
-		convID    = conversationID
-		sectionID string
-		msgIndex  int64
+		convID    = resume.ConversationID
+		sectionID = resume.SectionID
+		msgIndex  = resume.MessageIndex
 		streamErr error
 	)
 

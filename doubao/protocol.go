@@ -28,7 +28,12 @@ import (
 //     影响尚未分离。采集链路见 login.go 的 callbackSVWebIDHeader，读取入口见
 //     fingerprintOf。
 //
-// 最近修改时间：2026-11-15 22:55:00；改动原因：补记设备指纹是更前置的判据。
+//   - 工作模式（agent_mode=1）整条协议已随「只做图片与视频」删除（2026-11-17）：
+//     该管线依赖账号被投放 pc_incentive_task_mvp_v3 活动，且必须做会话续接与
+//     异步产物回灌，与生图/生视频的同步产物模型无关。删掉的常量与 atoiSafe
+//     只服务那条管线，任何一处都不再被引用。
+//
+// 最近修改时间：2026-11-17 00:52:00；改动原因：删除工作模式常量与 atoiSafe。
 
 const (
 	// webUserAgent 是模拟网页端请求的 User-Agent。
@@ -62,6 +67,12 @@ const (
 	// 上游按参数错误拒绝（实测 710020202）。
 	contentTypeJSON = "application/json"
 
+	// contentTypeIM 是 /im/* 族端点要求的 Content-Type。
+	//
+	// 与 contentTypeJSON 相反：/im/* 必须显式声明 encoding=utf-8，缺了会被上游
+	// 以 712012002「不支持编码类型」直接拒绝（2026-11-17 拉消息链时实测）。
+	contentTypeIM = "application/json; encoding=utf-8"
+
 	// blockTypeText 是消息文本块类型（BlockType.java: BLOCK_TYPE_TEXT）。
 	blockTypeText = 10000
 
@@ -80,61 +91,41 @@ const (
 	// skillVideoGen 是视频生成能力的上游 skill id。
 	skillVideoGen = 5
 
-	// workConversationMode 是工作模式会话的 conversation_mode 取值。
+	// abilityTypeVideoGen 是 chat_ability.ability_type 的视频生成取值。
 	//
-	// 上游用该字段区分会话类型：2 = 工作任务（agent 管线），0 = 普通对话。
-	workConversationMode = 2
+	// 视频确认轮靠它把「一段确认文本」升级成异步视频任务；首轮没有该字段，
+	// 因此只回参数确认、不产生任何产物（2026-11-17 抓包对比确认）。
+	abilityTypeVideoGen = 17
 
-	// defaultWorkModeID 是工作模式的 mode_id（mode_name 为「工作任务」）。
-	defaultWorkModeID = "3"
-
-	// defaultWorkReasoningEffort 是工作模式默认推理档位（0-4，4 为最高）。
-	defaultWorkReasoningEffort = "4"
-
-	// defaultWorkMemoryProfile 是工作模式默认记忆档位。
-	defaultWorkMemoryProfile = "300k_230"
-
-	// defaultWorkTotalWindow 是工作模式默认上下文窗口（与 memory_profile 配套）。
-	defaultWorkTotalWindow = "300000"
-
-	// needDeepThinkOn 是开启深度思考时 need_deep_think 的取值（10001 = 开启）。
-	needDeepThinkOn = 10001
-
-	// workWorkspaceMarker 是客户端工作目录标记。
-	workWorkspaceMarker = "\\Doubao"
+	// 视频确认轮的四个参数：真实网页把它们写在首轮确认文本里，次轮原样回传。
+	//
+	// 插件侧固定这一套取值：首轮提示词由插件给出参数确认，用户确认时参数本就
+	// 是这一套，固定下来不会与首轮文本冲突。
+	videoConfirmRatio      = "auto"
+	videoConfirmModel      = "seedance_v2.0_mini"
+	videoConfirmResolution = "720p"
+	videoConfirmDuration   = 10
 )
 
-// generationMode 描述一次请求期望的回复形态与模型参数。
+// generationMode 描述一次请求期望的回复形态。
 //
-// 两条不兼容的上游管线共用本结构：
-//   - 工作模式（WorkMode=true）：agent_mode=1，走客户端形态请求，模型由
-//     ModelItemKey 决定，Skill 恒为 0；
-//   - 技能模式（WorkMode=false）：agent_mode=2，走网页端形态请求，靠 Skill
-//     激活生图/生视频管线。
-//
-// 缺 Skill 时「画一只猫」只会被模型描述而不会真正绘制；反过来，在工作模式
-// 里塞 Skill 会被上游按普通对话处理。
+// 只剩一条上游管线（网页端技能管线，agent_mode=2）：靠 Skill 激活生图或
+// 生视频。缺 Skill 时「画一只猫」只会被模型描述而不会真正绘制——这是静默
+// 降级，不报错，因此调用方必须从目录别名取值，不能自己拼。
 type generationMode struct {
-	// Skill 是上游 skill id，0 表示纯文本对话。
+	// Skill 是上游 skill id，0 表示未声明能力。
 	Skill int
-	// Kind 是回复解析类型：text / image / video。
+	// Kind 是回复解析类型：image / video。
 	Kind string
-	// ModelItemKey 是上游模型主键（agent 管线按它选模型）。
-	ModelItemKey string
-	// MemoryProfile 是上游记忆档位（如 300k_230），需与 TotalWindow 配套。
-	MemoryProfile string
-	// TotalWindow 是上下文窗口大小（十进制字符串，如 300000）。
-	TotalWindow string
-	// ReasoningEffort 是推理档位（0-4，4 为最高）。
-	ReasoningEffort string
-	// WorkMode 表示走 agent 工作模式管线。
-	WorkMode bool
 }
 
-// textMode 返回普通对话模式（技能模式，无 skill）。
+// textMode 返回不带任何 skill 的空模式。
+//
+// 保留它是因为大量测试要一份「最小的合法 generationMode」；生产路径上模型名
+// 一律经 modeForModel 解析，未知名直接失败，不会落到这里。
 // [参数] 无。
 // [返回] Skill 为 0 的文本模式。
-// 最近修改时间：2026-11-14 01:40:00；改动原因：工作模式引入后明确本函数只表达技能管线的空模式。
+// 最近修改时间：2026-11-17 00:52:00；改动原因：工作模式管线删除，本函数只服务于测试基线。
 func textMode() generationMode {
 	return generationMode{Skill: 0, Kind: "text"}
 }
@@ -390,25 +381,4 @@ func buildAccountInfoQuery() string {
 	q.Set("sdk_version", accountInfoSDKVersion)
 	q.Set("doubao_from", "inject_html")
 	return q.Encode()
-}
-
-// atoiSafe 把纯数字字符串转成整数，遇非数字字符即停止。
-//
-// 上游要整数型的 reasoning_effort，而配置里存的是字符串；用 strconv.Atoi
-// 遇到 "4 " 之类的脏值会整段失败，这里按前缀解析保证总能拿到一个档位。
-// [参数] s: 待转换字符串。
-// [返回] 解析结果；无数字前缀时为 0。
-// 最近修改时间：2026-11-14 03:05:00；改动原因：新增，推理档位字符串转整数。
-func atoiSafe(s string) int {
-	// 1. 按字符前缀累加，遇非数字立即停止。
-	value := 0
-	for _, r := range strings.TrimSpace(s) {
-		if r < '0' || r > '9' {
-			break
-		}
-		value = value*10 + int(r-'0')
-	}
-
-	// 2. 无数字前缀时返回 0，由调用方按默认档位兜底。
-	return value
 }

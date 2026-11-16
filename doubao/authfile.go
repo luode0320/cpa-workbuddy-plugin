@@ -516,9 +516,9 @@ func saveCredentials(header, label string, timeout time.Duration) (*StoredAuth, 
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	// 设备标识必须在账号生命周期内保持不变：工作模式每次请求都要带
-	// device_id / tea_uuid，同一账号换标识会被上游按多设备登录归因，
-	// 必须与账号一起持久化（派生规则见 deviceIDFor）。
+	// 设备标识必须在账号生命周期内保持不变：每次请求都要带 device_id /
+	// tea_uuid，同一账号换标识会被上游按多设备登录归因，必须与账号一起持久化
+	// （派生规则见 deviceIDFor）。
 	sa.DeviceID = deviceIDFor(sa)
 	sa.WebID = strings.TrimSpace(sa.WebID)
 	sa.WebTabID = randomUUID()

@@ -10,15 +10,12 @@ import (
 
 // 本文件声明插件对外暴露的模型目录。
 //
-// 目录分两层：
-//   - 能力别名（default / pro / image / video）：描述**能力**而不是厂商 SKU，
-//     上游换模型时语义仍成立；
-//   - 工作模式模型（deepseek / kimi / glm / auto 等）：直指工作模式管线里的
-//     真实上游模型主键（model_item_key），一个别名锁一套 model_item_key +
-//     memory_profile + total_window_size + reasoning_effort。
+// 目录只有两条能力别名（image / video）：插件只做生图与生视频，别名描述
+// **能力**而不是厂商 SKU，上游换模型时语义仍成立。
 //
-// 未知名不做拦截，按工作模式默认模型透传：上游忽略不认识的主键并回落到账号
-// 默认助手，这比直接报错更符合使用者预期。
+// 未知名一律拒绝并返回明确错误：目录里已没有可回落的对话模型，静默透传
+// 只会让调用方以为在测生图，实际打到了别的东西上。
+// 最近修改时间：2026-11-17 00:32:00；改动原因：改为图片与视频专用，删除工作模式模型目录。
 
 // modelAlias 是一条对外暴露的模型别名。
 type modelAlias struct {
@@ -28,15 +25,15 @@ type modelAlias struct {
 	DisplayName string
 	// Description 说明该别名对应的能力。
 	Description string
-	// Skill 是该别名需要激活的上游 skill，0 表示普通对话。
+	// Skill 是该别名需要激活的上游 skill，0 表示未声明能力。
 	Skill int
-	// ModelItemKey 是工作模式的上游模型主键；空表示该别名不暴露工作模式模型。
+	// ModelItemKey 是该别名的上游模型主键；图片与视频管线不使用该字段。
 	ModelItemKey string
-	// MemoryProfile 是上游记忆档位，必须与 TotalWindow 配对使用。
+	// MemoryProfile 是该别名的上游记忆档位，必须与 TotalWindow 配对使用。
 	MemoryProfile string
 	// TotalWindow 是上下文窗口大小（十进制字符串）。
 	TotalWindow string
-	// ReasoningEffort 是推理档位（0-4）；空表示沿用工作模式默认档位。
+	// ReasoningEffort 是推理档位（0-4）；空表示沿用上游默认档位。
 	ReasoningEffort string
 }
 
@@ -44,18 +41,8 @@ type modelAlias struct {
 //
 // 前缀固定为 doubao/：宿主按 provider 聚合多个插件的模型，裸名容易与其他
 // 服务商的同名模型冲突。
+// 最近修改时间：2026-11-17 00:32:00；改动原因：删除 default / pro 两个对话别名。
 var capabilityAliases = []modelAlias{
-	{
-		ID:          "default",
-		DisplayName: "默认助手",
-		Description: "工作模式默认模型（DeepSeek V4 Flash），等同于插件未指定模型时的行为。",
-	},
-	{
-		ID:              "pro",
-		DisplayName:     "深度思考",
-		Description:     "工作模式默认模型，推理档拉满（最高档 4）。",
-		ReasoningEffort: "4",
-	},
 	{
 		ID:          "image",
 		DisplayName: "图像生成",
@@ -65,101 +52,16 @@ var capabilityAliases = []modelAlias{
 	{
 		ID:          "video",
 		DisplayName: "视频生成",
-		Description: "生成视频。视频地址以文本与 media 扩展字段返回。",
+		Description: "生成视频。首轮返回参数确认与 conversation_id，带上该 id 再发一次才会真正生成。",
 		Skill:       skillVideoGen,
 	},
 }
 
-// workModelAliases 是工作模式（agent_mode=1）模型目录。
+// defaultModelID 是模型名为空时的默认别名。
 //
-// 每条别名锁定一套上游 model_item_key + 记忆档位 + 上下文窗口：上游按
-// model_item_key 选模型，按 memory_profile / total_window_size 配额，三者
-// 不匹配会被拒或提前截断。窗口为 256000 的档位配 256k，300000 的配 300k_230。
-var workModelAliases = []modelAlias{
-	{
-		ID:            "auto",
-		DisplayName:   "自动选择",
-		Description:   "由上游按问题自动挑模型，免费额度可用。",
-		ModelItemKey:  "9",
-		MemoryProfile: "256k",
-		TotalWindow:   "256000",
-	},
-	{
-		ID:            "doubao-2.1-lite",
-		DisplayName:   "豆包 2.1 Lite",
-		Description:   "轻量对话模型，适合闲聊与短问答。",
-		ModelItemKey:  "seed-lite-7b",
-		MemoryProfile: "256k",
-		TotalWindow:   "256000",
-	},
-	{
-		ID:            "doubao-2.1-pro",
-		DisplayName:   "豆包 2.1 Pro",
-		Description:   "豆包旗舰对话模型，通用能力较强。",
-		ModelItemKey:  "5",
-		MemoryProfile: "256k",
-		TotalWindow:   "256000",
-	},
-	{
-		ID:            "deepseek-v4-flash",
-		DisplayName:   "DeepSeek V4 Flash",
-		Description:   "工作模式默认模型，速度快、额度消耗低。",
-		ModelItemKey:  "person-deepseek-v4-1-flash-261017",
-		MemoryProfile: "300k_230",
-		TotalWindow:   "300000",
-	},
-	{
-		ID:            "deepseek-v4-pro",
-		DisplayName:   "DeepSeek V4 Pro",
-		Description:   "DeepSeek 高配档，复杂推理与长文更稳。",
-		ModelItemKey:  "person-deepseek-v4-pro-ga-260813",
-		MemoryProfile: "300k_230",
-		TotalWindow:   "300000",
-	},
-	{
-		ID:            "kimi-k3",
-		DisplayName:   "Kimi K3",
-		Description:   "长上下文写作与资料整理见长。",
-		ModelItemKey:  "person-kimi-k3-261111",
-		MemoryProfile: "300k_230",
-		TotalWindow:   "300000",
-	},
-	{
-		ID:            "kimi-k3.1-pro",
-		DisplayName:   "Kimi K3.1 Pro",
-		Description:   "Kimi 新版旗舰，指令跟随更稳。",
-		ModelItemKey:  "person-kimi-k3-1-pro-261111",
-		MemoryProfile: "300k_230",
-		TotalWindow:   "300000",
-	},
-	{
-		ID:            "kimi-k3.1-pro-fast",
-		DisplayName:   "Kimi K3.1 Pro 高速版",
-		Description:   "Kimi 新版高速档，延迟更低。",
-		ModelItemKey:  "person-kimi-k3-1-pro-highspeed-261111",
-		MemoryProfile: "300k_230",
-		TotalWindow:   "300000",
-	},
-	{
-		ID:            "glm-5.3",
-		DisplayName:   "GLM 5.3",
-		Description:   "智谱 GLM 旗舰档；额度不足时上游会回显错误话术。",
-		ModelItemKey:  "person-glm-5-3-261111",
-		MemoryProfile: "300k_230",
-		TotalWindow:   "300000",
-	},
-	{
-		ID:            "glm-5.3-flash",
-		DisplayName:   "GLM 5.3 Flash",
-		Description:   "智谱 GLM 轻量档；额度不足时上游会回显错误话术。",
-		ModelItemKey:  "person-glm-5-3-flash-261111",
-		MemoryProfile: "300k_230",
-		TotalWindow:   "300000",
-	},
-}
-
-// defaultWorkModelID 是工作模式的默认模型别名。
-const defaultWorkModelID = "deepseek-v4-flash"
+// 只在 test-active 未指定模型时使用：目录里两条别名都会真正触发上游生成，
+// 选生图是因为它的产物同步返回，能在一次请求内判定账号是否可用。
+const defaultModelID = "image"
 
 // modelIDPrefix 是对外模型名的前缀。
 const modelIDPrefix = "doubao/"
@@ -185,116 +87,38 @@ func normalizeModelName(requested string) string {
 	return name
 }
 
-// skillForModel 返回模型名需要激活的上游 skill。
-// [参数] requested: 客户端模型名。
-// [返回] skill id；普通对话返回 0。
-// 最近修改时间：2026-10-17；改动原因：新增，能力映射。
-func skillForModel(requested string) int {
-	name := normalizeModelName(requested)
-	for _, alias := range capabilityAliases {
-		if strings.EqualFold(name, alias.ID) {
-			return alias.Skill
-		}
-	}
-	return 0
-}
-
 // modeForModel 把客户端模型名解析为生成模式。
 //
-// 解析顺序：能力别名里的技能别名（image / video）→ 工作模式模型别名 →
-// 能力别名里的纯对话别名（default / pro）→ 工作模式默认模型。技能别名必须
-// 优先，否则 image / video 会被当成普通对话模型名发给工作模式管线。
+// 只认目录里的能力别名（image / video）：插件只做生图与生视频，目录外的名字
+// 一律判失败。返回 false 由调用方转成明确错误，绝不静默替换成别的模型——工作
+// 模式模型目录已删除，静默回落会把「测生图」变成「测别的东西」。
 // [参数] requested: 客户端模型名。
-// [返回] 生成模式。
-// 最近修改时间：2026-11-14 02:05:00；改动原因：新增工作模式解析分支，未知名改为回落工作模式默认模型。
-func modeForModel(requested string) generationMode {
-	// 1. 技能别名优先：image / video 只能走网页端 skill 管线。
+// [返回] 生成模式；ok 表示是否命中目录。
+// 最近修改时间：2026-11-17 00:42:00；改动原因：工作模式模型目录删除，未知名由回落改为失败。
+func modeForModel(requested string) (generationMode, bool) {
 	name := normalizeModelName(requested)
 	for _, alias := range capabilityAliases {
-		if alias.Skill != 0 && strings.EqualFold(name, alias.ID) {
-			return workModeForAlias(alias, false)
-		}
-	}
-
-	// 2. 工作模式模型名直连客户端管线。
-	if alias, ok := aliasForWorkModel(name); ok {
-		return workModeForAlias(alias, true)
-	}
-
-	// 3. 纯对话的默认语义由工作模式默认模型承接，未知模型名同样回落。
-	for _, alias := range capabilityAliases {
 		if strings.EqualFold(name, alias.ID) {
-			return workModeForAlias(alias, true)
+			return modeForAlias(alias), true
 		}
 	}
-	alias, _ := aliasForWorkModel(defaultWorkModelID)
-	return workModeForAlias(alias, true)
+	return generationMode{}, false
 }
 
-// aliasForWorkModel 在目录中查找模型别名（能力别名与工作模式模型合并视图）。
-// [参数] name: 已归一化的模型名。
-// [返回] 命中的别名；found 表示是否存在同名条目。
-// 最近修改时间：2026-11-14 02:05:00；改动原因：新增，工作模式模型名解析。
-func aliasForWorkModel(name string) (modelAlias, bool) {
-	// 1. 名称比较大小写不敏感，与宿主传参习惯无关。
-	for _, alias := range workModelAliases {
-		if strings.EqualFold(name, alias.ID) {
-			return alias, true
-		}
-	}
-	return modelAlias{}, false
-}
-
-// workModeForAlias 把别名展开成一次请求的生成模式。
+// modeForAlias 把别名展开成一次请求的生成模式。
 //
-// 技能别名的 Skill 必须保留：生图/生视频只能走网页端 skill 管线；其余别名统一
-// 走工作模式，model_item_key 为空时由工作模式默认模型兜住。
-// [参数] alias: 命中的别名；allowWorkMode: 是否允许走工作模式管线。
+// Skill 必须保留：生图/生视频只能靠它激活上游 skill 管线；ModelItemKey 在图片
+// 与视频管线恒为空，由 buildCompletionRequest 统一写成 "0"。
+// [参数] alias: 命中的别名。
 // [返回] 生成模式。
-// 最近修改时间：2026-11-16 03:00:00；改动原因：删除网页链路别名分支，非技能别名统一走工作模式。
-func workModeForAlias(alias modelAlias, allowWorkMode bool) generationMode {
-	// 1. 技能别名只保留 skill，工作模式字段一律不填。
-	if alias.Skill != 0 {
-		return generationMode{Skill: alias.Skill, Kind: kindForAlias(alias)}
-	}
-
-	// 2. 普通别名展开成工作模式字段。
-	mode := generationMode{
-		Kind:            "text",
-		ModelItemKey:    alias.ModelItemKey,
-		MemoryProfile:   alias.MemoryProfile,
-		TotalWindow:     alias.TotalWindow,
-		ReasoningEffort: alias.ReasoningEffort,
-	}
-	if !allowWorkMode {
-		return mode
-	}
-
-	// 3. 允许工作模式时补齐默认值，空字段会把上游模型名打成空串。
-	cfg := currentConfig()
-	mode.WorkMode = true
-	if mode.ModelItemKey == "" {
-		if fallback, ok := aliasForWorkModel(defaultWorkModelID); ok {
-			mode.ModelItemKey = fallback.ModelItemKey
-			mode.MemoryProfile = fallback.MemoryProfile
-			mode.TotalWindow = fallback.TotalWindow
-		}
-	}
-	if mode.MemoryProfile == "" {
-		mode.MemoryProfile = cfg.WorkMemoryProfile
-	}
-	if mode.TotalWindow == "" {
-		mode.TotalWindow = cfg.WorkTotalWindow
-	}
-	if mode.ReasoningEffort == "" {
-		mode.ReasoningEffort = cfg.WorkReasoningEffort
-	}
-	return mode
+// 最近修改时间：2026-11-17 00:42:00；改动原因：工作模式管线删除，去掉 allowWorkMode 分支。
+func modeForAlias(alias modelAlias) generationMode {
+	return generationMode{Skill: alias.Skill, Kind: kindForAlias(alias)}
 }
 
 // kindForAlias 返回别名对应的回复类型。
 // [参数] alias: 别名。
-// [返回] text / image / video。
+// [返回] image / video；未声明 skill 时返回 text。
 // 最近修改时间：2026-10-17；改动原因：新增，回复解析类型判定。
 func kindForAlias(alias modelAlias) string {
 	switch alias.Skill {
@@ -308,24 +132,15 @@ func kindForAlias(alias modelAlias) string {
 
 // catalogueModels 构造完整的模型目录。
 //
-// 顺序即优先级：能力别名在前（default / pro / image / video），工作模式模型
-// 在后。同名条目只保留首个，避免两个来源给出不同的窗口与档位。
+// 目录即能力别名本身（image / video）。同名去重保留：将来新增别名时重复登记
+// 同一个 ID 会让宿主看到两条冲突条目。
 // [参数] 无。
 // [返回] 宿主模型结构列表。
-// 最近修改时间：2026-11-14 03:20:00；改动原因：合并工作模式模型目录。
+// 最近修改时间：2026-11-17 00:42:00；改动原因：工作模式模型目录删除，只保留能力别名。
 func catalogueModels() []pluginapi.ModelInfo {
-	// 1. 能力别名先入目录，占用同名条目的优先位。
-	out := make([]pluginapi.ModelInfo, 0, len(capabilityAliases)+len(workModelAliases))
-	seen := make(map[string]struct{}, len(capabilityAliases)+len(workModelAliases))
+	out := make([]pluginapi.ModelInfo, 0, len(capabilityAliases))
+	seen := make(map[string]struct{}, len(capabilityAliases))
 	for _, alias := range capabilityAliases {
-		if _, dup := seen[strings.ToLower(alias.ID)]; dup {
-			continue
-		}
-		seen[strings.ToLower(alias.ID)] = struct{}{}
-		out = append(out, modelInfoForAlias(alias))
-	}
-	// 2. 工作模式模型追加在后，同名条目跳过以保留能力别名的窗口与档位。
-	for _, alias := range workModelAliases {
 		if _, dup := seen[strings.ToLower(alias.ID)]; dup {
 			continue
 		}
@@ -337,36 +152,14 @@ func catalogueModels() []pluginapi.ModelInfo {
 
 // testableAliases 返回活跃测试可选的模型别名。
 //
-// 只排除生成类（生图/生视频）：它们会真正触发上游生成，既耗额度又要等数十秒，
-// 失败原因还与账号不可用难以区分。能力别名与工作模式模型都保留，顺序固定为
-// 能力别名在前，同名条目以能力别名为准。
+// 目录里只剩生图与生视频，两者都必须可测：它们是插件唯一的能力，排除掉就
+// 没有可测对象了。代价是测试会真正触发一次上游生成（耗额度、等数十秒），这是
+// 「只做图片和视频」下无法回避的代价。
 // [参数] 无。
-// [返回] 别名列表。
-// 最近修改时间：2026-11-14 15:55:00；改动原因：新增，测试模型列表与宿主模型目录同源。
+// [返回] 别名列表（返回副本，调用方改动不会污染目录）。
+// 最近修改时间：2026-11-17 00:42:00；改动原因：工作模式模型目录删除，测试列表改为全部能力别名。
 func testableAliases() []modelAlias {
-	// 1. 能力别名只保留纯对话条目，技能别名会真正触发上游生成。
-	out := make([]modelAlias, 0, len(capabilityAliases)+len(workModelAliases))
-	seen := make(map[string]struct{}, len(capabilityAliases)+len(workModelAliases))
-	for _, alias := range capabilityAliases {
-		if alias.Skill != 0 {
-			continue
-		}
-		if _, dup := seen[strings.ToLower(alias.ID)]; dup {
-			continue
-		}
-		seen[strings.ToLower(alias.ID)] = struct{}{}
-		out = append(out, alias)
-	}
-
-	// 2. 工作模式模型追加在后，同名条目跳过以保留能力别名的语义。
-	for _, alias := range workModelAliases {
-		if _, dup := seen[strings.ToLower(alias.ID)]; dup {
-			continue
-		}
-		seen[strings.ToLower(alias.ID)] = struct{}{}
-		out = append(out, alias)
-	}
-	return out
+	return append([]modelAlias(nil), capabilityAliases...)
 }
 
 // testableModelIDs 返回活跃测试可选的模型 id（含 doubao/ 前缀）。
@@ -384,11 +177,11 @@ func testableModelIDs() []string {
 
 // testableModelDetails 返回活跃测试可选模型的展示信息。
 //
-// 面板需要可读名：只给 doubao/deepseek-v4-flash 这类裸 id，用户分不清哪个是
-// 旗舰档、哪个是高速档。default 标记供面板给默认模型加注，避免用户误选。
+// 面板需要可读名：只给 doubao/image 这类裸 id，用户分不清生图与生视频。
+// default 标记供面板给默认别名加注，避免用户误选。
 // [参数] 无。
 // [返回] 每项含 id / name / description / default。
-// 最近修改时间：2026-11-14 15:55:00；改动原因：新增，面板展示可读模型名。
+// 最近修改时间：2026-11-17 00:42:00；改动原因：工作模式模型删除，注释样例改为能力别名。
 func testableModelDetails() []map[string]any {
 	aliases := testableAliases()
 	out := make([]map[string]any, 0, len(aliases))
@@ -397,7 +190,7 @@ func testableModelDetails() []map[string]any {
 			"id":          modelIDPrefix + alias.ID,
 			"name":        alias.DisplayName,
 			"description": alias.Description,
-			"default":     alias.ID == defaultWorkModelID,
+			"default":     alias.ID == defaultModelID,
 		})
 	}
 	return out
@@ -405,13 +198,12 @@ func testableModelDetails() []map[string]any {
 
 // aliasForTestModel 判断模型名是否属于可测试别名。
 //
-// 与 modeForModel 的区别：modeForModel 对未知名回落到工作模式默认模型（正式
-// 对话链路需要这个宽松语义），活跃测试必须严格——否则点上游内部代号会静默打到
-// 默认模型，界面显示「测试成功（模型: doubao/anceba）」，实际测的是 DeepSeek
-// V4 Flash，测试结果与所选模型无关。
+// 与 modeForModel 同源但不共用：两者都要严格——活跃测试点上游内部代号时必须
+// 直接失败，不能静默打到默认模型，否则界面显示「测试成功（模型: doubao/anceba）」
+// 而实际测的是别的模型，测试结果与所选模型无关。
 // [参数] requested: 客户端模型名（允许带 doubao/ 前缀与 :latest 后缀）。
 // [返回] 命中的别名与是否存在。
-// 最近修改时间：2026-11-14 15:55:00；改动原因：新增，活跃测试严格校验模型名。
+// 最近修改时间：2026-11-17 00:42:00；改动原因：工作模式模型目录删除，严格语义成为两条路径的共识。
 func aliasForTestModel(requested string) (modelAlias, bool) {
 	name := normalizeModelName(requested)
 	for _, alias := range testableAliases() {
@@ -449,8 +241,8 @@ func modelInfoForAlias(alias modelAlias) pluginapi.ModelInfo {
 
 // testModeForModel 把模型名展开成活跃测试用的生成模式。
 //
-// 与 modeForModel 的宽松回落不同，这里未命中别名时直接判失败：活跃测试要给用户
-// 「这个模型能不能用」的确切答案，静默替换模型会让结论失去意义。
+// 未命中别名时直接判失败：活跃测试要给用户「这个模型能不能用」的确切答案，
+// 静默替换模型会让结论失去意义。
 // [参数] requested: 客户端模型名。
 // [返回] 生成模式、命中的别名与是否命中。
 // 最近修改时间：2026-11-14 16:05:00；改动原因：新增，活跃测试严格解析模型名。
@@ -459,7 +251,7 @@ func testModeForModel(requested string) (generationMode, modelAlias, bool) {
 	if !ok {
 		return generationMode{}, modelAlias{}, false
 	}
-	return workModeForAlias(alias, true), alias, true
+	return modeForAlias(alias), alias, true
 }
 
 // filterExcludedModels 剔除宿主 oauth-excluded-models 中为本插件列出的模型。
@@ -524,9 +316,9 @@ func modelStatic(request []byte) ([]byte, error) {
 
 // modelForAuth 响应 model.for_auth。
 //
-// 这是按账号的模型目录：优先返回该账号的上游真实模型（model_list 透传），
-// 再补上插件的能力别名（default / pro / image / video）。上游不可达时只返回
-// 能力别名——宿主模型目录必须始终可用，不能因为一次网络失败让用户没模型可选。
+// 这是按账号的模型目录：能力别名（image / video）在前，该账号的上游真实模型
+// （model_list 透传）在后。上游不可达时只返回能力别名——宿主模型目录必须始终
+// 可用，不能因为一次网络失败让用户没模型可选。
 // [参数] request: 宿主请求体。
 // [返回] 信封 JSON 与错误。
 // 最近修改时间：2026-10-17；改动原因：接入上游动态模型清单。
@@ -544,8 +336,8 @@ func modelForAuth(request []byte) ([]byte, error) {
 // catalogueWithUpstream 组合能力别名与上游真实模型。
 //
 // 顺序固定为能力别名在前：它们是稳定语义（生图/生视频必须靠别名激活 skill），
-// 上游代号在后。同名时以能力别名为准，避免上游恰好返回 default/pro 时把
-// 语义别名挤掉。
+// 上游代号在后。同名时以能力别名为准，避免上游恰好返回同名模型时把语义别名
+// 挤掉。
 // [参数] req: 宿主按账号请求（含该账号的凭据快照）。
 // [返回] 合并后的模型列表。
 // 最近修改时间：2026-10-17；改动原因：新增，动态与静态目录合并。

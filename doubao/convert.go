@@ -182,6 +182,23 @@ func streamChunk(model, conversationID string, delta map[string]any, finishReaso
 	}
 }
 
+// attachResumePoint 把会话续接点挂到响应上。
+//
+// 视频生成本身是两段式：首轮只给参数确认，客户端必须带上这三个字段再发一次才会
+// 真正开跑。字段名与请求侧的入参同名，客户端原样回传即可续接；普通生图用不上，
+// 多出的字段会被不认识的客户端忽略。
+// [参数] resp: 响应对象；resume: 续接点。
+// [返回] 无。
+// 最近修改时间：2026-11-17 01:38:00；改动原因：新增，把续接点回给客户端。
+func attachResumePoint(resp map[string]any, resume resumePoint) {
+	if len(resp) == 0 || resume.isZero() {
+		return
+	}
+	resp["conversation_id"] = resume.ConversationID
+	resp["section_id"] = resume.SectionID
+	resp["message_index"] = resume.MessageIndex
+}
+
 // estimateUsage 估算 token 用量。
 //
 // 上游不返回真实用量，这里按字符特征估算：CJK 约 1 字 1 token，

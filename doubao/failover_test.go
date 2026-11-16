@@ -451,7 +451,7 @@ func TestRunWithFailoverRotatesOn429(t *testing.T) {
 		WebID:        "7300000000000000002",
 		WebTabID:     "00000000-0000-4000-8000-000000000001",
 	}
-	res, errRun := runWithFailover(first, 5*time.Second, textMode(), "1+1=?", nil)
+	res, errRun := runWithFailover(first, 5*time.Second, textMode(), "1+1=?", resumePoint{}, nil)
 	if errRun != nil {
 		t.Fatalf("换号后应成功：%v", errRun)
 	}
@@ -507,7 +507,7 @@ func TestRunWithFailoverStopsOnBusiness400(t *testing.T) {
 		WebID:        "7300000000000000002",
 		WebTabID:     "00000000-0000-4000-8000-000000000001",
 	}
-	if _, errRun := runWithFailover(first, 5*time.Second, textMode(), "1+1=?", nil); errRun == nil {
+	if _, errRun := runWithFailover(first, 5*time.Second, textMode(), "1+1=?", resumePoint{}, nil); errRun == nil {
 		t.Fatal("业务 400 应原样返回失败")
 	}
 	if got := atomic.LoadInt32(&hits); got != 1 {

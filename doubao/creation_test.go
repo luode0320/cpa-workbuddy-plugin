@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -94,12 +95,16 @@ func TestMergeAssetsKeepsDistinctIDs(t *testing.T) {
 	}
 }
 
-// TestParseCreationBlockVideo 校验视频资源解析。
+// TestParseCreationBlockVideo 校验视频资源按真实结构解析。
+//
+// 夹具取自 2026-11-17 的真实 `/im/chain/single` 响应：地址叫 download_url、
+// 顶层 width / height 是字符串、video_model 是字符串套 JSON、cover 没有 url。
+// 旧结构体对这份夹具不会报错，只会解析出全空字段。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，视频分支。
+// 最近修改时间：2026-11-17 01:24:00；改动原因：夹具改为真实响应形状，断言 download_url 与清晰度挑选。
 func TestParseCreationBlockVideo(t *testing.T) {
-	block := json.RawMessage(`{"creation_block":{"creations":[{"type":2,"id":"v-1","video":{"status":1,"key":"tos-cn-i-bucket/rc_gen_video/x.mp4","url":"https://example.com/v.mp4","cover":{"url":"https://example.com/cover.png","width":1280,"height":720}}}]}}`)
+	block := json.RawMessage(`{"creation_block":{"creations":[{"type":2,"id":"v-1","video":{"vid":"v0269","status":3,"width":"384","height":"216","duration":10.08,"video_type":"mp4","download_url":"https://example.com/v.mp4","download_filehash":"abc123","cover":{"key":"tos-cn-p-bucket/cover","image_thumb":{"url":"https://example.com/cover-thumb.png","width":384,"height":216},"image_preview":{"url":"https://example.com/cover-preview.png","width":1280,"height":720}}}}]}}`)
 	assets := parseCreationBlock(block)
 	if len(assets) != 1 {
 		t.Fatalf("应解析出 1 个视频，实际 %d", len(assets))
@@ -108,7 +113,63 @@ func TestParseCreationBlockVideo(t *testing.T) {
 		t.Error("应判定为视频")
 	}
 	if assets[0].URL != "https://example.com/v.mp4" {
-		t.Errorf("视频地址解析错误：%q", assets[0].URL)
+		t.Errorf("视频地址应取 download_url，实际 %q", assets[0].URL)
+	}
+	// 顶层尺寸是字符串，必须仍然解析成数字供 media 扩展使用。
+	if assets[0].Width != 384 || assets[0].Height != 216 {
+		t.Errorf("字符串尺寸应解析为 384×216，实际 %d×%d", assets[0].Width, assets[0].Height)
+	}
+}
+
+// TestParseCreationBlockVideoFallsBackToVideoModel 校验 download_url 缺失时退到清晰度清单。
+//
+// video_model 里的 main_url 是 base64 编码的地址，且键名（video_1 / video_2）
+// 不表达清晰度，必须按像素面积挑最清晰的那条。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 01:24:00；改动原因：新增，覆盖 video_model 解包与 base64 直链。
+func TestParseCreationBlockVideoFallsBackToVideoModel(t *testing.T) {
+	lowURL := base64.StdEncoding.EncodeToString([]byte("https://example.com/low.mp4"))
+	highURL := base64.StdEncoding.EncodeToString([]byte("https://example.com/high.mp4"))
+	model := `{\"status\":10,\"message\":\"success\",\"video_duration\":10.08,\"media_type\":\"video\",\"video_list\":{\"video_1\":{\"definition\":\"360p\",\"vwidth\":640,\"vheight\":360,\"main_url\":\"` + lowURL + `\"},\"video_2\":{\"definition\":\"1080p\",\"vwidth\":1920,\"vheight\":1080,\"main_url\":\"` + highURL + `\"}}}`
+	block := json.RawMessage(`{"creation_block":{"creations":[{"type":2,"id":"v-2","video":{"status":3,"width":"","height":"","video_model":"` + model + `","cover":{"image_preview":{"url":"https://example.com/cover.png","width":1280,"height":720}}}}]}}`)
+	assets := parseCreationBlock(block)
+	if len(assets) != 1 {
+		t.Fatalf("应解析出 1 个视频，实际 %d", len(assets))
+	}
+	if assets[0].URL != "https://example.com/high.mp4" {
+		t.Errorf("应挑像素面积最大的直链，实际 %q", assets[0].URL)
+	}
+	if assets[0].Width != 1920 || assets[0].Height != 1080 {
+		t.Errorf("尺寸应跟随所选清晰度 1920×1080，实际 %d×%d", assets[0].Width, assets[0].Height)
+	}
+}
+
+// TestParseCreationBlockVideoFallsBackToCover 校验连清晰度清单都没有时退到封面。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 01:24:00；改动原因：新增，封面只在没成品时使用。
+func TestParseCreationBlockVideoFallsBackToCover(t *testing.T) {
+	block := json.RawMessage(`{"creation_block":{"creations":[{"type":2,"id":"v-3","video":{"status":1,"cover":{"image_thumb":{"url":"https://example.com/t.png","width":384,"height":216},"image_preview":{"url":"https://example.com/p.png","width":1280,"height":720}}}}]}}`)
+	assets := parseCreationBlock(block)
+	if len(assets) != 1 {
+		t.Fatalf("应解析出 1 个视频，实际 %d", len(assets))
+	}
+	if assets[0].URL != "https://example.com/p.png" {
+		t.Errorf("封面回退应优先 image_preview，实际 %q", assets[0].URL)
+	}
+}
+
+// TestParseCreationBlockVideoSkipsEmpty 校验没有任何地址与 key 的视频条目被丢弃。
+//
+// 首帧可能只有 status，交出去就是一条空链接，比不交更糟。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 01:24:00；改动原因：新增，占位帧不外泄。
+func TestParseCreationBlockVideoSkipsEmpty(t *testing.T) {
+	block := json.RawMessage(`{"creation_block":{"creations":[{"type":2,"id":"v-4","video":{"status":1}}]}}`)
+	if assets := parseCreationBlock(block); len(assets) != 0 {
+		t.Fatalf("无地址无 key 的视频条目应被丢弃，实际 %+v", assets)
 	}
 }
 

@@ -64,7 +64,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.1.25"
+	version      = "0.1.26"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -84,38 +84,17 @@ type Config struct {
 	StreamTimeoutSeconds int `yaml:"stream_timeout_seconds" json:"stream_timeout_seconds"`
 	// ModelCacheSecs 模型目录缓存时长（秒）。
 	ModelCacheSecs int `yaml:"model_cache_seconds" json:"model_cache_seconds"`
-	// WorkBotID 工作模式会话机器人标识；空表示用内置默认值。
-	WorkBotID string `yaml:"work_bot_id" json:"work_bot_id"`
-	// WorkModeID 工作模式编号；3 是上游「工作任务」模式。
-	WorkModeID string `yaml:"work_mode_id" json:"work_mode_id"`
-	// WorkReasoningEffort 工作模式推理档位（0-4，4 最高）。
-	WorkReasoningEffort string `yaml:"work_reasoning_effort" json:"work_reasoning_effort"`
-	// WorkMemoryProfile 工作模式记忆档位，必须与 WorkTotalWindow 配套。
-	WorkMemoryProfile string `yaml:"work_memory_profile" json:"work_memory_profile"`
-	// WorkTotalWindow 工作模式上下文窗口大小。
-	WorkTotalWindow string `yaml:"work_total_window" json:"work_total_window"`
-	// WorkEnableSandbox 是否启用上游沙箱；headless 环境必须关闭，否则请求挂起。
-	WorkEnableSandbox bool `yaml:"work_enable_sandbox" json:"work_enable_sandbox"`
-	// WorkWorkspace 工作模式工作目录；空表示不启用本地目录映射。
-	WorkWorkspace string `yaml:"work_workspace" json:"work_workspace"`
 }
 
 // defaultConfig 返回插件默认配置。
 // [参数] 无。
 // [返回] 带默认值的配置结构。
-// 最近修改时间：2026-11-14 02:12:00；改动原因：新增工作模式七项配置，默认值与上游客户端实测一致。
+// 最近修改时间：2026-11-17 00:58:00；改动原因：工作模式删除，只留三个超时/缓存项。
 func defaultConfig() Config {
 	return Config{
 		TimeoutSeconds:       120,
 		StreamTimeoutSeconds: 600,
 		ModelCacheSecs:       300,
-		WorkBotID:            defaultBotID,
-		WorkModeID:           defaultWorkModeID,
-		WorkReasoningEffort:  defaultWorkReasoningEffort,
-		WorkMemoryProfile:    defaultWorkMemoryProfile,
-		WorkTotalWindow:      defaultWorkTotalWindow,
-		WorkEnableSandbox:    false,
-		WorkWorkspace:        "",
 	}
 }
 
@@ -261,7 +240,7 @@ type registrationCapability struct {
 // doubaoRegistration 返回插件注册元数据与能力声明。
 // [参数] 无。
 // [返回] 注册结构。
-// 最近修改时间：2026-11-14 04:00:00；改动原因：补充工作模式七项配置字段声明。
+// 最近修改时间：2026-11-17 01:07:00；改动原因：配置字段收敛为超时与缓存三项。
 func doubaoRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
@@ -275,13 +254,6 @@ func doubaoRegistration() registration {
 				{Name: "timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "非流式上游请求超时（秒）。"},
 				{Name: "stream_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "流式上游请求超时（秒）。"},
 				{Name: "model_cache_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "模型目录缓存时长（秒）。"},
-				{Name: "work_bot_id", Type: pluginapi.ConfigFieldTypeString, Description: "工作模式 bot_id；为空时用账号上的 bot_id。"},
-				{Name: "work_mode_id", Type: pluginapi.ConfigFieldTypeString, Description: "工作模式 mode_id（工作任务为 3）。"},
-				{Name: "work_reasoning_effort", Type: pluginapi.ConfigFieldTypeString, Description: "工作模式默认推理档位（0-4，4 最高）。"},
-				{Name: "work_memory_profile", Type: pluginapi.ConfigFieldTypeString, Description: "工作模式默认记忆档位（如 300k_230）。"},
-				{Name: "work_total_window", Type: pluginapi.ConfigFieldTypeString, Description: "工作模式默认上下文窗口（如 300000）。"},
-				{Name: "work_enable_sandbox", Type: pluginapi.ConfigFieldTypeBoolean, Description: "是否声明本地沙箱；无人值守部署必须为 false，否则请求会挂到超时。"},
-				{Name: "work_workspace", Type: pluginapi.ConfigFieldTypeString, Description: "工作模式工作目录；留空表示不声明本地目录。"},
 			},
 		},
 		Capabilities: registrationCapability{
@@ -360,11 +332,11 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 
 // configurePlugin 解析宿主下发的 YAML 配置并更新运行期配置。
 //
-// 数值项按「>0 才覆盖」处理；字符串项按「非空才覆盖」处理，保证缺省键保留
-// 默认值，无关项热更新不会把工作模式参数冲成空串。
+// 数值项按「>0 才覆盖」处理，保证缺省键保留默认值，无关项热更新不会把超时
+// 与缓存窗口冲成 0。未知键（如早期版本的 work_* 系列）由 yaml 宽松忽略。
 // [参数] raw: 宿主 reconfigure 载荷，config_yaml 为 base64 解码后的 YAML 字节。
 // [返回] 解析错误。
-// 最近修改时间：2026-11-14 02:16:00；改动原因：新增工作模式配置项覆盖逻辑。
+// 最近修改时间：2026-11-17 01:05:00；改动原因：删除工作模式配置项，只留三个超时/缓存项。
 func configurePlugin(raw []byte) error {
 	var req struct {
 		ConfigYAML []byte `json:"config_yaml"`
@@ -379,7 +351,7 @@ func configurePlugin(raw []byte) error {
 		if err := yaml.Unmarshal(req.ConfigYAML, &decoded); err != nil {
 			return err
 		}
-		// 1. 数值项与字符串项一视同仁：给了才覆盖，缺省键保留默认值。
+		// 1. 只有给了才覆盖，缺省键保留默认值。
 		if decoded.TimeoutSeconds > 0 {
 			cfg.TimeoutSeconds = decoded.TimeoutSeconds
 		}
@@ -389,33 +361,10 @@ func configurePlugin(raw []byte) error {
 		if decoded.ModelCacheSecs > 0 {
 			cfg.ModelCacheSecs = decoded.ModelCacheSecs
 		}
-		if decoded.WorkBotID != "" {
-			cfg.WorkBotID = decoded.WorkBotID
-		}
-		if decoded.WorkModeID != "" {
-			cfg.WorkModeID = decoded.WorkModeID
-		}
-		if decoded.WorkReasoningEffort != "" {
-			cfg.WorkReasoningEffort = decoded.WorkReasoningEffort
-		}
-		if decoded.WorkMemoryProfile != "" {
-			cfg.WorkMemoryProfile = decoded.WorkMemoryProfile
-		}
-		if decoded.WorkTotalWindow != "" {
-			cfg.WorkTotalWindow = decoded.WorkTotalWindow
-		}
-		if decoded.WorkWorkspace != "" {
-			cfg.WorkWorkspace = decoded.WorkWorkspace
-		}
-		// 2. 布尔项无法区分「未配置」与「显式 false」，按配置来源整体覆盖。
-		cfg.WorkEnableSandbox = decoded.WorkEnableSandbox
 	}
 
-	// 3. 整体替换运行期配置，热更新立即对后续请求生效。
+	// 2. 整体替换运行期配置，热更新立即对后续请求生效。
 	activeConfig.Store(cfg)
-
-	// 4. 签到定时器随插件配置就绪一起拉起，幂等保证重复 reconfigure 不叠加。
-	ensureCheckinScheduler()
 	return nil
 }
 

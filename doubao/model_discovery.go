@@ -115,7 +115,7 @@ func discoverUpstreamModels(sa *StoredAuth, timeout time.Duration) ([]upstreamMo
 	req.Header.Set("Content-Type", contentTypeJSON)
 	req.Header.Set("Accept", "application/json")
 	// 模型发现走 /alice/* 业务端点，与对话端点不同套，固定用网页端指纹。
-	applyUpstreamHeaders(req, false)
+	applyUpstreamHeaders(req)
 
 	client, jar := newUpstreamClient(sa, timeout)
 	resp, errDo := client.Do(req)

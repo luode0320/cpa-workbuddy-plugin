@@ -39,6 +39,30 @@ type chatRequest struct {
 	Messages json.RawMessage `json:"messages"`
 	// Stream 表示客户端是否要求流式返回。
 	Stream bool `json:"stream"`
+	// ConversationID 是续接点之一：上一轮响应的 conversation_id。
+	//
+	// 视频是两段式的，次轮必须指回同一条会话，否则参数确认永远等不到「开始生成」。
+	// 三个续接字段都是可选扩展，不认识的客户端不传，行为等同新会话。
+	ConversationID string `json:"conversation_id,omitempty"`
+	// SectionID 是续接点之二：上一轮响应的 section_id。
+	SectionID string `json:"section_id,omitempty"`
+	// LastMessageIndex 是续接点之三：上一轮响应的 message_index。
+	LastMessageIndex int64 `json:"last_message_index,omitempty"`
+}
+
+// resumePointOf 把客户端带的三个续接字段收敛成续接点。
+// [参数] 无。
+// [返回] 续接点；三字段全空时为零值，表示新会话。
+// 最近修改时间：2026-11-17 01:36:00；改动原因：新增，客户端续接点解析。
+func (r *chatRequest) resumePointOf() resumePoint {
+	if r == nil {
+		return resumePoint{}
+	}
+	return resumePoint{
+		ConversationID: strings.TrimSpace(r.ConversationID),
+		SectionID:      strings.TrimSpace(r.SectionID),
+		MessageIndex:   r.LastMessageIndex,
+	}
 }
 
 // decodeExecutorRequest 拆分宿主请求中的账号与 OpenAI 请求体。
@@ -122,6 +146,22 @@ func resolveExecutionAuth(req *pluginapi.ExecutorRequest) (*StoredAuth, error) {
 //
 // 实现见 executor_failover.go：本文件只负责把宿主请求翻译成上游调用。
 
+// resolveGenerationMode 把客户端模型名解析成生成模式。
+//
+// 目录外一律报错而不是回落：插件只做生图与生视频，静默换成别的模型会让调用方
+// 把「模型名写错」误判成「账号不可用」。错误文案直接列出可选别名，省一次查文档。
+// [参数] model: 客户端传入的模型名。
+// [返回] 生成模式与错误。
+// 最近修改时间：2026-11-17 00:45:00；改动原因：工作模式模型目录删除，未知名由回落改为报错。
+func resolveGenerationMode(model string) (generationMode, error) {
+	mode, ok := modeForModel(model)
+	if !ok {
+		return generationMode{}, fmt.Errorf("不支持的模型 %q：本插件只做生图与生视频，可选 %s",
+			model, strings.Join(testableModelIDs(), " / "))
+	}
+	return mode, nil
+}
+
 // executorExecute 处理非流式推理请求。
 // [参数] raw: 宿主请求 JSON。
 // [返回] 含 OpenAI 响应的信封 JSON 与错误。
@@ -140,9 +180,20 @@ func executorExecute(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("请求中没有可发送的文本内容")
 	}
 
-	res, errRun := runWithFailover(sa, time.Duration(currentConfig().TimeoutSeconds)*time.Second, modeForModel(chat.Model), prompt, nil)
+	mode, errMode := resolveGenerationMode(chat.Model)
+	if errMode != nil {
+		return nil, errMode
+	}
+
+	res, errRun := runWithFailover(sa, time.Duration(currentConfig().TimeoutSeconds)*time.Second, mode, prompt, chat.resumePointOf(), nil)
 	if errRun != nil {
 		return nil, errRun
+	}
+
+	// 视频是异步产物：确认轮只回一句「正在生成」，成品得从会话消息链里拉。
+	// 放在这里而不是流里，是因为这条链路的产物从来不会推给本次连接。
+	if errVideo := ensureVideoAsset(sa, mode, res); errVideo != nil {
+		return nil, errVideo
 	}
 
 	answer, think := splitReasoning(res.Text)
@@ -155,6 +206,8 @@ func executorExecute(raw []byte) ([]byte, error) {
 	}
 	resp := buildChatCompletion(chat.Model, answer, think, res.ConversationID, prompt)
 	attachAssets(resp, res.Assets)
+	// 把续接点回给客户端：视频要靠它发第二轮，不认识的客户端会忽略这些扩展字段。
+	attachResumePoint(resp, res.resumePointOf())
 
 	body, errMarshal := json.Marshal(resp)
 	if errMarshal != nil {

@@ -71,7 +71,7 @@ func TestRunActiveTestStopsOnFirstFrame(t *testing.T) {
 
 	sa := completionTestAccount()
 	start := time.Now()
-	res := runActiveTest(sa, "doubao/default")
+	res := runActiveTest(sa, "doubao/image")
 	elapsed := time.Since(start)
 
 	if res["error"] != nil {
@@ -99,7 +99,7 @@ func TestRunActiveTestRejectsStreamError(t *testing.T) {
 	defer srv.Close()
 	defer swapCompletionEndpoint(srv.URL + "/chat/completion")()
 
-	res := runActiveTest(completionTestAccount(), "doubao/default")
+	res := runActiveTest(completionTestAccount(), "doubao/image")
 	if res["ok"] == true {
 		t.Fatalf("错误帧被误判为成功：%+v", res)
 	}
@@ -121,7 +121,7 @@ func TestRunActiveTestRejectsEmptyReply(t *testing.T) {
 	defer srv.Close()
 	defer swapCompletionEndpoint(srv.URL + "/chat/completion")()
 
-	res := runActiveTest(completionTestAccount(), "doubao/default")
+	res := runActiveTest(completionTestAccount(), "doubao/image")
 	if res["ok"] == true {
 		t.Fatalf("空回复被误判为成功：%+v", res)
 	}
@@ -134,10 +134,10 @@ func TestRunActiveTestRejectsEmptyReply(t *testing.T) {
 // TestHandleModelsQueryKeepsAliasCatalogue 校验上游不可达时仍返回插件别名目录。
 //
 // 弹窗的可点击项必须是插件别名（与宿主 /v1/models 同源），上游内部代号无法映射到
-// 工作模式模型主键，选中后只能回落默认模型，所以代号永远不构成测试列表。
+// 任何插件别名，选中后只会被判失败，所以代号永远不构成测试列表。
 // 上游不可达时只降级掉 upstream_models，别名目录必须照旧完整。
-// 生图/生视频别名不在此列：它们会真正触发上游生成，既耗额度又要等数十秒，
-// 失败原因与账号不可用难区分。
+// 目录里只剩生图与生视频：两者都会真正触发上游生成（耗额度、等数十秒），这是
+// 「只做图片和视频」下无法回避的代价。
 // [参数] t: 测试上下文。
 // [返回] 无。
 // 最近修改时间：2026-11-14 16:05:00；改动原因：列表改为插件别名目录，回落只影响上游对照。
@@ -169,28 +169,29 @@ func TestHandleModelsQueryKeepsAliasCatalogue(t *testing.T) {
 	if notice, _ := res["notice"].(string); !strings.Contains(notice, "仅显示插件别名目录") {
 		t.Fatalf("回落应说明只剩插件别名目录，实际 %q", notice)
 	}
-	// 工作模式模型必须出现在可测试列表里，否则面板测不到真正在用的模型。
-	hasWorkModel := false
+	// 目录里只剩生图与生视频，两者都必须出现在可测试列表里。
 	for _, m := range models {
-		if m == "doubao/image" || m == "doubao/video" {
-			t.Fatalf("活跃测试不应包含生成类模型，实际 %v", models)
-		}
 		if !strings.HasPrefix(m, modelIDPrefix) {
 			t.Fatalf("模型名必须带 doubao/ 前缀，实际 %q", m)
 		}
-		if m == modelIDPrefix+defaultWorkModelID {
-			hasWorkModel = true
-		}
 	}
-	if !hasWorkModel {
-		t.Fatalf("可测试列表必须包含工作模式默认模型 %s，实际 %v", defaultWorkModelID, models)
+	for _, want := range []string{modelIDPrefix + "image", modelIDPrefix + "video"} {
+		found := false
+		for _, m := range models {
+			if m == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("可测试列表必须包含 %s，实际 %v", want, models)
+		}
 	}
 }
 
 // TestHandleModelsQueryNeverListsUpstreamCodes 校验上游代号不进入可点击列表。
 //
 // 代号（如 anceba、ances brs）是豆包内部模型标识，插件侧没有任何映射表能把它
-// 翻译成工作模式模型主键；把它们列出来会让用户点一个必然打错模型的按钮。
+// 翻译成能力别名；把它们列出来会让用户点一个必然被判失败的按钮。
 // [参数] t: 测试上下文。
 // [返回] 无。
 // 最近修改时间：2026-11-14 16:05:00；改动原因：新增，锁定代号不得作为可测试项。
@@ -225,11 +226,11 @@ func TestHandleModelsQueryNeverListsUpstreamCodes(t *testing.T) {
 
 // TestRunActiveTestRejectsUnknownModel 校验未知模型名直接失败而非静默替换。
 //
-// 旧实现把不认识的名字一律回落成工作模式默认模型，于是点任何上游代号都显示
+// 旧实现把不认识的名字一律回落成某个默认模型，于是点任何上游代号都显示
 // 「测试成功」，结论与所选模型无关。现在必须明确报错，并说明该用别名。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-14 16:05:00；改动原因：新增，锁死严格解析语义。
+// 最近修改时间：2026-11-17 00:52:00；改动原因：默认模型概念已消失，注释改为不指名具体模型。
 func TestRunActiveTestRejectsUnknownModel(t *testing.T) {
 	res := runActiveTest(completionTestAccount(), "doubao/ances brs")
 	if res["ok"] == true {
@@ -238,6 +239,56 @@ func TestRunActiveTestRejectsUnknownModel(t *testing.T) {
 	msg, _ := res["error"].(string)
 	if !strings.Contains(msg, "不支持的测试模型") {
 		t.Fatalf("未知模型应给出明确错误，实际 %q", msg)
+	}
+}
+
+// TestRunActiveTestRejectsRemovedWorkModels 校验已删的工作模式模型名被拒。
+//
+// 0.1.26 起插件只做图片与视频，deepseek / kimi / glm 这些工作模式模型已从目录
+// 移除。它们必须直接报「不支持的测试模型」，不能因为名字眼熟就被静默接受——
+// 否则面板点下去会真的发一次上游请求，白白消耗账号额度。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 01:08:00；改动原因：新增，锁定工作模式模型已不可测。
+func TestRunActiveTestRejectsRemovedWorkModels(t *testing.T) {
+	removed := []string{
+		modelIDPrefix + "deepseek-v4-flash",
+		modelIDPrefix + "deepseek-v4-pro",
+		modelIDPrefix + "kimi-k3",
+		modelIDPrefix + "glm-5.3",
+		modelIDPrefix + "default",
+		modelIDPrefix + "pro",
+	}
+	for _, model := range removed {
+		res := runActiveTest(completionTestAccount(), model)
+		if res["ok"] == true {
+			t.Errorf("%s 已从目录删除，不应判成功，实际 %+v", model, res)
+			continue
+		}
+		if msg, _ := res["error"].(string); !strings.Contains(msg, "不支持的测试模型") {
+			t.Errorf("%s 应报「不支持的测试模型」，实际 %q", model, msg)
+		}
+	}
+}
+
+// TestRunActiveTestAcceptsBothCapabilities 校验 image 与 video 都被认。
+//
+// 两个别名都必须能进到上游请求那一层（而不是在解析阶段就被判不支持）；
+// 上游用不可达地址模拟，只验证「没有报不支持的测试模型」。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 01:08:00；改动原因：新增，锁定两条能力别名都能测。
+func TestRunActiveTestAcceptsBothCapabilities(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+	defer swapCompletionEndpoint(deadURL)()
+
+	for _, model := range []string{modelIDPrefix + "image", modelIDPrefix + "video"} {
+		res := runActiveTest(completionTestAccount(), model)
+		if msg, _ := res["error"].(string); strings.Contains(msg, "不支持的测试模型") {
+			t.Errorf("%s 应被识别为合法能力别名，实际 %q", model, msg)
+		}
 	}
 }
 
@@ -274,7 +325,7 @@ func TestHandleModelsQueryRequiresAuthIndex(t *testing.T) {
 // [返回] 无。
 // 最近修改时间：2026-10-17；改动原因：新增，入参校验。
 func TestHandleTestActiveRequiresAuthIndex(t *testing.T) {
-	res := handleTestActive(pluginapi.ManagementRequest{Body: []byte(`{"model":"doubao/default"}`)})
+	res := handleTestActive(pluginapi.ManagementRequest{Body: []byte(`{"model":"doubao/image"}`)})
 	if res["error"] == nil {
 		t.Fatalf("缺少 auth_index 时应报错，实际 %+v", res)
 	}

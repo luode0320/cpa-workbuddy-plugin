@@ -17,10 +17,10 @@ import (
 // 429 / 额度耗尽 / 登录态失效值得立刻换号；5xx 与传输错误只记冷却，不烧预算。
 // 换号时排除刚失败的账号，避免又打回去。
 // [参数] sa: 首选账号；timeout: 单次尝试超时；mode: 生成模式；prompt: 提示词；
-// onDelta: 文本增量回调。
+// resume: 会话续接点（零值表示新会话）；onDelta: 文本增量回调。
 // [返回] 聚合结果与错误；全部账号失败时返回最后一个错误。
-// 最近修改时间：2026-10-17；改动原因：新增，TASK-008 同请求换号。
-func runWithFailover(sa *StoredAuth, timeout time.Duration, mode generationMode, prompt string, onDelta func(string)) (*completionResult, error) {
+// 最近修改时间：2026-11-17 01:34:00；改动原因：新增续接点入参，视频确认轮需要接着上一句说。
+func runWithFailover(sa *StoredAuth, timeout time.Duration, mode generationMode, prompt string, resume resumePoint, onDelta func(string)) (*completionResult, error) {
 	const maxAttempts = 3
 
 	current := sa
@@ -33,7 +33,7 @@ func runWithFailover(sa *StoredAuth, timeout time.Duration, mode generationMode,
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		res, errRun := collectCompletion(ctx, current, prompt, mode, "", true, onDelta)
+		res, errRun := collectCompletionWithResume(ctx, current, prompt, mode, resume, resume.isZero(), onDelta)
 		cancel()
 
 		if errRun == nil {

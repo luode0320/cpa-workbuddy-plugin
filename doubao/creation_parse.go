@@ -1,6 +1,10 @@
 package main
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+)
 
 // 本文件实现 CREATION 块的解析与同资源多次上报的合并。
 //
@@ -116,28 +120,60 @@ func assetFromImage(item creationItem) (creationAsset, bool) {
 }
 
 // assetFromVideo 把视频条目转成生成结果。
+//
+// 取地址的顺序是 download_url → video_model 里最清晰的 main_url → 封面图：
+// 前两者是成品本身，封面只是「还没生成好」时的占位，交出去也不会是视频。
 // [参数] item: 生成物条目。
 // [返回] 生成结果与是否可用。
-// 最近修改时间：2026-10-17；改动原因：新增，视频条目转换。
+// 最近修改时间：2026-11-17 01:22:00；改动原因：按真实结构取 download_url 与 video_model 直链。
 func assetFromVideo(item creationItem) (creationAsset, bool) {
 	video := item.Video
+	if video == nil {
+		return creationAsset{}, false
+	}
 	asset := creationAsset{
 		Type:   2,
 		ID:     item.ID,
 		Key:    video.Key,
-		URL:    video.URL,
+		URL:    video.DownloadURL,
 		Status: video.Status,
 	}
-	if video.Cover != nil {
-		// 封面兼作海报帧，也是视频地址未就绪时的回退地址。
-		if asset.URL == "" {
-			asset.URL = video.Cover.URL
-		}
-		asset.Width = video.Cover.Width
-		asset.Height = video.Cover.Height
+	// 顶层 width / height 是字符串；解析失败按 0 处理，尺寸只是展示信息。
+	if w, errW := strconv.Atoi(strings.TrimSpace(video.Width)); errW == nil && w > 0 {
+		asset.Width = w
 	}
-	if video.VideoInfo != nil && video.VideoInfo.URL != "" {
-		asset.URL = video.VideoInfo.URL
+	if h, errH := strconv.Atoi(strings.TrimSpace(video.Height)); errH == nil && h > 0 {
+		asset.Height = h
+	}
+	// download_url 缺失时退到清晰度清单里的直链，比封面更接近成品。
+	if asset.URL == "" {
+		if addr, w, h := video.bestStream(); addr != "" {
+			asset.URL = addr
+			if w > 0 {
+				asset.Width = w
+			}
+			if h > 0 {
+				asset.Height = h
+			}
+		}
+	}
+	if video.Cover != nil {
+		// 封面兼作海报帧，也是视频地址未就绪时的最后回退。
+		if asset.URL == "" {
+			if video.Cover.ImagePreview != nil && video.Cover.ImagePreview.URL != "" {
+				asset.URL = video.Cover.ImagePreview.URL
+			} else if video.Cover.ImageThumb != nil {
+				asset.URL = video.Cover.ImageThumb.URL
+			}
+		}
+		if asset.Width == 0 && video.Cover.ImagePreview != nil {
+			asset.Width = video.Cover.ImagePreview.Width
+			asset.Height = video.Cover.ImagePreview.Height
+		}
+		if asset.Width == 0 && video.Cover.ImageThumb != nil {
+			asset.Width = video.Cover.ImageThumb.Width
+			asset.Height = video.Cover.ImageThumb.Height
+		}
 	}
 	if asset.Key == "" && asset.URL == "" {
 		return asset, false

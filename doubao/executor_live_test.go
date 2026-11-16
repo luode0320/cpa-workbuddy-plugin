@@ -26,7 +26,7 @@ func liveExecutorRequest(t *testing.T, payload string) []byte {
 	raw, _ := json.Marshal(pluginapi.ExecutorRequest{
 		AuthID:       sa.AuthID,
 		AuthProvider: providerName,
-		Model:        "doubao/default",
+		Model:        "doubao/image",
 		Payload:      []byte(payload),
 		StorageJSON:  storage,
 	})
@@ -44,7 +44,7 @@ func TestExecutorLiveNonStream(t *testing.T) {
 	if os.Getenv("DOUBAO_LIVE_TEST") != "1" {
 		t.Skip("设 DOUBAO_LIVE_TEST=1 才执行真实上游探测")
 	}
-	raw := liveExecutorRequest(t, `{"model":"doubao/default","messages":[{"role":"user","content":"1+1=?"}]}`)
+	raw := liveExecutorRequest(t, `{"model":"doubao/image","messages":[{"role":"user","content":"1+1=?"}]}`)
 	if raw == nil {
 		t.Skip("未提供 .local_cookie.txt（真实 Cookie），跳过端到端验证")
 	}
@@ -96,7 +96,7 @@ func TestExecutorLiveStreamSync(t *testing.T) {
 	if os.Getenv("DOUBAO_LIVE_TEST") != "1" {
 		t.Skip("设 DOUBAO_LIVE_TEST=1 才执行真实上游探测")
 	}
-	raw := liveExecutorRequest(t, `{"model":"doubao/default","stream":true,"messages":[{"role":"user","content":"请用一句话介绍你自己"}]}`)
+	raw := liveExecutorRequest(t, `{"model":"doubao/image","stream":true,"messages":[{"role":"user","content":"请用一句话介绍你自己"}]}`)
 	if raw == nil {
 		t.Skip("未提供 .local_cookie.txt（真实 Cookie），跳过流式端到端验证")
 	}

@@ -90,12 +90,12 @@ func TestBuildPromptToolMessage(t *testing.T) {
 // [返回] 无。
 // 最近修改时间：2026-10-17；改动原因：新增，OpenAI 响应契约锁定。
 func TestBuildChatCompletionShape(t *testing.T) {
-	resp := buildChatCompletion("doubao/default", "答案是 2", "先数一下", "conv-1", "1+1=?")
+	resp := buildChatCompletion("doubao/image", "答案是 2", "先数一下", "conv-1", "1+1=?")
 
 	if resp["object"] != "chat.completion" {
 		t.Errorf("object 应为 chat.completion，实际 %v", resp["object"])
 	}
-	if resp["model"] != "doubao/default" {
+	if resp["model"] != "doubao/image" {
 		t.Errorf("model 应回显请求模型，实际 %v", resp["model"])
 	}
 	if resp["conversation_id"] != "conv-1" {
@@ -134,7 +134,7 @@ func TestBuildChatCompletionShape(t *testing.T) {
 // [返回] 无。
 // 最近修改时间：2026-10-17；改动原因：新增，普通回复与非思考模型保持一致。
 func TestBuildChatCompletionOmitsEmptyReasoning(t *testing.T) {
-	resp := buildChatCompletion("doubao/default", "答案", "", "", "问题")
+	resp := buildChatCompletion("doubao/image", "答案", "", "", "问题")
 	choices := resp["choices"].([]map[string]any)
 	msg := choices[0]["message"].(map[string]any)
 	if _, exists := msg["reasoning_content"]; exists {
@@ -147,7 +147,7 @@ func TestBuildChatCompletionOmitsEmptyReasoning(t *testing.T) {
 // [返回] 无。
 // 最近修改时间：2026-10-17；改动原因：新增，流式契约锁定。
 func TestStreamChunkShape(t *testing.T) {
-	chunk := streamChunk("doubao/default", "conv-1", map[string]any{"content": "你"}, "")
+	chunk := streamChunk("doubao/image", "conv-1", map[string]any{"content": "你"}, "")
 	if chunk["object"] != "chat.completion.chunk" {
 		t.Errorf("object 应为 chat.completion.chunk，实际 %v", chunk["object"])
 	}
@@ -156,7 +156,7 @@ func TestStreamChunkShape(t *testing.T) {
 		t.Errorf("未结束时 finish_reason 应为 null，实际 %v", choices[0]["finish_reason"])
 	}
 
-	stop := streamChunk("doubao/default", "conv-1", map[string]any{}, "stop")
+	stop := streamChunk("doubao/image", "conv-1", map[string]any{}, "stop")
 	if stop["choices"].([]map[string]any)[0]["finish_reason"] != "stop" {
 		t.Error("终止帧 finish_reason 应为 stop")
 	}
@@ -168,14 +168,14 @@ func TestStreamChunkShape(t *testing.T) {
 // 最近修改时间：2026-10-17；改动原因：新增，首帧 role 语义。
 func TestStreamDeltaFirstFrameHasRole(t *testing.T) {
 	var first map[string]any
-	_ = json.Unmarshal(streamDelta("doubao/default", "你", true), &first)
+	_ = json.Unmarshal(streamDelta("doubao/image", "你", true), &first)
 	delta := first["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
 	if delta["role"] != "assistant" {
 		t.Errorf("首帧 delta 应带 role=assistant，实际 %+v", delta)
 	}
 
 	var second map[string]any
-	_ = json.Unmarshal(streamDelta("doubao/default", "好", false), &second)
+	_ = json.Unmarshal(streamDelta("doubao/image", "好", false), &second)
 	delta2 := second["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
 	if _, exists := delta2["role"]; exists {
 		t.Errorf("后续帧不应重复 role，实际 %+v", delta2)
@@ -235,7 +235,7 @@ func TestDecodeExecutorRequestRejectsEmptyMessages(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"auth_id":      doubaoAuthFilePrefix + "nobody",
 		"storage_json": []byte(`{"cookie_header":"` + validCookieHeader + `"}`),
-		"payload":      []byte(`{"model":"doubao/default"}`),
+		"payload":      []byte(`{"model":"doubao/image"}`),
 	})
 	if _, _, _, err := decodeExecutorRequest(raw); err == nil {
 		t.Fatal("缺少 messages 应被拒绝")
@@ -288,7 +288,7 @@ func TestResolveExecutionAuthMissing(t *testing.T) {
 // 最近修改时间：2026-10-17；改动原因：新增，执行入口负向用例。
 func TestExecutorExecuteRejectsNoMessages(t *testing.T) {
 	storage, _ := json.Marshal(StoredAuth{AuthID: doubaoAuthFilePrefix + "x", CookieHeader: validCookieHeader})
-	raw, _ := json.Marshal(pluginapi.ExecutorRequest{StorageJSON: storage, Payload: []byte(`{"model":"doubao/default"}`)})
+	raw, _ := json.Marshal(pluginapi.ExecutorRequest{StorageJSON: storage, Payload: []byte(`{"model":"doubao/image"}`)})
 	if _, err := executorExecute(raw); err == nil {
 		t.Fatal("无 messages 时应被拒绝")
 	}
@@ -314,7 +314,7 @@ func TestExecutorExecuteNonStream(t *testing.T) {
 	defer cleanup()
 
 	storage, _ := json.Marshal(completionTestAccount())
-	payload := []byte(`{"model":"doubao/default","messages":[{"role":"user","content":"1+1=?"}]}`)
+	payload := []byte(`{"model":"doubao/image","messages":[{"role":"user","content":"1+1=?"}]}`)
 	raw, _ := json.Marshal(pluginapi.ExecutorRequest{StorageJSON: storage, Payload: payload})
 
 	out, err := executorExecute(raw)
@@ -373,7 +373,7 @@ func TestExecutorExecuteStreamSyncCollect(t *testing.T) {
 	defer cleanup()
 
 	storage, _ := json.Marshal(completionTestAccount())
-	payload := []byte(`{"model":"doubao/default","stream":true,"messages":[{"role":"user","content":"1+1=?"}]}`)
+	payload := []byte(`{"model":"doubao/image","stream":true,"messages":[{"role":"user","content":"1+1=?"}]}`)
 	raw, _ := json.Marshal(pluginapi.ExecutorRequest{StorageJSON: storage, Payload: payload})
 
 	out, err := executorExecuteStream(raw)
@@ -431,7 +431,7 @@ func TestPumpCompletionStreamEmitsError(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		pumpCompletionStream("test-stream", sa, &chatRequest{Model: "doubao/default"}, "你好")
+		pumpCompletionStream("test-stream", sa, generationMode{Skill: skillImageGen, Kind: "image"}, resumePoint{}, &chatRequest{Model: "doubao/image"}, "画一只猫")
 	}()
 	select {
 	case <-done:

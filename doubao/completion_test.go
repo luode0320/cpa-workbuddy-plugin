@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -497,6 +498,108 @@ func newCompletionTestServer(t *testing.T, stream string) (*httptest.Server, *St
 	return srv, completionTestAccount(), func() {
 		restore()
 		srv.Close()
+	}
+}
+
+// resumeTestStream 是一段最小可用的 SSE：有正文与续接点。
+//
+// 只有 ACK + REPLY_END 会让 collectCompletion 判「上游没有返回内容」（正文为空、
+// 思考为空、也没有生成结果）。续接点测试关心的是请求体，但仍需要一段正文才能
+// 走到断言。
+const resumeTestStream = "event: SSE_ACK\n" +
+	"data: {\"ack_client_meta\":{\"conversation_id\":\"conv-9\",\"section_id\":\"sec-9\"}}\n\n" +
+	"event: STREAM_MSG_NOTIFY\n" +
+	"data: {\"content\":{\"content_block\":[{\"block_type\":10000,\"content\":{\"text_block\":{\"text\":\"好的\"}}}]}}\n\n" +
+	"event: SSE_REPLY_END\n" +
+	"data: {}\n\n"
+
+// TestCollectCompletionPassesResumePoint 校验续接点被原样写进请求体的 client_meta。
+//
+// 视频是两段式的：首轮给参数确认，次轮必须指回同一条会话才会真正开跑。次轮的
+// agent_mode / conversation_mode / model_item_key 全部留空，上游只认这三个字段
+// （2026-11-17 抓包确认）。夹具取自确认轮请求体的 client_meta 原文。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 01:42:00；改动原因：新增，续接点透传锁定。
+func TestCollectCompletionPassesResumePoint(t *testing.T) {
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(resumeTestStream))
+	}))
+	defer srv.Close()
+	restore := swapCompletionEndpoint(srv.URL)
+	defer restore()
+
+	sa := completionTestAccount()
+	sa.PhysicalPath = ""
+	resume := resumePoint{ConversationID: "38454121040780034", SectionID: "38454121040780290", MessageIndex: 5}
+
+	if _, errRun := collectCompletionWithResume(context.Background(), sa, "确认，开始生成", generationMode{Skill: skillVideoGen, Kind: "video"}, resume, false, nil); errRun != nil {
+		t.Fatalf("聚合失败：%v", errRun)
+	}
+
+	var sent completionRequest
+	if errUnmarshal := json.Unmarshal(captured, &sent); errUnmarshal != nil {
+		t.Fatalf("请求体不是合法 JSON：%v", errUnmarshal)
+	}
+	if sent.ClientMeta.ConversationID != resume.ConversationID {
+		t.Errorf("conversation_id 应透传 %q，实际 %q", resume.ConversationID, sent.ClientMeta.ConversationID)
+	}
+	if sent.ClientMeta.LastSectionID != resume.SectionID {
+		t.Errorf("last_section_id 应透传 %q，实际 %q", resume.SectionID, sent.ClientMeta.LastSectionID)
+	}
+	if sent.ClientMeta.LastMessageIndex == nil || *sent.ClientMeta.LastMessageIndex != resume.MessageIndex {
+		t.Errorf("last_message_index 应透传 %d，实际 %v", resume.MessageIndex, sent.ClientMeta.LastMessageIndex)
+	}
+	// 确认轮不再新建会话，否则产物会落到另一条会话里。
+	if sent.Option.NeedCreateConversation {
+		t.Error("带续接点的请求不得要求上游新建会话")
+	}
+}
+
+// TestCollectCompletionNewSessionOmitsResumePoint 校验新会话的 last_message_index 仍输出 null。
+//
+// 该字段不用 omitempty 是为了逐字节对齐网页请求；改成省略会让上游按另一种
+// 形态解析（2026-11-16 已证伪一次，不能再退回去）。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 01:42:00；改动原因：新增，新会话语义不得被续接点改造带偏。
+func TestCollectCompletionNewSessionOmitsResumePoint(t *testing.T) {
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(resumeTestStream))
+	}))
+	defer srv.Close()
+	restore := swapCompletionEndpoint(srv.URL)
+	defer restore()
+
+	sa := completionTestAccount()
+	sa.PhysicalPath = ""
+
+	if _, errRun := collectCompletion(context.Background(), sa, "画一只猫", generationMode{Skill: skillImageGen, Kind: "image"}, "", true, nil); errRun != nil {
+		t.Fatalf("聚合失败：%v", errRun)
+	}
+
+	var sent completionRequest
+	if errUnmarshal := json.Unmarshal(captured, &sent); errUnmarshal != nil {
+		t.Fatalf("请求体不是合法 JSON：%v", errUnmarshal)
+	}
+	if sent.ClientMeta.ConversationID != "" || sent.ClientMeta.LastSectionID != "" {
+		t.Errorf("新会话不得带续接点：%+v", sent.ClientMeta)
+	}
+	if sent.ClientMeta.LastMessageIndex != nil {
+		t.Errorf("新会话的 last_message_index 必须是 null，实际 %v", *sent.ClientMeta.LastMessageIndex)
+	}
+	if !sent.Option.NeedCreateConversation {
+		t.Error("新会话必须要求上游新建会话")
+	}
+	// 字段必须真实出现在 JSON 里，而不是被 omitempty 吞掉。
+	if !strings.Contains(string(captured), `"last_message_index":null`) {
+		t.Error("last_message_index 必须显式输出 null")
 	}
 }
 

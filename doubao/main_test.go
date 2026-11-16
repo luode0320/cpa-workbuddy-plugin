@@ -200,6 +200,34 @@ func TestConfigurePluginDefaults(t *testing.T) {
 	}
 }
 
+// TestConfigurePluginIgnoresLegacyWorkKeys 校验旧配置里的 work_* 键被宽松忽略。
+//
+// 工作模式七项已在 0.1.26 删除，但存量部署的 config.yaml 里仍留着这批键。
+// yaml.Unmarshal 默认忽略未知字段，这里锁住该行为：不能因为旧键存在就解析失败，
+// 否则升级后所有老部署的插件配置都会读不出来。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 01:05:00；改动原因：新增，删除配置项后的向后兼容回归。
+func TestConfigurePluginIgnoresLegacyWorkKeys(t *testing.T) {
+	legacy := []byte(strings.Join([]string{
+		"timeout_seconds: 45",
+		"work_bot_id: 7338286299411103781",
+		"work_mode_id: \"3\"",
+		"work_reasoning_effort: \"4\"",
+		"work_memory_profile: 300k_230",
+		"work_total_window: \"300000\"",
+		"work_enable_sandbox: false",
+		"work_workspace: /tmp/doubao",
+	}, "\n"))
+
+	if err := configurePlugin(mustJSON(t, map[string]any{"config_yaml": legacy})); err != nil {
+		t.Fatalf("旧配置里的 work_* 键不应导致解析失败：%v", err)
+	}
+	if cfg := currentConfig(); cfg.TimeoutSeconds != 45 {
+		t.Errorf("同批配置里的有效项必须照常生效，timeout_seconds 实际 %d", cfg.TimeoutSeconds)
+	}
+}
+
 // truncateForTest 截断测试输出，避免断言失败时打印超长响应。
 // [参数] s: 原始字符串。
 // [返回] 截断后的字符串。

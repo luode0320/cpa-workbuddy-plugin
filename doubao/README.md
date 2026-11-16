@@ -2,11 +2,15 @@
 
 豆包（Doubao）Provider 插件：把豆包网页端账号能力封装为 CPA 的 OpenAI 兼容 Provider。
 
+本插件只做**图片生成**与**视频生成**两件事。工作模式对话、技能文本对话、
+每日签到、额度查询、令牌用量上报都不在范围内（2026-11-17 起）。
+
 ## 能力
 
-- 工作模式对话（`agent_mode=1`）：模拟豆包 PC 客户端，按 `model_item_key` 直连
-  DeepSeek / Kimi / GLM / 豆包等真实上游模型，支持 `reasoning_effort` 推理档位
-- 图像生成、视频生成（走网页端 skill 管线）
+- 图像生成（`doubao/image` → 上游 skill 3）：同步产物，同一次 `/chat/completion`
+  SSE 里直接返回图片地址
+- 视频生成（`doubao/video` → 上游 skill 5）：异步产物，**两段式**。首轮返回
+  参数确认与 `conversation_id`，调用方带上该 id 再发一次才会真正开始生成
 - 多账号池与阶梯冷却故障转移
 - 管理面板：密钥零输入（自动从 CPA 主面板读取，兜底 URL 参数与手工输入）、
   书签一键授权 / 批量导入凭证（粘贴 / 多选 JSON 文件）、导出账号（单文件 JSON / ZIP）、
@@ -14,36 +18,25 @@
 
 ## 模型
 
-对外模型名统一带 `doubao/` 前缀。
+对外模型名统一带 `doubao/` 前缀，只有两条：
 
-| 模型 | 上游主键 | 上下文 | 说明 |
-|---|---|---|---|
-| `doubao/default` | 工作模式默认 | 300k | 未指定模型时的行为，等同 `deepseek-v4-flash` |
-| `doubao/pro` | 工作模式默认 | 300k | 同上，推理档拉满（4） |
-| `doubao/image` | skill 3 | — | 图像生成 |
-| `doubao/video` | skill 5 | — | 视频生成 |
-| `doubao/auto` | `9` | 256k | 上游自动挑模型，免费额度可用 |
-| `doubao/doubao-2.1-lite` | `seed-lite-7b` | 256k | 轻量对话 |
-| `doubao/doubao-2.1-pro` | `5` | 256k | 豆包旗舰对话 |
-| `doubao/deepseek-v4-flash` | `person-deepseek-v4-1-flash-261017` | 300k | 工作模式默认模型 |
-| `doubao/deepseek-v4-pro` | `person-deepseek-v4-pro-ga-260813` | 300k | DeepSeek 高配档 |
-| `doubao/kimi-k3` | `person-kimi-k3-261111` | 300k | Kimi 长上下文 |
-| `doubao/kimi-k3.1-pro` | `person-kimi-k3-1-pro-261111` | 300k | Kimi 新版旗舰 |
-| `doubao/kimi-k3.1-pro-fast` | `person-kimi-k3-1-pro-highspeed-261111` | 300k | Kimi 高速档 |
-| `doubao/glm-5.3` | `person-glm-5-3-261111` | 300k | GLM 旗舰档 |
-| `doubao/glm-5.3-flash` | `person-glm-5-3-flash-261111` | 300k | GLM 轻量档 |
+| 模型 | 上游 skill | 说明 |
+|---|---|---|
+| `doubao/image` | 3 | 图像生成。回复以 OpenAI 多模态 content 返回，地址在 `image_url` 中 |
+| `doubao/video` | 5 | 视频生成。首轮给参数确认，带 `conversation_id` 再发一次才出片 |
 
-未知名不做拦截，按工作模式默认模型透传；但面板「测试」按钮走严格解析，
-只接受上表中的别名（生图/生视频除外），未命中直接报错而不是悄悄换成默认模型。
-豆包上游另有一套内部代号（`4tbp`、`anceba` 等），插件没有代号到模型的映射表，
-因此代号只作为排障信息附带，不作为可测试项。
+未知名一律报「不支持的模型」，不再回落到任何默认模型：静默回落会让调用方
+以为在测生图，实际打到了别的东西上。豆包上游另有一套内部代号（`4tbp`、
+`anceba` 等），插件没有代号到模型的映射表，因此代号只作为排障信息附带。
 
 ## 已知限制
 
 - 上游不返回 token 用量，响应里的 `usage` 是按字符估算（`estimated: true`）
 - 豆包客户端协议不支持 Function Calling，`tools` 参数会被忽略
-- 工作模式只处理文本消息，附件与图片输入未实现
-- 无人值守部署必须保持 `work_enable_sandbox=false`；声明本地沙箱会让请求挂到超时
+- 视频生成要等 1~5 分钟，产物地址有 `url_expire`，过期后需要重新生成
+- 视频「确认」轮依赖会话续接（`conversation_id` + `last_section_id` +
+  `last_message_index`），丢掉 id 就只能重新从参数确认开始
+- 生图 / 生视频都消耗账号额度；账号未投放相应能力时上游会回明确错误码
 
 ## 认证方式
 
@@ -78,9 +71,9 @@
 
 ## 风险提示
 
-- 本插件走豆包网页端 / PC 客户端协议（非火山方舟开放平台 API），协议可能随上游版本变化而失效
+- 本插件走豆包网页端协议（非火山方舟开放平台 API），协议可能随上游版本变化而失效
 - 上游对请求频率与账号行为有风控策略，请合理控制调用频率
-- 账号订阅状态可能影响生图/生视频等高级能力
+- 账号订阅状态与活动投放可能影响生图 / 生视频等能力
 
 ## 配置项
 
@@ -89,13 +82,9 @@
 | `timeout_seconds` | 整数 | 非流式上游请求超时（秒），默认 120 |
 | `stream_timeout_seconds` | 整数 | 流式上游请求超时（秒），默认 600 |
 | `model_cache_seconds` | 整数 | 模型目录缓存时长（秒），默认 300 |
-| `work_bot_id` | 字符串 | 工作模式 `bot_id`，默认 `7338286299411103781`；账号自带的 `bot_id` 优先 |
-| `work_mode_id` | 字符串 | 工作模式 `mode_id`，默认 `3`（工作任务） |
-| `work_reasoning_effort` | 字符串 | 默认推理档位 0-4，默认 `4` |
-| `work_memory_profile` | 字符串 | 默认记忆档位，默认 `300k_230` |
-| `work_total_window` | 字符串 | 默认上下文窗口，默认 `300000` |
-| `work_enable_sandbox` | 布尔 | 是否声明本地沙箱，默认 `false`；无人值守必须保持 `false` |
-| `work_workspace` | 字符串 | 工作目录，默认空（不声明本地目录） |
+
+早期版本的 `work_*` 七项配置已删除；存量 `config.yaml` 里留着这批键不会报错，
+yaml 会宽松忽略。
 
 ## 构建与验证
 

@@ -37,8 +37,8 @@ const (
 
 	// tokenBeatContentType 是令牌端点接受的 Content-Type。
 	//
-	// 必须精确为 application/json：工作模式的 /chat/completion 另有一套
-	// 编码要求，两者不要互相套用。
+	// 必须精确为 application/json：/chat/completion 的编码要求由各自的
+	// 请求构造与签名决定，两者不要互相套用。
 	tokenBeatContentType = "application/json"
 )
 
@@ -244,7 +244,7 @@ func mustParseDoubaoURL(raw string) *url.URL {
 //
 // 个别换发路径可能不下发 flow_cur_user_sec_id（它是 IM 端点 key 的字段，
 // 网页登录态常态存在）。此时用判据端点返回的 sec_user_id 补齐——两者都是
-// 同一账号的稳定句柄，缺字段会让后续工作模式请求被上游按未登录拒绝。
+// 同一账号的稳定句柄，缺字段会让后续请求被上游按未登录拒绝。
 // [参数] token: 一次性令牌；label: 备注名（可空）。
 // [返回] 落盘后的账号结构与错误。
 // 最近修改时间：2026-11-14；改动原因：新增，首次授权主链路。

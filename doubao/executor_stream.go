@@ -42,29 +42,40 @@ func executorExecuteStream(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("请求中没有可发送的文本内容")
 	}
 
-	// 同步收集模式：宿主未提供 stream_id 时一次性返回全部帧。
-	if streamReq.StreamID == "" {
-		return collectStreamResponse(sa, chat, prompt)
+	mode, errMode := resolveGenerationMode(chat.Model)
+	if errMode != nil {
+		return nil, errMode
 	}
 
-	go pumpCompletionStream(streamReq.StreamID, sa, chat, prompt)
+	// 同步收集模式：宿主未提供 stream_id 时一次性返回全部帧。
+	resume := chat.resumePointOf()
+	if streamReq.StreamID == "" {
+		return collectStreamResponse(sa, mode, resume, chat, prompt)
+	}
+
+	go pumpCompletionStream(streamReq.StreamID, sa, mode, resume, chat, prompt)
 	return okEnvelope(streamResponse{Headers: streamHeaders()})
 }
 
 // collectStreamResponse 在无宿主流标识时同步收集全部帧。
-// [参数] sa: 账号；chat: 客户端请求；prompt: 折叠后的提示词。
+// [参数] sa: 账号；mode: 已解析的生成模式；resume: 会话续接点；chat: 客户端请求；
+// prompt: 折叠后的提示词。
 // [返回] 含帧列表的信封 JSON 与错误。
-// 最近修改时间：2026-10-17；改动原因：新增，同步流式兜底。
-func collectStreamResponse(sa *StoredAuth, chat *chatRequest, prompt string) ([]byte, error) {
+// 最近修改时间：2026-11-17 01:40:00；改动原因：新增续接点入参，视频确认轮要靠它续接。
+func collectStreamResponse(sa *StoredAuth, mode generationMode, resume resumePoint, chat *chatRequest, prompt string) ([]byte, error) {
 	var chunks []pluginapi.ExecutorStreamChunk
 	first := true
-	res, errRun := runWithFailover(sa, time.Duration(currentConfig().StreamTimeoutSeconds)*time.Second, modeForModel(chat.Model), prompt, func(delta string) {
+	res, errRun := runWithFailover(sa, time.Duration(currentConfig().StreamTimeoutSeconds)*time.Second, mode, prompt, resume, func(delta string) {
 		payload := streamDelta(chat.Model, delta, first)
 		first = false
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: payload})
 	})
 	if errRun != nil {
 		return nil, errRun
+	}
+	// 视频成品只能异步回灌：确认轮的 SSE 只回一段「正在生成」的文本。
+	if errVideo := ensureVideoAsset(sa, mode, res); errVideo != nil {
+		return nil, errVideo
 	}
 
 	// 生成结果无法拆成增量：在流末尾单独发帧。
@@ -80,20 +91,26 @@ func collectStreamResponse(sa *StoredAuth, chat *chatRequest, prompt string) ([]
 //
 // 退出路径必须保证 stream.close 只调一次：宿主流关闭后继续 emit 会报错，
 // 且未关闭的流会让宿主侧资源泄漏。
-// [参数] streamID: 宿主流标识；sa: 账号；chat: 客户端请求；prompt: 提示词。
+// [参数] streamID: 宿主流标识；sa: 账号；mode: 已解析的生成模式；resume: 会话续接点；
+// chat: 客户端请求；prompt: 提示词。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，流式泵。
-func pumpCompletionStream(streamID string, sa *StoredAuth, chat *chatRequest, prompt string) {
+// 最近修改时间：2026-11-17 01:40:00；改动原因：新增续接点入参，视频确认轮要靠它续接。
+func pumpCompletionStream(streamID string, sa *StoredAuth, mode generationMode, resume resumePoint, chat *chatRequest, prompt string) {
 	defer streamClose(streamID)
 
 	first := true
-	res, errRun := runWithFailover(sa, time.Duration(currentConfig().StreamTimeoutSeconds)*time.Second, modeForModel(chat.Model), prompt, func(delta string) {
+	res, errRun := runWithFailover(sa, time.Duration(currentConfig().StreamTimeoutSeconds)*time.Second, mode, prompt, resume, func(delta string) {
 		payload := streamDelta(chat.Model, delta, first)
 		first = false
 		_ = streamEmit(streamID, payload)
 	})
 	if errRun != nil {
 		streamEmitError(streamID, errRun.Error())
+		return
+	}
+	// 视频成品只能异步回灌；拉不到就把失败推给客户端，而不是发一个空结局。
+	if errVideo := ensureVideoAsset(sa, mode, res); errVideo != nil {
+		streamEmitError(streamID, errVideo.Error())
 		return
 	}
 
