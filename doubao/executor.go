@@ -192,7 +192,8 @@ func executorExecute(raw []byte) ([]byte, error) {
 
 	// 视频是异步产物：确认轮只回一句「正在生成」，成品得从会话消息链里拉。
 	// 放在这里而不是流里，是因为这条链路的产物从来不会推给本次连接。
-	if errVideo := ensureVideoAsset(sa, mode, res); errVideo != nil {
+	// 续接点要一起传进去：首轮与视频模式同时成立，只有「这一次是确认轮」才该等产物。
+	if errVideo := ensureVideoAsset(sa, mode, chat.resumePointOf(), res); errVideo != nil {
 		return nil, errVideo
 	}
 

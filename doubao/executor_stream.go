@@ -74,7 +74,7 @@ func collectStreamResponse(sa *StoredAuth, mode generationMode, resume resumePoi
 		return nil, errRun
 	}
 	// 视频成品只能异步回灌：确认轮的 SSE 只回一段「正在生成」的文本。
-	if errVideo := ensureVideoAsset(sa, mode, res); errVideo != nil {
+	if errVideo := ensureVideoAsset(sa, mode, resume, res); errVideo != nil {
 		return nil, errVideo
 	}
 
@@ -109,7 +109,7 @@ func pumpCompletionStream(streamID string, sa *StoredAuth, mode generationMode, 
 		return
 	}
 	// 视频成品只能异步回灌；拉不到就把失败推给客户端，而不是发一个空结局。
-	if errVideo := ensureVideoAsset(sa, mode, res); errVideo != nil {
+	if errVideo := ensureVideoAsset(sa, mode, resume, res); errVideo != nil {
 		streamEmitError(streamID, errVideo.Error())
 		return
 	}

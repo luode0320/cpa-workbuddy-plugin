@@ -344,15 +344,30 @@ func TestPostChainJSONSendsIMContentType(t *testing.T) {
 	}
 }
 
-// TestEnsureVideoAssetSkipsNonVideoModes 校验只有视频模式才回灌。
+// videoConfirmResume 是确认轮的续接点夹具。
 //
-// 生图是同步产物，SSE 里已经带齐；给它也走一遍回灌会白等 6 分钟。
+// 用真实形态的三个字段：只要有一个非空，resume.isZero() 就是 false，
+// 插件据此认定「这一次是确认轮」。
+//
+// [返回] 续接点。
+// 最近修改时间：2026-11-17 02:38:00；改动原因：新增，回灌判据从「视频模式」改成「确认轮」。
+func videoConfirmResume() resumePoint {
+	return resumePoint{
+		ConversationID: "38454121040780034",
+		SectionID:      "38454121040780290",
+		MessageIndex:   5,
+	}
+}
+
+// TestEnsureVideoAssetSkipsFirstRound 校验首轮不该进回灌。
+//
+// 这是 2026-11-17 02:33 生产事故的回归用例：首轮请求同时满足「视频模式」与
+// 「有 conversation_id」，旧判据只看模式，于是首轮就进回灌、白等满 6 分钟再回 503。
+// 首轮的正确行为是立刻返回、只带参数确认文本与续接点。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-17 01:54:00；改动原因：新增，两条执行路径共用的入口判定。
-func TestEnsureVideoAssetSkipsNonVideoModes(t *testing.T) {
-	// 把等待压到毫秒级：生图模式若误入回灌，会在这里 5 毫秒内以「等待超时」失败，
-	// 而不是挂满 6 分钟。
+// 最近修改时间：2026-11-17 02:38:00；改动原因：新增，钉死「只有确认轮才回灌」。
+func TestEnsureVideoAssetSkipsFirstRound(t *testing.T) {
 	restoreTiming := swapVideoPollTiming(5*time.Millisecond, 20*time.Millisecond)
 	defer restoreTiming()
 
@@ -365,35 +380,63 @@ func TestEnsureVideoAssetSkipsNonVideoModes(t *testing.T) {
 	defer restoreEndpoint()
 
 	sa := completionTestAccount()
+	// 首轮的 res 里确实有 conversation_id（上游在 SSE_ACK 里就给了），
+	// 所以「有会话 id」不能当作回灌依据。
+	res := &completionResult{ConversationID: "38454121040780034"}
+	if errVideo := ensureVideoAsset(sa, generationMode{Skill: skillVideoGen, Kind: "video"}, resumePoint{}, res); errVideo != nil {
+		t.Fatalf("首轮不该回灌，却报了错：%v", errVideo)
+	}
+	if len(res.Assets) != 0 {
+		t.Errorf("首轮不该被塞进资产：%+v", res.Assets)
+	}
+}
+
+// TestEnsureVideoAssetSkipsOtherModes 校验非视频模式、已有产物、无会话 id 都不回灌。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 02:38:00；改动原因：改用 resume 入参并合并三条短路条件。
+func TestEnsureVideoAssetSkipsOtherModes(t *testing.T) {
+	restoreTiming := swapVideoPollTiming(5*time.Millisecond, 20*time.Millisecond)
+	defer restoreTiming()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(chainTestResponse(false)))
+	}))
+	defer srv.Close()
+	restoreEndpoint := swapBusinessEndpoint(srv.URL)
+	defer restoreEndpoint()
+
+	sa := completionTestAccount()
+	resume := videoConfirmResume()
 
 	imageRes := &completionResult{ConversationID: "38454121040780034"}
-	if errVideo := ensureVideoAsset(sa, generationMode{Skill: skillImageGen, Kind: "image"}, imageRes); errVideo != nil {
+	if errVideo := ensureVideoAsset(sa, generationMode{Skill: skillImageGen, Kind: "image"}, resume, imageRes); errVideo != nil {
 		t.Fatalf("生图模式不该回灌：%v", errVideo)
 	}
 	if len(imageRes.Assets) != 0 {
 		t.Errorf("生图模式不该被塞进资产：%+v", imageRes.Assets)
 	}
 
-	// 视频模式但已经拿到产物（短时长视频会在确认轮的 SSE 里直接带出来）。
+	// 视频确认轮但已经拿到产物（短时长视频会在 SSE 里直接带出来）。
 	withAsset := &completionResult{ConversationID: "38454121040780034", Assets: []creationAsset{{Type: 2, URL: "https://example.com/already.mp4"}}}
-	if errVideo := ensureVideoAsset(sa, generationMode{Skill: skillVideoGen, Kind: "video"}, withAsset); errVideo != nil {
+	if errVideo := ensureVideoAsset(sa, generationMode{Skill: skillVideoGen, Kind: "video"}, resume, withAsset); errVideo != nil {
 		t.Fatalf("已有产物时不该回灌：%v", errVideo)
 	}
 	if len(withAsset.Assets) != 1 {
 		t.Errorf("已有产物时不该再加一个：%+v", withAsset.Assets)
 	}
 
-	// 视频模式但没有会话 id：无从回灌，直接放过（错误在别处报）。
+	// 视频确认轮但没有会话 id：无从回灌，直接放过（错误在 waitVideoAsset 里报）。
 	noConv := &completionResult{}
-	if errVideo := ensureVideoAsset(sa, generationMode{Skill: skillVideoGen, Kind: "video"}, noConv); errVideo != nil {
+	if errVideo := ensureVideoAsset(sa, generationMode{Skill: skillVideoGen, Kind: "video"}, resume, noConv); errVideo != nil {
 		t.Fatalf("没有会话 id 时应直接放过：%v", errVideo)
 	}
 }
 
-// TestEnsureVideoAssetAppendsFetchedAsset 校验视频模式会把回灌到的产物补进结果。
+// TestEnsureVideoAssetAppendsFetchedAsset 校验确认轮会把回灌到的产物补进结果。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-17 01:54:00；改动原因：新增，回灌主路径。
+// 最近修改时间：2026-11-17 02:38:00；改动原因：改用 resume 入参。
 func TestEnsureVideoAssetAppendsFetchedAsset(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(chainTestResponse(true)))
@@ -405,7 +448,7 @@ func TestEnsureVideoAssetAppendsFetchedAsset(t *testing.T) {
 
 	sa := completionTestAccount()
 	res := &completionResult{ConversationID: "38454121040780034"}
-	if errVideo := ensureVideoAsset(sa, generationMode{Skill: skillVideoGen, Kind: "video"}, res); errVideo != nil {
+	if errVideo := ensureVideoAsset(sa, generationMode{Skill: skillVideoGen, Kind: "video"}, videoConfirmResume(), res); errVideo != nil {
 		t.Fatalf("回灌失败：%v", errVideo)
 	}
 	if len(res.Assets) != 1 || res.Assets[0].URL != "https://example.com/real-video.mp4" {

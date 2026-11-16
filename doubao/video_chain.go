@@ -268,18 +268,20 @@ func fetchChainAssets(ctx context.Context, sa *StoredAuth, conversationID string
 	return assetsFromChainResponse(raw)
 }
 
-// ensureVideoAsset 在视频模式下补齐异步产物。
+// ensureVideoAsset 在视频确认轮补齐异步产物。
 //
-// 确认轮与非确认轮的 SSE 都不会携带成品：成品由上游异步写进会话消息链，只能
-// 主动回灌。非流式与流式两条路径共用这一处判断，避免一边补一边漏。
+// 只有确认轮才可能产生产物：首轮的 SSE 只是一段「请确认参数」的文本，上游根本没
+// 有开跑，此时去轮询消息链只会白等满 videoPollTimeout 再报超时（2026-11-17 02:33
+// 生产实测：首轮等满 6 分钟回 503）。所以判据是「这一次是不是确认轮」，而不是
+// 「是不是视频模式」—— 两者在首轮同时成立，只看模式必然误入。
 //
 // 超时取 videoPollTimeout 外加一分钟余量：调用方传进来的 ctx 已在上游流结束时
 // 被取消，直接复用会让回灌立刻返回 context canceled。
-// [参数] sa: 账号；mode: 生成模式；res: 待补齐的执行结果。
+// [参数] sa: 账号；mode: 生成模式；resume: 本次请求的续接点；res: 待补齐的执行结果。
 // [返回] 错误（视频等不到成品时返回）。
-// 最近修改时间：2026-11-17 01:52:00；改动原因：新增，两条路径共用回灌判定并自带超时。
-func ensureVideoAsset(sa *StoredAuth, mode generationMode, res *completionResult) error {
-	if res == nil || mode.Kind != "video" || len(res.Assets) > 0 || res.ConversationID == "" {
+// 最近修改时间：2026-11-17 02:36:00；改动原因：新增 resume 入参，首轮不再误入回灌。
+func ensureVideoAsset(sa *StoredAuth, mode generationMode, resume resumePoint, res *completionResult) error {
+	if res == nil || mode.Kind != "video" || resume.isZero() || len(res.Assets) > 0 || res.ConversationID == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), videoPollTimeout+time.Minute)
