@@ -56,6 +56,19 @@ func creationChunkFrame() string {
 	return "event: STREAM_CHUNK\ndata: " + payload + "\n\n"
 }
 
+// ackFrame 构造一帧 SSE_ACK，带上游分配的会话 id。
+//
+// 视频两段式的首轮唯一通路证据就是它：首轮不产生产物，只有会话建起来了，
+// 下一轮才谈得上「确认后开始生成」。
+// [参数] conversationID: 会话 id。
+// [返回] 完整 SSE 帧文本。
+// 最近修改时间：2026-11-17 23:12:00；改动原因：新增，视频首轮通路判据夹具。
+func ackFrame(conversationID string) string {
+	return "event: SSE_ACK\ndata: " +
+		`{"ack_client_meta":{"conversation_id":"` + conversationID + `","section_id":"sec-1"},"query_list":[{"message_index":1}]}` +
+		"\n\n"
+}
+
 // TestRunActiveTestStopsOnFirstFrame 校验测试链路在首个有效输出帧即返回。
 //
 // 上游在首帧之后挂起 3 秒再结束；若实现等全文，本次调用必然超过 1 秒。
@@ -416,6 +429,73 @@ func TestActiveTestSawCreationDetectsCreationBlock(t *testing.T) {
 	}
 }
 
+// TestRunActiveTestWaitsForCreationAfterText 校验文本帧不会终止读取。
+//
+// 这是面板测试假阴性的成因：上游先回一段文字再说产物，见文本就关流会永远读不到
+// 创作块。2026-11-17 生产实测：旧实现 2.2 秒判「没能出图」，而同账号走正式链路
+// 的同一类提示词 12.2 秒真的出了图。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 23:20:00；改动原因：新增，锁住「文本帧不终止」契约。
+func TestRunActiveTestWaitsForCreationAfterText(t *testing.T) {
+	stream := "event: STREAM_MSG_NOTIFY\ndata: " +
+		`{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"马上画"}}}]}}` +
+		"\n\n" + creationChunkFrame() + "event: SSE_REPLY_END\ndata: {}\n\n"
+	_, sa, cleanup := newCompletionTestServer(t, stream)
+	defer cleanup()
+
+	res := runActiveTest(sa, modelIDPrefix+"image")
+	if res["ok"] != true {
+		t.Fatalf("文本之后到达的创作块应判成功，实际 %+v", res)
+	}
+}
+
+// TestRunActiveTestVideoAcceptsResumeSignal 校验视频按「会话建起来了」判通路。
+//
+// 视频首轮只回参数确认文本、不产生产物，用创作块判它必然失败（第二个假阴性）。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 23:12:00；改动原因：新增，视频通路判据回归。
+func TestRunActiveTestVideoAcceptsResumeSignal(t *testing.T) {
+	stream := ackFrame("conv-ping-1") + "event: STREAM_MSG_NOTIFY\ndata: " +
+		`{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"请确认参数"}}}]}}` +
+		"\n\n" + "event: SSE_REPLY_END\ndata: {}\n\n"
+	_, sa, cleanup := newCompletionTestServer(t, stream)
+	defer cleanup()
+
+	res := runActiveTest(sa, modelIDPrefix+"video")
+	if res["ok"] != true {
+		t.Fatalf("视频首轮建起会话应判通路正常，实际 %+v", res)
+	}
+	message, _ := res["message"].(string)
+	if !strings.Contains(message, "首轮通路正常") {
+		t.Errorf("文案必须说明这只是首轮通路，实际 %q", message)
+	}
+}
+
+// TestRunActiveTestVideoRejectsMissingResume 校验视频没建起会话必须判失败。
+//
+// 只回文本不给会话 id，说明上游连会话都没建，发确认轮也无从谈起。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 23:12:00；改动原因：新增，视频缺会话回归。
+func TestRunActiveTestVideoRejectsMissingResume(t *testing.T) {
+	stream := "event: STREAM_MSG_NOTIFY\ndata: " +
+		`{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"请确认参数"}}}]}}` +
+		"\n\n" + "event: SSE_REPLY_END\ndata: {}\n\n"
+	_, sa, cleanup := newCompletionTestServer(t, stream)
+	defer cleanup()
+
+	res := runActiveTest(sa, modelIDPrefix+"video")
+	if res["ok"] == true {
+		t.Fatalf("没建起会话不该判成功：%v", res)
+	}
+	message, _ := res["error"].(string)
+	if !strings.Contains(message, "没有建立会话") {
+		t.Errorf("失败文案应说明会话没建起来，实际 %q", message)
+	}
+}
+
 // TestCapabilityVerb 校验失败文案用的能力动作词。
 //
 // 文案必须说「没能出图 / 没能出片」而不是「没能生成图片」：前者是用户视角的
@@ -498,5 +578,25 @@ func TestActiveTestOutputRejectsEmptyPatch(t *testing.T) {
 	frame := `{"patch_op":[{"patch_value":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":""}}}]}}]}`
 	if _, ok := activeTestOutput(completionEvent{Name: "STREAM_CHUNK", Data: []byte(frame)}); ok {
 		t.Fatal("空文本补丁不应算作输出")
+	}
+}
+
+// TestMeaningfulPreviewDropsPunctuationOnly 校验只有标点的预览会被丢弃。
+//
+// 上游在产物前常先发一个句号或换行，看着像有文本却不含信息；拼进成功文案会得到
+// 「…耗时 15.1s）：。」（2026-11-17 真机复验实测到）。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 23:15:00；改动原因：新增，净化测试结果预览。
+func TestMeaningfulPreviewDropsPunctuationOnly(t *testing.T) {
+	for _, raw := range []string{"", " ", "\n", "。", "：。", " . , ", "…"} {
+		if got := meaningfulPreview(raw); got != "" {
+			t.Fatalf("%q 应被判为空预览，实际 %q", raw, got)
+		}
+	}
+	for _, raw := range []string{"已生成图片", " 。已生成图片。 ", "你好，世界"} {
+		if got := meaningfulPreview(raw); got == "" {
+			t.Fatalf("%q 应保留非空预览", raw)
+		}
 	}
 }

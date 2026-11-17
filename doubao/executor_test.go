@@ -162,6 +162,63 @@ func TestStreamChunkShape(t *testing.T) {
 	}
 }
 
+// TestStreamStopFrameCarriesResumePoint 校验终止帧带完整续接点。
+//
+// 流式视频两段式只能从终止帧拿续接点：增量帧在文本到达时就发出去了，那时聚合
+// 还没完成。2026-11-17 生产实测改之前每帧 conversation_id 都是空串，客户端
+// 根本发不出确认轮。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 22:52:00；改动原因：新增，流式续接点回程锁定。
+func TestStreamStopFrameCarriesResumePoint(t *testing.T) {
+	resume := resumePoint{
+		ConversationID: "38454121040780034",
+		SectionID:      "38454121040780290",
+		MessageIndex:   5,
+	}
+	var frame map[string]any
+	if errUnmarshal := json.Unmarshal(streamStopFrame("doubao/video", resume), &frame); errUnmarshal != nil {
+		t.Fatalf("终止帧不是合法 JSON：%v", errUnmarshal)
+	}
+	if frame["conversation_id"] != resume.ConversationID {
+		t.Errorf("conversation_id 应为 %q，实际 %v", resume.ConversationID, frame["conversation_id"])
+	}
+	if frame["section_id"] != resume.SectionID {
+		t.Errorf("section_id 应为 %q，实际 %v", resume.SectionID, frame["section_id"])
+	}
+	// JSON 数字统一解成 float64，比较前先转。
+	if index, ok := frame["message_index"].(float64); !ok || int64(index) != resume.MessageIndex {
+		t.Errorf("message_index 应为 %d，实际 %v", resume.MessageIndex, frame["message_index"])
+	}
+	choices := frame["choices"].([]any)
+	if choices[0].(map[string]any)["finish_reason"] != "stop" {
+		t.Error("终止帧 finish_reason 应为 stop")
+	}
+}
+
+// TestStreamStopFrameOmitsMissingResumeFields 校验半残续接点只写有值的字段。
+//
+// 只聚合到会话 id 时，写出空串的 section_id 与 0 的 message_index 会让客户端
+// 以为「续接点齐了但值不对」，缺哪个字段应该一眼能看出来。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 22:52:00；改动原因：新增，逐字段写语义锁定。
+func TestStreamStopFrameOmitsMissingResumeFields(t *testing.T) {
+	var frame map[string]any
+	if errUnmarshal := json.Unmarshal(streamStopFrame("doubao/image", resumePoint{ConversationID: "conv-1"}), &frame); errUnmarshal != nil {
+		t.Fatalf("终止帧不是合法 JSON：%v", errUnmarshal)
+	}
+	if frame["conversation_id"] != "conv-1" {
+		t.Errorf("conversation_id 应为 conv-1，实际 %v", frame["conversation_id"])
+	}
+	if _, exists := frame["section_id"]; exists {
+		t.Errorf("section_id 缺值时不写该键，实际 %v", frame["section_id"])
+	}
+	if _, exists := frame["message_index"]; exists {
+		t.Errorf("message_index 缺值时不写该键，实际 %v", frame["message_index"])
+	}
+}
+
 // TestStreamDeltaFirstFrameHasRole 校验首帧带 role，后续帧不带。
 // [参数] t: 测试上下文。
 // [返回] 无。

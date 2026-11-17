@@ -86,11 +86,19 @@ func streamDelta(model, delta string, first bool) []byte {
 }
 
 // streamStopFrame 构造终止帧。
-// [参数] model: 模型名；conversationID: 上游会话 id。
+//
+// 终止帧是整条流里唯一能带续接点的位置：增量帧在文本到达时就发出去了，那时
+// 聚合还没完成，取不到 section_id 与 message_index。视频两段式必须靠这三个
+// 字段续接（次轮 agent_mode / conversation_mode / model_item_key 全留空，上游
+// 只认续接点），缺一个就变成一条孤立的新消息。2026-11-17 生产实测：改之前
+// 每帧的 conversation_id 都是空串，客户端根本发不出确认轮。
+// [参数] model: 模型名；resume: 本次回复的续接点（零值时只写 conversation_id）。
 // [返回] 帧 JSON；序列化失败时返回 nil。
-// 最近修改时间：2026-10-17；改动原因：新增，终止帧构造。
-func streamStopFrame(model, conversationID string) []byte {
-	payload, errMarshal := json.Marshal(streamChunk(model, conversationID, map[string]any{}, "stop"))
+// 最近修改时间：2026-11-17 22:45:00；改动原因：终止帧带上完整续接点，流式视频两段式才能续接。
+func streamStopFrame(model string, resume resumePoint) []byte {
+	chunk := streamChunk(model, resume.ConversationID, map[string]any{}, "stop")
+	attachResumePoint(chunk, resume)
+	payload, errMarshal := json.Marshal(chunk)
 	if errMarshal != nil {
 		return nil
 	}

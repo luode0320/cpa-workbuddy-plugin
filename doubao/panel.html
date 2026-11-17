@@ -956,8 +956,8 @@ async function setAccountStatus(authId, disabled, btn){
 
 /* ---------- 测试模型 ----------
    点卡片「测试」→ 打开弹窗 → GET /models 拉取该账号可用模型 → 点某个模型
-   → POST /test-active 发起一次真实推理，结果就地展示。后端只等首个有效
-   输出帧就返回，所以结果通常在 1~3 秒内出现。
+   → POST /test-active 发起一次真实推理，结果就地展示。后端要等到「真的出了
+   图」或「视频首轮会话建起来了」才判成功，生图通常 10~15 秒，视频首轮 3~6 秒。
 */
 let pendingTestAuthIndex="";
 function openTestModal(authIndex){

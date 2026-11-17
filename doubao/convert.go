@@ -188,15 +188,25 @@ func streamChunk(model, conversationID string, delta map[string]any, finishReaso
 // 真正开跑。字段名与请求侧的入参同名，客户端原样回传即可续接；普通生图用不上，
 // 多出的字段会被不认识的客户端忽略。
 // [参数] resp: 响应对象；resume: 续接点。
+// 三个字段逐个判空写：上游只给会话 id 时，写出空串的 section_id 反而让人
+// 以为拿到了完整续接点。
 // [返回] 无。
-// 最近修改时间：2026-11-17 01:38:00；改动原因：新增，把续接点回给客户端。
+// 最近修改时间：2026-11-17 22:48:00；改动原因：改为逐字段写，半残续接点只回有值的字段。
 func attachResumePoint(resp map[string]any, resume resumePoint) {
 	if len(resp) == 0 || resume.isZero() {
 		return
 	}
-	resp["conversation_id"] = resume.ConversationID
-	resp["section_id"] = resume.SectionID
-	resp["message_index"] = resume.MessageIndex
+	// 逐字段写：上游某些路径只给会话 id 不给分节 id，硬写空串会让客户端以为
+	// 「续接点齐了但值不对」，缺哪个字段一眼就能看出来。
+	if strings.TrimSpace(resume.ConversationID) != "" {
+		resp["conversation_id"] = resume.ConversationID
+	}
+	if strings.TrimSpace(resume.SectionID) != "" {
+		resp["section_id"] = resume.SectionID
+	}
+	if resume.MessageIndex > 0 {
+		resp["message_index"] = resume.MessageIndex
+	}
 }
 
 // estimateUsage 估算 token 用量。

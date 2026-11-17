@@ -88,7 +88,7 @@ func collectStreamResponse(sa *StoredAuth, mode generationMode, resume resumePoi
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: payload})
 	}
 	// 终止帧：finish_reason=stop，宿主据此收尾。
-	chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: streamStopFrame(chat.Model, res.ConversationID)})
+	chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: streamStopFrame(chat.Model, res.resumePointOf())})
 	return okEnvelope(streamResponse{Headers: streamHeaders(), Chunks: chunks})
 }
 
@@ -128,7 +128,7 @@ func pumpCompletionStream(streamID string, sa *StoredAuth, mode generationMode, 
 	for _, payload := range streamAssetFrames(chat.Model, res.Assets) {
 		_ = streamEmit(streamID, payload)
 	}
-	if payload := streamStopFrame(chat.Model, res.ConversationID); payload != nil {
+	if payload := streamStopFrame(chat.Model, res.resumePointOf()); payload != nil {
 		_ = streamEmit(streamID, payload)
 	}
 }
