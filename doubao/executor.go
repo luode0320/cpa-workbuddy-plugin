@@ -48,6 +48,15 @@ type chatRequest struct {
 	SectionID string `json:"section_id,omitempty"`
 	// LastMessageIndex 是续接点之三：上一轮响应的 message_index。
 	LastMessageIndex int64 `json:"last_message_index,omitempty"`
+	// VideoDuration 是目标时长（秒），0 表示不指定。
+	//
+	// 三个视频参数都是可选扩展：真实网页把它们写在首轮确认文本里，次轮随
+	// chat_ability 提交。不传时按 protocol.go 的默认档，与旧版行为一致。
+	VideoDuration int `json:"video_duration,omitempty"`
+	// VideoResolution 是目标清晰度，如 720p。
+	VideoResolution string `json:"video_resolution,omitempty"`
+	// VideoRatio 是画面比例，如 16:9、9:16、auto。
+	VideoRatio string `json:"video_ratio,omitempty"`
 }
 
 // resumePointOf 把客户端带的三个续接字段收敛成续接点。
@@ -185,7 +194,11 @@ func executorExecute(raw []byte) ([]byte, error) {
 		return nil, errMode
 	}
 
-	res, errRun := runWithFailover(sa, time.Duration(currentConfig().TimeoutSeconds)*time.Second, mode, prompt, chat.resumePointOf(), nil)
+	// 视频参数在这里归一一次，首轮提示词与确认轮 chat_ability 都从这里取值。
+	params := normalizeVideoParams(chat.VideoDuration, chat.VideoResolution, chat.VideoRatio)
+	prompt = appendVideoParamHint(prompt, mode, params)
+
+	res, errRun := runWithFailover(sa, time.Duration(currentConfig().TimeoutSeconds)*time.Second, mode, prompt, chat.resumePointOf(), nil, params)
 	if errRun != nil {
 		return nil, errRun
 	}

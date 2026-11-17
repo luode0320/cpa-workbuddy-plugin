@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.1.28 (2026-11-17)
+
+### 新增
+
+- **视频参数可由调用方指定**：`doubao/video` 支持三个可选平铺字段（与续接点同层），
+  不传时与 0.1.27 逐字节一致：
+  - `video_duration` 整数，合法区间 1~60，缺省 10；
+  - `video_resolution` 字符串，缺省 `720p`；
+  - `video_ratio` 字符串，缺省 `auto`。
+  越界不报错，按缺省处理——一个笔误不该让整次生成失败。
+- **首轮提示词与确认轮参数同源**：传了非缺省值时，首轮提示词追加
+  「视频参数要求：时长 N 秒、清晰度 X、画面比例 Y，请直接按这组参数生成」，确认轮
+  `chat_ability.ability_param` 用同一套值提交。两处都从同一个 `videoParams` 取值，
+  不再出现「上游对用户承诺 5 秒、插件实际提交 10 秒」的脱钩（0.1.27 缺陷）。
+- **`media[].duration` 回填产物真实时长**：视频条目的 `duration` 取上游
+  `video.duration`（浮点秒，抓包实测 `10.08`）；图片条目没有该键；上游未给时省略，
+  不写 0。与请求的**目标**时长不是一回事——上游可能取整或改写。
+
+### 修复
+
+- **面板「测试」对生图/生视频是假阳性**：探针提示词原先是「你好 / 今天几号 / 说一句
+  问候语」这类对话文本，上游用一段文字作答，判据又是「有任何输出帧即算成功」（连思考
+  块都算），于是不能出图的账号也报「活跃成功」。现在两处一起收紧：
+  1. 提示词按能力分池，`image` 问「画一只橘猫…」、`video` 问「生成一段海浪拍打礁石的
+     短视频…」，未知 `Kind` 回落生图池；池内多条按能力独立原子轮换（同一账号反复发
+     相同提示词会被上游按内容重复度判定异常，2026-11-16 用户明确要求）。
+  2. 成功判据改为必须解析到 `block_type=2074` 创作块；只有文字时判失败，文案区分三档：
+     上游报错 / 「账号能正常出字，但没能出图（出片）」/ 「上游没有返回任何输出」。
+     `user_type=1` 的提问回显里带的创作块不算产物。
+
+### 测试
+
+- 新增 11 个用例：`TestNormalizeVideoParams` / `TestAppendVideoParamHint` /
+  `TestBuildConfirmOptionUsesRequestedParams` / `TestMediaExtensionCarriesVideoDuration` /
+  `TestMediaExtensionOmitsUnknownDuration` / `TestMergeAssetsKeepsDuration` /
+  `TestTestPingPromptRotates` / `TestActiveTestSawCreationDetectsCreationBlock` /
+  `TestCapabilityLabels` / `TestRunActiveTestRejectsTextOnlyReply`，并改写
+  `TestRunActiveTestStopsOnFirstFrame`（改发创作块帧，否则判据收紧后它测的不再是成功路径）。
+- **六处哨兵全部真失败过**，不是「写了用例就算」：删 `Duration: video.Duration`、
+  删 `mediaExtension` 的 duration 块、删 `mergeAssets` 的 duration 分支、同时破坏参数同源
+  调用点与 `params.isDefault()` 守卫、成功判据退回「有输出即成功」、把 image 池换成视频
+  提示词——每一处都让对应用例立刻失败，恢复后 `all green`。
+
+### 已知
+
+- 参数由调用方显式传，插件**不解析**上游确认文本。上游确认文案是自然语言，实测出现过
+  「你要求的 3 秒低于视频生成的最低时长」这种协商语句；正则解析会随文案改版失效，
+  而调用方本来就要发确认轮，多带三个标量字段没有额外成本。
+- 视频模型代号固定为 `seedance_v2.0_mini`，不开放给调用方（换模型属能力变更）。
+- 确认轮之后的成品回灌仍需等 1~5 分钟，这是上游异步生成的真实耗时。
+- 视频直链带 `url_expire`，过期后需重新生成；插件不做本地转存。
+
 ## 0.1.27 (2026-11-17)
 
 ### 修复

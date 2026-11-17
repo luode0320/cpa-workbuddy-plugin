@@ -13,7 +13,7 @@ import "encoding/json"
 // 后到的非空字段覆盖先到的空值，才能拿到完整结果。没有 ID 的条目直接追加。
 // [参数] existing: 已累计的结果；incoming: 本次解析出的结果。
 // [返回] 合并后的列表。
-// 最近修改时间：2026-10-17；改动原因：新增，同资源多次上报合并。
+// 最近修改时间：2026-11-17 22:10:00；改动原因：补时长字段的非零覆盖。
 func mergeAssets(existing, incoming []creationAsset) []creationAsset {
 	index := make(map[string]int, len(existing))
 	for i, asset := range existing {
@@ -50,6 +50,10 @@ func mergeAssets(existing, incoming []creationAsset) []creationAsset {
 			}
 			if asset.Status != 0 {
 				merged.Status = asset.Status
+			}
+			// 时长只在末帧才有，同样按非零覆盖，避免首帧的空值盖掉真实值。
+			if asset.Duration > 0 {
+				merged.Duration = asset.Duration
 			}
 			existing[i] = merged
 			continue

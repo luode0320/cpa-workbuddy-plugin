@@ -28,7 +28,7 @@ import (
 //
 // 解析见 creation_parse.go，无水印换取见 creation_watermark.go，
 // OpenAI 多模态转换见 creation_render.go。
-// 最近修改时间：2026-11-17 01:20:00；改动原因：新增视频真实结构、video_model 解包与清晰度挑选。
+// 最近修改时间：2026-11-17 22:10:00；改动原因：资产新增真实时长，供 media[] 回填。
 
 // creationAsset 是一份生成结果，已解析到可访问 URL。
 type creationAsset struct {
@@ -47,6 +47,11 @@ type creationAsset struct {
 	Model string
 	// Status 是上游生成状态。
 	Status int
+	// Duration 是视频的真实时长（秒，浮点）；图片恒为 0。
+	//
+	// 与「请求的目标时长」不是一回事：上游可能按可用档位取整或改写，所以这里
+	// 记录的是产物实测值，用来让调用方知道真正拿到了多长的片子。
+	Duration float64
 }
 
 // isVideo 判断该资源是否为视频。

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,13 +44,16 @@ func activePingSSEServer(t *testing.T, frames []string) *httptest.Server {
 	return srv
 }
 
-// textChunkFrame 构造一帧携带正文增量的 STREAM_CHUNK。
-// [参数] text: 正文片段。
+// creationChunkFrame 构造一帧携带创作块（block_type=2074）的 STREAM_CHUNK。
+//
+// 面板测试的成功判据是「解析出产物」，只有文字帧会被判成「能出字但没能出图」，
+// 因此验证首帧即停的用例必须发创作块帧，否则测的就不再是成功路径。
+// [参数] 无。
 // [返回] 完整 SSE 帧文本。
-// 最近修改时间：2026-10-17；改动原因：新增，测试帧构造。
-func textChunkFrame(text string) string {
-	payload, _ := json.Marshal(map[string]any{"delta": text})
-	return "event: STREAM_CHUNK\ndata: " + string(payload) + "\n\n"
+// 最近修改时间：2026-11-17 22:52:00；改动原因：判据收紧到创作块后，改用创作块帧。
+func creationChunkFrame() string {
+	const payload = `{"content":{"content_block":[{"block_type":2074,"content":{"creation_block":{"creations":[{"type":1,"id":"ping-1","image":{"status":1,"key":"tos-cn-i-b/rc_gen_image/ping.jpeg"}}]}}}]}}`
+	return "event: STREAM_CHUNK\ndata: " + payload + "\n\n"
 }
 
 // TestRunActiveTestStopsOnFirstFrame 校验测试链路在首个有效输出帧即返回。
@@ -62,7 +64,7 @@ func textChunkFrame(text string) string {
 // 最近修改时间：2026-10-17；改动原因：新增，锁定首帧即停契约。
 func TestRunActiveTestStopsOnFirstFrame(t *testing.T) {
 	frames := []string{
-		textChunkFrame("OK"),
+		creationChunkFrame(),
 		"event: SSE_REPLY_END\ndata: {\"end_type\":1}\n\n",
 	}
 	srv := activePingSSEServer(t, frames)
@@ -374,7 +376,7 @@ func TestRunActiveTestTimeoutIsBounded(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- streamCompletion(ctx, completionTestAccount(), buildCompletionRequest(
-			completionTestAccount(), testPingPrompt(), textMode(), "", "", 0, true,
+			completionTestAccount(), testPingPromptFor("image"), textMode(), "", "", 0, true,
 		), func(completionEvent) bool { return true })
 	}()
 
@@ -385,6 +387,71 @@ func TestRunActiveTestTimeoutIsBounded(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("上下文超时后仍死等上游")
+	}
+}
+
+// TestActiveTestSawCreationDetectsCreationBlock 校验创作块是唯一的产物证据。
+//
+// 收紧判据的靶点：文字帧只能证明「账号能聊天」，一张图也没出。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 22:36:00；改动原因：新增，锁住创作块判据。
+func TestActiveTestSawCreationDetectsCreationBlock(t *testing.T) {
+	// 1. 只有文字：不是产物证据。
+	textOnly := `{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"已为你生成图片"}}}]}}`
+	if activeTestSawCreation(completionEvent{Name: "STREAM_MSG_NOTIFY", Data: []byte(textOnly)}) {
+		t.Error("纯文字帧不该被当作产物证据")
+	}
+
+	// 2. 创作块带完整图片：是产物证据。
+	creation := `{"content":{"content_block":[{"block_type":2074,"content":{"creation_block":{"creations":[{"type":1,"id":"a-1","image":{"status":1,"key":"tos-cn-i-b/rc_gen_image/x.jpeg"}}]}}}]}}`
+	if !activeTestSawCreation(completionEvent{Name: "STREAM_MSG_NOTIFY", Data: []byte(creation)}) {
+		t.Error("带 key 的创作块应被当作产物证据")
+	}
+
+	// 3. 提问回显里的创作块不算：那是上游把请求原样发回来。
+	echo := `{"message":{"user_type":1,"content_block":[{"block_type":2074,"content":{"creation_block":{"creations":[{"type":1,"id":"a-2","image":{"status":1,"key":"tos-cn-i-b/rc_gen_image/y.jpeg"}}]}}}]}}`
+	if activeTestSawCreation(completionEvent{Name: "FULL_MSG_NOTIFY", Data: []byte(echo)}) {
+		t.Error("提问回显里的创作块不该算产物")
+	}
+}
+
+// TestCapabilityVerb 校验失败文案用的能力动作词。
+//
+// 文案必须说「没能出图 / 没能出片」而不是「没能生成图片」：前者是用户视角的
+// 动作，后者读起来像在描述缺失的功能模块。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 22:52:00；改动原因：只留 capabilityVerb 断言，用例名同步。
+func TestCapabilityVerb(t *testing.T) {
+	if capabilityVerb("image") != "出图" {
+		t.Errorf("生图动作词错误：%s", capabilityVerb("image"))
+	}
+	if capabilityVerb("video") != "出片" {
+		t.Errorf("生视频动作词错误：%s", capabilityVerb("video"))
+	}
+}
+
+// TestRunActiveTestRejectsTextOnlyReply 校验「能出字但没出图」必须判失败。
+//
+// 这是本次收紧的核心：0.1.27 之前这种回复会被报成「活跃成功」。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 22:36:00；改动原因：新增，假阳性回归。
+func TestRunActiveTestRejectsTextOnlyReply(t *testing.T) {
+	stream := "event: STREAM_MSG_NOTIFY\ndata: " +
+		`{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"好的，已为你生成"}}}]}}` +
+		"\n\nevent: SSE_REPLY_END\ndata: {}\n\n"
+	_, sa, cleanup := newCompletionTestServer(t, stream)
+	defer cleanup()
+
+	res := runActiveTest(sa, modelIDPrefix+"image")
+	if res["ok"] == true {
+		t.Fatalf("只出字不出图不该判成功：%v", res)
+	}
+	message, _ := res["error"].(string)
+	if !strings.Contains(message, "能正常出字") || !strings.Contains(message, "出图") {
+		t.Errorf("失败文案应说明「能出字但没能出图」，实际 %q", message)
 	}
 }
 

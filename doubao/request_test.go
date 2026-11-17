@@ -143,6 +143,122 @@ func TestBuildConfirmOptionMatchesWebShape(t *testing.T) {
 	}
 }
 
+// TestNormalizeVideoParams 校验视频参数归一：缺省、合法、越界三态。
+//
+// 这个函数是「调用方要什么」的唯一收敛点：首轮提示词与确认轮 chat_ability
+// 都从它的返回值取值，所以三种边界必须都钉住——否则两段请求会各解释一遍入参。
+func TestNormalizeVideoParams(t *testing.T) {
+	// 1. 全空入参（调用方没提要求）一律回落缺省。
+	if got := normalizeVideoParams(0, "", ""); !got.isDefault() {
+		t.Errorf("全空入参应回落缺省，实际 %+v", got)
+	}
+
+	// 2. 合法值原样保留，不做任何改写。
+	got := normalizeVideoParams(5, "1080p", "9:16")
+	want := videoParams{Duration: 5, Resolution: "1080p", Ratio: "9:16"}
+	if got != want {
+		t.Errorf("合法入参应原样保留，实际 %+v，期望 %+v", got, want)
+	}
+
+	// 3. 空白字符串等同于未传，不能变成空串提交给上游。
+	if out := normalizeVideoParams(0, "  ", "\t"); !out.isDefault() {
+		t.Errorf("空白字符串应回落缺省，实际 %+v", out)
+	}
+
+	// 4. 时长闭区间：上下界保留，越界回落。
+	if out := normalizeVideoParams(videoDurationMin, "", ""); out.Duration != videoDurationMin {
+		t.Errorf("下界 %d 应被接受，实际 %d", videoDurationMin, out.Duration)
+	}
+	if out := normalizeVideoParams(videoDurationMax, "", ""); out.Duration != videoDurationMax {
+		t.Errorf("上界 %d 应被接受，实际 %d", videoDurationMax, out.Duration)
+	}
+	if out := normalizeVideoParams(videoDurationMax+1, "", ""); out.Duration != defaultVideoDuration {
+		t.Errorf("越上界应回落缺省 %d，实际 %d", defaultVideoDuration, out.Duration)
+	}
+	if out := normalizeVideoParams(-3, "", ""); out.Duration != defaultVideoDuration {
+		t.Errorf("负时长应回落缺省 %d，实际 %d", defaultVideoDuration, out.Duration)
+	}
+}
+
+// TestAppendVideoParamHint 校验首轮提示词只在「视频 + 非缺省参数」时追加要求。
+//
+// 缺省时必须一字不加：不传参数的老调用方拿到的请求体要与改动前逐字节一致，
+// 否则等于给所有存量流量悄悄换了提示词。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 22:02:00；改动原因：新增，锁住缺省路径不变。
+func TestAppendVideoParamHint(t *testing.T) {
+	// 1. 非视频能力一律不追加，哪怕参数非缺省。
+	image := generationMode{Skill: skillImageGen, Kind: "image"}
+	if got := appendVideoParamHint("画一只猫", image, normalizeVideoParams(5, "1080p", "9:16")); got != "画一只猫" {
+		t.Errorf("生图模式不该改提示词，实际 %q", got)
+	}
+
+	// 2. 视频但参数缺省：提示词原样保留。
+	video := generationMode{Skill: skillVideoGen, Kind: "video"}
+	plain := "生成一段海浪拍打礁石的短视频"
+	if got := appendVideoParamHint(plain, video, normalizeVideoParams(0, "", "")); got != plain {
+		t.Errorf("缺省参数不该改提示词，实际 %q", got)
+	}
+
+	// 3. 视频且参数非缺省：三个值都要出现在提示词里。
+	got := appendVideoParamHint(plain, video, normalizeVideoParams(5, "1080p", "9:16"))
+	for _, want := range []string{"5 秒", "1080p", "9:16"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("提示词应含 %q，实际 %q", want, got)
+		}
+	}
+	// 用户原话必须完整保留在前，不能被参数说明挤掉。
+	if !strings.HasPrefix(got, plain) {
+		t.Errorf("提示词必须以用户原话开头，实际 %q", got)
+	}
+}
+
+// TestBuildConfirmOptionUsesRequestedParams 校验确认轮提交的就是调用方要的那一套。
+//
+// 0.1.27 的真实偏差：上游对用户承诺 5 秒，确认轮 ability_param 却恒提交 10 秒，
+// 因为两段各读一份硬编码常量。这里把「同一份 videoParams 贯穿两段」钉死。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 22:02:00；改动原因：新增，回归 0.1.27 的参数脱钩。
+func TestBuildConfirmOptionUsesRequestedParams(t *testing.T) {
+	sa := requestTestAccount()
+	resume := resumePoint{ConversationID: "38454121040780034", SectionID: "38454121040780290", MessageIndex: 5}
+	mode := generationMode{Skill: skillVideoGen, Kind: "video"}
+	params := normalizeVideoParams(5, "1080p", "9:16")
+
+	body := buildCompletionRequestWith(sa, "确认，开始生成", mode, resume, false, true, params)
+	if body.ChatAbility == nil {
+		t.Fatal("确认轮必须带 chat_ability")
+	}
+	var param map[string]any
+	if errUnmarshal := json.Unmarshal([]byte(body.ChatAbility.AbilityParam), &param); errUnmarshal != nil {
+		t.Fatalf("ability_param 不是合法 JSON 字符串：%v", errUnmarshal)
+	}
+	if duration, _ := param["duration"].(float64); int(duration) != 5 {
+		t.Errorf("ability_param.duration 应为 5，实际 %v", param["duration"])
+	}
+	if param["resolution"] != "1080p" {
+		t.Errorf("ability_param.resolution 应为 1080p，实际 %v", param["resolution"])
+	}
+	if param["ratio"] != "9:16" {
+		t.Errorf("ability_param.ratio 应为 9:16，实际 %v", param["ratio"])
+	}
+
+	// 不传参数时回落缺省，与 0.1.27 完全一致。
+	fallback := buildCompletionRequestWith(sa, "确认，开始生成", mode, resume, false, true)
+	var plain map[string]any
+	if errUnmarshal := json.Unmarshal([]byte(fallback.ChatAbility.AbilityParam), &plain); errUnmarshal != nil {
+		t.Fatalf("默认 ability_param 不是合法 JSON：%v", errUnmarshal)
+	}
+	if duration, _ := plain["duration"].(float64); int(duration) != defaultVideoDuration {
+		t.Errorf("不传参数时 duration 应为 %d，实际 %v", defaultVideoDuration, plain["duration"])
+	}
+	if plain["resolution"] != defaultVideoResolution || plain["ratio"] != defaultVideoRatio {
+		t.Errorf("不传参数时应回落缺省清晰度与比例，实际 %v / %v", plain["resolution"], plain["ratio"])
+	}
+}
+
 // TestBuildSkillOptionOmitsConfirmOnlyFields 校验首轮不夹带确认轮专属字段。
 //
 // 首轮带上 chat_ability 会直接变成「真开跑」，用户连参数都没看到就开始花额度；

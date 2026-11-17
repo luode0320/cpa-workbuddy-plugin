@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,33 +24,63 @@ import (
 // 与网络抖动，超过则判定账号或链路不可用。
 const activeTestTimeout = 20 * time.Second
 
-// testPingPrompts 是测试请求可用的短提示词池。
+// testPingPromptsByKind 是按能力分组的测试提示词池。
 //
-// 不再固定用同一句「hi」：同一账号反复发送相同提示词会建出一串内容一致的会话，
-// 上游按会话内容重复度判定异常并触发风控（2026-11-16 用户明确要求）。池子里每条
-// 都要求一句话作答，保证测试只验证链路、回复尽量短。
-var testPingPrompts = []string{
-	"你好",
-	"今天几号",
-	"说一句问候语",
-	"用一个词形容晴天",
-	"报一下现在的季节",
+// 不能再用「你好」这类对话提示词：本插件只做生图与生视频，发对话提示词上游
+// 会用一段文字作答，账号看似活跃、实际一张图也出不来（2026-11-17 决定收紧）。
+// 所以每种能力配一组真的要求出产物的短提示词。
+//
+// 池子里放多条是为了轮换：同一账号反复发送相同提示词会建出一串内容一致的会话，
+// 上游按内容重复度判定异常并触发风控（2026-11-16 用户明确要求）。
+var testPingPromptsByKind = map[string][]string{
+	"image": {
+		"画一只橘猫",
+		"画一片秋天的枫叶",
+		"画一盏台灯",
+		"画一朵向日葵",
+		"画一个红色的茶杯",
+	},
+	"video": {
+		"生成一段海浪拍打礁石的短视频",
+		"生成一段风吹树叶的短视频",
+		"生成一段雨滴落在湖面的短视频",
+		"生成一段云在天空飘动的短视频",
+		"生成一段蜡烛燃烧的短视频",
+	},
 }
 
-// testPingCounter 是提示词轮换游标。
+// testPingFallbackKind 是能力未知时使用的提示词组。
+//
+// 目录里只有 image / video 两种能力，走到这里说明调用方传了未注册的 Kind；
+// 用生图提示词至少还能验证「账号能不能出产物」，比退回对话提示词有意义。
+const testPingFallbackKind = "image"
+
+// testPingCounters 是各能力提示词池的轮换游标。
+//
+// 按能力分开计数：共用同一个游标会让「刚测过生图再测生视频」取到错位条目。
 //
 // 不能用时间取模：Windows 时钟精度约 15.6ms，纳秒值的低位在连续调用里不变，
 // 取模会稳定落在同一条上（2026-11-16 实测 32 次调用只取到 1 条）。
-var testPingCounter uint64
+var testPingCounters sync.Map
 
-// testPingPrompt 从提示词池里取一条，每次调用都换。
-// [参数] 无。
+// testPingPromptFor 从指定能力的提示词池里取一条，每次调用都换。
+//
+// 取模用原子计数而不是时间：Windows 时钟精度约 15.6ms，纳秒值的低位在连续
+// 调用里不变，时间取模会稳定落在同一条上（2026-11-16 实测 32 次只取到 1 条）。
+// [参数] kind: 能力类型（image / video）。
 // [返回] 一条短提示词。
-// 最近修改时间：2026-11-16 05:12:00；改动原因：改为原子计数轮换，时间取模在 Windows 上不轮换。
-func testPingPrompt() string {
-	// 1. 原子自增后取模，保证连续调用一定落在不同条目上。
-	next := atomic.AddUint64(&testPingCounter, 1)
-	return testPingPrompts[int(next%uint64(len(testPingPrompts)))]
+// 最近修改时间：2026-11-17 22:30:00；改动原因：改为按能力分池取词。
+func testPingPromptFor(kind string) string {
+	// 1. 能力未知时回落到生图池，保证永远能取到一条出产物的提示词。
+	prompts, ok := testPingPromptsByKind[kind]
+	if !ok || len(prompts) == 0 {
+		prompts = testPingPromptsByKind[testPingFallbackKind]
+	}
+
+	// 2. 每个能力各用一个游标，原子自增后取模。
+	counter, _ := testPingCounters.LoadOrStore(kind, new(uint64))
+	next := atomic.AddUint64(counter.(*uint64), 1)
+	return prompts[int(next%uint64(len(prompts)))]
 }
 
 // handleModelsQuery 返回指定账号可测试的模型列表。
@@ -179,13 +210,15 @@ func runActiveTest(sa *StoredAuth, model string) map[string]any {
 	model = modelIDPrefix + alias.ID
 
 	start := time.Now()
-	body := buildCompletionRequest(sa, testPingPrompt(), mode, "", "", 0, true)
+	// 提示词按能力取：发对话提示词回来一段文字，测不出「账号能不能出产物」。
+	body := buildCompletionRequest(sa, testPingPromptFor(mode.Kind), mode, "", "", 0, true)
 
 	ctx, cancel := context.WithTimeout(context.Background(), activeTestTimeout)
 	defer cancel()
 
 	var (
 		sawOutput bool
+		sawText   bool
 		preview   string
 		streamErr error
 	)
@@ -202,12 +235,19 @@ func runActiveTest(sa *StoredAuth, model string) map[string]any {
 			// 回复已结束仍没拿到任何输出：判定失败，不继续等 Keep-Alive。
 			return false
 		}
-		if text, ok := activeTestOutput(ev); ok {
-			sawOutput = true
-			preview = text
-			return false
+		// 创作块才算产物证据；文字与思考只能证明「账号能聊天」。
+		text, ok := activeTestOutput(ev)
+		if !ok && !activeTestSawCreation(ev) {
+			return true
 		}
-		return true
+		if text != "" {
+			sawText = true
+			preview = text
+		}
+		if activeTestSawCreation(ev) {
+			sawOutput = true
+		}
+		return false
 	})
 
 	elapsed := time.Since(start).Round(time.Millisecond)
@@ -218,6 +258,15 @@ func runActiveTest(sa *StoredAuth, model string) map[string]any {
 		return map[string]any{"error": fmt.Sprintf("测试失败（模型: %s）：%v", model, errStream), "model": model}
 	}
 	if !sawOutput {
+		// 能出字但没出产物是最容易误判的一态：账号完全可用，只是没被投放该能力、
+		// 或额度耗尽。文案必须把这两种可能摆明了，不能笼统说「不可用」。
+		if sawText {
+			return map[string]any{
+				"error": fmt.Sprintf("测试失败（模型: %s）：账号能正常出字，但没能%s（可能未投放该能力或额度已用尽）",
+					model, capabilityVerb(mode.Kind)),
+				"model": model,
+			}
+		}
 		return map[string]any{"error": fmt.Sprintf("测试失败（模型: %s）：上游没有返回任何输出", model), "model": model}
 	}
 
@@ -295,6 +344,72 @@ func activeTestOutput(ev completionEvent) (string, bool) {
 		return contentOutput(payload.Content)
 	}
 	return "", false
+}
+
+// activeTestSawCreation 判断一帧是否带来创作块（block_type=2074）。
+//
+// 这是唯一能证明「账号能出图/出片」的证据：文字帧只说明模型在说话。
+// 与 activeTestOutput 分开而不是合并，是因为两者回答不同问题——前者问
+// 「能不能出产物」，后者问「流里有没有内容」，合成一个函数会让调用点分不清。
+// [参数] ev: 一条 SSE 事件。
+// [返回] 出现创作块返回 true。
+// 最近修改时间：2026-11-17 22:30:00；改动原因：新增，把成功判据收紧到创作块。
+func activeTestSawCreation(ev completionEvent) bool {
+	var blocks []responseBlock
+	switch ev.Name {
+	case "FULL_MSG_NOTIFY":
+		var payload struct {
+			Message struct {
+				UserType     int             `json:"user_type"`
+				ContentBlock []responseBlock `json:"content_block"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(ev.Data, &payload) != nil || payload.Message.UserType != 2 {
+			return false
+		}
+		blocks = payload.Message.ContentBlock
+
+	case "STREAM_MSG_NOTIFY":
+		var payload struct {
+			Content streamMessageContent `json:"content"`
+		}
+		if json.Unmarshal(ev.Data, &payload) != nil {
+			return false
+		}
+		blocks = payload.Content.ContentBlock
+
+	case "STREAM_CHUNK", "CHUNK_DELTA":
+		var payload struct {
+			Content streamMessageContent `json:"content"`
+			PatchOp []patchOp            `json:"patch_op"`
+		}
+		if json.Unmarshal(ev.Data, &payload) != nil {
+			return false
+		}
+		for _, op := range payload.PatchOp {
+			if len(collectCreationAssets(op.PatchValue.blocks(), nil)) > 0 {
+				return true
+			}
+		}
+		blocks = payload.Content.ContentBlock
+
+	default:
+		return false
+	}
+
+	// 1. 创作块必须先有 block_type=2074，再由 collectCreationAssets 解析出产物。
+	return len(collectCreationAssets(blocks, nil)) > 0
+}
+
+// capabilityVerb 返回能力对应的动作词，用于失败文案。
+// [参数] kind: 能力类型。
+// [返回] 动作词。
+// 最近修改时间：2026-11-17 22:30:00；改动原因：新增，失败文案区分能力。
+func capabilityVerb(kind string) string {
+	if kind == "video" {
+		return "出片"
+	}
+	return "出图"
 }
 
 // contentOutput 判断一个消息内容体是否已有可见输出。

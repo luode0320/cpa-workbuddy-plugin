@@ -431,7 +431,7 @@ func TestPumpCompletionStreamEmitsError(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		pumpCompletionStream("test-stream", sa, generationMode{Skill: skillImageGen, Kind: "image"}, resumePoint{}, &chatRequest{Model: "doubao/image"}, "画一只猫")
+		pumpCompletionStream("test-stream", sa, generationMode{Skill: skillImageGen, Kind: "image"}, resumePoint{}, normalizeVideoParams(0, "", ""), &chatRequest{Model: "doubao/image"}, "画一只猫")
 	}()
 	select {
 	case <-done:

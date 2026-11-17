@@ -252,20 +252,25 @@ func nowMillis() int64 {
 // 指定 confirm=false。
 // [参数] sa: 账号（提供 bot_id）；text: 用户文本；mode: 生成模式；
 // conversationID / lastSectionID / lastMessageIndex: 会话续接点；
-// needCreate: 是否请求上游分配新会话。
+// needCreate: 是否请求上游分配新会话；params: 视频参数（可变，缺省即不传）。
 // [返回] 请求体。
-// 最近修改时间：2026-11-17 01:38:00；改动原因：按续接点区分确认轮形态。
-func buildCompletionRequest(sa *StoredAuth, text string, mode generationMode, conversationID, lastSectionID string, lastMessageIndex int64, needCreate bool) *completionRequest {
+// 最近修改时间：2026-11-17 21:52:00；改动原因：新增视频参数可变入参并向下透传。
+func buildCompletionRequest(sa *StoredAuth, text string, mode generationMode, conversationID, lastSectionID string, lastMessageIndex int64, needCreate bool, params ...videoParams) *completionRequest {
 	resume := resumePoint{ConversationID: conversationID, SectionID: lastSectionID, MessageIndex: lastMessageIndex}
-	return buildCompletionRequestWith(sa, text, mode, resume, needCreate, !resume.isZero())
+	return buildCompletionRequestWith(sa, text, mode, resume, needCreate, !resume.isZero(), params...)
 }
 
 // buildCompletionRequestWith 组装请求体，并显式指定是否为确认轮。
+//
+// params 只有视频确认轮用得上（进 chat_ability），所以用变参表达「可选」：
+// 签名里写死一个 videoParams 会逼所有只关心提示词的调用点补一个空结构，
+// 那种噪音会让真正的改动看不见。
 // [参数] sa: 账号；text: 用户文本；mode: 生成模式；resume: 会话续接点；
-// needCreate: 是否新建会话；confirm: 是否使用视频确认轮形态。
+// needCreate: 是否新建会话；confirm: 是否使用视频确认轮形态；
+// params: 视频参数（可变，缺省即按 protocol.go 的默认档）。
 // [返回] 请求体。
-// 最近修改时间：2026-11-17 01:38:00；改动原因：新增，把确认轮形态显式化。
-func buildCompletionRequestWith(sa *StoredAuth, text string, mode generationMode, resume resumePoint, needCreate bool, confirm bool) *completionRequest {
+// 最近修改时间：2026-11-17 21:52:00；改动原因：确认轮改用调用方给定的视频参数。
+func buildCompletionRequestWith(sa *StoredAuth, text string, mode generationMode, resume resumePoint, needCreate bool, confirm bool, params ...videoParams) *completionRequest {
 	botID := strings.TrimSpace(sa.BotID)
 	if botID == "" {
 		botID = defaultBotID
@@ -317,7 +322,9 @@ func buildCompletionRequestWith(sa *StoredAuth, text string, mode generationMode
 		body.Ext = confirmExt()
 		// chat_ability 是确认轮「真正开跑」的唯一开关，必须由构造器负责注入：
 		// 交给调用方手工挂会漏，漏了就只剩一段确认文本、不产生任何产物。
-		body.ChatAbility = buildVideoConfirmAbility(text, videoConfirmRatio, videoConfirmModel, videoConfirmResolution, videoConfirmDuration)
+		// 参数取调用方给的那一份，与首轮提示词同源——两处各读一遍入参是 0.1.27
+		// 出现「承诺 5 秒、提交 10 秒」的直接原因。
+		body.ChatAbility = buildVideoConfirmAbility(text, videoParamsOf(params), videoConfirmModel)
 		return body
 	}
 	body.Option = buildSkillOption(mode, needCreate)
@@ -517,15 +524,16 @@ func confirmExt() map[string]string {
 // reply_message_format 里的 %s 是上游回填视频描述的位置，不是本地格式化占位，
 // 必须原样送出。
 // [参数] text: 用户在确认轮输入的文本（真实网页原样回填进 user_input_content）；
-// ratio / model / resolution: 首轮确认文本里给出的三个参数；duration: 秒数。
+// params: 目标参数（时长/清晰度/比例），必须与首轮提示词里给出的一致；
+// model: 上游模型代号。
 // [返回] 能力声明。
-// 最近修改时间：2026-11-17 01:36:00；改动原因：新增，视频真正开跑的开关。
-func buildVideoConfirmAbility(text, ratio, model, resolution string, duration int) *chatAbility {
+// 最近修改时间：2026-11-17 21:52:00；改动原因：三个参数改从 videoParams 取，避免与首轮脱钩。
+func buildVideoConfirmAbility(text string, params videoParams, model string) *chatAbility {
 	param, _ := json.Marshal(map[string]any{
-		"ratio":      ratio,
+		"ratio":      params.Ratio,
 		"model":      model,
-		"duration":   duration,
-		"resolution": resolution,
+		"duration":   params.Duration,
+		"resolution": params.Resolution,
 		"input_box_content": map[string]any{
 			"user_input_content":   text,
 			"reply_message_format": "生成视频：%s",
@@ -535,6 +543,41 @@ func buildVideoConfirmAbility(text, ratio, model, resolution string, duration in
 		AbilityType:  abilityTypeVideoGen,
 		AbilityParam: string(param),
 	}
+}
+
+// videoParamsOf 取变参里的第一个，没有就用缺省值。
+//
+// 用变参表达「可选」的取舍见 buildCompletionRequestWith 的注释；这里负责把
+// 「没传」翻译成与 protocol.go 默认档完全一致的 videoParams，任何调用方都不
+// 需要自己拼一份缺省结构。
+// [参数] params: 变参，最多取第一个。
+// [返回] 归一后的参数（缺省时即默认档）。
+// 最近修改时间：2026-11-17 21:52:00；改动原因：新增，收敛变参取值。
+func videoParamsOf(params []videoParams) videoParams {
+	if len(params) > 0 {
+		return params[0]
+	}
+	return normalizeVideoParams(0, "", "")
+}
+
+// appendVideoParamHint 把目标参数追加到首轮提示词末尾。
+//
+// 为什么要写进提示词：上游是让模型读提示词、再由模型回出「参数确认」文本的。
+// 不把参数说清楚，模型会按自己的默认值回出确认文本，而确认轮的 chat_ability
+// 用的是调用方给的值——两段就脱钩了（0.1.27 的「承诺 5 秒、提交 10 秒」）。
+// 缺省参数时一字不加：不传参数的老调用方请求体必须与之前逐字节一致。
+// [参数] prompt: 折叠后的提示词；mode: 生成模式；params: 归一后的视频参数。
+// [返回] 可能要追加参数要求的新提示词。
+// 最近修改时间：2026-11-17 21:52:00；改动原因：新增，首轮提示词必须与确认轮同源。
+func appendVideoParamHint(prompt string, mode generationMode, params videoParams) string {
+	// 1. 只有视频能力且参数非缺省才追加：其余情况保持原样。
+	if mode.Kind != "video" || params.isDefault() {
+		return prompt
+	}
+
+	// 2. 单独成段，避免与用户原话粘连成一个长句被模型忽略。
+	return fmt.Sprintf("%s\n\n视频参数要求：时长 %d 秒、清晰度 %s、画面比例 %s。请直接按这组参数生成，不要再改成其它值。",
+		prompt, params.Duration, params.Resolution, params.Ratio)
 }
 
 // completionEvent 是一条解码后的 SSE 事件。
@@ -1065,9 +1108,9 @@ func collectCompletion(ctx context.Context, sa *StoredAuth, text string, mode ge
 // onDelta: 文本增量回调。
 // [返回] 聚合结果与错误。
 // 最近修改时间：2026-11-17 01:32:00；改动原因：新增，会话续接点贯穿。
-func collectCompletionWithResume(ctx context.Context, sa *StoredAuth, text string, mode generationMode, resume resumePoint, needCreate bool, onDelta func(string)) (*completionResult, error) {
+func collectCompletionWithResume(ctx context.Context, sa *StoredAuth, text string, mode generationMode, resume resumePoint, needCreate bool, onDelta func(string), params ...videoParams) (*completionResult, error) {
 	// 1. 组装请求体：mode 只决定激活哪个 skill（生图 / 生视频）。
-	body := buildCompletionRequest(sa, text, mode, resume.ConversationID, resume.SectionID, resume.MessageIndex, needCreate)
+	body := buildCompletionRequest(sa, text, mode, resume.ConversationID, resume.SectionID, resume.MessageIndex, needCreate, params...)
 
 	var (
 		textBuf   strings.Builder

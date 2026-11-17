@@ -119,6 +119,10 @@ func TestParseCreationBlockVideo(t *testing.T) {
 	if assets[0].Width != 384 || assets[0].Height != 216 {
 		t.Errorf("字符串尺寸应解析为 384×216，实际 %d×%d", assets[0].Width, assets[0].Height)
 	}
+	// 时长是 float 秒；调用方要靠它知道拿到的片子有多长。
+	if assets[0].Duration != 10.08 {
+		t.Errorf("应读出产物真实时长 10.08，实际 %v", assets[0].Duration)
+	}
 }
 
 // TestParseCreationBlockVideoFallsBackToVideoModel 校验 download_url 缺失时退到清晰度清单。
@@ -361,6 +365,62 @@ func TestCollectCompletionExtractsAssets(t *testing.T) {
 	}
 	if res.Assets[0].URL == "" {
 		t.Error("生成结果应有可用 URL")
+	}
+}
+
+// TestMediaExtensionCarriesVideoDuration 校验 media[] 回填视频真实时长。
+//
+// 上游可能按可用档位调整时长，所以「请求 5 秒」不等于「拿到 5 秒」；不把这个
+// 实测值交出去，调用方只能猜。图片条目不该出现该键。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 22:16:00；改动原因：新增，媒体条目回填时长。
+func TestMediaExtensionCarriesVideoDuration(t *testing.T) {
+	media := mediaExtension([]creationAsset{
+		{ID: "v", Type: 2, URL: "https://example.com/v.mp4", Duration: 5.04},
+		{ID: "i", Type: 1, URL: "https://example.com/i.png"},
+	})
+	if len(media) != 2 {
+		t.Fatalf("应输出 2 条媒体，实际 %d", len(media))
+	}
+	if got, ok := media[0]["duration"]; !ok || got != 5.04 {
+		t.Errorf("视频条目应带 duration=5.04，实际 %v（存在=%v）", got, ok)
+	}
+	if _, ok := media[1]["duration"]; ok {
+		t.Error("图片条目不得出现 duration")
+	}
+}
+
+// TestMediaExtensionOmitsUnknownDuration 校验上游没给时长时省略该键。
+//
+// 写 0 会被读成「拿到了 0 秒的片子」，比缺字段更误导。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 22:16:00；改动原因：新增，缺值不得写成 0。
+func TestMediaExtensionOmitsUnknownDuration(t *testing.T) {
+	media := mediaExtension([]creationAsset{{ID: "v", Type: 2, URL: "https://example.com/v.mp4"}})
+	if _, ok := media[0]["duration"]; ok {
+		t.Errorf("时长未知时不应出现 duration，实际 %v", media[0]["duration"])
+	}
+}
+
+// TestMergeAssetsKeepsDuration 校验时长在多次上报合并时不被清空。
+//
+// 真实的视频是异步产物：首帧只有状态，末帧才带时长与直链。合并逻辑若只覆盖
+// URL 而漏掉时长，最终结果就会缺这一项。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-17 22:16:00；改动原因：新增，补时长合并分支。
+func TestMergeAssetsKeepsDuration(t *testing.T) {
+	merged := mergeAssets(
+		[]creationAsset{{ID: "v", Type: 2, Status: 1}},
+		[]creationAsset{{ID: "v", Type: 2, Status: 3, URL: "https://example.com/v.mp4", Duration: 10.08}},
+	)
+	if len(merged) != 1 {
+		t.Fatalf("同一 id 应合并为 1 条，实际 %d", len(merged))
+	}
+	if merged[0].Duration != 10.08 {
+		t.Errorf("末帧的时长应被合并进来，实际 %v", merged[0].Duration)
 	}
 }
 

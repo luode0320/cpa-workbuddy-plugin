@@ -33,7 +33,8 @@ import (
 //     异步产物回灌，与生图/生视频的同步产物模型无关。删掉的常量与 atoiSafe
 //     只服务那条管线，任何一处都不再被引用。
 //
-// 最近修改时间：2026-11-17 00:52:00；改动原因：删除工作模式常量与 atoiSafe。
+// 最近修改时间：2026-11-17 21:40:00；改动原因：视频四个参数降为缺省值，
+// 新增 videoParams 与归一函数，供首轮提示词与确认轮共用同一套取值。
 
 const (
 	// webUserAgent 是模拟网页端请求的 User-Agent。
@@ -97,15 +98,80 @@ const (
 	// 因此只回参数确认、不产生任何产物（2026-11-17 抓包对比确认）。
 	abilityTypeVideoGen = 17
 
-	// 视频确认轮的四个参数：真实网页把它们写在首轮确认文本里，次轮原样回传。
+	// videoConfirmModel 是视频确认轮提交的模型代号。
 	//
-	// 插件侧固定这一套取值：首轮提示词由插件给出参数确认，用户确认时参数本就
-	// 是这一套，固定下来不会与首轮文本冲突。
-	videoConfirmRatio      = "auto"
-	videoConfirmModel      = "seedance_v2.0_mini"
-	videoConfirmResolution = "720p"
-	videoConfirmDuration   = 10
+	// 真实网页把它写在首轮确认文本里，次轮原样回传。本版不让调用方指定：
+	// 换模型属于能力变更，要先确认账号被投放了哪个模型，不在当前范围。
+	videoConfirmModel = "seedance_v2.0_mini"
+
+	// 视频参数的缺省值：调用方不传时按这一套处理，与 0.1.27 行为一致。
+	defaultVideoRatio      = "auto"
+	defaultVideoResolution = "720p"
+	defaultVideoDuration   = 10
+
+	// videoDurationMin / videoDurationMax 界定合法的目标时长（秒）。
+	//
+	// 越界值按缺省处理而不报错：这三个字段是可选增强，一个非法值不该打断
+	// 整条链路。上界取 60 秒，因为实测网页最长档为 15 秒，留足协商余量后
+	// 仍不该允许分钟级请求。
+	videoDurationMin = 1
+	videoDurationMax = 60
 )
+
+// videoParams 是一次视频请求归一后的参数集合。
+//
+// 为什么要归一而不是直接透传：这三个字段是可选项，缺省值、空串、越界值都要
+// 收敛成同一套可比较的值，否则「首轮提示词」与「确认轮 chat_ability」很容易
+// 各写一份判断而出现分歧——0.1.27 的偏差正是这么来的（上游对用户承诺 5 秒，
+// 确认轮却恒提交 10 秒）。
+type videoParams struct {
+	// Duration 是目标时长，单位秒。
+	Duration int
+	// Resolution 是目标清晰度，如 720p。
+	Resolution string
+	// Ratio 是画幅比例，如 16:9、9:16、auto。
+	Ratio string
+}
+
+// normalizeVideoParams 把可选入参收敛成一份确定的视频参数。
+//
+// 三种情况都归一到缺省值：未传（零值）、空白字符串、时长越界。理由见
+// videoParams 的注释——这些字段是可选增强，不该因为一个非法值让整条请求失败。
+// [参数] duration: 目标时长，0 表示未传；resolution: 目标清晰度，空串表示未传；
+// ratio: 画幅比例，空串表示未传。
+// [返回] 归一后的参数集合。
+// 最近修改时间：2026-11-17 21:36:00；改动原因：新增，视频参数由调用方决定。
+func normalizeVideoParams(duration int, resolution, ratio string) videoParams {
+	// 1. 时长按闭区间校验，越界一律回落缺省值。
+	params := videoParams{Duration: defaultVideoDuration}
+	if duration >= videoDurationMin && duration <= videoDurationMax {
+		params.Duration = duration
+	}
+
+	// 2. 两个字符串参数去空白后为空即视为未传。
+	params.Resolution = defaultVideoResolution
+	if trimmed := strings.TrimSpace(resolution); trimmed != "" {
+		params.Resolution = trimmed
+	}
+	params.Ratio = defaultVideoRatio
+	if trimmed := strings.TrimSpace(ratio); trimmed != "" {
+		params.Ratio = trimmed
+	}
+	return params
+}
+
+// isDefault 判断参数是否为缺省值。
+//
+// 用途是让「调用方根本没提要求」与「调用方要求和缺省一致」走同一条路径：
+// 两种情况下首轮提示词都不该多出一段参数要求。
+// [参数] 无。
+// [返回] 三项全为缺省值时返回 true。
+// 最近修改时间：2026-11-17 21:36:00；改动原因：新增，缺省路径必须逐字节不变。
+func (p videoParams) isDefault() bool {
+	return p.Duration == defaultVideoDuration &&
+		p.Resolution == defaultVideoResolution &&
+		p.Ratio == defaultVideoRatio
+}
 
 // generationMode 描述一次请求期望的回复形态。
 //

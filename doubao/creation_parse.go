@@ -125,7 +125,7 @@ func assetFromImage(item creationItem) (creationAsset, bool) {
 // 前两者是成品本身，封面只是「还没生成好」时的占位，交出去也不会是视频。
 // [参数] item: 生成物条目。
 // [返回] 生成结果与是否可用。
-// 最近修改时间：2026-11-17 01:22:00；改动原因：按真实结构取 download_url 与 video_model 直链。
+// 最近修改时间：2026-11-17 22:10:00；改动原因：同时读产物真实时长。
 func assetFromVideo(item creationItem) (creationAsset, bool) {
 	video := item.Video
 	if video == nil {
@@ -137,6 +137,8 @@ func assetFromVideo(item creationItem) (creationAsset, bool) {
 		Key:    video.Key,
 		URL:    video.DownloadURL,
 		Status: video.Status,
+		// 时长是产物实测值（真实抓包 10.08），调用方据此判断拿到的片子有多长。
+		Duration: video.Duration,
 	}
 	// 顶层 width / height 是字符串；解析失败按 0 处理，尺寸只是展示信息。
 	if w, errW := strconv.Atoi(strings.TrimSpace(video.Width)); errW == nil && w > 0 {

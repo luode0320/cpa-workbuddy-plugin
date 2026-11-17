@@ -58,7 +58,7 @@ func attachAssets(resp map[string]any, assets []creationAsset) {
 // mediaExtension 构造 media 扩展数组。
 // [参数] assets: 生成结果。
 // [返回] 结构化媒体列表。
-// 最近修改时间：2026-10-17；改动原因：新增，media 扩展。
+// 最近修改时间：2026-11-17 22:10:00；改动原因：视频条目回填真实时长。
 func mediaExtension(assets []creationAsset) []map[string]any {
 	out := make([]map[string]any, 0, len(assets))
 	for _, asset := range assets {
@@ -80,6 +80,11 @@ func mediaExtension(assets []creationAsset) []map[string]any {
 		}
 		if asset.Height > 0 {
 			item["height"] = asset.Height
+		}
+		// 时长只对视频有意义，且上游没给时省略而不是写 0：0 秒是非法值，
+		// 写成 0 会让调用方以为拿到了空片子。
+		if asset.isVideo() && asset.Duration > 0 {
+			item["duration"] = asset.Duration
 		}
 		out = append(out, item)
 	}
