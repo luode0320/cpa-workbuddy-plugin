@@ -6,7 +6,7 @@
 
 - **删除 `doubao/image`，插件只做生视频**（需求变更 `CHG-001`，用户 2026-11-18 明确
   授权）。模型目录从两条别名收敛到一条：`buildCompletionRequest` 拿到 `doubao/image`
-  现在会直接报「不支持的模型 `doubao/image`：本插件只做生视频，可选 doubao/video」，
+  现在由宿主目录先行拦截，返回 400 `model_not_found` / `unknown provider for model doubao/image`；若绕过宿主直连插件执行器，插件自己报「不支持的模型 `doubao/image`：本插件只做生视频，可选 doubao/video」。
   不再静默透传到上游。调用方若仍请求图片模型，需要改用 `doubao/video`。
 - 默认模型别名 `defaultModelID` 由 `image` 改为 `video`：面板「测试」在未指定模型时
   打的不再是生图。

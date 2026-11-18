@@ -24,7 +24,7 @@
 |---|---|---|
 | `doubao/video` | 5 | 视频生成。首轮给参数确认，带 `conversation_id` 再发一次才出片 |
 
-`doubao/image` 已删除，请求它会得到「不支持的模型」。未知名一律报错，不再回落到
+`doubao/image` 已删除：请求它会得到 400 `model_not_found`（`unknown provider for model doubao/image`，由宿主目录先行拦截）。未知名一律报错，不再回落到
 任何默认模型：静默回落会让调用方以为在测生视频，实际打到了别的东西上。豆包上游
 另有一套内部代号（`4tbp`、`anceba` 等），插件没有代号到模型的映射表，因此代号只
 作为排障信息附带。
