@@ -85,9 +85,9 @@ func TestBuildCompletionRequestSkill(t *testing.T) {
 		t.Errorf("普通对话的 mention_skill_list 应为空列表，实际 %q", plain.Option.AggregateParams.MentionSkillList)
 	}
 
-	image := buildCompletionRequest(sa, "画一只猫", generationMode{Skill: skillImageGen, Kind: "image"}, "", "", 0, false)
-	if image.Option.AggregateParams.MentionSkillList != "[3]" {
-		t.Errorf("生图请求的 mention_skill_list 应为 [3]，实际 %q", image.Option.AggregateParams.MentionSkillList)
+	video := buildCompletionRequest(sa, "生成一段海浪短视频", generationMode{Skill: skillVideoGen, Kind: "video"}, "", "", 0, false)
+	if video.Option.AggregateParams.MentionSkillList != "[5]" {
+		t.Errorf("生视频请求的 mention_skill_list 应为 [5]，实际 %q", video.Option.AggregateParams.MentionSkillList)
 	}
 }
 
@@ -580,7 +580,7 @@ func TestCollectCompletionNewSessionOmitsResumePoint(t *testing.T) {
 	sa := completionTestAccount()
 	sa.PhysicalPath = ""
 
-	if _, errRun := collectCompletion(context.Background(), sa, "画一只猫", generationMode{Skill: skillImageGen, Kind: "image"}, "", true, nil); errRun != nil {
+	if _, errRun := collectCompletion(context.Background(), sa, "生成一段海浪短视频", generationMode{Skill: skillVideoGen, Kind: "video"}, "", true, nil); errRun != nil {
 		t.Fatalf("聚合失败：%v", errRun)
 	}
 

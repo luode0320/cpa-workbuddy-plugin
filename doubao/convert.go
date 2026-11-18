@@ -185,7 +185,7 @@ func streamChunk(model, conversationID string, delta map[string]any, finishReaso
 // attachResumePoint 把会话续接点挂到响应上。
 //
 // 视频生成本身是两段式：首轮只给参数确认，客户端必须带上这三个字段再发一次才会
-// 真正开跑。字段名与请求侧的入参同名，客户端原样回传即可续接；普通生图用不上，
+// 真正开跑。字段名与请求侧的入参同名，客户端原样回传即可续接；非视频请求用不上，
 // 多出的字段会被不认识的客户端忽略。
 // [参数] resp: 响应对象；resume: 续接点。
 // 三个字段逐个判空写：上游只给会话 id 时，写出空串的 section_id 反而让人

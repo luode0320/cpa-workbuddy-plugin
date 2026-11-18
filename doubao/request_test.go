@@ -32,13 +32,13 @@ func requestTestAccount() *StoredAuth {
 
 // TestBuildSkillOptionKeepsWebPipeline 校验技能管线（agent_mode=2）的 option 段。
 //
-// 生图/生视频只能走网页端 skill 管线，这是插件唯一保留的上游管线。
+// 生视频只能走网页端 skill 管线，这是插件唯一保留的上游管线。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-17 01:02:00；改动原因：删除工作模式后，断言改为不含已删字段。
+// 最近修改时间：2026-11-18 23:30:00；改动原因：图片能力删除，用例改用生视频。
 func TestBuildSkillOptionKeepsWebPipeline(t *testing.T) {
 	sa := requestTestAccount()
-	body := buildCompletionRequest(sa, "画一只猫", generationMode{Skill: skillImageGen, Kind: "image"}, "", "", 0, false)
+	body := buildCompletionRequest(sa, "生成一段海浪短视频", generationMode{Skill: skillVideoGen, Kind: "video"}, "", "", 0, false)
 
 	if body.Option.AgentMode != 2 {
 		t.Errorf("技能管线 agent_mode 应为 2，实际 %d", body.Option.AgentMode)
@@ -49,8 +49,8 @@ func TestBuildSkillOptionKeepsWebPipeline(t *testing.T) {
 	if body.Ext["agent_mode"] != "2" || body.Ext["use_deep_think"] != "0" {
 		t.Errorf("技能管线顶层 ext 取值错误：%v", body.Ext)
 	}
-	if body.Option.AggregateParams.MentionSkillList != "[3]" {
-		t.Errorf("生图 skill 注入错误：%q", body.Option.AggregateParams.MentionSkillList)
+	if body.Option.AggregateParams.MentionSkillList != "[5]" {
+		t.Errorf("生视频 skill 注入错误：%q", body.Option.AggregateParams.MentionSkillList)
 	}
 }
 
@@ -189,9 +189,11 @@ func TestNormalizeVideoParams(t *testing.T) {
 // 最近修改时间：2026-11-17 22:02:00；改动原因：新增，锁住缺省路径不变。
 func TestAppendVideoParamHint(t *testing.T) {
 	// 1. 非视频能力一律不追加，哪怕参数非缺省。
-	image := generationMode{Skill: skillImageGen, Kind: "image"}
-	if got := appendVideoParamHint("画一只猫", image, normalizeVideoParams(5, "1080p", "9:16")); got != "画一只猫" {
-		t.Errorf("生图模式不该改提示词，实际 %q", got)
+	// 这里用不带 skill 的空模式作替身：图片能力已删除，但「Kind 不是 video」这条
+	// 守卫仍然要守住——将来再多一条能力时它同样靠这行生效。
+	plainMode := generationMode{}
+	if got := appendVideoParamHint("画一只猫", plainMode, normalizeVideoParams(5, "1080p", "9:16")); got != "画一只猫" {
+		t.Errorf("非视频能力不该改提示词，实际 %q", got)
 	}
 
 	// 2. 视频但参数缺省：提示词原样保留。
@@ -463,13 +465,13 @@ func TestFingerprintOfReadsAccountField(t *testing.T) {
 // 上游对「委托输入协议」做结构校验：网页每次都会把这些键显式发出去，
 // 用 omitempty 省略后上游直接回 -1 delegated input protocol violation。
 // 2026-11-16 消融：补齐这些默认值后，错误码从 -1 变成 710022004（人机验证），
-// 说明它们是协议判据而不是可选装饰。技能管线与已删除的工作模式共用这批字段。
+// 说明它们是协议判据而不是可选装饰。这批字段由技能管线独占。
 // [参数] t: 测试上下文。
 // [返回] 无。
 // 最近修改时间：2026-11-17 01:02:00；改动原因：工作模式删除，用例迁到技能管线。
 func TestSkillOptionCarriesWebDefaults(t *testing.T) {
 	sa := requestTestAccount()
-	body := buildCompletionRequest(sa, "画一只猫", generationMode{Skill: skillImageGen, Kind: "image"}, "", "", 0, true)
+	body := buildCompletionRequest(sa, "生成一段海浪短视频", generationMode{Skill: skillVideoGen, Kind: "video"}, "", "", 0, true)
 	raw, errMarshal := json.Marshal(body)
 	if errMarshal != nil {
 		t.Fatalf("序列化失败：%v", errMarshal)

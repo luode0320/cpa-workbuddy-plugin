@@ -157,7 +157,7 @@ func resolveExecutionAuth(req *pluginapi.ExecutorRequest) (*StoredAuth, error) {
 
 // resolveGenerationMode 把客户端模型名解析成生成模式。
 //
-// 目录外一律报错而不是回落：插件只做生图与生视频，静默换成别的模型会让调用方
+// 目录外一律报错而不是回落：插件只做生视频，静默换成别的模型会让调用方
 // 把「模型名写错」误判成「账号不可用」。错误文案直接列出可选别名，省一次查文档。
 // [参数] model: 客户端传入的模型名。
 // [返回] 生成模式与错误。
@@ -165,7 +165,7 @@ func resolveExecutionAuth(req *pluginapi.ExecutorRequest) (*StoredAuth, error) {
 func resolveGenerationMode(model string) (generationMode, error) {
 	mode, ok := modeForModel(model)
 	if !ok {
-		return generationMode{}, fmt.Errorf("不支持的模型 %q：本插件只做生图与生视频，可选 %s",
+		return generationMode{}, fmt.Errorf("不支持的模型 %q：本插件只做生视频，可选 %s",
 			model, strings.Join(testableModelIDs(), " / "))
 	}
 	return mode, nil

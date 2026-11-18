@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.1.30 (2026-11-18)
+
+### 破坏性变更
+
+- **删除 `doubao/image`，插件只做生视频**（需求变更 `CHG-001`，用户 2026-11-18 明确
+  授权）。模型目录从两条别名收敛到一条：`buildCompletionRequest` 拿到 `doubao/image`
+  现在会直接报「不支持的模型 `doubao/image`：本插件只做生视频，可选 doubao/video」，
+  不再静默透传到上游。调用方若仍请求图片模型，需要改用 `doubao/video`。
+- 默认模型别名 `defaultModelID` 由 `image` 改为 `video`：面板「测试」在未指定模型时
+  打的不再是生图。
+
+### 删除
+
+- **整条图片产物链路**：`skillImageGen`（上游 skill 3）、`creationImage` /
+  `creationPlaceholder` 两个结构体、`creationItem.Image` 字段、`assetFromImage`
+  解析函数（55 行）、`attachAssets` 的多模态 `image_url` 分支、`describeAssets` 的
+  「已生成图片」分支、`streamAssetFrames` 的图片帧分支。
+- **`creation_watermark.go` 整个文件**：它只对图片生效——`hydrateAssets` 的守卫是
+  `if asset.Key == "" || asset.isVideo() { continue }`，视频从来不走它。随文件一起删掉
+  `resolveNoWatermark` 与 `/creativity/resource/get_without_watermark` 调用，以及只服务
+  它的 `postBusinessJSON`（44 行）。
+- **面板测试的图片判据**：`activeTestSawCreation` 与 `capabilityVerb` 两个函数整体删除。
+  只剩生视频后，`runActiveTest` 的结论收敛为单一路径：`SSE_ACK` 里拿到会话 id 判通路
+  正常，否则按「能正常出字但上游没有建立会话」失败。
+
+### 变更
+
+- **`isVideo()` 保留**：目录只剩视频后它恒为 `true`，但渲染层与回灌层靠它区分「成品
+  直链」与「封面兜底」两类地址，删掉会让调用点失去自解释性。
+- 探针提示词池只剩一组（`testPingPromptsByKind` 只有 `"video"` 键），
+  `testPingFallbackKind` 改为 `"video"`。
+
+### 已知
+
+- 视频确认轮拿到续接点后仍可能等满 `video_poll_timeout`（默认 6 分钟）才报超时：上游
+  会在同一组参数下随机拒答（先建会话再回一段「我无法直接生成短视频」），此时既没有
+  产物也不会报错。2026-11-17 生产实测同一输入（5 秒 / 720p / auto）一次出片、一次拒答。
+- `media[].duration` 是上游产物的真实时长，不是请求的目标时长；`url_expire` 到期后地址
+  失效，需要重新生成。
+
 ## 0.1.29 (2026-11-17)
 
 ### 修复

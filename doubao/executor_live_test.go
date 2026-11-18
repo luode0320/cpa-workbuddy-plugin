@@ -12,7 +12,7 @@ import (
 // liveExecutorRequest 用真实账号构造一份宿主执行请求。
 // [参数] t: 测试上下文；payload: OpenAI 请求体。
 // [返回] 请求 JSON；无凭据时返回 nil（调用方应跳过）。
-// 最近修改时间：2026-10-17；改动原因：新增，端到端验证的请求装配。
+// 最近修改时间：2026-11-18 23:38:00；改动原因：图片能力删除，默认模型改用 doubao/video。
 func liveExecutorRequest(t *testing.T, payload string) []byte {
 	t.Helper()
 	sa := liveAccountForTest(t)
@@ -26,7 +26,7 @@ func liveExecutorRequest(t *testing.T, payload string) []byte {
 	raw, _ := json.Marshal(pluginapi.ExecutorRequest{
 		AuthID:       sa.AuthID,
 		AuthProvider: providerName,
-		Model:        "doubao/image",
+		Model:        "doubao/video",
 		Payload:      []byte(payload),
 		StorageJSON:  storage,
 	})
@@ -39,12 +39,12 @@ func liveExecutorRequest(t *testing.T, payload string) []byte {
 // 默认跳过，设 DOUBAO_LIVE_TEST=1 才执行。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，AC-004 非流式端到端。
+// 最近修改时间：2026-11-18 23:38:00；改动原因：图片能力删除，改用生视频请求。
 func TestExecutorLiveNonStream(t *testing.T) {
 	if os.Getenv("DOUBAO_LIVE_TEST") != "1" {
 		t.Skip("设 DOUBAO_LIVE_TEST=1 才执行真实上游探测")
 	}
-	raw := liveExecutorRequest(t, `{"model":"doubao/image","messages":[{"role":"user","content":"1+1=?"}]}`)
+	raw := liveExecutorRequest(t, `{"model":"doubao/video","messages":[{"role":"user","content":"生成一段海浪拍打礁石的短视频"}]}`)
 	if raw == nil {
 		t.Skip("未提供 .local_cookie.txt（真实 Cookie），跳过端到端验证")
 	}
@@ -91,12 +91,12 @@ func TestExecutorLiveNonStream(t *testing.T) {
 // 覆盖：增量帧转换、首帧 role、终止帧 finish_reason=stop。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，AC-004 流式端到端。
+// 最近修改时间：2026-11-18 23:38:00；改动原因：图片能力删除，改用生视频请求。
 func TestExecutorLiveStreamSync(t *testing.T) {
 	if os.Getenv("DOUBAO_LIVE_TEST") != "1" {
 		t.Skip("设 DOUBAO_LIVE_TEST=1 才执行真实上游探测")
 	}
-	raw := liveExecutorRequest(t, `{"model":"doubao/image","stream":true,"messages":[{"role":"user","content":"请用一句话介绍你自己"}]}`)
+	raw := liveExecutorRequest(t, `{"model":"doubao/video","stream":true,"messages":[{"role":"user","content":"生成一段海浪拍打礁石的短视频"}]}`)
 	if raw == nil {
 		t.Skip("未提供 .local_cookie.txt（真实 Cookie），跳过流式端到端验证")
 	}

@@ -4,16 +4,16 @@ import "encoding/json"
 
 // 本文件实现同一生成资源的多次上报合并。
 //
-// 上游对同一张图会分多帧上报：首帧只有 placeholder（宽高与生成器名），
-// 末帧才补 key 与直链。按 ID 对齐、后到非空覆盖先到空值，才能拿到完整结果。
+// 视频是异步产物，同一条会分多帧上报：首帧只有 status，末帧才补 download_url、
+// 时长与尺寸。按 ID 对齐、后到非空覆盖先到空值，才能拿到完整结果。
 
 // mergeAssets 把新到的生成结果并入已有列表。
 //
-// 同一资源会被反复上报：首帧只有尺寸，末帧才带 key 与 URL。按 ID 合并并让
-// 后到的非空字段覆盖先到的空值，才能拿到完整结果。没有 ID 的条目直接追加。
+// 同一条视频会被反复上报：首帧只有 status，末帧才带直链、时长与尺寸。按 ID 合并
+// 并让后到的非空字段覆盖先到的空值，才能拿到完整结果。没有 ID 的条目直接追加。
 // [参数] existing: 已累计的结果；incoming: 本次解析出的结果。
 // [返回] 合并后的列表。
-// 最近修改时间：2026-11-17 22:10:00；改动原因：补时长字段的非零覆盖。
+// 最近修改时间：2026-11-18 23:34:00；改动原因：图片能力删除，注释改为视频措辞。
 func mergeAssets(existing, incoming []creationAsset) []creationAsset {
 	index := make(map[string]int, len(existing))
 	for i, asset := range existing {

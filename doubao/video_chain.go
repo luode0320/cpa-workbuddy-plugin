@@ -212,13 +212,13 @@ func videoAssetAmong(assets []creationAsset) (creationAsset, bool) {
 
 // postChainJSON 向 /im/* 族端点发一次 JSON POST。
 //
-// 不能复用 postBusinessJSON：那条路径用的是纯 application/json，而 /im/* 族要求
-// "application/json; encoding=utf-8"，缺 encoding 声明会被上游以 712012002
-// 「不支持编码类型」直接拒绝（2026-11-17 实测）。两族端点的要求正好相反，
+// 不能复用对话链路那份请求头：/chat/completion 用的是纯 application/json，而
+// /im/* 族要求 "application/json; encoding=utf-8"，缺 encoding 声明会被上游以
+// 712012002「不支持编码类型」直接拒绝（2026-11-17 实测）。两族端点的要求正好相反，
 // 共用一份请求头必然有一边失败。
 // [参数] ctx: 上下文；sa: 账号；path: 端点路径；raw: 已编码的请求体。
 // [返回] 响应体与错误。
-// 最近修改时间：2026-11-17 01:48:00；改动原因：新增，/im/* 族要显式声明编码。
+// 最近修改时间：2026-11-18 23:35:00；改动原因：注释不再引用已删除的函数名。
 func postChainJSON(ctx context.Context, sa *StoredAuth, path string, raw []byte) ([]byte, error) {
 	url := endpointURL(sa, path, nil)
 	if businessEndpointOverride != "" {

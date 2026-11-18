@@ -10,12 +10,12 @@ import (
 
 // 本文件声明插件对外暴露的模型目录。
 //
-// 目录只有两条能力别名（image / video）：插件只做生图与生视频，别名描述
-// **能力**而不是厂商 SKU，上游换模型时语义仍成立。
+// 目录只有一条能力别名（video）：插件只做生视频，别名描述**能力**而不是厂商
+// SKU，上游换模型时语义仍成立。
 //
 // 未知名一律拒绝并返回明确错误：目录里已没有可回落的对话模型，静默透传
-// 只会让调用方以为在测生图，实际打到了别的东西上。
-// 最近修改时间：2026-11-17 00:32:00；改动原因：改为图片与视频专用，删除工作模式模型目录。
+// 只会让调用方以为在测生视频，实际打到了别的东西上。
+// 最近修改时间：2026-11-18 22:35:00；改动原因：按 CHG-001 删除 image 能力，只留视频。
 
 // modelAlias 是一条对外暴露的模型别名。
 type modelAlias struct {
@@ -27,7 +27,7 @@ type modelAlias struct {
 	Description string
 	// Skill 是该别名需要激活的上游 skill，0 表示未声明能力。
 	Skill int
-	// ModelItemKey 是该别名的上游模型主键；图片与视频管线不使用该字段。
+	// ModelItemKey 是该别名的上游模型主键；视频管线不使用该字段。
 	ModelItemKey string
 	// MemoryProfile 是该别名的上游记忆档位，必须与 TotalWindow 配对使用。
 	MemoryProfile string
@@ -41,14 +41,8 @@ type modelAlias struct {
 //
 // 前缀固定为 doubao/：宿主按 provider 聚合多个插件的模型，裸名容易与其他
 // 服务商的同名模型冲突。
-// 最近修改时间：2026-11-17 00:32:00；改动原因：删除 default / pro 两个对话别名。
+// 最近修改时间：2026-11-18 22:35:00；改动原因：按 CHG-001 删除 image 能力别名。
 var capabilityAliases = []modelAlias{
-	{
-		ID:          "image",
-		DisplayName: "图像生成",
-		Description: "生成图片。回复以 OpenAI 多模态 content 返回，图片地址在 image_url 中。",
-		Skill:       skillImageGen,
-	},
 	{
 		ID:          "video",
 		DisplayName: "视频生成",
@@ -59,9 +53,8 @@ var capabilityAliases = []modelAlias{
 
 // defaultModelID 是模型名为空时的默认别名。
 //
-// 只在 test-active 未指定模型时使用：目录里两条别名都会真正触发上游生成，
-// 选生图是因为它的产物同步返回，能在一次请求内判定账号是否可用。
-const defaultModelID = "image"
+// 只在 test-active 未指定模型时使用。目录只剩视频一条，因此只能指向它。
+const defaultModelID = "video"
 
 // modelIDPrefix 是对外模型名的前缀。
 const modelIDPrefix = "doubao/"
@@ -89,9 +82,9 @@ func normalizeModelName(requested string) string {
 
 // modeForModel 把客户端模型名解析为生成模式。
 //
-// 只认目录里的能力别名（image / video）：插件只做生图与生视频，目录外的名字
-// 一律判失败。返回 false 由调用方转成明确错误，绝不静默替换成别的模型——工作
-// 模式模型目录已删除，静默回落会把「测生图」变成「测别的东西」。
+// 只认目录里的能力别名（video）：插件只做生视频，目录外的名字一律判失败。
+// 返回 false 由调用方转成明确错误，绝不静默替换成别的模型——静默回落会把
+// 「测生视频」变成「测别的东西」。
 // [参数] requested: 客户端模型名。
 // [返回] 生成模式；ok 表示是否命中目录。
 // 最近修改时间：2026-11-17 00:42:00；改动原因：工作模式模型目录删除，未知名由回落改为失败。
@@ -107,8 +100,8 @@ func modeForModel(requested string) (generationMode, bool) {
 
 // modeForAlias 把别名展开成一次请求的生成模式。
 //
-// Skill 必须保留：生图/生视频只能靠它激活上游 skill 管线；ModelItemKey 在图片
-// 与视频管线恒为空，由 buildCompletionRequest 统一写成 "0"。
+// Skill 必须保留：生视频只能靠它激活上游 skill 管线；ModelItemKey 在视频管线
+// 恒为空，由 buildCompletionRequest 统一写成 "0"。
 // [参数] alias: 命中的别名。
 // [返回] 生成模式。
 // 最近修改时间：2026-11-17 00:42:00；改动原因：工作模式管线删除，去掉 allowWorkMode 分支。
@@ -118,12 +111,10 @@ func modeForAlias(alias modelAlias) generationMode {
 
 // kindForAlias 返回别名对应的回复类型。
 // [参数] alias: 别名。
-// [返回] image / video；未声明 skill 时返回 text。
-// 最近修改时间：2026-10-17；改动原因：新增，回复解析类型判定。
+// [返回] video；未声明 skill 时返回 text。
+// 最近修改时间：2026-11-18 22:35:00；改动原因：删除 image 分支。
 func kindForAlias(alias modelAlias) string {
 	switch alias.Skill {
-	case skillImageGen:
-		return "image"
 	case skillVideoGen:
 		return "video"
 	}
@@ -132,7 +123,7 @@ func kindForAlias(alias modelAlias) string {
 
 // catalogueModels 构造完整的模型目录。
 //
-// 目录即能力别名本身（image / video）。同名去重保留：将来新增别名时重复登记
+// 目录即能力别名本身（video）。同名去重保留：将来新增别名时重复登记
 // 同一个 ID 会让宿主看到两条冲突条目。
 // [参数] 无。
 // [返回] 宿主模型结构列表。
@@ -152,7 +143,7 @@ func catalogueModels() []pluginapi.ModelInfo {
 
 // testableAliases 返回活跃测试可选的模型别名。
 //
-// 目录里只剩生图与生视频，两者都必须可测：它们是插件唯一的能力，排除掉就
+// 目录里只剩生视频，它必须可测：这是插件唯一的能力，排除掉就
 // 没有可测对象了。代价是测试会真正触发一次上游生成（耗额度、等数十秒），这是
 // 「只做图片和视频」下无法回避的代价。
 // [参数] 无。
@@ -177,7 +168,7 @@ func testableModelIDs() []string {
 
 // testableModelDetails 返回活跃测试可选模型的展示信息。
 //
-// 面板需要可读名：只给 doubao/image 这类裸 id，用户分不清生图与生视频。
+// 面板需要可读名：只给 doubao/video 这类裸 id，用户分不清能力类型。
 // default 标记供面板给默认别名加注，避免用户误选。
 // [参数] 无。
 // [返回] 每项含 id / name / description / default。
@@ -231,8 +222,6 @@ func modelInfoForAlias(alias modelAlias) pluginapi.ModelInfo {
 	}
 	// 1. 技能别名改变类型，其余一律 chat。
 	switch alias.Skill {
-	case skillImageGen:
-		info.Type = "image"
 	case skillVideoGen:
 		info.Type = "video"
 	}
@@ -316,7 +305,7 @@ func modelStatic(request []byte) ([]byte, error) {
 
 // modelForAuth 响应 model.for_auth。
 //
-// 这是按账号的模型目录：能力别名（image / video）在前，该账号的上游真实模型
+// 这是按账号的模型目录：能力别名（video）在前，该账号的上游真实模型
 // （model_list 透传）在后。上游不可达时只返回能力别名——宿主模型目录必须始终
 // 可用，不能因为一次网络失败让用户没模型可选。
 // [参数] request: 宿主请求体。
@@ -335,7 +324,7 @@ func modelForAuth(request []byte) ([]byte, error) {
 
 // catalogueWithUpstream 组合能力别名与上游真实模型。
 //
-// 顺序固定为能力别名在前：它们是稳定语义（生图/生视频必须靠别名激活 skill），
+// 顺序固定为能力别名在前：它们是稳定语义（生视频必须靠别名激活 skill），
 // 上游代号在后。同名时以能力别名为准，避免上游恰好返回同名模型时把语义别名
 // 挤掉。
 // [参数] req: 宿主按账号请求（含该账号的凭据快照）。

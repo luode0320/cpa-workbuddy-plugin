@@ -44,18 +44,6 @@ func activePingSSEServer(t *testing.T, frames []string) *httptest.Server {
 	return srv
 }
 
-// creationChunkFrame 构造一帧携带创作块（block_type=2074）的 STREAM_CHUNK。
-//
-// 面板测试的成功判据是「解析出产物」，只有文字帧会被判成「能出字但没能出图」，
-// 因此验证首帧即停的用例必须发创作块帧，否则测的就不再是成功路径。
-// [参数] 无。
-// [返回] 完整 SSE 帧文本。
-// 最近修改时间：2026-11-17 22:52:00；改动原因：判据收紧到创作块后，改用创作块帧。
-func creationChunkFrame() string {
-	const payload = `{"content":{"content_block":[{"block_type":2074,"content":{"creation_block":{"creations":[{"type":1,"id":"ping-1","image":{"status":1,"key":"tos-cn-i-b/rc_gen_image/ping.jpeg"}}]}}}]}}`
-	return "event: STREAM_CHUNK\ndata: " + payload + "\n\n"
-}
-
 // ackFrame 构造一帧 SSE_ACK，带上游分配的会话 id。
 //
 // 视频两段式的首轮唯一通路证据就是它：首轮不产生产物，只有会话建起来了，
@@ -69,34 +57,43 @@ func ackFrame(conversationID string) string {
 		"\n\n"
 }
 
-// TestRunActiveTestStopsOnFirstFrame 校验测试链路在首个有效输出帧即返回。
+// TestRunActiveTestReturnsAfterReplyEnd 校验读到回复结束帧就收工。
 //
-// 上游在首帧之后挂起 3 秒再结束；若实现等全文，本次调用必然超过 1 秒。
+// 判据只能等会话 id，所以不再有「首帧即停」：上游吐完结束帧后不关流，实现必须
+// 认 SSE_REPLY_END 主动收工，不能等 Keep-Alive 到期。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，锁定首帧即停契约。
-func TestRunActiveTestStopsOnFirstFrame(t *testing.T) {
-	frames := []string{
-		creationChunkFrame(),
-		"event: SSE_REPLY_END\ndata: {\"end_type\":1}\n\n",
-	}
-	srv := activePingSSEServer(t, frames)
+// 最近修改时间：2026-11-18 23:05:00；改动原因：判据改为会话 id，改验证读到结束帧即收工。
+func TestRunActiveTestReturnsAfterReplyEnd(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		if _, errWrite := w.Write([]byte(ackFrame("conv-ping-stop") + "event: SSE_REPLY_END\ndata: {\"end_type\":1}\n\n")); errWrite != nil {
+			return
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// 结束帧之后不再关流：等 Keep-Alive 的实现会卡在这里。
+		<-r.Context().Done()
+	}))
 	defer srv.Close()
 	defer swapCompletionEndpoint(srv.URL + "/chat/completion")()
 
 	sa := completionTestAccount()
 	start := time.Now()
-	res := runActiveTest(sa, "doubao/image")
+	res := runActiveTest(sa, modelIDPrefix+"video")
 	elapsed := time.Since(start)
 
 	if res["error"] != nil {
-		t.Fatalf("首帧成功却报错：%v", res["error"])
+		t.Fatalf("建起会话却报错：%v", res["error"])
 	}
 	if res["ok"] != true {
 		t.Fatalf("应判定成功，实际 %+v", res)
 	}
 	if elapsed > 2*time.Second {
-		t.Fatalf("首帧即停未生效：耗时 %v", elapsed)
+		t.Fatalf("读到结束帧未及时收工：耗时 %v", elapsed)
 	}
 }
 
@@ -114,7 +111,7 @@ func TestRunActiveTestRejectsStreamError(t *testing.T) {
 	defer srv.Close()
 	defer swapCompletionEndpoint(srv.URL + "/chat/completion")()
 
-	res := runActiveTest(completionTestAccount(), "doubao/image")
+	res := runActiveTest(completionTestAccount(), modelIDPrefix+"video")
 	if res["ok"] == true {
 		t.Fatalf("错误帧被误判为成功：%+v", res)
 	}
@@ -136,7 +133,7 @@ func TestRunActiveTestRejectsEmptyReply(t *testing.T) {
 	defer srv.Close()
 	defer swapCompletionEndpoint(srv.URL + "/chat/completion")()
 
-	res := runActiveTest(completionTestAccount(), "doubao/image")
+	res := runActiveTest(completionTestAccount(), modelIDPrefix+"video")
 	if res["ok"] == true {
 		t.Fatalf("空回复被误判为成功：%+v", res)
 	}
@@ -151,8 +148,8 @@ func TestRunActiveTestRejectsEmptyReply(t *testing.T) {
 // 弹窗的可点击项必须是插件别名（与宿主 /v1/models 同源），上游内部代号无法映射到
 // 任何插件别名，选中后只会被判失败，所以代号永远不构成测试列表。
 // 上游不可达时只降级掉 upstream_models，别名目录必须照旧完整。
-// 目录里只剩生图与生视频：两者都会真正触发上游生成（耗额度、等数十秒），这是
-// 「只做图片和视频」下无法回避的代价。
+// 目录里只剩生视频：它会真正触发上游生成（耗额度、等数十秒），这是「只做视频」
+// 下无法回避的代价。
 // [参数] t: 测试上下文。
 // [返回] 无。
 // 最近修改时间：2026-11-14 16:05:00；改动原因：列表改为插件别名目录，回落只影响上游对照。
@@ -184,13 +181,13 @@ func TestHandleModelsQueryKeepsAliasCatalogue(t *testing.T) {
 	if notice, _ := res["notice"].(string); !strings.Contains(notice, "仅显示插件别名目录") {
 		t.Fatalf("回落应说明只剩插件别名目录，实际 %q", notice)
 	}
-	// 目录里只剩生图与生视频，两者都必须出现在可测试列表里。
+	// 目录里只剩生视频，它必须出现在可测试列表里。
 	for _, m := range models {
 		if !strings.HasPrefix(m, modelIDPrefix) {
 			t.Fatalf("模型名必须带 doubao/ 前缀，实际 %q", m)
 		}
 	}
-	for _, want := range []string{modelIDPrefix + "image", modelIDPrefix + "video"} {
+	for _, want := range []string{modelIDPrefix + "video"} {
 		found := false
 		for _, m := range models {
 			if m == want {
@@ -286,20 +283,20 @@ func TestRunActiveTestRejectsRemovedWorkModels(t *testing.T) {
 	}
 }
 
-// TestRunActiveTestAcceptsBothCapabilities 校验 image 与 video 都被认。
+// TestRunActiveTestAcceptsVideoCapability 校验 video 别名能被认。
 //
-// 两个别名都必须能进到上游请求那一层（而不是在解析阶段就被判不支持）；
-// 上游用不可达地址模拟，只验证「没有报不支持的测试模型」。
+// 别名必须能进到上游请求那一层（而不是在解析阶段就被判不支持）；上游用不可达
+// 地址模拟，只验证「没有报不支持的测试模型」。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-17 01:08:00；改动原因：新增，锁定两条能力别名都能测。
-func TestRunActiveTestAcceptsBothCapabilities(t *testing.T) {
+// 最近修改时间：2026-11-18 23:05:00；改动原因：图片能力删除，只剩生视频一条。
+func TestRunActiveTestAcceptsVideoCapability(t *testing.T) {
 	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	deadURL := dead.URL
 	dead.Close()
 	defer swapCompletionEndpoint(deadURL)()
 
-	for _, model := range []string{modelIDPrefix + "image", modelIDPrefix + "video"} {
+	for _, model := range []string{modelIDPrefix + "video"} {
 		res := runActiveTest(completionTestAccount(), model)
 		if msg, _ := res["error"].(string); strings.Contains(msg, "不支持的测试模型") {
 			t.Errorf("%s 应被识别为合法能力别名，实际 %q", model, msg)
@@ -340,7 +337,7 @@ func TestHandleModelsQueryRequiresAuthIndex(t *testing.T) {
 // [返回] 无。
 // 最近修改时间：2026-10-17；改动原因：新增，入参校验。
 func TestHandleTestActiveRequiresAuthIndex(t *testing.T) {
-	res := handleTestActive(pluginapi.ManagementRequest{Body: []byte(`{"model":"doubao/image"}`)})
+	res := handleTestActive(pluginapi.ManagementRequest{Body: []byte(`{"model":"doubao/video"}`)})
 	if res["error"] == nil {
 		t.Fatalf("缺少 auth_index 时应报错，实际 %+v", res)
 	}
@@ -389,7 +386,7 @@ func TestRunActiveTestTimeoutIsBounded(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- streamCompletion(ctx, completionTestAccount(), buildCompletionRequest(
-			completionTestAccount(), testPingPromptFor("image"), textMode(), "", "", 0, true,
+			completionTestAccount(), testPingPromptFor("video"), textMode(), "", "", 0, true,
 		), func(completionEvent) bool { return true })
 	}()
 
@@ -403,50 +400,23 @@ func TestRunActiveTestTimeoutIsBounded(t *testing.T) {
 	}
 }
 
-// TestActiveTestSawCreationDetectsCreationBlock 校验创作块是唯一的产物证据。
+// TestRunActiveTestReadsPastTextFrames 校验文本帧不会终止读取。
 //
-// 收紧判据的靶点：文字帧只能证明「账号能聊天」，一张图也没出。
+// 这是面板测试假阴性的成因：上游先回一段文字再建会话，见文本就关流会永远读不到
+// ACK。2026-11-17 生产实测：旧实现 2.2 秒就判失败，而同账号走正式链路真的出了图。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-17 22:36:00；改动原因：新增，锁住创作块判据。
-func TestActiveTestSawCreationDetectsCreationBlock(t *testing.T) {
-	// 1. 只有文字：不是产物证据。
-	textOnly := `{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"已为你生成图片"}}}]}}`
-	if activeTestSawCreation(completionEvent{Name: "STREAM_MSG_NOTIFY", Data: []byte(textOnly)}) {
-		t.Error("纯文字帧不该被当作产物证据")
-	}
-
-	// 2. 创作块带完整图片：是产物证据。
-	creation := `{"content":{"content_block":[{"block_type":2074,"content":{"creation_block":{"creations":[{"type":1,"id":"a-1","image":{"status":1,"key":"tos-cn-i-b/rc_gen_image/x.jpeg"}}]}}}]}}`
-	if !activeTestSawCreation(completionEvent{Name: "STREAM_MSG_NOTIFY", Data: []byte(creation)}) {
-		t.Error("带 key 的创作块应被当作产物证据")
-	}
-
-	// 3. 提问回显里的创作块不算：那是上游把请求原样发回来。
-	echo := `{"message":{"user_type":1,"content_block":[{"block_type":2074,"content":{"creation_block":{"creations":[{"type":1,"id":"a-2","image":{"status":1,"key":"tos-cn-i-b/rc_gen_image/y.jpeg"}}]}}}]}}`
-	if activeTestSawCreation(completionEvent{Name: "FULL_MSG_NOTIFY", Data: []byte(echo)}) {
-		t.Error("提问回显里的创作块不该算产物")
-	}
-}
-
-// TestRunActiveTestWaitsForCreationAfterText 校验文本帧不会终止读取。
-//
-// 这是面板测试假阴性的成因：上游先回一段文字再说产物，见文本就关流会永远读不到
-// 创作块。2026-11-17 生产实测：旧实现 2.2 秒判「没能出图」，而同账号走正式链路
-// 的同一类提示词 12.2 秒真的出了图。
-// [参数] t: 测试上下文。
-// [返回] 无。
-// 最近修改时间：2026-11-17 23:20:00；改动原因：新增，锁住「文本帧不终止」契约。
-func TestRunActiveTestWaitsForCreationAfterText(t *testing.T) {
+// 最近修改时间：2026-11-18 23:05:00；改动原因：判据改为会话 id，改为文本之后等 ACK。
+func TestRunActiveTestReadsPastTextFrames(t *testing.T) {
 	stream := "event: STREAM_MSG_NOTIFY\ndata: " +
-		`{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"马上画"}}}]}}` +
-		"\n\n" + creationChunkFrame() + "event: SSE_REPLY_END\ndata: {}\n\n"
+		`{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"马上生成"}}}]}}` +
+		"\n\n" + ackFrame("conv-ping-late") + "event: SSE_REPLY_END\ndata: {}\n\n"
 	_, sa, cleanup := newCompletionTestServer(t, stream)
 	defer cleanup()
 
-	res := runActiveTest(sa, modelIDPrefix+"image")
+	res := runActiveTest(sa, modelIDPrefix+"video")
 	if res["ok"] != true {
-		t.Fatalf("文本之后到达的创作块应判成功，实际 %+v", res)
+		t.Fatalf("文本之后到达的会话 id 应判通路正常，实际 %+v", res)
 	}
 }
 
@@ -496,28 +466,12 @@ func TestRunActiveTestVideoRejectsMissingResume(t *testing.T) {
 	}
 }
 
-// TestCapabilityVerb 校验失败文案用的能力动作词。
-//
-// 文案必须说「没能出图 / 没能出片」而不是「没能生成图片」：前者是用户视角的
-// 动作，后者读起来像在描述缺失的功能模块。
-// [参数] t: 测试上下文。
-// [返回] 无。
-// 最近修改时间：2026-11-17 22:52:00；改动原因：只留 capabilityVerb 断言，用例名同步。
-func TestCapabilityVerb(t *testing.T) {
-	if capabilityVerb("image") != "出图" {
-		t.Errorf("生图动作词错误：%s", capabilityVerb("image"))
-	}
-	if capabilityVerb("video") != "出片" {
-		t.Errorf("生视频动作词错误：%s", capabilityVerb("video"))
-	}
-}
-
-// TestRunActiveTestRejectsTextOnlyReply 校验「能出字但没出图」必须判失败。
+// TestRunActiveTestRejectsTextOnlyReply 校验「能出字但没建会话」必须判失败。
 //
 // 这是本次收紧的核心：0.1.27 之前这种回复会被报成「活跃成功」。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-17 22:36:00；改动原因：新增，假阳性回归。
+// 最近修改时间：2026-11-18 23:05:00；改动原因：图片能力删除，用例改用生视频。
 func TestRunActiveTestRejectsTextOnlyReply(t *testing.T) {
 	stream := "event: STREAM_MSG_NOTIFY\ndata: " +
 		`{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"好的，已为你生成"}}}]}}` +
@@ -525,13 +479,13 @@ func TestRunActiveTestRejectsTextOnlyReply(t *testing.T) {
 	_, sa, cleanup := newCompletionTestServer(t, stream)
 	defer cleanup()
 
-	res := runActiveTest(sa, modelIDPrefix+"image")
+	res := runActiveTest(sa, modelIDPrefix+"video")
 	if res["ok"] == true {
-		t.Fatalf("只出字不出图不该判成功：%v", res)
+		t.Fatalf("只出字不建会话不该判成功：%v", res)
 	}
 	message, _ := res["error"].(string)
-	if !strings.Contains(message, "能正常出字") || !strings.Contains(message, "出图") {
-		t.Errorf("失败文案应说明「能出字但没能出图」，实际 %q", message)
+	if !strings.Contains(message, "能正常出字") || !strings.Contains(message, "没有建立会话") {
+		t.Errorf("失败文案应说明「能出字但没建会话」，实际 %q", message)
 	}
 }
 
@@ -594,7 +548,7 @@ func TestMeaningfulPreviewDropsPunctuationOnly(t *testing.T) {
 			t.Fatalf("%q 应被判为空预览，实际 %q", raw, got)
 		}
 	}
-	for _, raw := range []string{"已生成图片", " 。已生成图片。 ", "你好，世界"} {
+	for _, raw := range []string{"已生成视频", " 。已生成视频。 ", "你好，世界"} {
 		if got := meaningfulPreview(raw); got == "" {
 			t.Fatalf("%q 应保留非空预览", raw)
 		}

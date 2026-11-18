@@ -26,20 +26,13 @@ const activeTestTimeout = 20 * time.Second
 
 // testPingPromptsByKind 是按能力分组的测试提示词池。
 //
-// 不能再用「你好」这类对话提示词：本插件只做生图与生视频，发对话提示词上游
-// 会用一段文字作答，账号看似活跃、实际一张图也出不来（2026-11-17 决定收紧）。
+// 不能再用「你好」这类对话提示词：本插件只做生视频，发对话提示词上游会用一段
+// 文字作答，账号看似活跃、实际一段片子也出不来（2026-11-17 决定收紧）。
 // 所以每种能力配一组真的要求出产物的短提示词。
 //
 // 池子里放多条是为了轮换：同一账号反复发送相同提示词会建出一串内容一致的会话，
 // 上游按内容重复度判定异常并触发风控（2026-11-16 用户明确要求）。
 var testPingPromptsByKind = map[string][]string{
-	"image": {
-		"画一只橘猫",
-		"画一片秋天的枫叶",
-		"画一盏台灯",
-		"画一朵向日葵",
-		"画一个红色的茶杯",
-	},
 	"video": {
 		"生成一段海浪拍打礁石的短视频",
 		"生成一段风吹树叶的短视频",
@@ -51,13 +44,13 @@ var testPingPromptsByKind = map[string][]string{
 
 // testPingFallbackKind 是能力未知时使用的提示词组。
 //
-// 目录里只有 image / video 两种能力，走到这里说明调用方传了未注册的 Kind；
-// 用生图提示词至少还能验证「账号能不能出产物」，比退回对话提示词有意义。
-const testPingFallbackKind = "image"
+// 目录里只剩 video 一种能力，走到这里说明调用方传了未注册的 Kind；用视频提示词
+// 至少还能验证「账号能不能出产物」，比退回对话提示词有意义。
+const testPingFallbackKind = "video"
 
 // testPingCounters 是各能力提示词池的轮换游标。
 //
-// 按能力分开计数：共用同一个游标会让「刚测过生图再测生视频」取到错位条目。
+// 按能力分开计数：共用同一个游标会让「不同能力交替测试」取到错位条目。
 //
 // 不能用时间取模：Windows 时钟精度约 15.6ms，纳秒值的低位在连续调用里不变，
 // 取模会稳定落在同一条上（2026-11-16 实测 32 次调用只取到 1 条）。
@@ -67,11 +60,11 @@ var testPingCounters sync.Map
 //
 // 取模用原子计数而不是时间：Windows 时钟精度约 15.6ms，纳秒值的低位在连续
 // 调用里不变，时间取模会稳定落在同一条上（2026-11-16 实测 32 次只取到 1 条）。
-// [参数] kind: 能力类型（image / video）。
+// [参数] kind: 能力类型（video）。
 // [返回] 一条短提示词。
 // 最近修改时间：2026-11-17 22:30:00；改动原因：改为按能力分池取词。
 func testPingPromptFor(kind string) string {
-	// 1. 能力未知时回落到生图池，保证永远能取到一条出产物的提示词。
+	// 1. 能力未知时回落到视频池，保证永远能取到一条出产物的提示词。
 	prompts, ok := testPingPromptsByKind[kind]
 	if !ok || len(prompts) == 0 {
 		prompts = testPingPromptsByKind[testPingFallbackKind]
@@ -187,24 +180,21 @@ func findAccountForTest(authIndex string) (*StoredAuth, error) {
 	return nil, fmt.Errorf("账号不存在：%s", authIndex)
 }
 
-// runActiveTest 对指定账号发起一次真实生成，按能力给出可用性结论。
+// runActiveTest 对指定账号发起一次真实生成，给出可用性结论。
 //
-// 判据按能力分开，因为两者在上游是完全不同的形态：
-//   - 生图是同步产物：同一个 SSE 里先是文本，随后才出现产物帧，必须读到产物
-//     帧才算成功；
-//   - 生视频是两段式：首轮只回参数确认文本，产物要等确认轮之后异步回灌，首轮
-//     永远不会有产物帧。对视频而言「会话真的建起来了」就是首轮能拿到的最强
-//     证据，文案必须写清楚它证明不了「一定能出片」。
+// 判据只能是「会话建起来了」：视频是两段式，首轮只回参数确认文本，产物要等确认
+// 轮之后异步回灌，首轮永远不会有产物帧。会话 id 是首轮能拿到的最强证据，文案
+// 必须写清楚它证明不了「一定能出片」。
 //
-// 不能「见文本即停」：两种能力都是先由模型说一段话再出产物，见文本就关闭流
-// 会永远等不到产物帧。2026-11-17 生产实测：旧实现 2.2 秒就判「没能出图」，
-// 而同账号走正式链路的同一类提示词 12.2 秒真的出了图——典型的假阴性。
+// 不能「见文本即停」：上游先由模型说一段话再建会话，见文本就关闭流会永远读不到
+// ACK。2026-11-17 生产实测：旧实现 2.2 秒就判失败，而同账号走正式链路真的出了图
+// ——典型的假阴性。
 //
 // 成功判定不能只看「流里有字节」：上游在 HTTP 200 下用 STREAM_ERROR 帧表达
 // 额度耗尽/限流，只看首包会把死号判成活跃。故必须解析帧语义，错误帧立即失败。
 // [参数] sa: 账号；model: 客户端模型名。
 // [返回] 测试结果。
-// 最近修改时间：2026-11-17 23:10:00；改动原因：文本帧不再终止读取，按能力分开成功判据。
+// 最近修改时间：2026-11-18 22:50:00；改动原因：图片能力删除，判据只剩首轮会话。
 func runActiveTest(sa *StoredAuth, model string) map[string]any {
 	// 1. 严格解析模型名：未命中别名直接失败，避免静默替换模型后给出假结论。
 	mode, alias, ok := testModeForModel(model)
@@ -224,11 +214,10 @@ func runActiveTest(sa *StoredAuth, model string) map[string]any {
 	defer cancel()
 
 	var (
-		sawProduct bool
-		sawText    bool
-		sawResume  bool
-		preview    string
-		streamErr  error
+		sawText   bool
+		sawResume bool
+		preview   string
+		streamErr error
 	)
 
 	errStream := streamCompletion(ctx, sa, body, func(ev completionEvent) bool {
@@ -250,16 +239,11 @@ func runActiveTest(sa *StoredAuth, model string) map[string]any {
 			return false
 		}
 
-		// 产物帧是唯一能证明「真的出了图」的证据，到了就立刻收工。
-		if activeTestSawCreation(ev) {
-			sawProduct = true
-			return false
-		}
 		if text, ok := activeTestOutput(ev); ok && text != "" {
 			sawText = true
 			preview = text
 		}
-		// 关键：文本帧只作记录，不得终止读取——两种能力都是先说后出。
+		// 关键：文本帧只作记录，不得终止读取——视频首轮是「先说话、再建会话」。
 		return true
 	})
 
@@ -271,36 +255,16 @@ func runActiveTest(sa *StoredAuth, model string) map[string]any {
 		return map[string]any{"error": fmt.Sprintf("测试失败（模型: %s）：%v", model, errStream), "model": model}
 	}
 
-	// 2. 生视频走首轮通路判据：首轮不产生产物，只验证会话建起来了。
+	// 2. 首轮通路判据：首轮不产生产物，只验证会话建起来了。
 	//    这条判据证明不了「一定能出片」：上游也可能先建会话、再用一段文本拒答
 	//    （2026-11-17 生产多次实测到该形态），仅凭会话 id 无法区分。所以成功文案
 	//    必须写明这只是首轮通路，出片要等确认轮。
-	if mode.Kind == "video" {
-		if !sawResume {
-			return map[string]any{
-				"error": fmt.Sprintf("测试失败（模型: %s）：上游没有建立会话，无法进入视频生成流程", model),
-				"model": model,
-			}
-		}
-		log.Printf("[doubao] manual active test success for %s with model %s (took %v)", sa.AuthID, model, elapsed)
-		message := fmt.Sprintf("首轮通路正常 (模型: %s, 能力: video, 耗时: %v)：视频两段式首轮只回参数确认，能否真出片要带会话续接点再发确认轮",
-			model, elapsed)
-		return map[string]any{
-			"ok":      true,
-			"model":   model,
-			"elapsed": elapsed.String(),
-			"message": message,
-		}
-	}
-
-	// 3. 生图必须有产物帧：文字与思考只能证明「账号能聊天」。
-	if !sawProduct {
-		// 能出字但没出产物是最容易误判的一态：账号完全可用，只是没被投放该能力、
+	if !sawResume {
+		// 能出字但没建会话是最容易误判的一态：账号完全可用，只是没被投放视频能力、
 		// 或额度耗尽。文案必须把这两种可能摆明了，不能笼统说「不可用」。
 		if sawText {
 			return map[string]any{
-				"error": fmt.Sprintf("测试失败（模型: %s）：账号能正常出字，但没能%s（可能未投放该能力或额度已用尽）",
-					model, capabilityVerb(mode.Kind)),
+				"error": fmt.Sprintf("测试失败（模型: %s）：账号能正常出字，但上游没有建立会话（可能未投放视频能力或额度已用尽）", model),
 				"model": model,
 			}
 		}
@@ -308,10 +272,9 @@ func runActiveTest(sa *StoredAuth, model string) map[string]any {
 	}
 
 	log.Printf("[doubao] manual active test success for %s with model %s (took %v)", sa.AuthID, model, elapsed)
-	// 图片与视频管线不带 model_item_key（skill 管线不认它），回显能力类型即可：
-	// 上游真实模型名要等产物帧回来才拿得到，测试成功时未必已经拿到。
-	message := fmt.Sprintf("活跃成功 (模型: %s, 能力: %s, 耗时: %v)", model, mode.Kind, elapsed)
-	// 只追加「有意义」的预览：上游常在产物前后补一个句号或空白，直接拼会得到
+	message := fmt.Sprintf("首轮通路正常 (模型: %s, 能力: %s, 耗时: %v)：视频两段式首轮只回参数确认，能否真出片要带会话续接点再发确认轮",
+		model, mode.Kind, elapsed)
+	// 只追加「有意义」的预览：上游常在参数确认前后补一个句号或空白，直接拼会得到
 	// 「…耗时 15.1s）：。」这种尾巴（2026-11-17 真机复验实测到）。
 	if p := meaningfulPreview(preview); p != "" {
 		message += "：" + truncateText(p, 40)
@@ -383,73 +346,6 @@ func activeTestOutput(ev completionEvent) (string, bool) {
 		return contentOutput(payload.Content)
 	}
 	return "", false
-}
-
-// activeTestSawCreation 判断一帧是否带来创作块（block_type=2074）。
-//
-// 这是唯一能证明「账号能出图」的证据：文字帧只说明模型在说话。
-// 与 activeTestOutput 分开而不是合并，是因为两者回答不同问题——前者问
-// 「能不能出产物」，后者问「流里有没有内容」，合成一个函数会让调用点分不清。
-// [参数] ev: 一条 SSE 事件。
-// [返回] 出现创作块返回 true。
-// 最近修改时间：2026-11-17 23:16:00；改动原因：撤回 delta.media 判据，上游帧里没有该字段。
-func activeTestSawCreation(ev completionEvent) bool {
-	// 1. 先定位 content_block / patch_op，再交给 collectCreationAssets 解析。
-	var blocks []responseBlock
-	switch ev.Name {
-	case "FULL_MSG_NOTIFY":
-		var payload struct {
-			Message struct {
-				UserType     int             `json:"user_type"`
-				ContentBlock []responseBlock `json:"content_block"`
-			} `json:"message"`
-		}
-		if json.Unmarshal(ev.Data, &payload) != nil || payload.Message.UserType != 2 {
-			return false
-		}
-		blocks = payload.Message.ContentBlock
-
-	case "STREAM_MSG_NOTIFY":
-		var payload struct {
-			Content streamMessageContent `json:"content"`
-		}
-		if json.Unmarshal(ev.Data, &payload) != nil {
-			return false
-		}
-		blocks = payload.Content.ContentBlock
-
-	case "STREAM_CHUNK", "CHUNK_DELTA":
-		var payload struct {
-			Content streamMessageContent `json:"content"`
-			PatchOp []patchOp            `json:"patch_op"`
-		}
-		if json.Unmarshal(ev.Data, &payload) != nil {
-			return false
-		}
-		for _, op := range payload.PatchOp {
-			if len(collectCreationAssets(op.PatchValue.blocks(), nil)) > 0 {
-				return true
-			}
-		}
-		blocks = payload.Content.ContentBlock
-
-	default:
-		return false
-	}
-
-	// 2. 创作块必须先有 block_type=2074，再由 collectCreationAssets 解析出产物。
-	return len(collectCreationAssets(blocks, nil)) > 0
-}
-
-// capabilityVerb 返回能力对应的动作词，用于失败文案。
-// [参数] kind: 能力类型。
-// [返回] 动作词。
-// 最近修改时间：2026-11-17 22:30:00；改动原因：新增，失败文案区分能力。
-func capabilityVerb(kind string) string {
-	if kind == "video" {
-		return "出片"
-	}
-	return "出图"
 }
 
 // meaningfulPreview 去掉只有标点或空白的预览，避免在成功文案后拼出空尾巴。

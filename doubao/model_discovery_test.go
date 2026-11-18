@@ -234,10 +234,14 @@ func TestModelForAuthMergesUpstreamAndAliases(t *testing.T) {
 	for _, m := range resp.Models {
 		ids[m.ID]++
 	}
-	for _, want := range []string{"doubao/image", "doubao/video", "doubao/ogt"} {
+	for _, want := range []string{"doubao/video", "doubao/ogt"} {
 		if ids[want] != 1 {
 			t.Fatalf("模型 %s 应恰好出现一次，实际 %d（全部：%v）", want, ids[want], ids)
 		}
+	}
+	// 图片能力已按 CHG-001 删除：上游就算把它报上来也不能出现在目录里。
+	if n := ids["doubao/image"]; n != 0 {
+		t.Fatalf("doubao/image 应已从目录消失，实际出现 %d 次（全部：%v）", n, ids)
 	}
 }
 

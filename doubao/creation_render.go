@@ -15,7 +15,7 @@ import (
 // 以文本形式给出链接，同时在 media 扩展里保留结构化信息。
 // [参数] resp: OpenAI 响应对象；assets: 生成结果。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，多模态响应转换。
+// 最近修改时间：2026-11-18 22:42:00；改动原因：删除 image_url 分支，只留视频文本段。
 func attachAssets(resp map[string]any, assets []creationAsset) {
 	if len(assets) == 0 {
 		return
@@ -37,14 +37,7 @@ func attachAssets(resp map[string]any, assets []creationAsset) {
 		if asset.URL == "" {
 			continue
 		}
-		if asset.isVideo() {
-			parts = append(parts, map[string]any{"type": "text", "text": "[视频] " + asset.URL})
-			continue
-		}
-		parts = append(parts, map[string]any{
-			"type":      "image_url",
-			"image_url": map[string]any{"url": asset.URL},
-		})
+		parts = append(parts, map[string]any{"type": "text", "text": "[视频] " + asset.URL})
 	}
 	if len(parts) == 0 {
 		return
@@ -58,17 +51,14 @@ func attachAssets(resp map[string]any, assets []creationAsset) {
 // mediaExtension 构造 media 扩展数组。
 // [参数] assets: 生成结果。
 // [返回] 结构化媒体列表。
-// 最近修改时间：2026-11-17 22:10:00；改动原因：视频条目回填真实时长。
+// 最近修改时间：2026-11-18 22:42:00；改动原因：type 固定 video，删去图片默认值。
 func mediaExtension(assets []creationAsset) []map[string]any {
 	out := make([]map[string]any, 0, len(assets))
 	for _, asset := range assets {
 		if asset.URL == "" {
 			continue
 		}
-		item := map[string]any{"url": asset.URL, "type": "image"}
-		if asset.isVideo() {
-			item["type"] = "video"
-		}
+		item := map[string]any{"url": asset.URL, "type": "video"}
 		if asset.Key != "" {
 			item["key"] = asset.Key
 		}
@@ -81,9 +71,9 @@ func mediaExtension(assets []creationAsset) []map[string]any {
 		if asset.Height > 0 {
 			item["height"] = asset.Height
 		}
-		// 时长只对视频有意义，且上游没给时省略而不是写 0：0 秒是非法值，
-		// 写成 0 会让调用方以为拿到了空片子。
-		if asset.isVideo() && asset.Duration > 0 {
+		// 时长上游没给时省略而不是写 0：0 秒是非法值，写成 0 会让调用方
+		// 以为拿到了空片子。
+		if asset.Duration > 0 {
 			item["duration"] = asset.Duration
 		}
 		out = append(out, item)
@@ -104,11 +94,7 @@ func describeAssets(assets []creationAsset) string {
 	}
 	parts := make([]string, 0, len(assets))
 	for _, asset := range assets {
-		kind := "图片"
-		if asset.isVideo() {
-			kind = "视频"
-		}
-		desc := "已生成" + kind
+		desc := "已生成视频"
 		if asset.Model != "" {
 			desc += "（" + asset.Model + "）"
 		}
@@ -135,12 +121,7 @@ func streamAssetFrames(model string, assets []creationAsset) [][]byte {
 		if asset.URL == "" {
 			continue
 		}
-		delta := map[string]any{"media": mediaExtension([]creationAsset{asset})}
-		if asset.isVideo() {
-			delta["content"] = "[视频] " + asset.URL
-		} else {
-			delta["content"] = ""
-		}
+		delta := map[string]any{"media": mediaExtension([]creationAsset{asset}), "content": "[视频] " + asset.URL}
 		payload, errMarshal := json.Marshal(streamChunk(model, "", delta, ""))
 		if errMarshal != nil {
 			continue

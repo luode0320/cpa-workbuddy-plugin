@@ -13,12 +13,6 @@ import (
 // 因此必须按 id 合并，且以后到的完整版本覆盖先到的占位版本——只取首帧会拿到
 // 一个没有 URL 的空壳。
 //
-// 图片块结构（2026-10-17 实测，同步产物，同一次 /chat/completion 的 SSE 到齐）：
-//
-//	content.creation_block.creations[i].image.key        资源 key（tos-cn-i-<bucket>/rc_gen_image/<hash>.jpeg）
-//	content.creation_block.creations[i].image.image_thumb.url   已签名的缩略图 URL（带水印）
-//	content.creation_block.creations[i].image.placeholder       首帧只有宽高与生成器名
-//
 // 视频块结构（2026-11-17 实测，异步产物，只在 /im/chain/single 里出现）：
 //
 //	content.creation_block.creations[i].video.download_url       成品直链（带签名）
@@ -26,13 +20,12 @@ import (
 //	content.creation_block.creations[i].video.video_model        字符串套 JSON，内含 video_list
 //	content.creation_block.creations[i].video.cover              只有 key 与两个变体，没有 url
 //
-// 解析见 creation_parse.go，无水印换取见 creation_watermark.go，
-// OpenAI 多模态转换见 creation_render.go。
-// 最近修改时间：2026-11-17 22:10:00；改动原因：资产新增真实时长，供 media[] 回填。
+// 解析见 creation_parse.go，OpenAI 多模态转换见 creation_render.go。
+// 最近修改时间：2026-11-18 22:40:00；改动原因：按 CHG-001 删除图片块结构。
 
 // creationAsset 是一份生成结果，已解析到可访问 URL。
 type creationAsset struct {
-	// Type 是资源类型：1 图片，2 视频。
+	// Type 是资源类型，当前恒为 2（视频）。
 	Type int
 	// ID 是上游对该生成物的标识，用于合并同一资源的多次上报。
 	ID string
@@ -43,11 +36,11 @@ type creationAsset struct {
 	// Width / Height 是成品尺寸。
 	Width  int
 	Height int
-	// Model 是生成器名称（来自首帧 placeholder.description）。
+	// Model 是生成器名称（来自首帧 video_model 或封面的生成器信息）。
 	Model string
 	// Status 是上游生成状态。
 	Status int
-	// Duration 是视频的真实时长（秒，浮点）；图片恒为 0。
+	// Duration 是视频的真实时长（秒，浮点）。
 	//
 	// 与「请求的目标时长」不是一回事：上游可能按可用档位取整或改写，所以这里
 	// 记录的是产物实测值，用来让调用方知道真正拿到了多长的片子。
@@ -55,9 +48,12 @@ type creationAsset struct {
 }
 
 // isVideo 判断该资源是否为视频。
+//
+// 只留视频一条能力后它恒为 true，但仍然保留：渲染层与回灌层用它区分「成品直链」
+// 与「封面兜底」两类地址，将来若重新引入非视频产物，判定点已经在这里。
 // [参数] 无。
 // [返回] 视频返回 true。
-// 最近修改时间：2026-10-17；改动原因：新增，类型判定。
+// 最近修改时间：2026-11-18 22:40:00；改动原因：图片能力删除，注释说明保留理由。
 func (a creationAsset) isVideo() bool { return a.Type == 2 }
 
 // creationItem 是 creations[] 中的一条。
@@ -68,35 +64,8 @@ type creationItem struct {
 	ID string `json:"id"`
 	// CanPublish 表示上游是否允许发布该资源。
 	CanPublish bool `json:"can_publish"`
-	// Image 是图片负载。
-	Image *creationImage `json:"image"`
 	// Video 是视频负载。
 	Video *creationVideo `json:"video"`
-}
-
-// creationImage 是图片生成结果。
-type creationImage struct {
-	// Status 是生成状态。
-	Status int `json:"status"`
-	// Key 是资源 key。
-	Key string `json:"key"`
-	// URL 是直接地址（部分帧直接给）。
-	URL string `json:"url"`
-	// ImageThumb 是缩略图变体，通常最先可访问。
-	ImageThumb *creationVariant `json:"image_thumb"`
-	// ImageOri 是原图变体。
-	ImageOri *creationVariant `json:"image_ori"`
-	// Placeholder 是占位信息，首帧只有它。
-	Placeholder *creationPlaceholder `json:"placeholder"`
-}
-
-// creationPlaceholder 是生成中的占位信息。
-type creationPlaceholder struct {
-	// Width / Height 是预期尺寸。
-	Width  int `json:"width"`
-	Height int `json:"height"`
-	// Description 是生成器名称。
-	Description string `json:"description"`
 }
 
 // creationVariant 是一种渲染形态。
@@ -107,9 +76,9 @@ type creationVariant struct {
 	URI string `json:"uri"`
 	// Width / Height 是该形态尺寸。
 	//
-	// 图片侧是数字，视频侧的 cover 子对象（image_thumb / image_preview）同样是
-	// 数字；但 video 顶层的 width / height 是字符串，两者不能共用同一个字段类型，
-	// 所以这里保持 int，字符串尺寸由 creationVideo 的 own 字段承接。
+	// 视频侧的 cover 子对象（image_thumb / image_preview）是数字；但 video 顶层的
+	// width / height 是字符串，两者不能共用同一个字段类型，所以这里保持 int，
+	// 字符串尺寸由 creationVideo 的 own 字段承接。
 	Width  int `json:"width"`
 	Height int `json:"height"`
 	// URLFormats 是其他编码格式（heic 等）。

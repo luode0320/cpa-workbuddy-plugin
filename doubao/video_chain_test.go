@@ -394,7 +394,7 @@ func TestEnsureVideoAssetSkipsFirstRound(t *testing.T) {
 // TestEnsureVideoAssetSkipsOtherModes 校验非视频模式、已有产物、无会话 id 都不回灌。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-17 02:38:00；改动原因：改用 resume 入参并合并三条短路条件。
+// 最近修改时间：2026-11-18 23:32:00；改动原因：图片能力删除，非视频替身改用空模式。
 func TestEnsureVideoAssetSkipsOtherModes(t *testing.T) {
 	restoreTiming := swapVideoPollTiming(5*time.Millisecond, 20*time.Millisecond)
 	defer restoreTiming()
@@ -409,12 +409,14 @@ func TestEnsureVideoAssetSkipsOtherModes(t *testing.T) {
 	sa := completionTestAccount()
 	resume := videoConfirmResume()
 
-	imageRes := &completionResult{ConversationID: "38454121040780034"}
-	if errVideo := ensureVideoAsset(sa, generationMode{Skill: skillImageGen, Kind: "image"}, resume, imageRes); errVideo != nil {
-		t.Fatalf("生图模式不该回灌：%v", errVideo)
+	// 非视频能力一律不进入回灌。图片能力已删除，这里用不带 skill 的空模式作替身：
+	// 「Kind 不是 video」这条守卫仍然要守住，将来再多一条能力时它同样靠这行生效。
+	plainRes := &completionResult{ConversationID: "38454121040780034"}
+	if errVideo := ensureVideoAsset(sa, generationMode{}, resume, plainRes); errVideo != nil {
+		t.Fatalf("非视频能力不该回灌：%v", errVideo)
 	}
-	if len(imageRes.Assets) != 0 {
-		t.Errorf("生图模式不该被塞进资产：%+v", imageRes.Assets)
+	if len(plainRes.Assets) != 0 {
+		t.Errorf("非视频能力不该被塞进资产：%+v", plainRes.Assets)
 	}
 
 	// 视频确认轮但已经拿到产物（短时长视频会在 SSE 里直接带出来）。

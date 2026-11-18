@@ -243,7 +243,7 @@ func nowMillis() int64 {
 // buildCompletionRequest 组装一轮对话的请求体。
 //
 // 只有一条上游管线：网页端技能模式（agent_mode=2），靠 mention_skill_list 触发
-// 生图或生视频。会话续接点照常透传——视频要做「首轮确认 + 次轮出片」，第二轮
+// 生视频。会话续接点照常透传——视频要做「首轮确认 + 次轮出片」，第二轮
 // 必须能指回同一个 conversation 与 section，否则上游只当新对话处理。
 //
 // 续接点非空即认定为视频确认轮（confirm=true），此时改用确认轮形态：option 走
@@ -355,7 +355,7 @@ func localPermissionsFor() []permission {
 // buildSkillOption 构造网页端技能管线的 option 段。
 //
 // 该链路已验证可用，字段取值保持不变：mode_id 固定 "1"、model_item_key "0"、
-// agent_mode 2；生图/生视频靠 mention_skill_list 激活。
+// agent_mode 2；生视频靠 mention_skill_list 激活。
 // [参数] mode: 生成模式（Skill 决定 skill 清单）；needCreate: 是否新建会话。
 // [返回] option 段。
 // 最近修改时间：2026-11-14 02:30:00；改动原因：从 buildCompletionRequest 抽出，行为不变。
@@ -982,50 +982,6 @@ func swapBusinessEndpoint(base string) func() {
 	return func() { businessEndpointOverride = prev }
 }
 
-// postBusinessJSON 向业务端点发一次 JSON POST 并返回原始响应体。
-//
-// 与 streamCompletion 的区别：这些端点（如无水印解析）返回普通 JSON 而非 SSE。
-// [参数] ctx: 上下文；sa: 账号；path: 端点路径；raw: 已编码的请求体。
-// [返回] 响应体与错误。
-// 最近修改时间：2026-10-17；改动原因：新增，非流式业务端点调用。
-func postBusinessJSON(ctx context.Context, sa *StoredAuth, path string, raw []byte) ([]byte, error) {
-	// 1. 业务端点固定拼网页端基址与网页端指纹，测试可整体覆盖基址。
-	url := endpointURL(sa, path, nil)
-	if businessEndpointOverride != "" {
-		url = businessEndpointOverride + path
-	}
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
-	if errReq != nil {
-		return nil, fmt.Errorf("构造请求失败：%w", errReq)
-	}
-	req.Header.Set("Content-Type", contentTypeJSON)
-	req.Header.Set("Accept", "application/json")
-	applyUpstreamHeaders(req)
-
-	// 2. 请求结束后把滚动下发的 Cookie 落盘，失败不影响本次结果。
-	client, jar := newUpstreamClient(sa, time.Duration(currentConfig().TimeoutSeconds)*time.Second)
-	resp, errDo := client.Do(req)
-	if errDo != nil {
-		return nil, fmt.Errorf("请求上游失败：%w", errDo)
-	}
-	defer resp.Body.Close()
-	defer func() {
-		_ = jar.persist(sa)
-	}()
-
-	body, errRead := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if errRead != nil {
-		return nil, fmt.Errorf("读取上游响应失败：%w", errRead)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, &upstreamError{
-			StatusCode: resp.StatusCode,
-			Message:    fmt.Sprintf("上游返回 HTTP %d：%s", resp.StatusCode, truncateText(string(body), 200)),
-		}
-	}
-	return body, nil
-}
-
 // resumePoint 是会话续接点：指回上一条提问，让上游把新消息接在同一个 section 下。
 //
 // 视频是两段式的：首轮只回参数确认，次轮要「接着上一句说」。次轮的请求体里
@@ -1109,7 +1065,7 @@ func collectCompletion(ctx context.Context, sa *StoredAuth, text string, mode ge
 // [返回] 聚合结果与错误。
 // 最近修改时间：2026-11-17 01:32:00；改动原因：新增，会话续接点贯穿。
 func collectCompletionWithResume(ctx context.Context, sa *StoredAuth, text string, mode generationMode, resume resumePoint, needCreate bool, onDelta func(string), params ...videoParams) (*completionResult, error) {
-	// 1. 组装请求体：mode 只决定激活哪个 skill（生图 / 生视频）。
+	// 1. 组装请求体：mode 决定激活视频 skill。
 	body := buildCompletionRequest(sa, text, mode, resume.ConversationID, resume.SectionID, resume.MessageIndex, needCreate, params...)
 
 	var (
@@ -1255,11 +1211,6 @@ func collectCompletionWithResume(ctx context.Context, sa *StoredAuth, text strin
 	if strings.TrimSpace(final) == "" && strings.TrimSpace(reasoning.String()) == "" && len(assets) == 0 {
 		return nil, errors.New("上游没有返回内容")
 	}
-	// 6. 生成结果补全直链：hydrate 失败不影响已拿到的资产标识。
-	if len(assets) > 0 {
-		assets = hydrateAssets(ctx, sa, assets)
-	}
-
 	return &completionResult{
 		Text:           final,
 		Reasoning:      reasoning.String(),

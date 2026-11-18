@@ -8,8 +8,8 @@ import (
 
 // 本文件实现 CREATION 块的解析与同资源多次上报的合并。
 //
-// 合并规则：按 ID 对齐，后到的非空字段覆盖先到的空值。首帧只有 placeholder
-// （宽高与生成器名），末帧才补 key 与直链；只取首帧会得到没有 URL 的空壳。
+// 合并规则：按 ID 对齐，后到的非空字段覆盖先到的空值。首帧只有尺寸，末帧才补
+// key 与直链；只取首帧会得到没有 URL 的空壳。
 
 // creationBlockPayload 是 CREATION 块的 content。
 //
@@ -50,11 +50,6 @@ func parseCreationBlock(raw json.RawMessage) []creationAsset {
 
 	var out []creationAsset
 	for _, item := range payload.allCreations() {
-		if item.Image != nil {
-			if asset, ok := assetFromImage(item); ok {
-				out = append(out, asset)
-			}
-		}
 		if item.Video != nil {
 			if asset, ok := assetFromVideo(item); ok {
 				out = append(out, asset)
@@ -62,61 +57,6 @@ func parseCreationBlock(raw json.RawMessage) []creationAsset {
 		}
 	}
 	return out
-}
-
-// assetFromImage 把图片条目转成生成结果。
-// [参数] item: 生成物条目。
-// [返回] 生成结果与是否可用。
-// 最近修改时间：2026-10-17；改动原因：新增，图片条目转换。
-func assetFromImage(item creationItem) (creationAsset, bool) {
-	img := item.Image
-	asset := creationAsset{
-		Type:   item.Type,
-		ID:     item.ID,
-		Key:    img.Key,
-		Status: img.Status,
-	}
-	// 上游偶发把图片的 type 置 0，按图片处理。
-	if asset.Type == 0 {
-		asset.Type = 1
-	}
-
-	// 缩略图优先：它是现成的签名地址；只有 key 时还需二次调用才能换 URL。
-	if img.ImageThumb != nil {
-		asset.URL = img.ImageThumb.URL
-		asset.Width = img.ImageThumb.Width
-		asset.Height = img.ImageThumb.Height
-		if asset.Key == "" {
-			asset.Key = img.ImageThumb.URI
-		}
-	}
-	if img.ImageOri != nil && img.ImageOri.URL != "" {
-		// 原图优于缩略图：分辨率与画质都更高。
-		asset.URL = img.ImageOri.URL
-		if img.ImageOri.Width > 0 {
-			asset.Width = img.ImageOri.Width
-		}
-		if img.ImageOri.Height > 0 {
-			asset.Height = img.ImageOri.Height
-		}
-	}
-	if asset.URL == "" {
-		asset.URL = img.URL
-	}
-	if img.Placeholder != nil {
-		asset.Model = img.Placeholder.Description
-		if asset.Width == 0 {
-			asset.Width = img.Placeholder.Width
-		}
-		if asset.Height == 0 {
-			asset.Height = img.Placeholder.Height
-		}
-	}
-
-	if asset.Key == "" && asset.URL == "" {
-		return asset, false
-	}
-	return asset, true
 }
 
 // assetFromVideo 把视频条目转成生成结果。

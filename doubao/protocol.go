@@ -30,7 +30,7 @@ import (
 //
 //   - 工作模式（agent_mode=1）整条协议已随「只做图片与视频」删除（2026-11-17）：
 //     该管线依赖账号被投放 pc_incentive_task_mvp_v3 活动，且必须做会话续接与
-//     异步产物回灌，与生图/生视频的同步产物模型无关。删掉的常量与 atoiSafe
+//     异步产物回灌，与视频的产物模型无关。删掉的常量与 atoiSafe
 //     只服务那条管线，任何一处都不再被引用。
 //
 // 最近修改时间：2026-11-17 21:40:00；改动原因：视频四个参数降为缺省值，
@@ -82,12 +82,6 @@ const (
 
 	// blockTypeCreation 是生成结果块类型（图片/视频）。
 	blockTypeCreation = 2074
-
-	// skillImageGen 是图像生成能力的上游 skill id。
-	//
-	// 值来自上游 /samantha/skill/recommend。缺少它时「画一只猫」只会让模型
-	// 描述画面而不会真正绘制——这是静默降级，不报错。
-	skillImageGen = 3
 
 	// skillVideoGen 是视频生成能力的上游 skill id。
 	skillVideoGen = 5
@@ -175,13 +169,13 @@ func (p videoParams) isDefault() bool {
 
 // generationMode 描述一次请求期望的回复形态。
 //
-// 只剩一条上游管线（网页端技能管线，agent_mode=2）：靠 Skill 激活生图或
+// 只剩一条上游管线（网页端技能管线，agent_mode=2）：靠 Skill 激活
 // 生视频。缺 Skill 时「画一只猫」只会被模型描述而不会真正绘制——这是静默
 // 降级，不报错，因此调用方必须从目录别名取值，不能自己拼。
 type generationMode struct {
 	// Skill 是上游 skill id，0 表示未声明能力。
 	Skill int
-	// Kind 是回复解析类型：image / video。
+	// Kind 是回复解析类型：video。
 	Kind string
 }
 
