@@ -235,6 +235,12 @@ type failoverAuthDoc struct {
 	failoverModel string
 	// manualDisable 是用户的禁用意图，恢复时必须让位，绝不解除。
 	manualDisable bool
+	// exhaustedDisable 是生命周期额度耗尽的自动禁用标记：由 4 小时签到
+	// reconcile 在额度恢复时解除，本机制不得抢占它的恢复职责。
+	exhaustedDisable bool
+	// lowCreditDisable 是硬积分线的自动禁用标记：由积分分级检查负责恢复，
+	// 同样不属于本机制。
+	lowCreditDisable bool
 	// permanent 标记上游账号级永久封禁（11140）：探活必须跳过。
 	permanent bool
 }
@@ -248,19 +254,23 @@ type failoverAuthDoc struct {
 // 最近修改时间：2026-10-21；改动原因：新增。
 func parseFailoverAuthDoc(raw []byte) failoverAuthDoc {
 	var m struct {
-		Disabled        bool   `json:"disabled"`
-		FailoverDisable bool   `json:"failover_disable"`
-		FailoverModel   string `json:"failover_disable_model"`
-		ManualDisable   bool   `json:"manual_disable"`
-		Permanent       bool   `json:"failover_permanent"`
+		Disabled         bool   `json:"disabled"`
+		FailoverDisable  bool   `json:"failover_disable"`
+		FailoverModel    string `json:"failover_disable_model"`
+		ManualDisable    bool   `json:"manual_disable"`
+		ExhaustedDisable bool   `json:"exhausted_disable"`
+		LowCreditDisable bool   `json:"low_credit_disable"`
+		Permanent        bool   `json:"failover_permanent"`
 	}
 	_ = json.Unmarshal(raw, &m)
 	return failoverAuthDoc{
-		disabled:        m.Disabled,
-		failoverDisable: m.FailoverDisable,
-		failoverModel:   strings.TrimSpace(m.FailoverModel),
-		manualDisable:   m.ManualDisable,
-		permanent:       m.Permanent,
+		disabled:         m.Disabled,
+		failoverDisable:  m.FailoverDisable,
+		failoverModel:    strings.TrimSpace(m.FailoverModel),
+		manualDisable:    m.ManualDisable,
+		exhaustedDisable: m.ExhaustedDisable,
+		lowCreditDisable: m.LowCreditDisable,
+		permanent:        m.Permanent,
 	}
 }
 
@@ -678,19 +688,25 @@ func reenableAccountForFailover(authIndex, authID string) bool {
 	}
 	doc := parseFailoverAuthDoc(phys.JSON)
 	if !doc.failoverDisable || doc.manualDisable {
-		// 不是本机制禁的，或用户已表达禁用意图：绝不解除他人的禁用，也不返回成功。
-		// 外部启用（盘上已 disabled:false）造成的 sidecar 残留由 reconcileFailoverLocalSet
-		// 统一对账，不在本函数里越权处理。
+		// 不是本机制禁的：必须按归属细分，不能一刀切返回 false。
 		//
-		// 但「宿主仍 disabled 且盘上无本机制标记」这一形态必须清掉插件侧记录：
-		// 归属已经丢了（宿主白名单重建抹标记 / 旧版残留），插件再排除一遍没有任何
-		// 额外收益，却会让这个号在用户手动启用后仍被 scheduler 跳过——2026-11-07
-		// 生产里两个号就是这样卡在「sidecar 说禁用、宿主说禁用、探活永远解不开」。
+		// manual_disable / exhausted_disable / low_credit_disable 各有恢复路径
+		// （用户意图 / 4 小时签到 reconcile / 积分分级），本机制不抢占。
+		// 但「disabled:true 且盘上无任何归属标记」是孤儿形态：宿主用内存态
+		// 重建物理文件时会丢弃非白名单顶层键，归属就此丢失。插件再排除一遍
+		// 没有额外收益，却会让这个号失去唯一恢复通道——2026-11-19 生产实证：
+		// 33 个号里 9 个处于该形态，探活零恢复，用户只能人工启用。
+		// 调用方能走到这里（探活成功 / 成功请求）已经证明账号可用，直接恢复。
 		if doc.disabled {
 			clearFailoverDisabledLocal(authID, authIndex)
 			forgetFailoverProbeModel(authID)
 			failoverStateClearDisabled(authID)
-			log.Printf("[workbuddy] failover orphan state cleared (host-disabled, no own marker): auth=%s", authID)
+			if doc.manualDisable || doc.exhaustedDisable || doc.lowCreditDisable {
+				log.Printf("[workbuddy] failover state cleared, recovery owned by others: auth=%s manual=%v exhausted=%v low_credit=%v",
+					authID, doc.manualDisable, doc.exhaustedDisable, doc.lowCreditDisable)
+				return false
+			}
+			return reenableOrphanDisabled(phys, authIndex, authID)
 		}
 		return false
 	}
@@ -743,6 +759,47 @@ func reenableAccountForFailover(authIndex, authID string) bool {
 	wait := failoverWaitConfirmed
 	go confirmFailoverHostState(wait, authIndex, false, authID, phys.Path)
 	log.Printf("[workbuddy] failover re-enabled account: auth=%s", authID)
+	return true
+}
+
+// reenableOrphanDisabled 恢复「disabled 但无任何归属标记」的账号。
+//
+// 只把 disabled 改回 false，不删除任何顶层键：盘上本来就没有本机制三键，
+// note 与计数原样保留。与正常恢复一样优先走宿主管理 API（路由真相源在
+// MySQL/宿主内存），未配置或调用失败才回落直写物理文件。
+//
+// 两条路都必须清插件侧状态（冷却、内存失败模型、本地集合、sidecar），
+// 否则宿主已可路由、scheduler 仍会把这个号跳过。
+//
+// [参数] phys：物理文档快照；authIndex：宿主 auth_index；authID：账号标识。
+// [返回] true 表示已解除禁用。
+// 最近修改时间：2026-11-19；改动原因：新增，给归属丢失的禁用号补上自动恢复通道。
+func reenableOrphanDisabled(phys *hostAuthPhysical, authIndex, authID string) bool {
+	var rawDoc map[string]any
+	if err := json.Unmarshal(phys.JSON, &rawDoc); err != nil || rawDoc == nil {
+		return false
+	}
+	rawDoc["disabled"] = false
+	raw, err := json.Marshal(rawDoc)
+	if err != nil {
+		return false
+	}
+	apiErr := setHostAuthDisabled(phys.Name, authIndex, false)
+	if apiErr != nil && !errors.Is(apiErr, errCPAManagementNotConfigured) {
+		log.Printf("[workbuddy] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+	}
+	if err := failoverPersistFn(phys.Name, phys.Path, "", raw); err != nil {
+		log.Printf("[workbuddy] orphan re-enable write failed: auth=%s err=%v", authID, err)
+		// API 已成功时宿主侧状态是对的，落盘失败不影响可路由性。
+		if apiErr != nil {
+			return false
+		}
+	}
+	resetCooldownState(authID)
+	forgetFailoverProbeModel(authID)
+	clearFailoverDisabledLocal(authID, authIndex)
+	failoverStateClearDisabled(authID)
+	log.Printf("[workbuddy] orphan-disabled account re-enabled: auth=%s via_api=%v", authID, apiErr == nil)
 	return true
 }
 
@@ -803,7 +860,18 @@ func failoverProbeTargets() []failoverProbeCandidate {
 		// 每 10 分钟被「探活成功 → 恢复」一次，resetCooldownState 顺带把连续
 		// 失败计数清零——真实失败永远攒不到写盘门限，表现为「失败不再禁用」。
 		disabledByUs := doc.disabled && doc.failoverDisable
-		if !disabledByUs && !sidecarDisabled {
+		// 孤儿禁用：disabled:true 但盘上没有任何归属标记。宿主用内存态重建
+		// 物理文件时会丢弃非白名单顶层键（本机制三键与 low_credit/exhausted
+		// 标记都可能被抹掉），留下「宿主永久禁用、探活却找不到标记」的死角。
+		//
+		// 2026-11-19 生产实证：33 个号里 9 个处于该形态，探活零候选、只能人工
+		// 启用；人工启用后再次失败又被摘，用户观感就是「启用了但不生效、回复
+		// 一直很慢」。归属已经丢失时插件再排除一遍没有任何额外收益，因此纳入
+		// 探活：探通即恢复。仍排除 manual_disable（用户明确意图）与
+		// exhausted/low_credit（各自有恢复路径），不抢占他人的恢复职责。
+		orphanDisabled := doc.disabled && !doc.failoverDisable &&
+			!doc.manualDisable && !doc.exhaustedDisable && !doc.lowCreditDisable
+		if !disabledByUs && !sidecarDisabled && !orphanDisabled {
 			continue
 		}
 		// 永久封禁的账号不进入探活候选：上游 11140 表示凭据已被封死，
@@ -873,6 +941,38 @@ func failoverStateSnapshotModel(authID string) string {
 	return strings.TrimSpace(st.lastModel)
 }
 
+// normalizeProbeModel 把探活模型名折回该账号上游可接受的精确 ID。
+//
+// 与请求路径共用 canonicalUpstreamModelID 的全局归一表；表未命中时（动态模型
+// 列表尚未拉取 / 该账号独有模型）退到账号级模型列表做大小写折叠。上游模型 ID
+// 大小写敏感：请求 DeepSeek-V4-Pro 会得到 11102 service info not found，只有
+// deepseek-v4-pro 可用。
+//
+// [参数] sa：账号凭据，可为 nil；model：盘上或内存记录的失败模型名。
+// [返回] 可用于回放的模型名；确实无候选时返回空串（调用方跳过该号）。
+// 最近修改时间：2026-11-19；改动原因：新增，修复探活模型未归一化导致的永久禁号。
+func normalizeProbeModel(sa *storedAuth, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	// 1. 全局归一表命中即用其注册 ID。
+	if id := canonicalUpstreamModelID(model); id != model {
+		return id
+	}
+	// 2. 未命中时按账号可用模型做大小写折叠。
+	if sa != nil {
+		for _, id := range orderedAllWorkbuddyModels(sa) {
+			id = strings.TrimSpace(id)
+			if id != "" && strings.EqualFold(id, model) {
+				return id
+			}
+		}
+	}
+	// 3. 都没有线索时原样回放：宁可探错一次，也不能让健康号永久失联。
+	return model
+}
+
 // resolveFailoverAuth 把候选的 auth_index 解析为可用的账号凭据。
 // [参数] authIndex：宿主 auth_index。
 // [返回] 账号凭据；解析失败返回 nil。
@@ -919,7 +1019,17 @@ func runFailoverProbeTick(resolve func(string) *storedAuth) int {
 		}
 		model := strings.TrimSpace(tc.model)
 		if model == "" {
-			log.Printf("[workbuddy] failover probe skipped: no failed model recorded for auth=%s", tc.authIndex)
+			// 孤儿禁用与旧版残留文档没有失败模型：用账号默认候选兜底，
+			// 否则这类号永远不进探活，与「无模型不恢复」的死角同形。
+			model = failoverFallbackProbeModel(tc.authID)
+		}
+		// 上游模型 ID 大小写敏感（DeepSeek-V4-Pro → 11102 service info not
+		// found）：探活必须与请求路径一样归一化，否则盘上的历史脏模型名会
+		// 让探活永久 400，账号即使健康也回不来（2026-11-19 生产实证：35 次
+		// 探活全部因此失败，6 小时零恢复）。
+		model = normalizeProbeModel(sa, model)
+		if model == "" {
+			log.Printf("[workbuddy] failover probe skipped: no usable model for auth=%s", tc.authIndex)
 			continue
 		}
 		probed++

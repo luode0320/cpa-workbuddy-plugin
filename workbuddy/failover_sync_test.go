@@ -214,13 +214,17 @@ func TestReenableClearsDiskMarkersOnAPIPath(t *testing.T) {
 	}
 }
 
-// TestReenableClearsOrphanSidecarWhenMarkerLost 锁定归属丢失后的自愈：
-// 宿主 disabled 但盘上没有本机制标记时，插件不得永久持有 sidecar 排除。
+// TestReenableRecoversOrphanDisabledWhenMarkerLost 锁定归属丢失后的自愈：
+// 宿主 disabled 但盘上没有本机制标记时，插件既要清 sidecar，也要把号恢复。
 //
-// 生产形态（2026-11-07）：宿主白名单重建抹掉 failover_disable，sidecar 仍记
-// disabled；探活每次探通都因「没有标记」返回 false，sidecar 永不清除，账号在
-// 用户手动启用后仍被 scheduler 跳过。
-func TestReenableClearsOrphanSidecarWhenMarkerLost(t *testing.T) {
+// 生产形态（2026-11-07 / 2026-11-19）：宿主用内存态重建物理文件会抹掉非白名单
+// 顶层键（本机制三键），留下 `disabled:true` 且无任何归属标记的孤儿。旧实现
+// 只清 sidecar、不置 enabled，账号只能人工启用；33 个号里 9 个处于该形态，
+// 探活零恢复，用户观感是「启用了但不生效、回复一直很慢」。
+//
+// 新语义：调用方（探活成功 / 成功请求）已证明账号可用，孤儿直接恢复；
+// manual_disable 与 exhausted/low_credit 标记仍让位给各自的恢复路径。
+func TestReenableRecoversOrphanDisabledWhenMarkerLost(t *testing.T) {
 	resetFailover(t)
 	isolateFailoverSidecar(t)
 	h := newFailoverFakeHost(t)
@@ -228,17 +232,17 @@ func TestReenableClearsOrphanSidecarWhenMarkerLost(t *testing.T) {
 	failoverStateMarkDisabled("wb-orphan", "glm-4.6")
 	markFailoverDisabledLocal("wb-orphan", "idx-orphan")
 
-	if reenableAccountForFailover("idx-orphan", "wb-orphan") {
-		t.Fatal("无本机制标记时不得返回「已恢复」")
+	if !reenableAccountForFailover("idx-orphan", "wb-orphan") {
+		t.Fatal("孤儿禁用应被自动恢复")
 	}
 	if failoverStateIsDisabled("wb-orphan") {
-		t.Fatal("归属丢失的 sidecar 条目必须清除，否则账号永久被排除")
+		t.Fatal("归属丢失的 sidecar 条目必须清除")
 	}
 	if isAccountCoolingDown("wb-orphan") {
-		t.Fatal("归属丢失后不得继续排除该号")
+		t.Fatal("恢复后不得继续排除该号")
 	}
-	if h.docOf("idx-orphan")["disabled"] != true {
-		t.Fatal("不得替他人的禁用写盘启用")
+	if h.docOf("idx-orphan")["disabled"] != false {
+		t.Fatal("孤儿禁用必须置回 enabled")
 	}
 }
 

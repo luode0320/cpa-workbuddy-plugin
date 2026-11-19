@@ -241,6 +241,39 @@ func isQueueFullBody(body string) bool {
 	return strings.Contains(lower, "queue.full") || strings.Contains(lower, "queue full")
 }
 
+// quotaExceededCode 是上游「配额/请求额度超限」的业务码。
+// 与 6021 渠道满载不同：它确实指向该账号的资源额度，但池化场景下同一账号
+// 常被多个并发请求共用额度，单次命中不代表账号已不可用。
+const quotaExceededCode = "14018"
+
+// isQuotaExceededSoftError 判定「配额超限」类失败。
+//
+// 上游 14018 携带 "Your requests have exceeded the quota"（也见过
+// "quota limit reached"）。它在池化部署里是高频抖动而非账号死亡：额度按
+// 周期刷新、且多个请求共享同一账号配额。历史实现把它并入 hardCreditMarkers
+// 后，`isTransientUpstreamFailure` 返回 false，写盘禁用门限被整体跳过——
+// 2026-11-19 生产实证：429/14018 一次就把账号写盘禁用，盘上 `failed_count: 1`
+// 即 `disabled:true`；33 个号里 11 个被摘，可用容量下降三分之一，请求全压到
+// 剩余账号上，又制造更多 14018，形成「越禁越慢」的正反馈。
+//
+// 处置：仍归账号级（额度耗尽换模型也没用），但必须受连续失败门限约束，
+// 让单次抖动只走内存冷却、数分钟内自愈。
+//
+// [参数] body：上游响应正文或错误帧文本。
+// [返回] true 表示这是配额超限类失败，应受写盘禁用门限约束。
+// 最近修改时间：2026-11-19；改动原因：新增，修复单次 14018 即摘号的容量崩塌。
+func isQuotaExceededSoftError(body string) bool {
+	if body == "" {
+		return false
+	}
+	if containsBusinessCode(body, quotaExceededCode) {
+		return true
+	}
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "exceeded the quota") ||
+		strings.Contains(lower, "quota limit reached")
+}
+
 // isTransientUpstreamFailure 报告一次失败是否属于「可能自愈的瞬时故障」。
 //
 // 判据只影响写盘禁用是否受连续失败门限约束，不影响分类与冷却：
@@ -253,6 +286,11 @@ func isQueueFullBody(body string) bool {
 // [返回] true 表示该失败可能在短时间内自愈。
 // 最近修改时间：2026-10-31；改动原因：新增，给写盘禁用门限划出适用范围。
 func isTransientUpstreamFailure(status int, body string) bool {
+	// 配额超限优先判瞬时：它命中 hardCreditMarkers，若放在确定性分支之后
+	// 就永远按「一次即禁」处理（见 isQuotaExceededSoftError 的生产实证）。
+	if isQuotaExceededSoftError(body) {
+		return true
+	}
 	// 确定性故障优先判定：它们即使带 5xx 或限流文案也不该等。
 	if isModelBlockedError(status, body) || isHardCreditError(status, body) {
 		return false
