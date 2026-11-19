@@ -50,6 +50,127 @@
 响应里视频条目的 `media[].duration` 是**产物真实时长**（上游给的浮点秒，如 `10.08`），
 与请求的目标时长不是一回事：上游可能取整或改写。
 
+## 接入方式
+
+插件挂在 CPA 宿主上对外提供 OpenAI 兼容接口，调用方只需要 baseURL 与 API Key 两样东西。
+
+| 项 | 值 |
+|---|---|
+| Base URL | `https://cpa.luode.vip/v1` |
+| API Key | CPA 宿主 `config.yaml` 的 `access.api-keys` 列表里的任一条，以 `Authorization: Bearer <key>` 发送 |
+| 端点 | `POST /v1/chat/completions`，请求体与 OpenAI 完全一致 |
+
+`GET /v1/models` 要同一个 Key：不带或带错都返回 HTTP 401。目录里 `owned_by=doubao-provider`
+的条目中只有 `doubao/video` 是可用的能力别名，其余是上游内部代号原样透传，不要拿它们发请求。
+
+### 两段式调用
+
+视频必须发两次：第一次只拿续接点，第二次才真的出片。
+
+1. **首轮**只发提示词。上游回一段参数确认文本（这一轮不产生产物），响应**顶层**带
+   `conversation_id` / `section_id` / `message_index` 三个续接点。
+2. **确认轮**把这三个值原样带回，`content` 填「确认，开始生成」。这一次才开始生成并
+   阻塞等待成品，成功时响应**顶层** `media` 数组给出视频直链。
+
+三个续接点与三个视频参数（`video_duration` / `video_resolution` / `video_ratio`）都是
+**请求体顶层平铺字段**，不在 `metadata` 里。官方 openai SDK 用 `extra_body` 传即可：SDK
+会把它们透传到顶层，响应侧的续接点也能从 `model_dump()` 顶层读回。
+
+**不带续接点的第二次请求不会报错，但会另起一个全新会话**，上游把「确认，开始生成」当成
+新需求，自己编一套参数重来一遍，永远拿不到上一轮那个成品。这是最容易踩的坑。
+
+### 首轮就拒答：先确认账号当前还能不能出片
+
+正常首轮回的是「参数确认」（模型 / 时长 / 比例）。如果首轮回的是下面这类文本，说明上游
+模型这一次根本没有调用视频技能，**确认轮一定拿不到成品**，不要去发第二次：
+
+- 「很抱歉，我当前没办法直接生成并输出视频文件」
+- 「当前这个对话窗口没有视频渲染执行入口，我无法在这里直接提交生成」
+- 「我目前不能直接生成5秒…短视频文件，你可以把提示词拿到支持文生视频的工具里生成」
+
+这类回复**照样带 `conversation_id`**，形态上与正常首轮无法区分；照发确认轮会白等满 6 分钟
+（插件内固定值 `videoPollTimeout`）再返回「等待视频超时」。当前插件不解析首轮正文，只能由
+调用方自己看：首轮正文里没出现你要的时长/比例，就不要发确认轮。
+
+面板的「测试模型」对 `doubao/video` 返回 `ok:true` 只代表**会话建起来了**（首轮 ACK），
+不保证真能出片，两者不要混为一谈。
+
+### curl
+
+```bash
+# 首轮：只拿续接点，不产生产物
+curl -s https://cpa.luode.vip/v1/chat/completions \
+  -H "Authorization: Bearer $CPA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "doubao/video",
+    "messages": [{"role":"user","content":"生成一段 5 秒的海浪拍打礁石短视频"}],
+    "stream": false,
+    "video_duration": 5, "video_resolution": "720p", "video_ratio": "16:9"
+  }'
+
+# 确认轮：把上一轮的三个续接点带回来，这一步会阻塞等成品
+curl -s https://cpa.luode.vip/v1/chat/completions \
+  -H "Authorization: Bearer $CPA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "doubao/video",
+    "messages": [{"role":"user","content":"确认，开始生成"}],
+    "stream": false,
+    "conversation_id": "<首轮的 conversation_id>",
+    "section_id": "<首轮的 section_id>",
+    "last_message_index": <首轮的 message_index>,
+    "video_duration": 5, "video_resolution": "720p", "video_ratio": "16:9"
+  }'
+```
+
+确认轮成功时响应顶层 `media` 形如：
+
+```json
+{"media": [{"type": "video", "url": "https://v26-vdl.doubao.com/...", "duration": 5.057, "width": 384, "height": 216}]}
+```
+
+`duration` 是产物真实时长，`width` / `height` 是上游给的**预览尺度**，不是成品分辨率
+（成品实测 1280×720）；需要真实分辨率请下载后用 `ffprobe` 读。
+
+### Python（官方 openai SDK）
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="https://cpa.luode.vip/v1", api_key=os.environ["CPA_API_KEY"])
+PARAMS = {"video_duration": 5, "video_resolution": "720p", "video_ratio": "16:9"}
+
+r1 = client.chat.completions.create(
+    model="doubao/video",
+    messages=[{"role": "user", "content": "生成一段 5 秒的海浪拍打礁石短视频"}],
+    extra_body=PARAMS,
+)
+d1 = r1.model_dump()
+
+r2 = client.chat.completions.create(
+    model="doubao/video",
+    messages=[{"role": "user", "content": "确认，开始生成"}],
+    extra_body={
+        **PARAMS,
+        "conversation_id": d1["conversation_id"],
+        "section_id": d1["section_id"],
+        "last_message_index": d1["message_index"],
+    },
+)
+media = r2.model_dump().get("media") or []
+print(media[0]["url"])
+```
+
+确认轮的 `choices[0].message.content` 是 **Object[]**（多段 text），不是字符串；首轮才是
+字符串。要按类型分别处理，否则会拿到 `TypeError`。
+
+### 流式
+
+`stream: true` 时续接点**只在终止帧**：前面所有 `data:` 帧的 `conversation_id` 都是空串，
+只有 `finish_reason` 为 `stop` 的那一帧带完整三个值，之后跟一个 `data: [DONE]`。客户端
+必须在终止帧读，读早了拿到的是空字符串。
+
 ## 已知限制
 
 - 上游不返回 token 用量，响应里的 `usage` 是按字符估算（`estimated: true`）
@@ -60,6 +181,11 @@
 - 视频「确认」轮依赖会话续接（`conversation_id` + `last_section_id` +
   `last_message_index`），丢掉 id 就只能重新从参数确认开始
 - 生视频消耗账号额度；账号未投放视频能力时上游会回明确错误码
+- 确认轮最多等 6 分钟（插件内固定值 `videoPollTimeout`，**不是配置项**，改不了）。上游
+  出片时长波动很大：2026-11-20 实测同一账号 02:24 那次 130 秒就出片，02:33 起连续 4 次
+  等到 6 分钟仍未产出、回「等待视频超时（6m0s）」。超时不代表请求写错，可用同一个
+  `conversation_id` 再发一次确认轮
+- 上游对视频有最低 4 秒时长限制：传更短的值不会报错，上游会自行抬到 4 秒并在确认文本里说明
 - 面板「测试」只能判到「首轮会话建起来了」：首轮本来就不产生产物，能否真出片
   要带续接点再发确认轮才知道。上游还会先建会话再回一段拒答文本，这两种态在流里无法
   区分，所以成功文案写的是「首轮通路正常」而不是「活跃成功」
