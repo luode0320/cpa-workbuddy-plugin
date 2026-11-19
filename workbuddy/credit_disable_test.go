@@ -27,8 +27,13 @@ func TestDisableForLowCredits_UsesCPAAPIWhenConfigured(t *testing.T) {
 	if got := (*calls)[0]; !got.Disabled || got.AuthIndex != "idx-low" {
 		t.Fatalf("请求体 = %+v", got)
 	}
-	if h.writeCount() != 0 {
-		t.Fatalf("走 API 时不应写盘，实际 %d", h.writeCount())
+	// API 只改宿主真相源的 disabled，不认识本机制归属标记；必须同时落盘，
+	// 否则盘上留下「disabled 且无标记」的孤儿，探活会把它误恢复。
+	if h.writeCount() != 1 {
+		t.Fatalf("走 API 时仍应落盘写标记，实际写盘 %d 次", h.writeCount())
+	}
+	if h.docOf("idx-low")[creditDisableKey] != true {
+		t.Fatalf("盘上应带低额禁用标记: %v", h.docOf("idx-low"))
 	}
 }
 
@@ -55,5 +60,30 @@ func TestDisableForLowCredits_FallsBackToDiskWhenNotConfigured(t *testing.T) {
 	}
 	if h.docOf("idx-low2")[creditDisableKey] != true {
 		t.Fatal("盘上应带低额禁用标记")
+	}
+}
+
+// TestGradeCreditsClaimsOrphanDisabled 锁定低积分号被宿主重建抹掉标记后的认领：
+// 不改 disabled，只补回归属，避免探活把它当可用号恢复。
+func TestGradeCreditsClaimsOrphanDisabled(t *testing.T) {
+	resetFailover(t)
+	h := newFailoverFakeHost(t)
+	_, restore := withCPADisableSync(t, false)
+	defer restore()
+	resetCreditProbeForTest()
+	defer setLowCreditDisableBelow(100)()
+
+	h.addAccount("auth-orphan", "idx-orphan", map[string]any{"disabled": true, "note": "CN · 积分未知"})
+	sa := &storedAuth{Account: storedAccount{UID: "auth-orphan"}}
+	cr := &creditsSummary{TotalRemain: 10}
+
+	gradeCreditsForAuth("idx-orphan", "auth-orphan", sa, cr)
+
+	doc := h.docOf("idx-orphan")
+	if doc[creditDisableKey] != true {
+		t.Fatalf("低积分孤儿应被认领并写标记: %v", doc)
+	}
+	if doc["disabled"] != true {
+		t.Fatalf("认领不得改变 disabled 状态: %v", doc)
 	}
 }

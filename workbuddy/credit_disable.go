@@ -93,7 +93,17 @@ func gradeCreditsForAuth(authIndex, authID string, sa *storedAuth, cr *creditsSu
 	// 2. 低于禁用线：仅在无人认领时写盘。
 	if tier == creditTierDisabled {
 		if disabled {
-			// 已被禁用：谁的禁用谁负责。manual / failover 的号不归本机制管。
+			// 已被禁用：谁的禁用谁负责。manual / failover / exhausted 的号不归
+			// 本机制管。但「disabled 且盘上无任何归属标记」是孤儿形态：宿主用
+			// 内存态重建文件会抹掉非白名单键，探活随后会把它当可用号反复恢复
+			// （2026-11-20 生产实证：remain=94 的号被恢复一次）。
+			// 这里按当前积分判据补写本机制标记，disabled 保持不变，让它重新有
+			// 明确归属，不再被探活误认。
+			if !manual && !failover && !ours {
+				if err := claimOrphanForLowCredits(authIndex, authID, sa, cr, disableBelow); err != nil {
+					log.Printf("[workbuddy] low-credit claim failed: auth=%s err=%v", authID, err)
+				}
+			}
 			return tier
 		}
 		if err := disableForLowCredits(authIndex, authID, sa, cr, disableBelow); err != nil {
@@ -173,6 +183,53 @@ func forgetCreditProbe(authID string) {
 	creditDisableMu.Unlock()
 }
 
+// claimOrphanForLowCredits 给「已禁用且无任何归属标记」的低积分号补写归属。
+//
+// disabled 已经是 true，这里只补三个自有键与 note，不改变禁用状态本身。
+// 目的是消除孤儿形态：没有标记的禁用号会被探活候选当成「归属丢失」，探通后
+// 直接恢复，与低积分保号策略冲突。
+//
+// [参数] authIndex：宿主 auth_index；authID：账号标识；sa：凭据；
+// cr：当前积分；below：当前禁用线。
+// [返回] 写盘错误。
+// 最近修改时间：2026-11-20；改动原因：新增，堵住低积分禁用走 API 后归属不落盘。
+func claimOrphanForLowCredits(authIndex, authID string, sa *storedAuth, cr *creditsSummary, below int64) error {
+	lock := failoverDocLock(authIndex)
+	lock.Lock()
+	defer lock.Unlock()
+
+	phys, err := failoverGetPhysicalFn(authIndex)
+	if err != nil || phys == nil || len(phys.JSON) == 0 {
+		return err
+	}
+	// 拿到锁后重判：期间可能有别的机制完成认领。
+	if manualDisableFromAuthJSON(phys.JSON) ||
+		parseFailoverAuthDoc(phys.JSON).failoverDisable ||
+		lowCreditDisableFromAuthJSON(phys.JSON) ||
+		exhaustedDisableFromAuthJSON(phys.JSON) {
+		return nil
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(phys.JSON, &doc); err != nil || doc == nil {
+		return err
+	}
+	doc[creditDisableKey] = true
+	doc[creditDisableBelowKey] = below
+	doc[creditDisableAtKey] = time.Now().UTC().Format(time.RFC3339)
+	doc["note"] = displayNote(sa, cr, true)
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	name, path, legacy := resolveAuthFileTarget(sa, phys)
+	if err := failoverPersistFn(name, path, legacy, raw); err != nil {
+		return err
+	}
+	log.Printf("[workbuddy] low-credit claimed orphan disabled: auth=%s remain=%d below=%d",
+		authID, cr.TotalRemain, below)
+	return nil
+}
+
 // disableForLowCredits 写盘禁用：disabled:true + 三个自有键。
 //
 // 走「读物理文件 → 改顶层键 → 整体写回」，不用 host.auth.save：
@@ -215,13 +272,18 @@ func disableForLowCredits(authIndex, authID string, sa *storedAuth, cr *creditsS
 	}
 	name, path, legacy := resolveAuthFileTarget(sa, phys)
 	apiErr := setHostAuthDisabled(name, authIndex, true)
-	if apiErr != nil {
-		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
-			log.Printf("[workbuddy] cpa disable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
-		}
-		if err := failoverPersistFn(name, path, legacy, raw); err != nil {
+	if apiErr != nil && !errors.Is(apiErr, errCPAManagementNotConfigured) {
+		log.Printf("[workbuddy] cpa disable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+	}
+	// 无论 API 成败都必须落盘：API 只改宿主真相源的 disabled，不认识本机制的
+	// 归属标记。API 成功就不写盘会留下「disabled:true 且无任何归属标记」的
+	// 孤儿形态，探活会把它当可用号恢复一次（2026-11-20 生产实证：remain=94
+	// 低于 below=100 的号被恢复后 16 分钟又被积分分级禁回，白烧额度）。
+	if err := failoverPersistFn(name, path, legacy, raw); err != nil {
+		if apiErr != nil {
 			return err
 		}
+		log.Printf("[workbuddy] low-credit disable marker write failed: auth=%s err=%v", authID, err)
 	}
 	rememberLifecycleState(authID, true, displayNote(sa, cr, true))
 	if apiErr == nil {
@@ -274,13 +336,17 @@ func reenableForLowCredits(authIndex, authID string, sa *storedAuth, cr *credits
 	}
 	name, path, legacy := resolveAuthFileTarget(sa, phys)
 	apiErr := setHostAuthDisabled(name, authIndex, false)
-	if apiErr != nil {
-		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
-			log.Printf("[workbuddy] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
-		}
-		if err := failoverPersistFn(name, path, legacy, raw); err != nil {
+	if apiErr != nil && !errors.Is(apiErr, errCPAManagementNotConfigured) {
+		log.Printf("[workbuddy] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
+	}
+	// 恢复同样必须落盘：API 不认识本机制三键，不落盘会留下
+	// `disabled:false + low_credit_disable:true` 的陈旧标记，探活候选每轮
+	// 都会把这个已恢复的号当禁用号再「恢复」一次。
+	if err := failoverPersistFn(name, path, legacy, raw); err != nil {
+		if apiErr != nil {
 			return err
 		}
+		log.Printf("[workbuddy] low-credit enable marker write failed: auth=%s err=%v", authID, err)
 	}
 	// 4. 清掉内存冷却与探活缓存，避免「盘上可用、插件仍排除」。
 	resetCooldownState(authID)
