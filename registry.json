@@ -783,43 +783,36 @@
             "goos": "darwin",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.9/gemini-web2api_1.0.9_darwin_amd64.zip",
-            "sha256": "",
-            "size": 0
-          },
-          {
-            "goos": "darwin",
-            "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.9/gemini-web2api_1.0.9_darwin_arm64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "6ebd9639781224c047d670208ad83961e1c8d113e87f3753bdff74eb840b36f6",
+            "size": 18222502
           },
           {
             "goos": "linux",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.9/gemini-web2api_1.0.9_linux_amd64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "1e7c91405d98f4fd23ac3670cddcfcf004a85e6817258e5d84bb3518461b3076",
+            "size": 18897051
           },
           {
             "goos": "linux",
             "goarch": "arm64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.9/gemini-web2api_1.0.9_linux_arm64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "c3913b194109ecb20341103d9b65b68d9f556ba2042b182c9b7e51813a3eb01d",
+            "size": 17482384
           },
           {
             "goos": "windows",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.9/gemini-web2api_1.0.9_windows_amd64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "25df7246337c21db55d0c9feb58e4c8c43eacf43b57597f0061a2eda8d6e945f",
+            "size": 18404116
           },
           {
             "goos": "windows",
             "goarch": "arm64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.9/gemini-web2api_1.0.9_windows_arm64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "7d79edf4b8a7f1f763413bb5315b91644271e2e3f0c41524680f109bee98cf91",
+            "size": 16869956
           }
         ]
       }
