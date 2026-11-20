@@ -70,7 +70,7 @@ func executorExecuteStream(raw []byte) ([]byte, error) {
 func collectStreamResponse(sa *StoredAuth, mode generationMode, resume resumePoint, params videoParams, chat *chatRequest, prompt string) ([]byte, error) {
 	var chunks []pluginapi.ExecutorStreamChunk
 	first := true
-	res, errRun := runWithFailover(sa, time.Duration(currentConfig().StreamTimeoutSeconds)*time.Second, mode, prompt, resume, func(delta string) {
+	res, used, errRun := runWithFailover(sa, time.Duration(currentConfig().StreamTimeoutSeconds)*time.Second, mode, prompt, resume, func(delta string) {
 		payload := streamDelta(chat.Model, delta, first)
 		first = false
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: payload})
@@ -79,7 +79,7 @@ func collectStreamResponse(sa *StoredAuth, mode generationMode, resume resumePoi
 		return nil, errRun
 	}
 	// 视频成品只能异步回灌：确认轮的 SSE 只回一段「正在生成」的文本。
-	if errVideo := ensureVideoAsset(sa, mode, resume, res); errVideo != nil {
+	if errVideo := ensureVideoAsset(used, mode, resume, res); errVideo != nil {
 		return nil, errVideo
 	}
 
@@ -104,7 +104,7 @@ func pumpCompletionStream(streamID string, sa *StoredAuth, mode generationMode, 
 	defer streamClose(streamID)
 
 	first := true
-	res, errRun := runWithFailover(sa, time.Duration(currentConfig().StreamTimeoutSeconds)*time.Second, mode, prompt, resume, func(delta string) {
+	res, used, errRun := runWithFailover(sa, time.Duration(currentConfig().StreamTimeoutSeconds)*time.Second, mode, prompt, resume, func(delta string) {
 		payload := streamDelta(chat.Model, delta, first)
 		first = false
 		_ = streamEmit(streamID, payload)
@@ -114,7 +114,7 @@ func pumpCompletionStream(streamID string, sa *StoredAuth, mode generationMode, 
 		return
 	}
 	// 视频成品只能异步回灌；拉不到就把失败推给客户端，而不是发一个空结局。
-	if errVideo := ensureVideoAsset(sa, mode, resume, res); errVideo != nil {
+	if errVideo := ensureVideoAsset(used, mode, resume, res); errVideo != nil {
 		streamEmitError(streamID, errVideo.Error())
 		return
 	}

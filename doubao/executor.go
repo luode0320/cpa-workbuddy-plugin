@@ -78,9 +78,13 @@ func (r *chatRequest) resumePointOf() resumePoint {
 //
 // 账号优先取 StorageJSON（宿主随请求下发的凭据快照），缺失时按 AuthID 回落到
 // 本地账号目录。凭据必须通过字段齐备性校验，否则直接报错而不是发无效请求。
+//
+// 解析出请求体之后还要过一次会话粘性：宿主选号同样是轮转的，视频确认轮如果被
+// 分到首轮以外的账号，上游认不出上下文，只会白等一次超时。粘性表的修正必须是
+// 最后一步 —— 早于请求体解析拿不到 conversation_id。
 // [参数] raw: 宿主请求 JSON。
 // [返回] 宿主请求、账号、OpenAI 请求与错误。
-// 最近修改时间：2026-10-17；改动原因：新增，执行入口解析。
+// 最近修改时间：2026-11-21 00:18:00；改动原因：新增会话粘性修正，续接请求回钉首轮账号。
 func decodeExecutorRequest(raw []byte) (*pluginapi.ExecutorRequest, *StoredAuth, *chatRequest, error) {
 	var req pluginapi.ExecutorRequest
 	if len(raw) > 0 {
@@ -109,6 +113,12 @@ func decodeExecutorRequest(raw []byte) (*pluginapi.ExecutorRequest, *StoredAuth,
 	}
 	if len(chat.Messages) == 0 {
 		return nil, nil, nil, fmt.Errorf("请求中没有 messages")
+	}
+
+	// 会话粘性：带续接点的请求必须回到首轮那个账号，否则上游认不出上下文。
+	sa, errSticky := applySessionSticky(sa, chat.resumePointOf())
+	if errSticky != nil {
+		return nil, nil, nil, errSticky
 	}
 	return &req, sa, chat, nil
 }
@@ -198,7 +208,7 @@ func executorExecute(raw []byte) ([]byte, error) {
 	params := normalizeVideoParams(chat.VideoDuration, chat.VideoResolution, chat.VideoRatio)
 	prompt = appendVideoParamHint(prompt, mode, params)
 
-	res, errRun := runWithFailover(sa, time.Duration(currentConfig().TimeoutSeconds)*time.Second, mode, prompt, chat.resumePointOf(), nil, params)
+	res, used, errRun := runWithFailover(sa, time.Duration(currentConfig().TimeoutSeconds)*time.Second, mode, prompt, chat.resumePointOf(), nil, params)
 	if errRun != nil {
 		return nil, errRun
 	}
@@ -206,7 +216,8 @@ func executorExecute(raw []byte) ([]byte, error) {
 	// 视频是异步产物：确认轮只回一句「正在生成」，成品得从会话消息链里拉。
 	// 放在这里而不是流里，是因为这条链路的产物从来不会推给本次连接。
 	// 续接点要一起传进去：首轮与视频模式同时成立，只有「这一次是确认轮」才该等产物。
-	if errVideo := ensureVideoAsset(sa, mode, chat.resumePointOf(), res); errVideo != nil {
+	// 回灌用实际执行账号：换号后 res 里的会话属于新账号，拿首选账号的凭据拉不到。
+	if errVideo := ensureVideoAsset(used, mode, chat.resumePointOf(), res); errVideo != nil {
 		return nil, errVideo
 	}
 

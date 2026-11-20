@@ -451,12 +451,16 @@ func TestRunWithFailoverRotatesOn429(t *testing.T) {
 		WebID:        "7300000000000000002",
 		WebTabID:     "00000000-0000-4000-8000-000000000001",
 	}
-	res, errRun := runWithFailover(first, 5*time.Second, textMode(), "1+1=?", resumePoint{}, nil)
+	res, used, errRun := runWithFailover(first, 5*time.Second, textMode(), "1+1=?", resumePoint{}, nil)
 	if errRun != nil {
 		t.Fatalf("换号后应成功：%v", errRun)
 	}
 	if !strings.Contains(res.Text, "换号后成功") {
 		t.Errorf("应返回新账号的回复，实际 %q", res.Text)
+	}
+	// 换号成功后必须回传实际执行账号：产物回灌要靠它，用首选账号会拉不到。
+	if used == nil || used.AuthID != "doubao-bbb" {
+		t.Errorf("应回传换号后的账号 doubao-bbb，实际 %+v", used)
 	}
 	if got := atomic.LoadInt32(&hits); got != 2 {
 		t.Errorf("应请求 2 次（首发 429 + 换号成功），实际 %d", got)
@@ -507,7 +511,7 @@ func TestRunWithFailoverStopsOnBusiness400(t *testing.T) {
 		WebID:        "7300000000000000002",
 		WebTabID:     "00000000-0000-4000-8000-000000000001",
 	}
-	if _, errRun := runWithFailover(first, 5*time.Second, textMode(), "1+1=?", resumePoint{}, nil); errRun == nil {
+	if _, _, errRun := runWithFailover(first, 5*time.Second, textMode(), "1+1=?", resumePoint{}, nil); errRun == nil {
 		t.Fatal("业务 400 应原样返回失败")
 	}
 	if got := atomic.LoadInt32(&hits); got != 1 {

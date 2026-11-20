@@ -294,6 +294,13 @@ func ensureVideoAsset(sa *StoredAuth, mode generationMode, resume resumePoint, r
 	return nil
 }
 
+// chainPollAccountHook 是回灌账号的观察点（仅测试使用）。
+//
+// 为什么需要它：回灌用的是 Cookie，而 Cookie 的 Domain 绑定在 doubao 站点上，
+// 用例里的 httptest 服务收不到这些 Cookie，无法从请求头反推「用了哪个账号」。
+// 这个钩子把实际入参暴露出来，让「回灌必须用实际执行账号」这条约束可以被断言。
+var chainPollAccountHook func(*StoredAuth)
+
 // waitVideoAsset 轮询消息链直到拿到视频直链或超时。
 //
 // 为什么要轮询而不是等 SSE：确认轮的 SSE 只回一段「正在生成」的文本就结束了，
@@ -302,6 +309,9 @@ func ensureVideoAsset(sa *StoredAuth, mode generationMode, resume resumePoint, r
 // [返回] 视频产物与错误。
 // 最近修改时间：2026-11-17 01:40:00；改动原因：新增，视频产物回灌。
 func waitVideoAsset(ctx context.Context, sa *StoredAuth, conversationID string) (creationAsset, error) {
+	if chainPollAccountHook != nil {
+		chainPollAccountHook(sa)
+	}
 	if conversationID == "" {
 		return creationAsset{}, fmt.Errorf("视频已提交但会话 id 为空，无法回灌产物")
 	}

@@ -391,6 +391,56 @@ func TestEnsureVideoAssetSkipsFirstRound(t *testing.T) {
 	}
 }
 
+// TestEnsureVideoAssetUsesPassedAccount 校验回灌用的是调用方传入的账号。
+//
+// 换号后 res 里的会话属于新账号：如果回灌仍拿首选账号的凭据去拉消息链，
+// 上游会认为「这个账号没有这条会话」，插件只能白等满超时。Cookie 的 Domain
+// 绑定在 doubao 站点上，httptest 收不到，所以这里用观察钩子断言入参。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-21 00:38:00；改动原因：新增，回灌账号归属回归。
+func TestEnsureVideoAssetUsesPassedAccount(t *testing.T) {
+	restoreTiming := swapVideoPollTiming(5*time.Millisecond, 30*time.Millisecond)
+	defer restoreTiming()
+
+	var seen []string
+	original := chainPollAccountHook
+	chainPollAccountHook = func(sa *StoredAuth) {
+		if sa == nil {
+			seen = append(seen, "<nil>")
+			return
+		}
+		seen = append(seen, sa.AuthID)
+	}
+	defer func() { chainPollAccountHook = original }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(chainTestResponse(true)))
+	}))
+	defer srv.Close()
+	restoreEndpoint := swapBusinessEndpoint(srv.URL)
+	defer restoreEndpoint()
+
+	// 实际执行账号与「首选账号」是两个不同的标识：拉错人这里就会露出来。
+	used := completionTestAccount()
+	used.AuthID = doubaoAuthFilePrefix + "used"
+	res := &completionResult{ConversationID: "38454121040780034"}
+	if errVideo := ensureVideoAsset(used, generationMode{Skill: skillVideoGen, Kind: "video"}, videoConfirmResume(), res); errVideo != nil {
+		t.Fatalf("确认轮应拉回成品：%v", errVideo)
+	}
+	if len(seen) == 0 {
+		t.Fatal("回灌应真正发起拉链请求")
+	}
+	for _, id := range seen {
+		if id != used.AuthID {
+			t.Errorf("回灌应使用调用方传入的账号 %s，实际 %s", used.AuthID, id)
+		}
+	}
+	if len(res.Assets) != 1 {
+		t.Errorf("应回填 1 条资产，实际 %+v", res.Assets)
+	}
+}
+
 // TestEnsureVideoAssetSkipsOtherModes 校验非视频模式、已有产物、无会话 id 都不回灌。
 // [参数] t: 测试上下文。
 // [返回] 无。

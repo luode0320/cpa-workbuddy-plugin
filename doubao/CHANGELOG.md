@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.1.31 (2026-11-21)
+
+### 修复
+- **视频确认轮被换到别的账号后必然拿不到成品**（多账号场景的真实缺陷）。选号本身
+  是轮转的（`scheduler.go` 的 `schedulerIndex`），池里有两个以上账号时首轮落 A、
+  确认轮必落 B。上游只认建立会话的那个账号，跨账号续接拿不到上下文，于是每次确
+  认轮都白等满 6 分钟再报「等待视频超时」，还把这次追问的额度烧在一个健康账号上。
+  三层一起改：
+
+  1. **会话粘性**（新增 `session_sticky.go`）：`conversation_id → auth_id` 内存表，
+     TTL 30 分钟，首轮成功后登记，续接请求在 `decodeExecutorRequest` 末尾回钉到首
+     轮那个账号。取不到绑定账号时明确报错，不静默回落到当前账号 —— 那只会把一次注
+     定失败的续接记成一个健康账号的失败。
+  2. **续接请求禁止换号**（`executor_failover.go`）：`resume` 非零时失败直接返回，
+     不进入 `pickAccount`。429 这类「本来该立刻换号」的信号在续接请求里同样不换。
+     失败账号仍照常记账冷却，但不会波及另一个账号。
+  3. **回灌用实际执行账号**（`runWithFailover` 返回值增加 `*StoredAuth`）：
+     `executor.go:209`、`executor_stream.go:82`、`executor_stream.go:117` 三处
+     `ensureVideoAsset` 改用实际跑通的那个账号。此前一律传外层首选账号，一旦
+     failover 换过号，回灌就会拿 A 的 Cookie 去拉 B 的会话。
+
+### 新增
+- `session_sticky.go` / `session_sticky_test.go`：粘性表读写、TTL 回收、非新会话
+  回钉、绑定账号缺失即失败，以及 `runWithFailover` 的首轮登记与续接禁换号回归。
+- `video_chain.go` 增加测试观察点 `chainPollAccountHook`：回灌走的是 Cookie，而
+  Cookie 的 Domain 绑定在 doubao 站点上，用例里的 httptest 服务收不到这些 Cookie，
+  无法从请求头反推「用了哪个账号」，只能靠钩子暴露入参。
+
+### 已知
+- 粘性表是进程内内存表：插件热重载后会清空。已重启但会话未过期时，续接请求会退回
+  「沿用当前账号」的行为（不报错），需要重新发起首轮才能重建成片。
+- 上游处于拒答波动态时，首轮本身就回「我没有视频生成能力」，确认轮仍会白等满
+  `videoPollTimeout`（6 分钟，插件内固定值，不是配置项）。识别拒答并快速失败不在
+  本版范围内。
+
 ## 0.1.30 (2026-11-18)
 
 ### 破坏性变更
