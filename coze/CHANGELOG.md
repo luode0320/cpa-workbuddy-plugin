@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.8 (2026-11-20)
+
+### Fix - 兜底模型目录写死了上游已下线的 doubao-seed-2-0-pro-260215
+
+- 缺陷(用户反馈 2026-11-20): CPA 面板「测试渠道连接」里给 coze-provider 配的别名 `doubao-seed-pro` 一测就报 `400 unknown provider for model doubao-seed-pro`，而同一提供商的 `gpt-image-2` 别名正常。
+- 根因(两层): ① 宿主 `applyOAuthModelAliasEntries` 只对「模型目录里真实存在 name 的模型」生成别名，name 匹配不到就静默丢弃、不报错；② 该别名的 name 指向 `coze/doubao-seed-2-0-pro-260215`，而这只模型 2026-11-20 复测已不在上游 `/v1/model/list?model_type=llm` 的返回里（llm 仅剩 turbo-260628 / lite / mini），`model.for_auth` 用动态发现整表覆盖静态种子后它就不存在了，别名随之永远注册不出来。
+- 同一病灶的另一半: `staticFallbackModels` 里写死的 `doubao-seed-2-0-pro-260215` 是上游下线模型，它会被宿主原样登记进全局模型目录，用户选中后必然 `503 auth_not_found`（生产实测）。
+- 修复: 兜底种子的旗舰位由 `doubao-seed-2-0-pro-260215` 换为现役最强对话模型 `doubao-seed-2-1-turbo-260628`，显示名 `Doubao-Seed-2.1-turbo`；`protocol.go` 的 llm 目录契约注释同步为复测结果。
+- 影响范围: 仅静态兜底目录的一条种子（无账号 / 启动期 / 发现失败三种场景），以及该目录的契约注释。动态发现、执行器、别名反解、积分闸门、面板全部零改动。
+- 验证: `cgo-shim-build.py coze` build / vet / test 全绿；新增 `TestStaticFallbackModels_SkipsOfflineSeed` 与 `TestStaticFallbackModels_HasTurboChat` 两条用例，把种子改回旧值时两条精确 FAIL，还原后全绿（变异反证成立）。
+
 ## 0.7.7 (2026-11-14)
 
 ### Fix - 面板搜索框被浏览器表单历史自动填回上次搜索词

@@ -261,6 +261,46 @@ func TestStaticFallbackModels_NotEmpty(t *testing.T) {
 	}
 }
 
+// TestStaticFallbackModels_SkipsOfflineSeed 验证兜底目录不再包含上游已下线的模型。
+//
+// 兜底种子会被宿主原样登记进全局模型目录，一旦写了上游已下线的模型，
+// 用户选中它只会拿到 503 auth_not_found（2026-11-20 生产实证：
+// coze/doubao-seed-2-0-pro-260215 仍在目录里、直连必然 503）。
+// 因此把「已下线」名单固定成断言，种子再被改回旧值时必须 FAIL。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-20；改动原因：新增，锁定下线模型不得回到兜底目录。
+func TestStaticFallbackModels_SkipsOfflineSeed(t *testing.T) {
+	offline := map[string]bool{
+		modelIDPrefix + "doubao-seed-2-0-pro-260215": true,
+	}
+	for _, model := range staticFallbackModels() {
+		if offline[model.ID] {
+			t.Errorf("兜底目录不得包含上游已下线的模型 %q，选中它必然 503", model.ID)
+		}
+	}
+}
+
+// TestStaticFallbackModels_HasTurboChat 验证旗舰位由现役 turbo 模型顶上。
+//
+// 上游 llm 类型（2026-11-20 实测）只剩 turbo-260628 / lite / mini 三条，
+// 兜底目录必须至少提供其中的旗舰位，否则用户授权前拿不到最强对话模型。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-20；改动原因：新增，锁定旗舰兜底模型。
+func TestStaticFallbackModels_HasTurboChat(t *testing.T) {
+	want := modelIDPrefix + "doubao-seed-2-1-turbo-260628"
+	for _, model := range staticFallbackModels() {
+		if model.ID == want {
+			if model.Type != "chat" {
+				t.Fatalf("%q 类型为 %q，期望 chat", model.ID, model.Type)
+			}
+			return
+		}
+	}
+	t.Fatalf("兜底目录缺少现役旗舰对话模型 %q", want)
+}
+
 // TestModelStatic_ReturnsFallbackWithoutAccounts 验证无账号时 model.static 可用。
 // [参数] t: 测试上下文。
 // [返回] 无。

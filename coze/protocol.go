@@ -51,7 +51,8 @@ const (
 	//
 	// 契约（2026-10-18 真实账号实测）：POST，body 里 model_type 必须是
 	// **字符串**且只能取枚举值，传数字会返回 InvalidRequest：
-	//   - "llm"              → 3 条对话模型（doubao-seed-2-0-pro/lite/mini）
+	//   - "llm"              → 3 条对话模型（2026-11-20 复测：turbo-260628 / lite / mini；
+	//                          原 pro-260215 已被上游下线，不再返回）
 	//   - "image_generation" → 2 条生图模型
 	//   - "video_generation" → 1 条生视频模型
 	//   - "tts" / "asr" / "embedding" 各 1 条

@@ -512,16 +512,21 @@ func resetModelCatalogCache() {
 // staticFallbackModels 返回没有账号可探测时对外暴露的模型目录。
 //
 // 宿主在启动期就会调用 model.register，此时可能一个账号都没有。目录不能为空，
-// 否则用户看不到任何模型；这里列出 2026-10-18 实测到的默认模型，等真实账号
+// 否则用户看不到任何模型；这里只列上游**当前在役**的默认模型，等真实账号
 // 接入后由 model.for_auth 用动态目录覆盖。
+//
+// 种子必须与上游现状同步：上游下线的模型一旦留在种子里，就会出现在全局模型
+// 目录中却永远拿不到可用账号，用户选中后只能得到 503。2026-11-20 实测
+// /v1/model/list?model_type=llm 仅返回 turbo-260628 / lite / mini 三条，
+// 原旗舰 doubao-seed-2-0-pro-260215 已被上游下线，故以 turbo 顶替。
 // [参数] 无。
 // [返回] 兜底模型列表。
-// 最近修改时间：2026-10-18；改动原因：新增，无账号时的目录兜底。
+// 最近修改时间：2026-11-20；改动原因：pro-260215 被上游下线，旗舰位换为现役 turbo-260628。
 func staticFallbackModels() []pluginapi.ModelInfo {
 	seeds := []struct {
 		id, display, desc, hostType string
 	}{
-		{"doubao-seed-2-0-pro-260215", "Doubao-Seed-2.0-pro", "旗舰级全能通用模型，擅长复杂推理与长链路任务。", "chat"},
+		{"doubao-seed-2-1-turbo-260628", "Doubao-Seed-2.1-turbo", "旗舰级通用模型，擅长复杂推理与长链路任务。", "chat"},
 		{"doubao-seed-2-0-lite-260215", "Doubao-Seed-2.0-lite", "轻量通用模型，兼顾速度与质量。", "chat"},
 		{"doubao-seed-2-0-mini-260215", "Doubao-Seed-2.0-mini", "超轻量模型，响应最快。", "chat"},
 		{"doubao-seedream-5-0-260128", "Doubao-Seedream-5.0-lite", "图像生成模型。", openAIImageModelType},
