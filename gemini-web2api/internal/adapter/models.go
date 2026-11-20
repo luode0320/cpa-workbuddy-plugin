@@ -1,0 +1,327 @@
+package adapter
+
+import (
+	"fmt"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/luode0320/cpa-workbuddy-plugin/gemini-web2api/internal/balancer"
+	"github.com/luode0320/cpa-workbuddy-plugin/gemini-web2api/internal/config"
+	"github.com/luode0320/cpa-workbuddy-plugin/gemini-web2api/internal/gemini"
+	"github.com/gin-gonic/gin"
+)
+
+// CatalogModel 是公开目录中的一个模型及其在账号间的上下文窗口范围
+type CatalogModel struct {
+	gemini.Model
+	MinInputTokenLimit int
+	MaxInputTokenLimit int
+	AccountCount       int
+	// Accounts 为提供该模型的已就绪账号
+	Accounts []string
+	// AliasOf 为 MODEL_MAPPING 别名或改名前的旧 ID 指向的模型 ID
+	AliasOf string
+}
+
+// Catalog 返回公开模型目录
+func Catalog(pool *balancer.AccountPool) []CatalogModel {
+	return availableModels(pool)
+}
+
+// availableModels 汇总已就绪或已读取目录的账号的模型目录，追加 gemini-default、MODEL_MAPPING 中指向已有模型的别名与改名前的旧 ID
+func availableModels(pool *balancer.AccountPool) []CatalogModel {
+	byID := make(map[string]CatalogModel)
+	defaultVotes := make(map[string]int)
+	defaults := CatalogModel{Model: gemini.Model{ID: gemini.DefaultModelID, DisplayName: "Default", Description: "Each account's official default model", Capabilities: []string{"generateContent", "streamGenerateContent"}}}
+	for _, account := range pool.CatalogAccounts() {
+		client := account.Client
+		contextWindow := client.ContextWindow()
+		if account.Ready {
+			defaults.AccountCount++
+			defaults.Accounts = append(defaults.Accounts, account.ID)
+		}
+		if defaults.MinInputTokenLimit == 0 || contextWindow < defaults.MinInputTokenLimit {
+			defaults.MinInputTokenLimit = contextWindow
+		}
+		defaults.MaxInputTokenLimit = max(defaults.MaxInputTokenLimit, contextWindow)
+		for _, model := range client.Models() {
+			if model.Default {
+				defaultVotes[model.ID]++
+			}
+			availability := byID[model.ID]
+			if availability.ID == "" || len(model.ThinkingLevels) > len(availability.ThinkingLevels) {
+				availability.Model = model
+			}
+			if account.Ready {
+				availability.AccountCount++
+				availability.Accounts = append(availability.Accounts, account.ID)
+			}
+			if availability.MinInputTokenLimit == 0 || contextWindow < availability.MinInputTokenLimit {
+				availability.MinInputTokenLimit = contextWindow
+			}
+			if contextWindow > availability.MaxInputTokenLimit {
+				availability.MaxInputTokenLimit = contextWindow
+			}
+			byID[model.ID] = availability
+		}
+	}
+	globalDefault := ""
+	for id := range byID {
+		if globalDefault == "" || defaultVotes[id] > defaultVotes[globalDefault] ||
+			defaultVotes[id] == defaultVotes[globalDefault] && byID[id].AccountCount > byID[globalDefault].AccountCount ||
+			defaultVotes[id] == defaultVotes[globalDefault] && byID[id].AccountCount == byID[globalDefault].AccountCount && id < globalDefault {
+			globalDefault = id
+		}
+	}
+	models := make([]CatalogModel, 0, len(byID))
+	for id, model := range byID {
+		model.Default = id == globalDefault
+		models = append(models, model)
+	}
+	sort.Slice(models, func(left int, right int) bool {
+		if models[left].Default != models[right].Default {
+			return models[left].Default
+		}
+		return models[left].ID < models[right].ID
+	})
+	if _, exists := byID[gemini.DefaultModelID]; !exists && len(byID) > 0 {
+		defaults.ThinkingLevels = byID[globalDefault].ThinkingLevels
+		models = append(models, defaults)
+	}
+	aliases := config.ModelAliases()
+	names := make([]string, 0, len(aliases))
+	for alias := range aliases {
+		names = append(names, alias)
+	}
+	sort.Strings(names)
+	for _, alias := range names {
+		target, ok := byID[gemini.CanonicalModelID(aliases[alias])]
+		if _, exists := byID[alias]; !ok || exists {
+			continue
+		}
+		target.ID, target.AliasOf, target.Default = alias, target.ID, false
+		models = append(models, target)
+	}
+	renames := gemini.ModelRenames()
+	olds := make([]string, 0, len(renames))
+	for old := range renames {
+		olds = append(olds, old)
+	}
+	sort.Strings(olds)
+	for _, old := range olds {
+		target, ok := byID[renames[old]]
+		if _, exists := byID[old]; !ok || exists {
+			continue
+		}
+		target.ID, target.AliasOf, target.Default = old, renames[old], false
+		models = append(models, target)
+	}
+	return models
+}
+
+// findModel 在公开目录中查找模型 ID、别名或改名前的旧 ID，ID 可带 models/ 或 google/ 前缀
+func findModel(pool *balancer.AccountPool, id string) (CatalogModel, bool) {
+	id = gemini.NormalizeModelID(id)
+	for _, model := range availableModels(pool) {
+		if strings.EqualFold(model.ID, id) {
+			return model, true
+		}
+	}
+	return CatalogModel{}, false
+}
+
+// lookupModel 在公开目录中查找模型 ID 或别名，找不到时按 modelKnown 返回 503 或 404 错误
+func lookupModel(pool *balancer.AccountPool, id string) (CatalogModel, error) {
+	if model, ok := findModel(pool, id); ok {
+		return model, nil
+	}
+	if err := modelKnown(pool, id); err != nil {
+		return CatalogModel{}, err
+	}
+	return CatalogModel{}, &gemini.ProtocolError{HTTPStatus: http.StatusNotFound, Message: modelNotFoundMessage(pool, id)}
+}
+
+// modelNotFoundMessage 返回模型不存在的说明并列出可用模型
+func modelNotFoundMessage(pool *balancer.AccountPool, id string) string {
+	models := availableModels(pool)
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	if len(ids) == 0 {
+		return fmt.Sprintf("model %q is unavailable: no account is ready", id)
+	}
+	return fmt.Sprintf("model %q is unavailable; available models: %s", id, strings.Join(ids, ", "))
+}
+
+func openAIModelObject(model CatalogModel) gin.H {
+	owner := "google"
+	if model.Feature != 0 || model.AliasOf != "" {
+		owner = "gemini-web2api"
+	}
+	object := gin.H{
+		"id": model.ID, "object": "model", "created": 0, "owned_by": owner, "default": model.Default,
+		"display_name": model.DisplayName, "description": model.Description,
+		"context_window": model.MaxInputTokenLimit, "context_length": model.MaxInputTokenLimit, "min_context_window": model.MinInputTokenLimit,
+		"max_context_window": model.MaxInputTokenLimit, "available_account_count": model.AccountCount,
+		"thinking_levels": thinkingLevelNames(model.ThinkingLevels), "input_modalities": inputModalities(model.Model),
+	}
+	if model.AliasOf != "" {
+		object["alias_of"] = model.AliasOf
+	}
+	return object
+}
+
+// inputModalities 返回模型接受的输入类型：图片、视频与音乐工具接受文字与参考图，对话模型另接受音频、视频与文件附件
+func inputModalities(model gemini.Model) []string {
+	switch model.Feature {
+	case gemini.FeatureImage, gemini.FeatureVideo, gemini.FeatureMusic:
+		return []string{"text", "image"}
+	}
+	return []string{"text", "image", "audio", "video", "file"}
+}
+
+func claudeModelObject(model CatalogModel) gin.H {
+	return gin.H{
+		"id": model.ID, "type": "model", "display_name": model.DisplayName,
+		"created_at": "1970-01-01T00:00:00Z", "default": model.Default,
+		"context_window": model.MaxInputTokenLimit, "min_context_window": model.MinInputTokenLimit,
+		"available_account_count": model.AccountCount, "thinking_levels": thinkingLevelNames(model.ThinkingLevels),
+	}
+}
+
+func geminiModelObject(model CatalogModel) gin.H {
+	return gin.H{
+		"name": "models/" + model.ID, "displayName": model.DisplayName, "description": model.Description,
+		"supportedGenerationMethods": model.Capabilities, "default": model.Default,
+		"inputTokenLimit": model.MaxInputTokenLimit, "minInputTokenLimit": model.MinInputTokenLimit,
+		"availableAccountCount": model.AccountCount, "thinking": len(model.ThinkingLevels) > 0,
+		"thinkingLevels": thinkingLevelNames(model.ThinkingLevels),
+	}
+}
+
+// ListModelsHandler 返回 OpenAI 模型目录，带 anthropic-version 头时返回 Anthropic 格式，没有任何目录时返回 503
+func ListModelsHandler(pool *balancer.AccountPool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if len(pool.CatalogAccounts()) == 0 {
+			if c.GetHeader("anthropic-version") != "" {
+				writeClaudeError(c, http.StatusServiceUnavailable, "overloaded_error", errCatalogNotReady.Message)
+				return
+			}
+			writeOpenAIError(c, http.StatusServiceUnavailable, "upstream_error", errCatalogNotReady.Message)
+			return
+		}
+		models := availableModels(pool)
+		if c.GetHeader("anthropic-version") != "" {
+			data := make([]gin.H, 0, len(models))
+			for _, model := range models {
+				data = append(data, claudeModelObject(model))
+			}
+			firstID, lastID := "", ""
+			if len(models) > 0 {
+				firstID, lastID = models[0].ID, models[len(models)-1].ID
+			}
+			c.JSON(http.StatusOK, gin.H{"data": data, "has_more": false, "first_id": firstID, "last_id": lastID})
+			return
+		}
+		data := make([]gin.H, 0, len(models))
+		for _, model := range models {
+			data = append(data, openAIModelObject(model))
+		}
+		c.JSON(http.StatusOK, gin.H{"object": "list", "data": data})
+	}
+}
+
+// RetrieveModelHandler 返回单个模型，带 anthropic-version 头时返回 Anthropic 格式
+func RetrieveModelHandler(pool *balancer.AccountPool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		bindScope(c, pool, c.Param("model"))
+		model, err := lookupModel(pool, c.Param("model"))
+		anthropic := c.GetHeader("anthropic-version") != ""
+		switch {
+		case err != nil && anthropic:
+			writeClaudeError(c, upstreamStatus(err), claudeUpstreamType(err), err.Error())
+		case err != nil:
+			writeOpenAIError(c, upstreamStatus(err), openAIUpstreamCode(err), err.Error())
+		case anthropic:
+			c.JSON(http.StatusOK, claudeModelObject(model))
+		default:
+			c.JSON(http.StatusOK, openAIModelObject(model))
+		}
+	}
+}
+
+// GeminiListModelsHandler 按 pageSize 与 pageToken 分页返回 Gemini 模型目录，没有任何目录时返回 503
+func GeminiListModelsHandler(pool *balancer.AccountPool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if len(pool.CatalogAccounts()) == 0 {
+			writeGeminiError(c, http.StatusServiceUnavailable, "UNAVAILABLE", errCatalogNotReady.Message)
+			return
+		}
+		models, next, err := geminiPage(c, availableModels(pool))
+		if err != nil {
+			writeGeminiError(c, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+			return
+		}
+		data := make([]gin.H, 0, len(models))
+		for _, model := range models {
+			data = append(data, geminiModelObject(model))
+		}
+		response := gin.H{"models": data}
+		if next != "" {
+			response["nextPageToken"] = next
+		}
+		c.JSON(http.StatusOK, response)
+	}
+}
+
+// geminiPage 按 Gemini API 的 pageSize（默认 50、最多 1000）与 pageToken（下一页的起始位置）返回一页与下一页令牌
+func geminiPage(c *gin.Context, items []CatalogModel) ([]CatalogModel, string, error) {
+	size, offset := 50, 0
+	if value := c.Query("pageSize"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			return nil, "", fmt.Errorf("invalid pageSize %q", value)
+		}
+		if parsed > 0 {
+			size = min(parsed, 1000)
+		}
+	}
+	if token := c.Query("pageToken"); token != "" {
+		parsed, err := strconv.Atoi(token)
+		if err != nil || parsed < 0 || parsed > len(items) {
+			return nil, "", fmt.Errorf("invalid pageToken %q", token)
+		}
+		offset = parsed
+	}
+	end := min(offset+size, len(items))
+	if end < len(items) {
+		return items[offset:end], strconv.Itoa(end), nil
+	}
+	return items[offset:end], "", nil
+}
+
+// GeminiGetModelHandler 返回单个 Gemini 模型
+func GeminiGetModelHandler(pool *balancer.AccountPool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		bindScope(c, pool, c.Param("model"))
+		model, err := lookupModel(pool, c.Param("model"))
+		if err != nil {
+			writeGeminiError(c, upstreamStatus(err), geminiUpstreamStatus(err), err.Error())
+			return
+		}
+		c.JSON(http.StatusOK, geminiModelObject(model))
+	}
+}
+
+// WriteOpenAINotFound 以 OpenAI 错误体返回未知路由
+func WriteOpenAINotFound(c *gin.Context) {
+	writeOpenAIError(c, http.StatusNotFound, "unknown_url", fmt.Sprintf("Unknown request URL: %s %s", c.Request.Method, c.Request.URL.Path))
+}
+
+// WriteGeminiNotFound 以 Google 错误体返回未知路由
+func WriteGeminiNotFound(c *gin.Context) {
+	writeGeminiError(c, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("Unknown request URL: %s %s", c.Request.Method, c.Request.URL.Path))
+}

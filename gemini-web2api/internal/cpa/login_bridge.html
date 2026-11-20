@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gemini Web2API 一键授权</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 28px 18px 48px; font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: #1f2328; background: #f6f8fa; }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  .sub { margin: 0 0 20px; color: #656d76; }
+  section { background: #fff; border: 1px solid #d0d7de; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  code, input, textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .pair { display: flex; gap: 8px; }
+  .pair input { flex: 1; padding: 8px 10px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; }
+  button { padding: 8px 14px; border: 0; border-radius: 6px; background: #1f883d; color: #fff; font-weight: 600; cursor: pointer; }
+  button.ghost { background: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; }
+  textarea { width: 100%; min-height: 96px; padding: 8px 10px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; resize: vertical; }
+  ol { margin: 0; padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .status { margin-top: 10px; padding: 8px 10px; border-radius: 6px; background: #f6f8fa; white-space: pre-wrap; word-break: break-all; }
+  .ok { background: #dafbe1; }
+  .err { background: #ffebe9; }
+  .hint { color: #656d76; font-size: 12px; }
+  a { color: #0969da; }
+</style>
+</head>
+<body data-state="{{STATE}}" data-origin="{{ORIGIN}}" data-poll="{{POLL_URL}}">
+<main>
+  <h1>Gemini Web2API 一键授权</h1>
+  <p class="sub">用你自己已登录 Google 的浏览器，把 gemini.google.com 的会话 Cookie 推送到 CPA。整个过程不需要在服务器上安装浏览器。</p>
+
+  <section>
+    <h2>第 1 步 · 复制配对码</h2>
+    <div class="pair">
+      <input id="pair" value="{{PAIR}}" readonly>
+      <button id="copy">复制</button>
+    </div>
+    <p class="hint">配对码同时已写入剪贴板；它只在本次登录会话内有效，不含管理密钥。</p>
+  </section>
+
+  <section>
+    <h2>第 2 步 · 安装浏览器授权助手</h2>
+    <ol>
+      <li>下载 <a href="{{EXT_URL}}">gemini-web2api-auth-helper.zip</a> 并解压到任意目录。</li>
+      <li>浏览器打开 <code>chrome://extensions</code>，开启右上角「开发者模式」。</li>
+      <li>点「加载已解压的扩展程序」，选择刚解压出来的目录。</li>
+      <li>确认该浏览器已登录 <a href="https://gemini.google.com/app" target="_blank" rel="noreferrer">gemini.google.com</a>。</li>
+      <li>点工具栏的扩展图标，配对码会自动从剪贴板填入，按「读取 Cookie 并推送」。</li>
+    </ol>
+    <p class="hint">扩展只申请 cookies 与剪贴板权限，只读取 google.com 域下的会话 Cookie，推送到本机配对码里的地址。</p>
+  </section>
+
+  <section>
+    <h2>第 3 步 · 等待结果</h2>
+    <div id="status" class="status">尚未开始。</div>
+  </section>
+
+  <section>
+    <h2>备选 · 手动粘贴 Cookie</h2>
+    <p class="hint">没有 Chrome 时，可用 Cookie-Editor 一类扩展导出 Cookie 头，或直接从浏览器开发者工具复制，粘贴到下面。必须是 <code>SAPISID</code> 与 <code>__Secure-1PSID</code> 齐全的一整行。</p>
+    <textarea id="manual" placeholder="SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=..."></textarea>
+    <button id="manualGo">导入</button>
+    <div id="manualStatus" class="status">尚未提交。</div>
+  </section>
+</main>
+<script>
+(function () {
+  'use strict';
+
+  var body = document.body;
+  var state = body.getAttribute('data-state') || '';
+  var pollPath = body.getAttribute('data-poll') || '';
+
+  function setStatus(el, text, cls) {
+    el.textContent = text;
+    el.className = 'status' + (cls ? ' ' + cls : '');
+  }
+
+  var copyBtn = document.getElementById('copy');
+  copyBtn.addEventListener('click', function () {
+    var input = document.getElementById('pair');
+    input.select();
+    var done = false;
+    try { done = document.execCommand('copy'); } catch (e) { done = false; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(input.value).then(function () {
+        copyBtn.textContent = '已复制';
+      }, function () {
+        copyBtn.textContent = done ? '已复制' : '请手动复制';
+      });
+      return;
+    }
+    copyBtn.textContent = done ? '已复制' : '请手动复制';
+  });
+
+  function submit(cookies, statusEl) {
+    if (!cookies) {
+      setStatus(statusEl, 'Cookie 不能为空。', 'err');
+      return;
+    }
+    setStatus(statusEl, '正在导入，插件会真实校验一次 Gemini 会话，通常 3~10 秒…');
+    var url = '{{SUBMIT_URL}}?state=' + encodeURIComponent(state)
+      + '&cookies=' + encodeURIComponent(cookies);
+    fetch(url, { method: 'GET', cache: 'no-store' })
+      .then(function (res) {
+        return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+      })
+      .then(function (out) {
+        if (!out.ok || out.data.error) {
+          throw new Error(out.data.error || 'HTTP error');
+        }
+        poll(statusEl, Date.now());
+      })
+      .catch(function (err) {
+        setStatus(statusEl, '提交失败：' + (err && err.message ? err.message : err), 'err');
+      });
+  }
+
+  function poll(statusEl, startedAt) {
+    var deadline = startedAt + 90000;
+    function tick() {
+      fetch(pollPath + '?state=' + encodeURIComponent(state), { cache: 'no-store' })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (data.status === 'success') {
+            setStatus(statusEl, '授权成功：' + (data.email || data.account_id || '已导入')
+              + '\n可以关闭本页，回到 CPA 控制台。', 'ok');
+            return;
+          }
+          if (data.status === 'error') {
+            setStatus(statusEl, '导入失败：' + (data.message || '未知错误'), 'err');
+            return;
+          }
+          if (data.status === 'expired') {
+            setStatus(statusEl, '登录会话已过期，请刷新本页重新开始。', 'err');
+            return;
+          }
+          if (Date.now() > deadline) {
+            setStatus(statusEl, '等待超时。请回到 CPA 控制台查看账户列表确认结果。', 'err');
+            return;
+          }
+          setStatus(statusEl, '状态：' + (data.status || 'pending') + ' …');
+          setTimeout(tick, 1500);
+        })
+        .catch(function (err) {
+          setStatus(statusEl, '轮询失败：' + (err && err.message ? err.message : err), 'err');
+        });
+    }
+    tick();
+  }
+
+  var manualStatus = document.getElementById('manualStatus');
+  document.getElementById('manualGo').addEventListener('click', function () {
+    submit(document.getElementById('manual').value.trim(), manualStatus);
+  });
+
+  if (state) {
+    poll(document.getElementById('status'), Date.now());
+  }
+})();
+</script>
+</body>
+</html>

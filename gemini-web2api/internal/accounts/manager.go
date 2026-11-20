@@ -1,0 +1,805 @@
+// Package accounts 管理账号的初始化、恢复、Cookie 轮换与运行期增删
+package accounts
+
+import (
+	"cmp"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/luode0320/cpa-workbuddy-plugin/gemini-web2api/internal/auth"
+	"github.com/luode0320/cpa-workbuddy-plugin/gemini-web2api/internal/balancer"
+	"github.com/luode0320/cpa-workbuddy-plugin/gemini-web2api/internal/chromeauth"
+	"github.com/luode0320/cpa-workbuddy-plugin/gemini-web2api/internal/config"
+	"github.com/luode0320/cpa-workbuddy-plugin/gemini-web2api/internal/gemini"
+	"github.com/luode0320/cpa-workbuddy-plugin/gemini-web2api/internal/logging"
+	"github.com/luode0320/cpa-workbuddy-plugin/gemini-web2api/internal/proxypool"
+)
+
+// Settings 是账号生命周期使用的配置
+type Settings struct {
+	// InitTimeout 是单个账号一次初始化的超时
+	InitTimeout time.Duration
+	// RetryInterval 是初始化失败后再次初始化的间隔
+	RetryInterval time.Duration
+	// Proxy 是以逗号分隔的代理池，未设置固定代理的账号与访客会话从中分配
+	Proxy string
+	// SaveHistory 表示生成请求写入官网历史记录
+	SaveHistory bool
+	// AuthDir 是管理端导入的账号写入的目录
+	AuthDir string
+	// Concurrency 是每个账号同时进行的上游请求数
+	Concurrency int
+}
+
+// Manager 为每个账号运行初始化、失败恢复与 Cookie 轮换，并支持运行期增删
+type Manager struct {
+	ctx      context.Context
+	pool     *balancer.AccountPool
+	mu       sync.Mutex
+	settings Settings
+	accounts map[string]*managed
+	order    []string
+	// guest 是访客会话的生命周期
+	guest *managed
+	// operations 串行化同一账号的停止与重启
+	operations sync.Map
+	// proxies 是未设置固定代理的账号共用的代理池，proxyCheck 请求立即检测代理池
+	proxies    *proxypool.Pool
+	proxyCheck chan struct{}
+	// guestMu 串行化访客会话的重启
+	guestMu sync.Mutex
+}
+
+type managed struct {
+	account   auth.LoadedAccount
+	cancel    context.CancelFunc
+	done      chan struct{}
+	firstDone chan struct{}
+}
+
+// operate 占用账号的操作锁，返回释放函数
+func (m *Manager) operate(accountID string) func() {
+	lock, _ := m.operations.LoadOrStore(accountID, &sync.Mutex{})
+	mutex := lock.(*sync.Mutex)
+	mutex.Lock()
+	return mutex.Unlock
+}
+
+// New 创建账号管理器，ctx 结束时全部账号停止
+func New(ctx context.Context, pool *balancer.AccountPool, settings Settings) *Manager {
+	manager := &Manager{
+		ctx: ctx, pool: pool, settings: settings, accounts: make(map[string]*managed),
+		proxies: proxypool.New(config.SplitList(settings.Proxy)), proxyCheck: make(chan struct{}, 1),
+	}
+	pool.OnTransportError(manager.requestProxyCheck)
+	pool.OnCaptcha(manager.handleCaptcha)
+	return manager
+}
+
+// Pool 返回账号池
+func (m *Manager) Pool() *balancer.AccountPool {
+	return m.pool
+}
+
+// Settings 返回当前账号配置
+func (m *Manager) Settings() Settings {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.settings
+}
+
+// Start 登记并启动全部账号与访客会话，返回后首轮初始化全部结束
+func (m *Manager) Start(accounts []auth.LoadedAccount) {
+	var wait sync.WaitGroup
+	for _, account := range accounts {
+		wait.Add(1)
+		m.launch(account, nil, nil, wait.Done)
+	}
+	wait.Add(1)
+	m.launchGuest(nil, wait.Done)
+	wait.Wait()
+	go m.watchProxies()
+}
+
+// guestReloadInterval 是访客会话重读首页与模型目录的间隔，与账号的默认轮换间隔相同
+const guestReloadInterval = 10 * time.Minute
+
+// launchGuest 创建访客客户端并启动其生命周期，firstDone 在首轮初始化结束时调用；previous 不为 nil 时它在新客户端首轮初始化结束前继续处理请求
+func (m *Manager) launchGuest(previous *managed, firstDone func()) {
+	settings := m.Settings()
+	proxy, source := m.poolProxy(gemini.GuestID)
+	info := balancer.AccountInfo{Source: balancer.SourceGuest, Proxy: proxy, ProxySource: source}
+	if previous == nil {
+		m.pool.Register(gemini.GuestID, info, false)
+	} else {
+		m.pool.SetInfo(gemini.GuestID, info)
+	}
+	client, err := gemini.NewGuestClient(proxy, settings.Concurrency)
+	if err != nil {
+		m.handover(gemini.GuestID, nil, previous)
+		m.pool.MarkFailed(gemini.GuestID, err)
+		logging.Error(gemini.GuestID, "访客会话创建失败", "错误", err)
+		firstDone()
+		return
+	}
+	if previous == nil {
+		m.pool.SetClient(gemini.GuestID, client)
+	}
+	ctx, cancel := context.WithCancel(m.ctx)
+	entry := &managed{cancel: cancel, done: make(chan struct{})}
+	m.mu.Lock()
+	m.guest = entry
+	m.mu.Unlock()
+	go func() {
+		defer close(entry.done)
+		m.runGuest(ctx, client, previous, firstDone)
+	}()
+}
+
+// runGuest 初始化访客会话直到成功，之后定期重读首页与模型目录，重读失败时保留原有参数；首轮初始化结束时换下 previous
+func (m *Manager) runGuest(ctx context.Context, client *gemini.Client, previous *managed, firstDone func()) {
+	first := sync.OnceFunc(firstDone)
+	defer first()
+	for {
+		settings := m.Settings()
+		started := time.Now()
+		initContext, cancel := context.WithTimeout(ctx, settings.InitTimeout)
+		err := client.Init(initContext)
+		cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		m.handover(gemini.GuestID, client, previous)
+		previous = nil
+		if err == nil {
+			client.ObserveCatalog()
+			m.pool.MarkReady(gemini.GuestID)
+			logging.Info(gemini.GuestID, "访客会话就绪", "模型", len(client.Models()), "耗时", time.Since(started))
+			break
+		}
+		retry := retryInterval(settings.RetryInterval, err)
+		if m.pool.MarkFailed(gemini.GuestID, err) {
+			logging.Warn(gemini.GuestID, "访客会话初始化失败", "耗时", time.Since(started), "下次重试", retry, "错误", err)
+		}
+		first()
+		if !sleep(ctx, retry) {
+			return
+		}
+	}
+	first()
+	for sleep(ctx, guestReloadInterval) {
+		before := catalogOf(client)
+		initContext, cancel := context.WithTimeout(ctx, m.Settings().InitTimeout)
+		err := client.Init(initContext)
+		cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			m.pool.RecordError(gemini.GuestID, err)
+			logging.Warn(gemini.GuestID, "访客会话重读失败", "下次", guestReloadInterval, "错误", err)
+			continue
+		}
+		client.ObserveCatalog()
+		logCatalogChange(gemini.GuestID, before, catalogOf(client))
+	}
+}
+
+// StopGuest 停止并从账号池中移除访客会话
+func (m *Manager) StopGuest() {
+	m.guestMu.Lock()
+	defer m.guestMu.Unlock()
+	m.mu.Lock()
+	entry := m.guest
+	m.guest = nil
+	m.mu.Unlock()
+	if entry != nil {
+		entry.cancel()
+		<-entry.done
+	}
+	m.pool.Remove(gemini.GuestID)
+}
+
+// RelaunchGuest 重新创建并启动访客会话
+func (m *Manager) RelaunchGuest() {
+	m.relaunchGuest()
+}
+
+// Add 登记并启动一个新导入的账号，返回后首轮初始化结束
+func (m *Manager) Add(account auth.LoadedAccount) error {
+	defer m.operate(account.ID)()
+	m.mu.Lock()
+	entry := m.accounts[account.ID]
+	m.mu.Unlock()
+	if entry != nil {
+		if entry.firstDone != nil {
+			select {
+			case <-entry.firstDone:
+			case <-m.ctx.Done():
+				return m.ctx.Err()
+			}
+		}
+		return nil
+	}
+	firstDone := make(chan struct{})
+	var once sync.Once
+	m.launch(account, nil, firstDone, func() { once.Do(func() { close(firstDone) }) })
+	select {
+	case <-firstDone:
+	case <-m.ctx.Done():
+		return m.ctx.Err()
+	}
+	return nil
+}
+
+// WaitFirstInit 等待账号首轮初始化结束（若正在初始化中）
+func (m *Manager) WaitFirstInit(ctx context.Context, accountID string) {
+	m.mu.Lock()
+	entry := m.accounts[accountID]
+	m.mu.Unlock()
+	if entry == nil || entry.firstDone == nil {
+		return
+	}
+	select {
+	case <-entry.firstDone:
+	case <-ctx.Done():
+	case <-m.ctx.Done():
+	}
+}
+
+// handover 在替换启动时让账号池改用 client，再停止 previous 的生命周期；previous 为 nil 时不做任何事
+func (m *Manager) handover(accountID string, client *gemini.Client, previous *managed) {
+	if previous == nil {
+		return
+	}
+	if client != nil {
+		m.pool.SetClient(accountID, client)
+	}
+	if previous.cancel != nil {
+		previous.cancel()
+		<-previous.done
+	}
+}
+
+// launch 创建账号客户端并启动其生命周期，firstDone 在首轮初始化结束或账号停用时调用；有认证文件的账号以文件当前的 Cookie、续签材料与设置启动；previous 不为 nil 时它在新客户端首轮初始化结束前继续处理请求
+func (m *Manager) launch(account auth.LoadedAccount, previous *managed, firstDoneCh chan struct{}, firstDone func()) {
+	if account.File != nil {
+		account = account.File.Account()
+	}
+	proxy, source := m.accountProxy(account)
+	account.ProxyURL = proxy
+	info := balancer.AccountInfo{Source: "cookie", Profile: account.Profile, Proxy: proxy, ProxySource: source}
+	if account.OAuth != nil {
+		info.Source = "chrome"
+	}
+	if account.File != nil {
+		info.Path = account.File.Path()
+	}
+	if previous == nil {
+		m.pool.Register(account.ID, info, account.Disabled)
+	} else {
+		m.pool.SetInfo(account.ID, info)
+	}
+	m.mu.Lock()
+	if _, exists := m.accounts[account.ID]; !exists {
+		m.order = append(m.order, account.ID)
+	}
+	if firstDoneCh == nil {
+		firstDoneCh = make(chan struct{})
+		orig := firstDone
+		var once sync.Once
+		firstDone = func() {
+			once.Do(func() { close(firstDoneCh) })
+			if orig != nil {
+				orig()
+			}
+		}
+	}
+	entry := &managed{account: account, firstDone: firstDoneCh}
+	m.accounts[account.ID] = entry
+	settings := m.settings
+	m.mu.Unlock()
+	if account.Disabled {
+		m.handover(account.ID, nil, previous)
+		firstDone()
+		return
+	}
+
+	account.Source.Concurrency = settings.Concurrency
+	client, err := gemini.NewClient(account.Source, account.ProxyURL, settings.SaveHistory)
+	if err != nil {
+		m.handover(account.ID, nil, previous)
+		m.pool.MarkFailed(account.ID, err)
+		logging.Error(account.ID, "账号创建失败", "错误", err)
+		firstDone()
+		return
+	}
+	if previous == nil {
+		m.pool.SetClient(account.ID, client)
+	}
+	ctx, cancel := context.WithCancel(m.ctx)
+	entry.cancel, entry.done = cancel, make(chan struct{})
+	go func() {
+		defer close(entry.done)
+		m.run(ctx, account, client, previous, firstDone)
+	}()
+}
+
+// networkRetryInterval 是连接失败或初始化超时后重新初始化的间隔上限
+const networkRetryInterval = 10 * time.Second
+
+// retryInterval 返回初始化失败后的重试间隔：连接失败与超时不超过 networkRetryInterval，人机验证拦截为出口停用时长，其余错误为配置值
+func retryInterval(configured time.Duration, err error) time.Duration {
+	switch {
+	case errors.Is(err, gemini.ErrTransport) || errors.Is(err, context.DeadlineExceeded):
+		return min(configured, networkRetryInterval)
+	case errors.Is(err, gemini.ErrCaptcha):
+		return balancer.CaptchaCooldown
+	}
+	return configured
+}
+
+// run 初始化账号直到成功，之后按轮换页给出的间隔轮换 Cookie 直到 ctx 结束；首轮初始化结束时换下 previous
+func (m *Manager) run(ctx context.Context, account auth.LoadedAccount, client *gemini.Client, previous *managed, firstDone func()) {
+	first := sync.OnceFunc(firstDone)
+	defer first()
+	for {
+		settings := m.Settings()
+		started := time.Now()
+		err := initialize(ctx, client, settings.InitTimeout)
+		if ctx.Err() != nil {
+			return
+		}
+		m.handover(account.ID, client, previous)
+		previous = nil
+		if err == nil {
+			client.ObserveCatalog()
+			m.pool.MarkReady(account.ID)
+			logReady(account, client, time.Since(started))
+			break
+		}
+		retry := retryInterval(settings.RetryInterval, err)
+		if m.pool.MarkFailed(account.ID, err) {
+			logging.Error(account.ID, "账号初始化失败", "耗时", time.Since(started), "下次重试", retry, "错误", err)
+		} else {
+			logging.Debug(account.ID, "账号初始化失败", "错误", err)
+		}
+		first()
+		if !sleep(ctx, retry) {
+			return
+		}
+	}
+	first()
+
+	rotator := gemini.NewCookieRotator(client)
+	for {
+		started := time.Now()
+		before := catalogOf(client)
+		next, err := rotator.Rotate(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		state := m.state(account.ID)
+		switch {
+		case err == nil:
+			client.ObserveCatalog()
+			logCatalogChange(account.ID, before, catalogOf(client))
+			if state == balancer.StateAuthRequired || state == balancer.StateUnavailable {
+				m.pool.MarkReady(account.ID)
+				logging.Info(account.ID, "账号恢复就绪", "耗时", time.Since(started))
+			}
+			logging.Debug(account.ID, "Cookie 轮换完成", "耗时", time.Since(started), "下次", next)
+		case rotationTooSoon(err):
+			logging.Debug(account.ID, "Cookie 轮换过早", "下次", next)
+		case gemini.IsAuthenticationError(err):
+			if m.pool.MarkFailed(account.ID, err) {
+				logging.Warn(account.ID, "账号会话失效", "下次检查", next, "错误", err)
+			}
+		case errors.Is(err, gemini.ErrAccountRestricted):
+			if m.pool.MarkFailed(account.ID, err) {
+				logging.Warn(account.ID, "账号不可用", "下次检查", next, "错误", err)
+			}
+		case errors.Is(err, gemini.ErrCaptcha):
+			m.pool.ReportFailure(account.ID, "", err)
+		default:
+			m.pool.RecordError(account.ID, err)
+			logging.Warn(account.ID, "Cookie 轮换失败", "下次", next, "错误", err)
+		}
+		if !sleep(ctx, next) {
+			return
+		}
+	}
+}
+
+// initialize 读取首页参数、模型目录、偏好与用量
+func initialize(ctx context.Context, client *gemini.Client, timeout time.Duration) error {
+	initContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := client.Init(initContext); err != nil {
+		return err
+	}
+	_, err := client.FetchUsage(initContext)
+	return err
+}
+
+// rotationTooSoon 判断轮换失败是否为距上次轮换过近的 429
+func rotationTooSoon(err error) bool {
+	var protocolErr *gemini.ProtocolError
+	return errors.As(err, &protocolErr) && protocolErr.Code == 429
+}
+
+func logReady(account auth.LoadedAccount, client *gemini.Client, duration time.Duration) {
+	fields := []any{"模型", len(client.Models()), "窗口", client.ContextWindow()}
+	if usage := client.CachedUsage(); usage != nil {
+		fields = append([]any{"层级", usage.Tier}, fields...)
+	}
+	if email := client.Email(); email != "" {
+		fields = append([]any{"邮箱", email}, fields...)
+	}
+	if account.ProxyURL != "" {
+		fields = append(fields, "代理", proxypool.Redact(account.ProxyURL))
+	}
+	fields = append(fields, "耗时", duration)
+	logging.Info(account.ID, "账号就绪", fields...)
+}
+
+// accountCatalog 是账号的层级与模型 ID，用于发现定期重读后的变化
+type accountCatalog struct {
+	tier   string
+	models []string
+}
+
+func catalogOf(client *gemini.Client) accountCatalog {
+	var catalog accountCatalog
+	if usage := client.CachedUsage(); usage != nil {
+		catalog.tier = usage.Tier
+	}
+	for _, model := range client.Models() {
+		catalog.models = append(catalog.models, model.ID)
+	}
+	return catalog
+}
+
+// logCatalogChange 在账号层级变化时写一条警告，模型目录变化时写一行日志列出增减的模型
+func logCatalogChange(accountID string, before, after accountCatalog) {
+	if before.tier != after.tier {
+		logging.Warn(accountID, "账号订阅层级变化", "层级", before.tier+" → "+after.tier)
+	}
+	var fields []any
+	if added := missingFrom(after.models, before.models); len(added) > 0 {
+		fields = append(fields, "新增", strings.Join(added, ","))
+	}
+	if removed := missingFrom(before.models, after.models); len(removed) > 0 {
+		fields = append(fields, "移除", strings.Join(removed, ","))
+	}
+	if len(fields) > 0 {
+		logging.Info(accountID, "账号模型目录变化", fields...)
+	}
+}
+
+// missingFrom 返回 ids 中不在 others 里的 ID
+func missingFrom(ids, others []string) []string {
+	var missing []string
+	for _, id := range ids {
+		if !slices.Contains(others, id) {
+			missing = append(missing, id)
+		}
+	}
+	return missing
+}
+
+func (m *Manager) state(accountID string) string {
+	for _, account := range m.pool.Status().Accounts {
+		if account.AccountID == accountID {
+			return account.State
+		}
+	}
+	return ""
+}
+
+// stop 停止账号的生命周期协程并等待其退出
+func (m *Manager) stop(accountID string) (*managed, error) {
+	m.mu.Lock()
+	entry := m.accounts[accountID]
+	m.mu.Unlock()
+	if entry == nil {
+		return nil, fmt.Errorf("账号 %q 不存在", accountID)
+	}
+	if entry.cancel != nil {
+		entry.cancel()
+		<-entry.done
+		entry.cancel = nil
+	}
+	return entry, nil
+}
+
+// Remove 停止并删除账号与其认证状态文件
+func (m *Manager) Remove(accountID string) error {
+	defer m.operate(accountID)()
+	entry, err := m.stop(accountID)
+	if err != nil {
+		return err
+	}
+	m.pool.Remove(accountID)
+	m.proxies.Release(accountID)
+	m.mu.Lock()
+	delete(m.accounts, accountID)
+	for index, id := range m.order {
+		if id == accountID {
+			m.order = append(m.order[:index], m.order[index+1:]...)
+			break
+		}
+	}
+	m.mu.Unlock()
+	if entry.account.File != nil {
+		path := entry.account.File.Path()
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("删除认证状态 %s: %w", path, err)
+		}
+		_ = os.Remove(filepath.Dir(path))
+	}
+	logging.Info(accountID, "账号已删除")
+	return nil
+}
+
+// SetEnabled 启用或停用账号并写回认证状态
+func (m *Manager) SetEnabled(accountID string, enabled bool) error {
+	defer m.operate(accountID)()
+	entry, err := m.stop(accountID)
+	if err != nil {
+		return err
+	}
+	if entry.account.File != nil {
+		if err := entry.account.File.SetDisabled(!enabled); err != nil {
+			return err
+		}
+	}
+	entry.account.Disabled = !enabled
+	if !enabled {
+		m.pool.SetDisabled(accountID, true)
+		logging.Info(accountID, "账号已停用")
+		return nil
+	}
+	m.pool.SetDisabled(accountID, false)
+	logging.Info(accountID, "账号已启用")
+	return m.restart(entry.account)
+}
+
+// SetProxy 修改账号固定代理并重新初始化账号，空值表示从代理池分配，direct 表示直连
+func (m *Manager) SetProxy(accountID string, proxy string) error {
+	proxy = strings.TrimSpace(proxy)
+	if proxy != "" && proxy != proxypool.Direct {
+		if _, err := chromeauth.ValidateProxy(proxy); err != nil {
+			return err
+		}
+	}
+	defer m.operate(accountID)()
+	entry, err := m.stop(accountID)
+	if err != nil {
+		return err
+	}
+	if entry.account.File != nil {
+		if err := entry.account.File.SetProxy(proxy); err != nil {
+			return err
+		}
+	}
+	entry.account.ProxyURL, _ = m.accountProxy(entry.account)
+	logging.Info(accountID, "账号代理已更新", "代理", cmp.Or(proxypool.Redact(entry.account.ProxyURL), "直连"))
+	return m.restart(entry.account)
+}
+
+// TemporaryClient 以停用账号当前的认证状态新建并初始化一个不进入账号池的客户端，账号保持停用
+func (m *Manager) TemporaryClient(ctx context.Context, accountID string) (*gemini.Client, error) {
+	m.mu.Lock()
+	entry := m.accounts[accountID]
+	settings := m.settings
+	m.mu.Unlock()
+	if entry == nil {
+		return nil, fmt.Errorf("账号 %q 不存在", accountID)
+	}
+	account := entry.account
+	if account.File != nil {
+		account = account.File.Account()
+	}
+	proxy := fixedProxy(account)
+	switch proxy {
+	case "":
+		proxy = m.importProxy()
+	case proxypool.Direct:
+		proxy = ""
+	}
+	account.ProxyURL = proxy
+	account.Source.Concurrency = settings.Concurrency
+	client, err := gemini.NewClient(account.Source, proxy, settings.SaveHistory)
+	if err != nil {
+		return nil, err
+	}
+	if err := initialize(ctx, client, settings.InitTimeout); err != nil {
+		client.CloseIdleConnections()
+		return nil, err
+	}
+	return client, nil
+}
+
+// Verify 重新初始化账号并返回结果
+func (m *Manager) Verify(accountID string) error {
+	defer m.operate(accountID)()
+	entry, err := m.stop(accountID)
+	if err != nil {
+		return err
+	}
+	if entry.account.Disabled {
+		return fmt.Errorf("账号 %q 已停用", accountID)
+	}
+	logging.Info(accountID, "账号重新验证")
+	if err := m.restart(entry.account); err != nil {
+		return err
+	}
+	for _, account := range m.pool.Status().Accounts {
+		if account.AccountID == accountID && account.State != balancer.StateReady && account.State != balancer.StateCooldown {
+			return errors.New(account.LastError)
+		}
+	}
+	return nil
+}
+
+// SetSettings 修改账号配置并并行以新设置替换受影响账号的客户端，新客户端首轮初始化结束前旧客户端照常处理请求：代理池变化时为分到的代理有变化的账号与访客会话，历史记录变化时为全部账号，并发设置变化时为全部账号与访客会话
+func (m *Manager) SetSettings(settings Settings) {
+	m.mu.Lock()
+	previous := m.settings
+	m.settings = settings
+	ids := append([]string(nil), m.order...)
+	m.mu.Unlock()
+	if previous.Proxy != settings.Proxy {
+		m.proxies.SetProxies(config.SplitList(settings.Proxy))
+		m.requestProxyCheck()
+	}
+	var wait sync.WaitGroup
+	for _, id := range ids {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			defer m.operate(id)()
+			m.mu.Lock()
+			entry := m.accounts[id]
+			m.mu.Unlock()
+			if entry == nil || entry.account.Disabled {
+				return
+			}
+			account := entry.account
+			proxyChanged := usesGlobalProxy(account) && m.proxies.Assign(id) != account.ProxyURL
+			if proxyChanged || previous.SaveHistory != settings.SaveHistory || previous.Concurrency != settings.Concurrency {
+				_ = m.await(func(firstDone func()) { m.launch(account, entry, nil, firstDone) })
+			}
+		}()
+	}
+	if previous.Proxy != settings.Proxy || previous.Concurrency != settings.Concurrency {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			m.relaunchGuest()
+		}()
+	}
+	wait.Wait()
+}
+
+// usesGlobalProxy 报告账号没有固定代理、从代理池分配
+func usesGlobalProxy(account auth.LoadedAccount) bool {
+	return fixedProxy(account) == ""
+}
+
+// restart 以新客户端重新启动账号并等待首轮初始化结束
+func (m *Manager) restart(account auth.LoadedAccount) error {
+	return m.await(func(firstDone func()) { m.launch(account, nil, nil, firstDone) })
+}
+
+// await 调用 launch 并等待它的首轮初始化结束或服务停止
+func (m *Manager) await(launch func(firstDone func())) error {
+	done := make(chan struct{})
+	launch(sync.OnceFunc(func() { close(done) }))
+	select {
+	case <-done:
+		return nil
+	case <-m.ctx.Done():
+		return m.ctx.Err()
+	}
+}
+
+// IDs 返回按登记顺序排列的账号 ID
+func (m *Manager) IDs() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.order...)
+}
+
+
+// ImportCookie 从 Cookie Header、浏览器导出的 JSON 或 Netscape cookies.txt 导入账号并启动
+func (m *Manager) ImportCookie(ctx context.Context, cookies string, id string, proxy string, authUser int) (string, error) {
+	path, _, err := chromeauth.ImportCookies(ctx, chromeauth.CookieImportOptions{Cookies: cookies, ID: id, Output: m.Settings().AuthDir, Proxy: proxy, RequestProxy: m.importProxy(), AuthUser: authUser})
+	if err != nil {
+		return "", err
+	}
+	return m.addFile(path)
+}
+
+// ImportState 校验 setup --remote 上传的认证状态，写入认证目录后新增或更新账号
+func (m *Manager) ImportState(data []byte) (string, error) {
+	var state auth.StorageState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return "", fmt.Errorf("认证状态无效: %w", err)
+	}
+	state.Metadata.ID = chromeauth.AccountID(state.Metadata.ID)
+	path := filepath.Join(m.Settings().AuthDir, state.Metadata.ID, "storage-state.json")
+	state.Metadata = auth.Inherit(path, state.Metadata)
+	file, err := auth.New(path, state)
+	if err != nil {
+		return "", err
+	}
+	if err := file.Write(); err != nil {
+		return "", err
+	}
+	return m.addFile(file.Path())
+}
+
+// addFile 读取认证状态文件，账号已存在时以新文件替换该账号的客户端并在新客户端首轮初始化结束前由旧客户端处理请求，否则新增
+func (m *Manager) addFile(path string) (string, error) {
+	file, err := auth.Load(path)
+	if err != nil {
+		return "", err
+	}
+	account := file.Account()
+	m.mu.Lock()
+	_, exists := m.accounts[account.ID]
+	m.mu.Unlock()
+	if exists {
+		defer m.operate(account.ID)()
+		m.mu.Lock()
+		previous := m.accounts[account.ID]
+		m.mu.Unlock()
+		logging.Info(account.ID, "账号认证已更新")
+		return account.ID, m.await(func(firstDone func()) { m.launch(account, previous, nil, firstDone) })
+	}
+	logging.Info(account.ID, "账号已导入")
+	return account.ID, m.Add(account)
+}
+
+// SetPairingRenewal 更新账号的远程配对续签凭据摘要并写回
+func (m *Manager) SetPairingRenewal(accountID string, digest string) error {
+	m.mu.Lock()
+	entry := m.accounts[accountID]
+	m.mu.Unlock()
+	if entry == nil {
+		return fmt.Errorf("账号 %q 不存在", accountID)
+	}
+	return entry.account.File.SetPairingRenewal(digest)
+}
+
+// PairingRenewal 返回账号保存的远程配对续签凭据摘要，账号不存在或没有远程配对时为空
+func (m *Manager) PairingRenewal(accountID string) string {
+	m.mu.Lock()
+	entry := m.accounts[accountID]
+	m.mu.Unlock()
+	if entry == nil {
+		return ""
+	}
+	return entry.account.File.Metadata().PairingRenewal
+}
+
+func sleep(ctx context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}

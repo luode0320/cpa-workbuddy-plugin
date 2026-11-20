@@ -1,0 +1,86 @@
+# Changelog
+
+本文件记录 gemini-web2api 插件在本仓库（`luode0320/cpa-workbuddy-plugin`）内的自有变更。
+上游 `jianli9158/cpa-plugin-gemini-web2api` 与 `Mag1cFall/Gemini-Web2API` 的历史变更见各自仓库。
+
+## 1.0.9 (2026-11-21)
+
+### 新增 - 收编为第 14 个自有插件
+
+- 上游源码整体 vendor 进 `gemini-web2api/`，module 路径改为
+  `github.com/luode0320/cpa-workbuddy-plugin/gemini-web2api`，`go` 指令从 1.27 降到 1.26.0
+  （实测 go1.26.5 可编，无 go1.27 专有语法）。
+- 布局扁平化：`cmd/gemini-web2api-plugin/main.go` 上移到模块根 `main.go`，与仓库其余插件
+  目录惯例一致；删除上游自带的 `.github/`（ci.yml / release.yml 会与自有 `build.yml` 冲突）、
+  `.gitignore`（根已覆盖）。
+- 版本号改为单一来源：`internal/app/plugin_bridge.go` 提供 `SetVersion` / `Version`，
+  `main.go` 的 `var version` 由 CI 的 `-X main.version` 注入，本地构建回落 `VERSION` 文件同值；
+  `Makefile` 重写为 `-ldflags="-s -w -X main.version=$(VERSION)" -buildmode=c-shared -o $(OUT_FILE) .`
+  （原 `./cmd/gemini-web2api-plugin` 路径已随扁平化失效）。
+- 注册元信息指向本仓库：`internal/cpa/plugin.go` 的 `Author` 改为
+  `luode0320 (Upstream: jianli9158 / Mag1cFall)`，`GitHubRepository` 改为
+  `https://github.com/luode0320/cpa-workbuddy-plugin`。
+- CI 与发布面登记：`.github/workflows/build.yml` 八处（tag 映射注释、`on.push.tags`、
+  dispatch 的 `plugin` 枚举、test matrix、`SLUG` 映射、tag 前缀条件、tag 解析 shell 分支、
+  显示名 case）；`registry.json` 追加第 14 条（6 平台 artifacts，sha256/size 待发布脚本回填）。
+
+### 修复 - schema 版本对齐生产宿主
+
+- 生产 `cli-proxy-api` 容器跑的是 `Commit bd0ed82`（BuiltAt 2026-11-11），其
+  `sdk/pluginabi` 为 `ABIVersion=1` / `SchemaVersion=6`；上游 vendored 副本上报 `SchemaVersion=10`，
+  宿主 `registerRPCPlugin` 会直接拒绝：`plugin schema version 10 is not supported`。
+- 处理：`internal/pluginabi/types.go` 的 `SchemaVersion` 由 10 降为 6。已逐项核对
+  上游能力面与宿主 schema-6 契约 —— 上游 `rpcCapabilities` 12 字段是宿主 27 字段的子集；
+  上游处理的 27 个 method 全在宿主支持的 61 个之内；上游用到的 `host.*` 里
+  `host.auth.models` / `host.affinity.lookup` 零调用点，`host.routing.reset_cooldown`
+  唯一调用点显式丢弃错误；上游零处读取宿主传来的 `schema_version`、零处按具名 schema
+  常量分支、零处实际使用 schema 7–10 独有能力（`RequestBodyPatcher` / `MultiAuthProviders` /
+  `ProviderModels` 等全部为定义未使用）。降级后 `go build` / `go vet` / `go test ./...` 全绿。
+
+### 新增 - 一键授权登录（桥接页 + 浏览器扩展回传）
+
+生产容器是 Debian 12 裸镜像，`/usr/bin` 与 `/usr/local/bin` 里 `chrom|chrome|firefox`
+零命中，`chromeauth.FindLocalChromeBinary()` 必然返回空 —— 上游「拉起本机 Chrome 无痕窗口」
+这条唯一登录路径在生产上完全不可用，只剩手工粘贴 Cookie。因此新增一条不依赖服务端浏览器的授权通道：
+
+- `internal/cpa/login_bridge.go`（新增）：`handleLoginResource` 接管四个资源路由
+  ——`/v0/resource/plugins/gemini-web2api/login`（桥接页）、`/login/extension.zip`（扩展下载）、
+  `/login/submit`（收 Cookie）、`/login/poll`（轮询进度）；`ensureLoginState` 优先沿用宿主
+  `auth.login.start` 已发的 state（缺失才新建），`runLoginImport` 走 `Accounts.ImportCookie`
+  做一次真实 Gemini 校验后 `finishLogin`，并回填 `CallbackID` 以 `SyncAccountIDToHostAuth`
+  同步 auth 文件。
+- `internal/cpa/login_bridge.html`（新增）：三步引导页（复制配对码 / 下载并加载扩展 / 等待结果），
+  另带手动粘贴 Cookie 输入框。占位符由 `strings.NewReplacer` 注入且全部经 `htmlEscape`
+  （Host 是可伪造输入，已加用例断言注入 `<script>` 被转义）。
+- `internal/cpa/login_extension.go` + `login_popup.js`（新增）：MV3 授权助手扩展，`archive/zip`
+  在内存里打包 `manifest.json` / `popup.html` / `popup.js`，用 `chrome.cookies` 读取
+  `SAPISID` / `__Secure-1PSID` 等 HttpOnly 会话 Cookie（页面 JS 的 `document.cookie` 读不到），
+  按配对码 `cpa|origin|state` 回传。
+- `internal/cpa/management.go`：登录面分发**必须前置于静态面板**，否则
+  `/v0/resource/plugins/gemini-web2api` 前缀会把登录页一起吞成面板 HTML；
+  `handleManagementRegister` 的 Resources 由 1 条扩为 5 条（`/login` 挂 Menu，
+  `/login/submit`、`/login/poll`、`/login/extension.zip` 不挂 Menu —— 不进控制台菜单，
+  但必须注册，否则宿主 `ServeResourceHTTP` 查不到路由会直接 404）。
+- `internal/cpa/auth.go`：`handleAuthLoginStart` 的返回 `URL` 由账号面板改指桥接页，
+  Metadata 增加 `pair_code` / `extension_url`；`loginSessionState` 记录 `CallbackID`。
+- `internal/cpa/webui.html`：登录区改为三列，新增方式一「一键授权（浏览器扩展回传）」
+  并标 `recommended`；方式二「本机 Chrome」补注「服务器部署时没有桌面浏览器，请改用方式一或方式三」。
+
+### 设计取舍 - 为什么提交端点是 GET
+
+宿主 `internal/pluginhost/management.go` 的 `ServeResourceHTTP` 开头即
+`if !strings.EqualFold(r.Method, http.MethodGet) { return false }`，且资源路由不向插件传递
+请求体；而资源路由是唯一免管理密钥、可浏览器直达的通道。因此 Cookie 走 query 传递，
+扩展与桥接页都用 `GET`。导入含一次真实 Gemini 校验（最长 30s），故 `/login/submit`
+立刻返回 `202 importing`，由 `/login/poll` 取最终结果，避免浏览器请求被代理层超时切断。
+
+### 已知
+
+- 上游 OAuth 续签链路是死代码：`auth.SetOAuthAndBound` / `auth.SetBoundSession` /
+  `AccountSource.Refresh` 均零调用点，`gemini/rotate.go` 的「会话失效 → refreshCookies」分支
+  永远走不到，会话失效即报 `ErrSignedOut`。本轮未接活，一键授权仍是「一次性导入 Cookie」，
+  长期保活依赖上游 `RotateCookies` 定期轮换。
+- 上游 155 个 Go 文件里 65 个超过 200 行（`internal/pluginapi/types.go` 1768 行、
+  `internal/balancer/balancer.go` 1237 行等），属原样 vendor 的历史形态，本轮未拆分。
+- `auth.go` / `management.go` / `internal/app/plugin_bridge.go` 三处 `gofmt -l` 仍报差异
+  （import 顺序、多余空行），上游 clone 同样如此，非本轮引入；保持原样以避免无关 diff。

@@ -1,0 +1,604 @@
+// Package requestdb 在本地 SQLite 中保存请求用量、小时与本地日汇总、可选的 gzip 压缩截断正文与 WARN 以上日志，并提供用量与日志查询接口
+package requestdb
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/luode0320/cpa-workbuddy-plugin/gemini-web2api/internal/logging"
+	"github.com/klauspost/compress/gzip"
+	_ "modernc.org/sqlite"
+)
+
+// BodyLimit 是单个请求或响应正文保存的最大字节数
+const BodyLimit = 64 << 10
+
+// usageRetention 是用量记录与汇总的保留时长
+const usageRetention = 90 * 24 * time.Hour
+
+// bodyRetention 是保留的最近正文条数
+const bodyRetention = 1000
+
+// responseRetention 是保存的 Responses 的保留时长，与 OpenAI 保存 Response 对象的 30 天一致
+const responseRetention = 30 * 24 * time.Hour
+
+// GeneratedRetention 是生成视频与缩略图自生成起的保留时长，与 Gemini API 生成视频在服务端保存的 2 天一致
+const GeneratedRetention = 48 * time.Hour
+
+// FilesLimit 是文件目录的总字节上限，超过时从最早的文件起删除
+const FilesLimit = 4 << 30
+
+// pruneInterval 是清理过期数据并交还空闲页的间隔
+const pruneInterval = time.Hour
+
+// batchLimit 是单个写事务合并的最大记录数
+const batchLimit = 256
+
+// commitWindow 是写入协程收到一条记录后等待合并后续记录的时长
+const commitWindow = 200 * time.Millisecond
+
+// queueLimit 是等待写入的最大记录数，队列已满时丢弃新记录
+const queueLimit = 4096
+
+// hourMS 是一小时的毫秒数
+const hourMS = int64(time.Hour / time.Millisecond)
+
+// rollupColumns 是小时与本地日汇总表的列，start 是分段起点
+const rollupColumns = `
+ start INTEGER NOT NULL, model TEXT NOT NULL, account TEXT NOT NULL, protocol TEXT NOT NULL,
+ state TEXT NOT NULL, status INTEGER NOT NULL, requests INTEGER NOT NULL,
+ input_tokens INTEGER NOT NULL, reasoning_tokens INTEGER NOT NULL, reply_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL,
+ duration_ms INTEGER NOT NULL, first_event_ms INTEGER NOT NULL, first_events INTEGER NOT NULL, queue_ms INTEGER NOT NULL,
+ duration_hist BLOB NOT NULL, first_event_hist BLOB NOT NULL, last_time INTEGER NOT NULL,
+ PRIMARY KEY (start, model, account, protocol, state, status)`
+
+const schema = `
+CREATE TABLE IF NOT EXISTS requests (
+ id TEXT PRIMARY KEY, time INTEGER NOT NULL, protocol TEXT NOT NULL, path TEXT NOT NULL,
+ model TEXT NOT NULL, provider_model TEXT NOT NULL, response_id TEXT NOT NULL, account TEXT NOT NULL,
+ status INTEGER NOT NULL, state TEXT NOT NULL, duration_ms INTEGER NOT NULL, first_event_ms INTEGER NOT NULL, queue_ms INTEGER NOT NULL,
+ input_tokens INTEGER NOT NULL, reasoning_tokens INTEGER NOT NULL, reply_tokens INTEGER NOT NULL,
+ total_tokens INTEGER NOT NULL, tool_calls INTEGER NOT NULL, error TEXT NOT NULL, attempts TEXT NOT NULL,
+ thinking TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS requests_time ON requests(time);
+CREATE INDEX IF NOT EXISTS requests_model_time ON requests(model, time);
+CREATE INDEX IF NOT EXISTS requests_account_time ON requests(account, time);
+CREATE INDEX IF NOT EXISTS requests_state_time ON requests(state, time);
+CREATE TABLE IF NOT EXISTS hours (` + rollupColumns + `) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS days (` + rollupColumns + `) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS request_bodies (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, time INTEGER NOT NULL,
+ request BLOB NOT NULL, request_size INTEGER NOT NULL, response BLOB NOT NULL, response_size INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS stored_responses (
+ id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, previous_id TEXT NOT NULL, background INTEGER NOT NULL,
+ status TEXT NOT NULL, response BLOB NOT NULL, input BLOB NOT NULL, conversation TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS stored_responses_created ON stored_responses(created_at);
+CREATE INDEX IF NOT EXISTS stored_responses_conversation ON stored_responses(conversation, created_at) WHERE conversation != '';
+CREATE INDEX IF NOT EXISTS stored_responses_unfinished ON stored_responses(status) WHERE background=1 AND status IN ('queued','in_progress');
+CREATE TABLE IF NOT EXISTS files (
+ id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, filename TEXT NOT NULL,
+ mime_type TEXT NOT NULL, bytes INTEGER NOT NULL, purpose TEXT NOT NULL, sha256 TEXT NOT NULL, source TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS files_created ON files(created_at);
+CREATE TABLE IF NOT EXISTS videos (
+ id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, protocol TEXT NOT NULL, status TEXT NOT NULL,
+ object TEXT NOT NULL, file_id TEXT NOT NULL, session TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS videos_created ON videos(created_at);
+CREATE TABLE IF NOT EXISTS sessions (
+ key TEXT PRIMARY KEY, cid TEXT NOT NULL, rid TEXT NOT NULL, rcid TEXT NOT NULL, token TEXT NOT NULL,
+ model_mode INTEGER NOT NULL, turns INTEGER NOT NULL, account TEXT NOT NULL, context_tokens INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expires_at);
+CREATE TABLE IF NOT EXISTS cooldowns (
+ account TEXT NOT NULL, model TEXT NOT NULL, until INTEGER NOT NULL, reason TEXT NOT NULL, PRIMARY KEY (account, model));
+CREATE TABLE IF NOT EXISTS model_catalogs (account TEXT PRIMARY KEY, catalog BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS model_renames (old TEXT PRIMARY KEY, current TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS logs (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL, level TEXT NOT NULL, request_id TEXT NOT NULL,
+ text TEXT NOT NULL, data TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS logs_time ON logs(time);
+CREATE INDEX IF NOT EXISTS logs_request_id ON logs(request_id);`
+
+// Body 是一次请求捕获的请求与响应正文及其原始字节数
+type Body struct {
+	Request      []byte
+	RequestSize  int64
+	Response     []byte
+	ResponseSize int64
+}
+
+// write 是写入协程处理的一条用量、正文、会话或日志，flushed 非空时表示提交此前排队的全部内容后关闭它
+type write struct {
+	info     *logging.RequestInfo
+	body     *RequestBody
+	sessions []StoredSession
+	log      *logging.Event
+	flushed  chan struct{}
+}
+
+// readConnections 是只读连接池的连接数
+const readConnections = 4
+
+// Store 串行批量写入请求账本与汇总，并提供聚合与明细查询；db 是单连接的写连接池，reads 是只读连接池
+type Store struct {
+	db      *sql.DB
+	reads   *sql.DB
+	writes  chan write
+	done    chan struct{}
+	capture atomic.Bool
+	dropped atomic.Int64
+	mu      sync.RWMutex
+	closed  bool
+}
+
+// Open 打开或创建账本数据库并启动写入协程
+func Open(path string) (*Store, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	options := url.Values{"_pragma": {"busy_timeout(10000)", "journal_mode(WAL)", "synchronous(NORMAL)", "journal_size_limit(524288)"}}
+	dsn := "file:" + filepath.ToSlash(path) + "?" + options.Encode()
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if err := useIncrementalVacuum(db); err != nil {
+		return nil, errors.Join(fmt.Errorf("初始化请求账本: %w", err), db.Close())
+	}
+	if err := applySchema(db); err != nil {
+		return nil, errors.Join(fmt.Errorf("初始化请求账本: %w", err), db.Close())
+	}
+	reads, err := sql.Open("sqlite", dsn+"&_query_only=1")
+	if err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
+	reads.SetMaxOpenConns(readConnections)
+	reads.SetMaxIdleConns(readConnections)
+	store := &Store{db: db, reads: reads, writes: make(chan write, queueLimit), done: make(chan struct{})}
+	if err := store.alignDays(); err != nil {
+		return nil, errors.Join(fmt.Errorf("重建本地日汇总: %w", err), reads.Close(), db.Close())
+	}
+	store.removeInterruptedUploads()
+	go store.run()
+	return store, nil
+}
+
+// Close 写完已排队的记录后关闭数据库
+func (store *Store) Close() error {
+	if store == nil {
+		return nil
+	}
+	store.mu.Lock()
+	if store.closed {
+		store.mu.Unlock()
+		return nil
+	}
+	store.closed = true
+	close(store.writes)
+	store.mu.Unlock()
+	<-store.done
+	return errors.Join(store.reads.Close(), store.db.Close())
+}
+
+// SetBodyCapture 设置是否保存请求与响应正文
+func (store *Store) SetBodyCapture(enabled bool) {
+	if store != nil {
+		store.capture.Store(enabled)
+	}
+}
+
+// BodyCapture 返回是否保存请求与响应正文
+func (store *Store) BodyCapture() bool {
+	return store != nil && store.capture.Load()
+}
+
+// Record 排队写入一条已结束请求的用量记录，body 非 nil 时同时保存截断到 BodyLimit 的正文，不等待落盘
+func (store *Store) Record(info logging.RequestInfo, body *Body) {
+	item := write{info: &info}
+	if body != nil {
+		item.body = &RequestBody{
+			ID: info.ID, Time: finishedAt(&info).UTC(), Request: truncate(body.Request), RequestSize: body.RequestSize,
+			Response: truncate(body.Response), ResponseSize: body.ResponseSize,
+		}
+	}
+	store.enqueue(item)
+}
+
+// finishedAt 返回请求的结束时间
+func finishedAt(info *logging.RequestInfo) time.Time {
+	return info.StartedAt.Add(time.Duration(info.DurationMS) * time.Millisecond)
+}
+
+// usageOf 返回请求的 token 用量，没有用量时为零
+func usageOf(info *logging.RequestInfo) logging.Usage {
+	if info.Usage == nil {
+		return logging.Usage{}
+	}
+	return *info.Usage
+}
+
+// truncate 返回正文前 BodyLimit 字节
+func truncate(data []byte) string {
+	return string(data[:min(len(data), BodyLimit)])
+}
+
+// enqueue 把记录交给写入协程，队列已满时计入丢弃数而不阻塞请求
+func (store *Store) enqueue(item write) {
+	if store == nil {
+		return
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if store.closed {
+		return
+	}
+	select {
+	case store.writes <- item:
+	default:
+		store.dropped.Add(1)
+	}
+}
+
+// run 把 commitWindow 内到达的记录合并为单个事务，查询前按 flush 请求提前提交，并每隔 pruneInterval 清理过期数据
+func (store *Store) run() {
+	defer close(store.done)
+	store.prune()
+	prune := time.NewTicker(pruneInterval)
+	defer prune.Stop()
+	window := time.NewTimer(commitWindow)
+	window.Stop()
+	var batch []write
+	commit := func() {
+		if len(batch) > 0 {
+			store.commit(batch)
+			batch = nil
+		}
+	}
+	for {
+		select {
+		case item, ok := <-store.writes:
+			if !ok {
+				commit()
+				return
+			}
+			if item.flushed != nil {
+				commit()
+				close(item.flushed)
+				continue
+			}
+			if len(batch) == 0 {
+				window.Reset(commitWindow)
+			}
+			if batch = append(batch, item); len(batch) == batchLimit {
+				commit()
+			}
+		case <-window.C:
+			commit()
+		case <-prune.C:
+			store.prune()
+		}
+	}
+}
+
+// flush 等待此前排队的内容全部提交，查询据此读到已结束的请求
+func (store *Store) flush() {
+	store.mu.RLock()
+	if store.closed {
+		store.mu.RUnlock()
+		return
+	}
+	flushed := make(chan struct{})
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	select {
+	case store.writes <- write{flushed: flushed}:
+		store.mu.RUnlock()
+	case <-store.done:
+		store.mu.RUnlock()
+		return
+	case <-timer.C:
+		store.mu.RUnlock()
+		return
+	}
+	select {
+	case <-flushed:
+	case <-store.done:
+	}
+}
+
+// commit 写入一批记录，记录写入失败与队列丢弃
+func (store *Store) commit(batch []write) {
+	if err := store.write(batch); err != nil {
+		logging.Error(logging.SourceService, "请求账本写入失败", "记录", len(batch), "错误", err)
+	}
+	if dropped := store.dropped.Swap(0); dropped > 0 {
+		logging.Warn(logging.SourceService, "请求账本写入队列已满", "丢弃", dropped)
+	}
+}
+
+// rollupKey 是汇总表的主键
+type rollupKey struct {
+	start    int64
+	model    string
+	account  string
+	protocol string
+	state    string
+	status   int
+}
+
+// keyOf 返回条目在指定分段起点下的汇总键
+func keyOf(start int64, value *entry) rollupKey {
+	return rollupKey{
+		start: start, model: value.model, account: value.account, protocol: value.protocol, state: value.state, status: value.status,
+	}
+}
+
+// collect 把条目累加到同键汇总，首次出现时保存副本
+func collect(target map[rollupKey]*entry, key rollupKey, value *entry) {
+	if current := target[key]; current != nil {
+		current.combine(value)
+		return
+	}
+	copied := value.clone()
+	copied.time = key.start
+	target[key] = copied
+}
+
+// write 在一个事务内写入记录与会话、累加小时与本地日汇总并裁剪正文条数
+func (store *Store) write(batch []write) (err error) {
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, tx.Rollback())
+		}
+	}()
+	hours, days := map[rollupKey]*entry{}, map[rollupKey]*entry{}
+	bodies := false
+	for _, item := range batch {
+		if info := item.info; info != nil {
+			attempts := info.Attempts
+			if attempts == nil {
+				attempts = []logging.Attempt{}
+			}
+			encoded, err := json.Marshal(attempts)
+			if err != nil {
+				return err
+			}
+			usage := usageOf(info)
+			result, err := tx.Exec(`INSERT OR IGNORE INTO requests (id,time,protocol,path,model,provider_model,response_id,account,status,state,duration_ms,first_event_ms,queue_ms,input_tokens,reasoning_tokens,reply_tokens,total_tokens,tool_calls,error,attempts,thinking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				info.ID, finishedAt(info).UnixMilli(), info.Protocol, info.Path, info.Model, info.ProviderModel, info.ResponseID,
+				info.Account, info.Status, info.State, info.DurationMS, info.FirstEventMS, info.QueueMS,
+				usage.InputTokens, usage.ReasoningTokens, usage.ReplyTokens, usage.TotalTokens, info.ToolCalls, info.Error, string(encoded), info.Thinking)
+			if err != nil {
+				return err
+			}
+			if inserted, err := result.RowsAffected(); err != nil {
+				return err
+			} else if inserted == 1 {
+				value := rowEntry(info)
+				day, _ := localDay(value.time)
+				collect(hours, keyOf(floorDiv(value.time, hourMS)*hourMS, value), value)
+				collect(days, keyOf(day, value), value)
+			}
+		}
+		if body := item.body; body != nil {
+			bodies = true
+			if _, err := tx.Exec(`INSERT OR REPLACE INTO request_bodies (id,time,request,request_size,response,response_size) VALUES (?,?,?,?,?,?)`,
+				body.ID, body.Time.UnixMilli(), compress([]byte(body.Request)), body.RequestSize, compress([]byte(body.Response)), body.ResponseSize); err != nil {
+				return err
+			}
+		}
+		for _, session := range item.sessions {
+			if err := saveSession(tx, session); err != nil {
+				return err
+			}
+		}
+		if event := item.log; event != nil {
+			data, err := json.Marshal(event)
+			if err != nil {
+				return err
+			}
+			requestID, text := "", event.Source+" "+event.Text()
+			if request := event.Request; request != nil {
+				requestID = request.ID
+				text = strings.Join([]string{text, request.ID, request.Model, request.Account, request.Error}, " ")
+			}
+			if _, err := tx.Exec(`INSERT INTO logs (time,level,request_id,text,data) VALUES (?,?,?,?,?)`,
+				event.Time.UnixMilli(), event.Level, requestID, text, string(data)); err != nil {
+				return err
+			}
+		}
+	}
+	for key, value := range hours {
+		if err := mergeRollup(tx, "hours", key, value); err != nil {
+			return err
+		}
+	}
+	for key, value := range days {
+		if err := mergeRollup(tx, "days", key, value); err != nil {
+			return err
+		}
+	}
+	if bodies {
+		if _, err := tx.Exec(`DELETE FROM request_bodies WHERE seq <= (SELECT MAX(seq) FROM request_bodies) - ?`, bodyRetention); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// mergeRollup 把本批记录累加到汇总表中已有的同键汇总
+func mergeRollup(tx *sql.Tx, table string, key rollupKey, value *entry) error {
+	existing := &entry{}
+	var durations, firstEvents []byte
+	err := tx.QueryRow(`SELECT requests, input_tokens, reasoning_tokens, reply_tokens, total_tokens, duration_ms, first_event_ms,
+ first_events, queue_ms, duration_hist, first_event_hist, last_time FROM `+table+`
+ WHERE start=? AND model=? AND account=? AND protocol=? AND state=? AND status=?`,
+		key.start, key.model, key.account, key.protocol, key.state, key.status).Scan(
+		&existing.requests, &existing.inputTokens, &existing.reasoningTokens, &existing.replyTokens, &existing.totalTokens,
+		&existing.durationMS, &existing.firstEventMS, &existing.firstEvents, &existing.queueMS, &durations, &firstEvents, &existing.lastTime)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return err
+	default:
+		if existing.duration, err = decodeCounts(durations); err != nil {
+			return err
+		}
+		if existing.firstEvent, err = decodeCounts(firstEvents); err != nil {
+			return err
+		}
+		value.combine(existing)
+	}
+	_, err = tx.Exec(`INSERT OR REPLACE INTO `+table+` VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		key.start, key.model, key.account, key.protocol, key.state, key.status, value.requests,
+		value.inputTokens, value.reasoningTokens, value.replyTokens, value.totalTokens,
+		value.durationMS, value.firstEventMS, value.firstEvents, value.queueMS,
+		value.duration.encode(), value.firstEvent.encode(), value.lastTime)
+	return err
+}
+
+// prune 删除超过保留期的数据并交还空闲页：请求记录与汇总从截止时间所在本地日的起点开始保留，使各层数据覆盖同一范围；Responses、视频任务与文件按各自的保留期删除
+func (store *Store) prune() {
+	now := time.Now()
+	day, _ := localDay(now.Add(-usageRetention).UnixMilli())
+	hour := floorDiv(day, hourMS) * hourMS
+	_, requestsErr := store.db.Exec(`DELETE FROM requests WHERE time < ?`, hour)
+	_, hoursErr := store.db.Exec(`DELETE FROM hours WHERE start < ?`, hour)
+	_, daysErr := store.db.Exec(`DELETE FROM days WHERE start < ?`, day)
+	_, logsErr := store.db.Exec(`DELETE FROM logs WHERE time < ?`, hour)
+	_, responsesErr := store.db.Exec(`DELETE FROM stored_responses WHERE created_at < ?`, now.Add(-responseRetention).UnixMilli())
+	_, videosErr := store.db.Exec(`DELETE FROM videos WHERE created_at < ?`, now.Add(-GeneratedRetention).UnixMilli())
+	store.purgeFiles(context.Background())
+	reclaimErr := reclaim(context.Background(), store.db)
+	if err := errors.Join(requestsErr, hoursErr, daysErr, logsErr, responsesErr, videosErr, reclaimErr); err != nil {
+		logging.Error(logging.SourceService, "请求账本清理失败", "错误", err)
+	}
+}
+
+// alignDays 在本地日汇总的起点与当前服务器时区不一致时，从小时汇总与原始记录重建全部本地日汇总
+func (store *Store) alignDays() (err error) {
+	rows, err := store.db.Query(`SELECT start FROM days GROUP BY start`)
+	if err != nil {
+		return err
+	}
+	aligned := true
+	for rows.Next() {
+		var start int64
+		if err := rows.Scan(&start); err != nil {
+			return errors.Join(err, rows.Close())
+		}
+		if day, _ := localDay(start); day != start {
+			aligned = false
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil || aligned {
+		return err
+	}
+	var earliest sql.NullInt64
+	if err := store.db.QueryRow(`SELECT MIN(start) FROM hours`).Scan(&earliest); err != nil {
+		return err
+	}
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, tx.Rollback())
+		}
+	}()
+	if _, err := tx.Exec(`DELETE FROM days`); err != nil {
+		return err
+	}
+	rebuilt, now := 0, time.Now().UnixMilli()
+	for start, end := localDay(earliest.Int64); earliest.Valid && start <= now; start, end = localDay(end) {
+		days := map[rollupKey]*entry{}
+		for _, part := range planHours(start, end, nil) {
+			if err := store.scan(context.Background(), part, nil, func(value *entry) { collect(days, keyOf(start, value), value) }); err != nil {
+				return err
+			}
+		}
+		for key, value := range days {
+			if err := mergeRollup(tx, "days", key, value); err != nil {
+				return err
+			}
+		}
+		rebuilt++
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	logging.Info(logging.SourceService, "请求账本已按服务器时区重建本地日汇总", "天数", rebuilt)
+	return nil
+}
+
+// RequestBody 返回请求保存的截断正文
+func (store *Store) RequestBody(ctx context.Context, id string) (RequestBody, error) {
+	store.flush()
+	body := RequestBody{ID: id}
+	var at int64
+	var request, response []byte
+	err := store.reads.QueryRowContext(ctx, `SELECT time,request,request_size,response,response_size FROM request_bodies WHERE id=?`, id).
+		Scan(&at, &request, &body.RequestSize, &response, &body.ResponseSize)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RequestBody{}, ErrRequestBodyNotFound
+	}
+	if err != nil {
+		return RequestBody{}, err
+	}
+	if request, err = decompress(request); err != nil {
+		return RequestBody{}, err
+	}
+	if response, err = decompress(response); err != nil {
+		return RequestBody{}, err
+	}
+	body.Time, body.Request, body.Response = time.UnixMilli(at).UTC(), string(request), string(response)
+	return body, nil
+}
+
+// gzipWriters 复用正文的 gzip 压缩器
+var gzipWriters = sync.Pool{New: func() any { return gzip.NewWriter(nil) }}
+
+// compress 以 gzip 压缩一段正文
+func compress(data []byte) []byte {
+	var buffer bytes.Buffer
+	writer := gzipWriters.Get().(*gzip.Writer)
+	defer gzipWriters.Put(writer)
+	writer.Reset(&buffer)
+	_, _ = writer.Write(data)
+	_ = writer.Close()
+	return buffer.Bytes()
+}
+
+// decompress 还原 gzip 压缩的正文
+func decompress(data []byte) ([]byte, error) {
+	reader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	return io.ReadAll(reader)
+}
+
+// floorDiv 返回向负无穷取整的整数除法结果
+func floorDiv(value, divisor int64) int64 {
+	quotient := value / divisor
+	if value%divisor != 0 && (value < 0) != (divisor < 0) {
+		quotient--
+	}
+	return quotient
+}

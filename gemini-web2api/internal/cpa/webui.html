@@ -1,0 +1,1358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gemini-Web2API 插件控制台 · CLIProxyAPI</title>
+<style>
+  :root {
+    --bg-base: #060913;
+    --glass-bg: rgba(17, 25, 40, 0.62);
+    --glass-bg-elevated: rgba(30, 41, 59, 0.55);
+    --glass-bg-subtle: rgba(15, 23, 42, 0.48);
+    --glass-input: rgba(9, 14, 26, 0.68);
+    --glass-border: rgba(255, 255, 255, 0.09);
+    --glass-border-strong: rgba(255, 255, 255, 0.16);
+    --glass-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.12);
+    --glass-shadow: 0 16px 40px -12px rgba(0, 0, 0, 0.55);
+    --text: #f1f5f9;
+    --text-secondary: #cbd5e1;
+    --muted: #8b9bb4;
+    --accent: #3b82f6;
+    --accent-glow: rgba(59, 130, 246, 0.32);
+    --success: #10b981;
+    --success-bg: rgba(16, 185, 129, 0.15);
+    --success-border: rgba(52, 211, 153, 0.32);
+    --warning: #f59e0b;
+    --warning-bg: rgba(245, 158, 11, 0.14);
+    --warning-border: rgba(251, 191, 36, 0.35);
+    --danger: #ef4444;
+    --danger-bg: rgba(239, 68, 68, 0.15);
+    --danger-border: rgba(248, 113, 113, 0.32);
+  }
+  * { box-sizing: border-box; }
+  ::selection {
+    background: rgba(59, 130, 246, 0.35);
+    color: #fff;
+  }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.4); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.28); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.45); }
+
+  body {
+    margin: 0;
+    padding: 28px 24px 48px;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+    background-color: var(--bg-base);
+    background-image:
+      radial-gradient(circle at 12% 8%, rgba(56, 189, 248, 0.16), transparent 38%),
+      radial-gradient(circle at 88% 14%, rgba(99, 102, 241, 0.16), transparent 42%),
+      radial-gradient(circle at 50% 88%, rgba(16, 185, 129, 0.10), transparent 45%);
+    background-attachment: fixed;
+    color: var(--text);
+    line-height: 1.5;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container { max-width: 1260px; margin: 0 auto; }
+
+  .top-header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    padding: 18px 22px;
+    margin-bottom: 20px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-highlight), var(--glass-shadow);
+    border-radius: 16px;
+  }
+  .brand-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  h1 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: #fff;
+  }
+  .subtitle {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    background: rgba(148, 163, 184, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  .badge.success {
+    background: var(--success-bg);
+    border-color: var(--success-border);
+    color: #34d399;
+  }
+  .badge.warning {
+    background: var(--warning-bg);
+    border-color: var(--warning-border);
+    color: #fbbf24;
+  }
+  .badge.danger {
+    background: var(--danger-bg);
+    border-color: var(--danger-border);
+    color: #f87171;
+  }
+  .badge.accent {
+    background: rgba(59, 130, 246, 0.16);
+    border-color: rgba(96, 165, 250, 0.35);
+    color: #93c5fd;
+  }
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 8px currentColor;
+  }
+
+  .auth-bar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  input, textarea, select {
+    background: var(--glass-input);
+    border: 1px solid var(--glass-border);
+    color: var(--text);
+    padding: 8px 12px;
+    border-radius: 9px;
+    font-size: 13px;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+    outline: none;
+  }
+  input::placeholder, textarea::placeholder { color: rgba(139, 155, 180, 0.65); }
+  input:focus, textarea:focus, select:focus {
+    border-color: rgba(96, 165, 250, 0.65);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+    background: rgba(9, 14, 26, 0.85);
+  }
+
+  button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: linear-gradient(180deg, rgba(59, 130, 246, 0.92), rgba(37, 99, 235, 0.92));
+    color: #fff;
+    border: 1px solid rgba(147, 197, 253, 0.32);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 4px 12px rgba(37, 99, 235, 0.25);
+    padding: 8px 14px;
+    border-radius: 9px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.16s ease;
+    white-space: nowrap;
+  }
+  button:hover:not(:disabled) {
+    background: linear-gradient(180deg, rgba(96, 165, 250, 0.96), rgba(37, 99, 235, 0.98));
+    transform: translateY(-1px);
+  }
+  button:active:not(:disabled) { transform: translateY(0); }
+  button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  button.secondary {
+    background: rgba(51, 65, 85, 0.48);
+    border: 1px solid var(--glass-border-strong);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    color: var(--text-secondary);
+  }
+  button.secondary:hover:not(:disabled) {
+    background: rgba(71, 85, 105, 0.65);
+    color: #fff;
+  }
+
+  button.success {
+    background: linear-gradient(180deg, rgba(16, 185, 129, 0.92), rgba(5, 150, 105, 0.92));
+    border-color: rgba(110, 231, 183, 0.35);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 4px 14px rgba(16, 185, 129, 0.25);
+  }
+  button.success:hover:not(:disabled) {
+    background: linear-gradient(180deg, rgba(52, 211, 153, 0.95), rgba(5, 150, 105, 0.98));
+  }
+
+  button.warning {
+    background: linear-gradient(180deg, rgba(245, 158, 11, 0.95), rgba(217, 119, 6, 0.95));
+    border-color: rgba(253, 230, 138, 0.4);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 4px 12px rgba(245, 158, 11, 0.22);
+    color: #090d16;
+    font-weight: 600;
+  }
+  button.warning:hover:not(:disabled) {
+    background: linear-gradient(180deg, rgba(251, 191, 36, 0.98), rgba(217, 119, 6, 1));
+    color: #090d16;
+  }
+
+  button.danger {
+    background: rgba(239, 68, 68, 0.16);
+    border: 1px solid rgba(248, 113, 113, 0.32);
+    box-shadow: none;
+    color: #fca5a5;
+  }
+  button.danger:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.85);
+    color: #fff;
+  }
+
+  button.sm {
+    padding: 5px 10px;
+    font-size: 12px;
+    border-radius: 7px;
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  @media (max-width: 960px) {
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 560px) {
+    .stats-grid { grid-template-columns: 1fr; }
+  }
+
+  .glass-card {
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-highlight), var(--glass-shadow);
+    border-radius: 16px;
+    padding: 20px 22px;
+    margin-bottom: 20px;
+  }
+  .stat-card {
+    margin-bottom: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-height: 128px;
+  }
+  .stat-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--muted);
+  }
+  .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 6px 0 10px;
+    font-variant-numeric: tabular-nums;
+    color: #fff;
+  }
+  .stat-footer {
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .section-title {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .login-grid {
+    display: grid;
+    grid-template-columns: 1.05fr 1fr 1.15fr;
+    gap: 16px;
+    align-items: stretch;
+  }
+  @media (max-width: 960px) {
+    .login-grid { grid-template-columns: 1fr; }
+  }
+  .method-panel {
+    background: var(--glass-bg-subtle);
+    border: 1px solid var(--glass-border);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .method-panel.recommended {
+    background: linear-gradient(145deg, rgba(16, 185, 129, 0.09), rgba(15, 23, 42, 0.55));
+    border-color: rgba(52, 211, 153, 0.25);
+  }
+  .method-title {
+    font-weight: 600;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: #fff;
+  }
+  .method-desc {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 6px 0 14px;
+    line-height: 1.55;
+  }
+  .field-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: 5px;
+    display: block;
+  }
+  .row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .row:last-child { margin-bottom: 0; }
+
+  .table-wrap {
+    overflow-x: auto;
+    border-radius: 12px;
+    border: 1px solid var(--glass-border);
+    background: rgba(9, 14, 26, 0.38);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+  th, td {
+    text-align: left;
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    vertical-align: middle;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr { transition: background 0.15s ease; }
+  tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
+  th {
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 12px;
+    background: rgba(15, 23, 42, 0.55);
+    white-space: nowrap;
+  }
+
+  .cooldown-pill-box {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 3px;
+    background: rgba(245, 158, 11, 0.11);
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    border-radius: 8px;
+    padding: 6px 10px;
+    margin: 2px 0;
+    max-width: 280px;
+  }
+  .cooldown-pill-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+  }
+  .cooldown-pill-time {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: #fde68a;
+  }
+  .cooldown-pill-reason {
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 256px;
+  }
+
+  .proxy-editor {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: nowrap;
+  }
+
+  .logs {
+    background: rgba(6, 9, 18, 0.72);
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    padding: 12px 14px;
+    max-height: 280px;
+    overflow-y: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .log-line {
+    padding: 4px 0;
+    border-bottom: 1px dashed rgba(255, 255, 255, 0.05);
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    line-height: 1.45;
+  }
+  .log-line:last-child { border-bottom: none; }
+  .log-time { color: var(--muted); white-space: nowrap; font-size: 11px; }
+  .log-lvl {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .log-lvl.INFO { background: rgba(59, 130, 246, 0.16); color: #93c5fd; }
+  .log-lvl.WARN { background: rgba(245, 158, 11, 0.18); color: #fcd34d; }
+  .log-lvl.ERROR { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
+  .log-src { color: #38bdf8; white-space: nowrap; font-size: 11px; }
+  .log-msg { color: var(--text-secondary); word-break: break-all; }
+
+  .toast {
+    position: fixed;
+    top: 22px;
+    right: 24px;
+    z-index: 9999;
+    max-width: 440px;
+    padding: 12px 16px;
+    border-radius: 12px;
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.65);
+    display: none;
+    font-size: 13px;
+    font-weight: 500;
+    animation: toastIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+</style>
+</head>
+<body>
+<div id="toast" class="toast"></div>
+
+<div class="container">
+  <header class="top-header">
+    <div>
+      <div class="brand-row">
+        <h1>Gemini-Web2API 插件控制台</h1>
+        <span id="stateBadge" class="badge"><span class="status-dot"></span>加载中</span>
+        <span id="guestBadge" class="badge accent">访客会话: 检测中</span>
+        <button id="guestRelaunchBtn" class="secondary sm" onclick="relaunchGuestSession()" style="padding:3px 9px; font-size:11px;">重启访客</button>
+        <button id="guestStopBtn" class="secondary sm" onclick="stopGuestSession()" style="padding:3px 9px; font-size:11px;">停止访客</button>
+      </div>
+      <div class="subtitle">
+        Google Gemini Web (gemini.google.com) · Chrome TLS 指纹与 Cookie/OAuth 自动轮换 · 原生支持 OpenAI / Responses / Claude / Gemini / Imagen / Veo
+      </div>
+    </div>
+    <div class="auth-bar">
+      <span id="keyStatusBadge" class="badge warning">未填入管理密钥</span>
+      <input type="password" id="mgmtKey" placeholder="输入 CPA 管理密钥" style="width: 240px;" oninput="onKeyInputChanged()" />
+      <button onclick="saveKeyAndReload()">保存密钥</button>
+    </div>
+  </header>
+
+  <div class="stats-grid">
+    <div class="glass-card stat-card">
+      <div class="stat-header">
+        <span>生成服务状态</span>
+        <span class="status-dot" id="statStateDot" style="color:var(--success);"></span>
+      </div>
+      <div class="stat-value" id="statState">-</div>
+      <div class="stat-footer">
+        <button id="serviceToggleBtn" class="success sm" onclick="toggleService()" style="width:100%;">启动服务</button>
+      </div>
+    </div>
+
+    <div class="glass-card stat-card">
+      <div class="stat-header">
+        <span>就绪 / 总账户数</span>
+      </div>
+      <div class="stat-value" id="statAccounts">0 / 0</div>
+      <div class="stat-footer">
+        <button class="secondary sm" onclick="syncAuthFiles()" style="width:100%;">同步至 CPA 凭证目录</button>
+      </div>
+    </div>
+
+    <div class="glass-card stat-card">
+      <div class="stat-header">
+        <span>已发现 Gemini 模型</span>
+      </div>
+      <div class="stat-value" id="statModels">0</div>
+      <div class="stat-footer">含 Nano Banana 2、Veo、Deep Research 等</div>
+    </div>
+
+    <div class="glass-card stat-card">
+      <div class="stat-header">
+        <span>冷却中 / 需重登账户</span>
+      </div>
+      <div class="stat-value" id="statCooldown">0 / 0</div>
+      <div class="stat-footer">支持按单账号查看结束时间并单独解除</div>
+    </div>
+  </div>
+
+  <div class="glass-card">
+    <div class="section-header">
+      <h2 class="section-title">添加 / 登录 Google Gemini Web 账户</h2>
+      <span style="font-size:12px; color:var(--muted);">支持本机 Chrome 独立窗口登录（自动关闭并入库）或粘贴 Cookie 导入</span>
+    </div>
+
+    <div class="login-grid">
+      <div class="method-panel recommended">
+        <div>
+          <div class="method-title">
+            <span>方式一：一键授权（浏览器扩展回传）</span>
+            <span class="badge success">推荐 · 免抓包免粘贴</span>
+          </div>
+          <div class="method-desc">
+            打开授权页拿到配对码，用「浏览器授权助手」扩展在已登录 Google 的浏览器里一键推送会话 Cookie。
+            Cookie 是 HttpOnly，页面脚本读不到，扩展是唯一能自动取到的载体。
+          </div>
+        </div>
+        <div class="row" style="margin-top:4px;">
+          <button class="success" onclick="openLoginBridge()" style="width:100%; padding:10px 16px; font-weight:600;">
+            🔐 打开一键授权页
+          </button>
+        </div>
+      </div>
+
+      <div class="method-panel">
+        <div>
+          <div class="method-title">
+            <span>方式二：本机 Chrome 独立窗口登录</span>
+            <span class="badge">需本机有 Chrome</span>
+          </div>
+          <div id="chromeLoginHint" class="method-desc">
+            将启动隔离的本机 Chrome 无痕窗口（使用独立临时目录，不读取本机已有浏览器数据），您在窗口中登录 Google 账号后插件会自动提取凭证并关闭窗口。服务器部署时没有桌面浏览器，请改用方式一或方式三。
+          </div>
+          <div style="margin-bottom: 12px;">
+            <label class="field-label" for="chromeLoginProxy">登录专属单账户代理（可选，留空则使用全局或直连）</label>
+            <input type="text" id="chromeLoginProxy" placeholder="例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" style="width:100%;" />
+          </div>
+        </div>
+        <div class="row" style="margin-top:4px;">
+          <button id="chromeLoginBtn" class="success" onclick="loginWithChromeBrowser()" style="width:100%; padding:10px 16px; font-weight:600;">
+            🌐 启动本机 Chrome 无痕登录
+          </button>
+        </div>
+      </div>
+
+      <div class="method-panel">
+        <div>
+          <div class="method-title">
+            <span>方式三：手动粘贴 Cookie / StorageState 导入</span>
+            <span class="badge">适用于无桌面 / 远程服务器</span>
+          </div>
+          <div class="method-desc">
+            支持粘贴请求头 Cookie（含 SAPISID 与 __Secure-1PSID）、Cookie-Editor JSON、Netscape cookies.txt 或 storage-state.json。
+          </div>
+          <div class="row">
+            <input type="text" id="accLabel" placeholder="账户标识或邮箱 (留空自动从页面识别)" style="flex:1; min-width:170px;" />
+            <input type="text" id="cookieProxy" placeholder="此账号代理 (可选，如 http://127.0.0.1:7890)" style="flex:1; min-width:190px;" />
+            <input type="number" id="accAuthUser" placeholder="authuser" value="0" style="width:82px;" title="Google 多账号会话序号 (authuser，默认 0)" />
+          </div>
+          <div class="row">
+            <textarea id="accCookies" rows="2" style="width:100%; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px;" placeholder="在此粘贴 Cookie 请求头、Cookie-Editor JSON、cookies.txt 或 storage-state.json 内容..."></textarea>
+          </div>
+        </div>
+        <div class="row" style="margin-top:4px;">
+          <button onclick="importCookieAccount()" style="width:100%;">导入 Cookie / StorageState 账户</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="glass-card">
+    <div class="section-header">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <h2 class="section-title">账户池与会话状态</h2>
+        <span id="accountPoolBadge" class="badge">0 个账户</span>
+      </div>
+      <button class="secondary sm" onclick="loadStatus()">刷新列表</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>账户 ID / 邮箱</th>
+            <th>状态</th>
+            <th>来源 / 等级</th>
+            <th>可用模型 (窗口)</th>
+            <th>单账户代理 (支持随时修改)</th>
+            <th>冷却结束时间 / 状态摘要</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="accountsBody">
+          <tr><td colspan="7" style="color:var(--muted); text-align:center; padding:24px;">暂无账户数据</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="glass-card">
+    <div class="section-header">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <h2 class="section-title">冷却中账户一览</h2>
+        <span id="cooldownCountBadge" class="badge success">0 项冷却</span>
+      </div>
+      <span style="font-size:12px; color:var(--muted);">展示各账户冷却范围、精确恢复时间、实时倒计时与完整上游原因</span>
+    </div>
+    <div id="cooldownOverviewBox">
+      <div style="color:var(--muted); font-size:13px;">当前没有处于冷却中的账户或模型</div>
+    </div>
+  </div>
+
+  <div class="glass-card" style="margin-bottom:0;">
+    <div class="section-header">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <h2 class="section-title">运行日志</h2>
+        <span style="font-size:12px; color:var(--muted);">最近 80 条实时事件</span>
+      </div>
+      <button class="secondary sm" onclick="loadLogs()">刷新日志</button>
+    </div>
+    <div class="logs" id="logsBox">等待连接...</div>
+  </div>
+</div>
+
+<script>
+let lastRejectedKey = null;
+let latestAccounts = [];
+let latestCooldowns = [];
+let editingProxyAccountId = null;
+let editingProxyDraft = '';
+let toastTimer = null;
+
+function updateKeyBadge() {
+  const badge = document.getElementById('keyStatusBadge');
+  const input = document.getElementById('mgmtKey');
+  if (!badge || !input) return;
+  const k = input.value.trim();
+  if (!k) {
+    badge.textContent = '未填入管理密钥';
+    badge.className = 'badge warning';
+    input.style.borderColor = '';
+  } else if (lastRejectedKey !== null && k === lastRejectedKey) {
+    badge.textContent = '密钥无效 (已防封拦截)';
+    badge.className = 'badge danger';
+    input.style.borderColor = 'var(--danger)';
+  } else {
+    badge.textContent = '已配置管理密钥';
+    badge.className = 'badge success';
+    input.style.borderColor = '';
+  }
+}
+
+function onKeyInputChanged() {
+  updateKeyBadge();
+}
+
+function getKey() {
+  const input = document.getElementById('mgmtKey');
+  if (input && input.value.trim()) {
+    updateKeyBadge();
+    return input.value.trim();
+  }
+  const params = new URLSearchParams(window.location.search);
+  const urlKey = params.get('key') || params.get('management_key') || params.get('token');
+  if (urlKey && urlKey.trim()) {
+    const cleanKey = urlKey.trim();
+    input.value = cleanKey;
+    localStorage.setItem('cpa_gemini_web2api_key', cleanKey);
+    params.delete('key');
+    params.delete('management_key');
+    params.delete('token');
+    const cleanQuery = params.toString();
+    window.history.replaceState({}, '', window.location.pathname + (cleanQuery ? ('?' + cleanQuery) : '') + window.location.hash);
+    updateKeyBadge();
+    return cleanKey;
+  }
+  const candidates = ['cpa_gemini_web2api_key', 'cpa_aistudio2api_key', 'management_key', 'cpa-management-key', 'secret-key', 'secretKey', 'managementKey', 'apiKey', 'token'];
+  const stores = [localStorage, sessionStorage];
+  try {
+    if (window.parent && window.parent !== window && window.parent.location.origin === window.location.origin && window.parent.localStorage) {
+      stores.push(window.parent.localStorage);
+    }
+  } catch (_) {}
+  for (const store of stores) {
+    for (const k of candidates) {
+      try {
+        const v = store.getItem(k);
+        if (v && v.trim()) {
+          input.value = v.trim();
+          updateKeyBadge();
+          return v.trim();
+        }
+      } catch (_) {}
+    }
+  }
+  updateKeyBadge();
+  return '';
+}
+
+function saveKeyAndReload() {
+  const k = document.getElementById('mgmtKey').value.trim();
+  if (k) {
+    localStorage.setItem('cpa_gemini_web2api_key', k);
+    if (lastRejectedKey === k) lastRejectedKey = null;
+    showToast('管理密钥已保存，正在加载运行状态...', false);
+  } else {
+    localStorage.removeItem('cpa_gemini_web2api_key');
+    lastRejectedKey = null;
+    showToast('已清除保存的管理密钥', false);
+  }
+  updateKeyBadge();
+  loadStatus();
+  loadLogs();
+}
+
+function showToast(msg, isErr) {
+  const el = document.getElementById('toast');
+  if (!el) return;
+  if (toastTimer) clearTimeout(toastTimer);
+  el.style.display = 'block';
+  el.style.background = isErr ? 'rgba(127, 29, 29, 0.82)' : 'rgba(6, 78, 59, 0.82)';
+  el.style.border = isErr ? '1px solid rgba(248, 113, 113, 0.45)' : '1px solid rgba(52, 211, 153, 0.45)';
+  el.style.color = isErr ? '#fecaca' : '#a7f3d0';
+  el.textContent = msg;
+  toastTimer = setTimeout(() => { el.style.display = 'none'; }, 4800);
+}
+
+async function apiCall(path, method = 'GET', body = null) {
+  const headers = { 'Content-Type': 'application/json' };
+  const isMgmtRoute = path.startsWith('/v0/management/');
+  const key = getKey();
+  if (isMgmtRoute) {
+    if (!key) {
+      const input = document.getElementById('mgmtKey');
+      if (input) {
+        input.focus();
+        input.style.borderColor = 'var(--warning)';
+      }
+      throw new Error('请先在右上角填入 CPA 管理密钥并点击「保存密钥」');
+    }
+    if (lastRejectedKey !== null && key === lastRejectedKey) {
+      const input = document.getElementById('mgmtKey');
+      if (input) input.focus();
+      throw new Error('当前管理密钥验证失败 (401/403)，为防止触发 CPA IP 封禁已拦截请求，请修改正确的密钥后点击「保存密钥」');
+    }
+    headers['Authorization'] = 'Bearer ' + key;
+    headers['X-Management-Key'] = key;
+  }
+  const opts = { method, headers };
+  if (body !== null) opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (isMgmtRoute && (res.status === 401 || res.status === 403)) {
+      lastRejectedKey = key;
+      updateKeyBadge();
+      throw new Error('CPA 管理密钥错误 (HTTP ' + res.status + ')，已停止重复请求以防止 IP 被封禁，请核对右上角管理密钥');
+    }
+    throw new Error(data.error || data.message || ('HTTP ' + res.status));
+  }
+  return data;
+}
+
+async function loadStatus() {
+  if (!getKey()) {
+    const badge = document.getElementById('stateBadge');
+    if (badge) {
+      badge.innerHTML = '<span class="status-dot"></span>待填入密钥';
+      badge.className = 'badge warning';
+    }
+    const tbody = document.getElementById('accountsBody');
+    if (tbody) {
+      tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted); text-align:center; padding:26px;">请先在页面右上角输入 CPA 管理密钥并点击「保存密钥」以加载账户池与状态</td></tr>';
+    }
+    return;
+  }
+  try {
+    const data = await apiCall('/v0/management/gemini-web2api/status');
+    const st = data.status || {};
+    const counts = st.accounts || {};
+    const state = (st.state || 'STOPPED').toUpperCase();
+    const isRunning = Boolean(st.running || state === 'RUNNING');
+    document.getElementById('statState').textContent = state;
+    const dot = document.getElementById('statStateDot');
+    if (dot) dot.style.color = isRunning ? 'var(--success)' : 'var(--warning)';
+    const badge = document.getElementById('stateBadge');
+    badge.innerHTML = '<span class="status-dot"></span>' + escapeHtml(state);
+    badge.className = 'badge ' + (isRunning ? 'success' : 'warning');
+
+    const toggleBtn = document.getElementById('serviceToggleBtn');
+    if (toggleBtn) {
+      toggleBtn.dataset.running = isRunning ? 'true' : 'false';
+      if (isRunning) {
+        toggleBtn.textContent = '停止生成服务';
+        toggleBtn.className = 'danger sm';
+        toggleBtn.disabled = false;
+      } else {
+        toggleBtn.textContent = '启动生成服务';
+        toggleBtn.className = 'success sm';
+        toggleBtn.disabled = false;
+      }
+    }
+    const guestBadge = document.getElementById('guestBadge');
+    if (guestBadge) {
+      const gState = st.guest_state || 'disabled';
+      guestBadge.textContent = '访客会话: ' + gState;
+      guestBadge.className = 'badge ' + (gState === 'ready' ? 'success' : 'accent');
+    }
+
+    document.getElementById('statAccounts').textContent = (counts.ready || 0) + ' / ' + (counts.total || 0);
+    document.getElementById('statModels').textContent = data.models_count || 0;
+
+    latestAccounts = data.accounts || [];
+    latestCooldowns = deduplicateCooldowns(data.cooldowns || []);
+    const poolBadge = document.getElementById('accountPoolBadge');
+    if (poolBadge) {
+      poolBadge.textContent = latestAccounts.length + ' 个账户';
+    }
+
+    const cooldownAccountsSet = new Set(latestCooldowns.map(c => String(c.account_id || '').toLowerCase()));
+    for (const acc of latestAccounts) {
+      if (acc.state === 'cooldown') cooldownAccountsSet.add(String(acc.id || '').toLowerCase());
+    }
+    const effectiveCooldownCount = Math.max(counts.cooldown || 0, cooldownAccountsSet.size);
+    document.getElementById('statCooldown').textContent = effectiveCooldownCount + ' / ' + (counts.auth_required || 0);
+
+    renderAccounts(latestAccounts, latestCooldowns);
+    renderCooldownOverview(latestCooldowns);
+  } catch (e) {
+    showToast('读取状态失败: ' + e.message, true);
+  }
+}
+
+function deduplicateCooldowns(rawList) {
+  const map = new Map();
+  for (const item of (rawList || [])) {
+    if (!item || !item.account_id) continue;
+    const scope = item.scope || item.model_id || '*';
+    const key = String(item.account_id).toLowerCase() + '|' + scope;
+    const existing = map.get(key);
+    if (!existing || new Date(item.until) > new Date(existing.until)) {
+      map.set(key, {
+        account_id: item.account_id,
+        account_label: item.account_label || item.account_id,
+        channel: scope === '*' ? 'all' : (item.channel || 'web'),
+        model_id: scope === '*' ? '全部模型 (全局冷却)' : (item.model_id || scope),
+        scope: scope,
+        until: item.until,
+        reason: item.reason || ''
+      });
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => new Date(a.until) - new Date(b.until));
+}
+
+function formatCooldownEndTime(untilStr) {
+  if (!untilStr) return '-';
+  const d = new Date(untilStr);
+  if (isNaN(d.getTime())) return String(untilStr);
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+    pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+function formatCooldownRemaining(untilStr) {
+  if (!untilStr) return '';
+  const d = new Date(untilStr);
+  if (isNaN(d.getTime())) return '';
+  const diffSec = Math.max(0, Math.ceil((d.getTime() - Date.now()) / 1000));
+  if (diffSec <= 0) return '即将恢复';
+  const h = Math.floor(diffSec / 3600);
+  const m = Math.floor((diffSec % 3600) / 60);
+  const s = diffSec % 60;
+  if (h > 0) return '剩余 ' + h + '小时' + m + '分' + String(s).padStart(2, '0') + '秒';
+  if (m > 0) return '剩余 ' + m + '分' + String(s).padStart(2, '0') + '秒';
+  return '剩余 ' + s + '秒';
+}
+
+function renderAccounts(accounts, cooldowns) {
+  const tbody = document.getElementById('accountsBody');
+  if (!accounts.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted); text-align:center; padding:26px;">暂无已导入账户（当前可自动使用访客会话），请使用上方「启动 Chrome 无痕窗口登录」或粘贴 Cookie 导入</td></tr>';
+    return;
+  }
+  const cdByAccount = new Map();
+  for (const c of (cooldowns || [])) {
+    const key = String(c.account_id || '').toLowerCase();
+    if (!cdByAccount.has(key)) cdByAccount.set(key, []);
+    cdByAccount.get(key).push(c);
+  }
+  tbody.innerHTML = accounts.map(acc => {
+    const accKey = String(acc.id || '').toLowerCase();
+    const accCooldowns = cdByAccount.get(accKey) || [];
+    const hasCooldown = acc.state === 'cooldown' || accCooldowns.length > 0;
+    let badgeClass = '';
+    if (acc.state === 'ready') badgeClass = 'success';
+    else if (acc.state === 'cooldown' || acc.state === 'initializing') badgeClass = 'warning';
+    else badgeClass = 'danger';
+
+    let proxyCell = '';
+    if (editingProxyAccountId === acc.id) {
+      proxyCell =
+        '<div class="proxy-editor">' +
+          '<input type="text" id="proxyInput_' + escapeHtml(acc.id) + '" value="' + escapeHtml(editingProxyDraft) + '" placeholder="http://127.0.0.1:7890 (留空代理池)" style="width:195px; padding:5px 9px; font-size:12px;" />' +
+          '<button class="success sm" onclick="saveAccountProxy(\'' + escapeJs(acc.id) + '\')">保存</button>' +
+          '<button class="secondary sm" onclick="saveAccountProxy(\'' + escapeJs(acc.id) + '\', \'direct\')">直连</button>' +
+          '<button class="secondary sm" onclick="cancelEditProxy()">取消</button>' +
+        '</div>';
+    } else {
+      const proxyLabel = acc.proxy
+        ? '<span style="color:#93c5fd; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;">' + escapeHtml(acc.proxy) + '</span>'
+        : '<span style="color:var(--muted);">全局 / 直连</span>';
+      proxyCell =
+        '<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; min-width:160px;">' +
+          '<div>' + proxyLabel + '</div>' +
+          '<button class="secondary sm" onclick="openEditProxy(\'' + escapeJs(acc.id) + '\', \'' + escapeJs(acc.proxy || '') + '\')">设置代理</button>' +
+        '</div>';
+    }
+
+    let detailParts = [];
+    for (const c of accCooldowns) {
+      const endText = formatCooldownEndTime(c.until);
+      const remText = formatCooldownRemaining(c.until);
+      const title = c.scope === '*' ? '全局冷却' : c.model_id;
+      detailParts.push(
+        '<div class="cooldown-pill-box" title="' + escapeHtml(c.reason || '') + '">' +
+          '<div class="cooldown-pill-top">' +
+            '<strong style="color:#fbbf24;">' + escapeHtml(title) + '</strong>' +
+            '<span class="badge warning" data-until="' + escapeHtml(c.until) + '" style="font-size:10px; padding:1px 7px;">' + escapeHtml(remText) + '</span>' +
+          '</div>' +
+          '<div class="cooldown-pill-time">结束: ' + escapeHtml(endText) + '</div>' +
+          (c.reason ? '<div class="cooldown-pill-reason">' + escapeHtml(c.reason) + '</div>' : '') +
+        '</div>'
+      );
+    }
+    const rawMsg = acc.message || '';
+    if (rawMsg && !accCooldowns.some(c => c.reason === rawMsg)) {
+      detailParts.push('<div style="color:var(--muted); font-size:12px; max-width:260px;">' + escapeHtml(rawMsg) + '</div>');
+    }
+    const detailHtml = detailParts.length ? detailParts.join('') : '<span style="color:var(--muted);">正常就绪</span>';
+
+    const clearCooldownBtn = hasCooldown
+      ? '<button class="warning sm" onclick="clearCooldowns(\'' + escapeJs(acc.id) + '\', \'\')">清除冷却</button>'
+      : '';
+
+    const tierText = (acc.benefit_tier || 'FREE').toUpperCase();
+    const tierBadgeClass = tierText.includes('PRO') || tierText.includes('PAID') || tierText.includes('ULTRA') || tierText.includes('ADVANCED') ? 'accent' : '';
+    const ctxText = acc.context_window ? (' (' + Math.round(acc.context_window / 1024) + 'K)') : '';
+    const emailSub = (acc.email && acc.email !== acc.id) ? ('<div style="font-size:11px; color:var(--muted);">' + escapeHtml(acc.email) + '</div>') : '';
+
+    return '<tr>' +
+      '<td><strong style="color:#fff;">' + escapeHtml(acc.id) + '</strong>' + emailSub + '</td>' +
+      '<td><span class="badge ' + badgeClass + '"><span class="status-dot"></span>' + escapeHtml(acc.state) + '</span></td>' +
+      '<td><span class="badge ' + tierBadgeClass + '">' + escapeHtml(acc.benefit_tier || 'FREE') + '</span> <span style="font-size:11px; color:var(--muted);">' + escapeHtml(acc.source || 'cookie') + '</span></td>' +
+      '<td style="font-weight:600;">' + (acc.models ? acc.models.length : 0) + escapeHtml(ctxText) + '</td>' +
+      '<td>' + proxyCell + '</td>' +
+      '<td>' + detailHtml + '</td>' +
+      '<td><div style="display:flex; gap:6px; flex-wrap:nowrap; align-items:center;">' +
+        clearCooldownBtn +
+        '<button class="sm" onclick="reloginAccount(\'' + escapeJs(acc.id) + '\', \'' + escapeJs(acc.proxy || '') + '\')">无痕重登</button>' +
+        '<button class="secondary sm" onclick="refreshAccount(\'' + escapeJs(acc.id) + '\')">重新验证</button>' +
+        '<button class="secondary sm" onclick="toggleAccount(\'' + escapeJs(acc.id) + '\', ' + (!acc.enabled) + ')">' + (acc.enabled ? '禁用' : '启用') + '</button>' +
+        '<button class="danger sm" onclick="deleteAccount(\'' + escapeJs(acc.id) + '\')">删除</button>' +
+      '</div></td>' +
+    '</tr>';
+  }).join('');
+}
+
+function renderCooldownOverview(cooldowns) {
+  const box = document.getElementById('cooldownOverviewBox');
+  const badge = document.getElementById('cooldownCountBadge');
+  if (!box) return;
+  const active = (cooldowns || []).filter(c => {
+    const t = new Date(c.until).getTime();
+    return isNaN(t) || t > Date.now() - 1000;
+  });
+  if (badge) {
+    badge.textContent = active.length ? (active.length + ' 项冷却中') : '0 项冷却';
+    badge.className = 'badge ' + (active.length ? 'warning' : 'success');
+  }
+  if (!active.length) {
+    box.innerHTML = '<div style="padding:14px 16px; border-radius:10px; background:rgba(16,185,129,0.07); border:1px solid rgba(52,211,153,0.18); color:#6ee7b7; font-size:13px;">所有账户与模型均处于正常可用状态，无冷却限制</div>';
+    return;
+  }
+  box.innerHTML = '<div class="table-wrap"><table>' +
+    '<thead><tr>' +
+      '<th>账户 ID</th>' +
+      '<th>冷却范围 / 模型</th>' +
+      '<th>冷却结束时间</th>' +
+      '<th>剩余恢复倒计时</th>' +
+      '<th>冷却原因详情</th>' +
+      '<th>操作</th>' +
+    '</tr></thead>' +
+    '<tbody>' +
+    active.map(c => {
+      const endText = formatCooldownEndTime(c.until);
+      const remText = formatCooldownRemaining(c.until);
+      const scopeBadge = c.scope === '*'
+        ? '<span class="badge warning">全局冷却 (全部模型)</span>'
+        : '<span class="badge accent">' + escapeHtml(c.model_id) + '</span>';
+      return '<tr>' +
+        '<td><strong style="color:#fff;">' + escapeHtml(c.account_id) + '</strong></td>' +
+        '<td style="white-space:nowrap;">' + scopeBadge + '</td>' +
+        '<td style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#fde68a; font-weight:600; white-space:nowrap;">' + escapeHtml(endText) + '</td>' +
+        '<td style="white-space:nowrap;"><span class="badge warning" data-until="' + escapeHtml(c.until) + '">' + escapeHtml(remText) + '</span></td>' +
+        '<td style="max-width:420px; word-break:break-word; color:var(--text-secondary); font-size:12px; line-height:1.5;">' + escapeHtml(c.reason || '-') + '</td>' +
+        '<td style="white-space:nowrap;">' +
+          '<button class="warning sm" onclick="clearCooldowns(\'' + escapeJs(c.account_id) + '\', \'' + escapeJs(c.scope) + '\')">清除此项冷却</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('') +
+    '</tbody></table></div>';
+}
+
+function openEditProxy(accountId, currentProxy) {
+  editingProxyAccountId = accountId;
+  editingProxyDraft = currentProxy || '';
+  renderAccounts(latestAccounts, latestCooldowns);
+  setTimeout(() => {
+    const el = document.getElementById('proxyInput_' + accountId);
+    if (el) el.focus();
+  }, 30);
+}
+
+function cancelEditProxy() {
+  editingProxyAccountId = null;
+  editingProxyDraft = '';
+  renderAccounts(latestAccounts, latestCooldowns);
+}
+
+async function saveAccountProxy(accountId, overrideProxy) {
+  let proxy = '';
+  if (typeof overrideProxy === 'string') {
+    proxy = overrideProxy.trim();
+  } else {
+    const input = document.getElementById('proxyInput_' + accountId);
+    proxy = input ? input.value.trim() : '';
+  }
+  try {
+    showToast('正在更新账户 ' + accountId + ' 的代理配置...', false);
+    await apiCall('/v0/management/gemini-web2api/accounts/update', 'POST', {
+      account_id: accountId,
+      proxy: proxy
+    });
+    editingProxyAccountId = null;
+    editingProxyDraft = '';
+    showToast('账户 ' + accountId + ' 代理已更新', false);
+    await loadStatus();
+    loadLogs();
+  } catch (e) {
+    showToast('更新代理失败: ' + e.message, true);
+  }
+}
+
+async function toggleService() {
+  const toggleBtn = document.getElementById('serviceToggleBtn');
+  if (toggleBtn && toggleBtn.dataset.running === 'true') {
+    await stopService();
+  } else {
+    await startService();
+  }
+}
+
+async function startService() {
+  try {
+    showToast('正在启动 Gemini-Web2API 生成服务...', false);
+    await apiCall('/v0/management/gemini-web2api/service/start', 'POST', {});
+    showToast('生成服务已启动', false);
+    await loadStatus();
+    loadLogs();
+  } catch (e) {
+    showToast('启动失败: ' + e.message, true);
+    await loadStatus();
+  }
+}
+
+async function stopService() {
+  try {
+    await apiCall('/v0/management/gemini-web2api/service/stop', 'POST', {});
+    showToast('生成服务已停止', false);
+    await loadStatus();
+  } catch (e) {
+    showToast('停止失败: ' + e.message, true);
+    await loadStatus();
+  }
+}
+
+async function relaunchGuestSession() {
+  try {
+    showToast('正在初始化/重启访客会话...', false);
+    await apiCall('/v0/management/gemini-web2api/guest/relaunch', 'POST', {});
+    showToast('访客会话已重建', false);
+    await loadStatus();
+    loadLogs();
+  } catch (e) {
+    showToast('重启访客失败: ' + e.message, true);
+  }
+}
+
+async function stopGuestSession() {
+  try {
+    await apiCall('/v0/management/gemini-web2api/guest/stop', 'POST', {});
+    showToast('访客会话已停止', false);
+    await loadStatus();
+    loadLogs();
+  } catch (e) {
+    showToast('停止访客失败: ' + e.message, true);
+  }
+}
+
+// openLoginBridge 在新标签打开一键授权桥接页。
+//
+// 桥接页走资源路由（/v0/resource/plugins/gemini-web2api/login），
+// 不需要管理密钥，因此这里用相对路径直接跳转即可。
+function openLoginBridge() {
+  window.open('/v0/resource/plugins/gemini-web2api/login', '_blank');
+}
+
+async function loginWithChromeBrowser() {
+  const btn = document.getElementById('chromeLoginBtn');
+  const proxyInput = document.getElementById('chromeLoginProxy');
+  const proxy = proxyInput ? proxyInput.value.trim() : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '正在等待 Chrome 窗口完成登录...';
+  }
+  try {
+    showToast('已启动本机 Chrome 独立窗口，请登录 Google 账号并进入 Gemini Web，完成后窗口将自动关闭...', false);
+    const res = await apiCall('/v0/management/gemini-web2api/accounts/login-browser', 'POST', { proxy });
+    const accId = res.account ? res.account.id : '';
+    showToast('Chrome 登录成功，已自动导入账户: ' + accId, false);
+    await loadStatus();
+    loadLogs();
+  } catch (e) {
+    showToast('Chrome 登录未完成: ' + e.message, true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '🌐 启动本机 Chrome 无痕登录';
+    }
+  }
+}
+
+async function reloginAccount(id, proxy) {
+  try {
+    showToast('已为账户 ' + id + ' 启动本机 Chrome 独立窗口，请使用该谷歌账号完成登录...', false);
+    const res = await apiCall('/v0/management/gemini-web2api/accounts/relogin', 'POST', { account_id: id, proxy: proxy || '' });
+    showToast('账户 ' + (res.account ? res.account.id : id) + ' 重新登录并更新成功！', false);
+    await loadStatus();
+    loadLogs();
+  } catch (e) {
+    showToast('重新登录失败: ' + e.message, true);
+  }
+}
+
+async function importCookieAccount() {
+  const cookies = document.getElementById('accCookies').value.trim();
+  if (!cookies) {
+    showToast('请先粘贴 Cookie 或 storage-state.json 内容', true);
+    return;
+  }
+  const label = document.getElementById('accLabel').value.trim();
+  const proxyEl = document.getElementById('cookieProxy');
+  const proxy = proxyEl ? proxyEl.value.trim() : '';
+  const authUser = parseInt(document.getElementById('accAuthUser').value || '0', 10);
+  try {
+    showToast('正在验证 Cookie 并导入账户...', false);
+    const res = await apiCall('/v0/management/gemini-web2api/accounts', 'POST', {
+      label, proxy, auth_user: authUser, cookies
+    });
+    document.getElementById('accCookies').value = '';
+    showToast('成功导入账户: ' + (res.account ? res.account.id : label), false);
+    loadStatus();
+    loadLogs();
+  } catch (e) {
+    showToast('导入失败: ' + e.message, true);
+  }
+}
+
+async function refreshAccount(id) {
+  try {
+    showToast('正在重新验证账户 ' + id + ' 的会话与模型目录...', false);
+    const res = await apiCall('/v0/management/gemini-web2api/accounts/refresh', 'POST', { account_id: id });
+    showToast('验证成功，共 ' + (res.models_count || 0) + ' 个模型', false);
+    loadStatus();
+    loadLogs();
+  } catch (e) {
+    showToast('验证失败: ' + e.message, true);
+  }
+}
+
+async function toggleAccount(id, enabled) {
+  try {
+    await apiCall('/v0/management/gemini-web2api/accounts/update', 'POST', {
+      account_id: id, enabled
+    });
+    loadStatus();
+  } catch (e) {
+    showToast('更新失败: ' + e.message, true);
+  }
+}
+
+async function deleteAccount(id) {
+  if (!confirm('确认删除账户 ' + id + ' 吗？')) return;
+  try {
+    await apiCall('/v0/management/gemini-web2api/accounts/delete', 'POST', { account_id: id });
+    showToast('已删除账户 ' + id, false);
+    loadStatus();
+  } catch (e) {
+    showToast('删除失败: ' + e.message, true);
+  }
+}
+
+async function syncAuthFiles() {
+  try {
+    const res = await apiCall('/v0/management/gemini-web2api/accounts/sync-auth', 'POST', {});
+    showToast('已同步 ' + (res.synced || 0) + ' 个账户至 CLIProxyAPI 凭证目录', false);
+  } catch (e) {
+    showToast('同步失败: ' + e.message, true);
+  }
+}
+
+async function clearCooldowns(accountId, scope = '') {
+  if (!accountId) {
+    showToast('请指定要清除冷却的账户', true);
+    return;
+  }
+  try {
+    await apiCall('/v0/management/gemini-web2api/cooldowns/clear', 'POST', {
+      account_id: accountId,
+      scope: scope || ''
+    });
+    showToast('已清除账户 ' + accountId + (scope && scope !== '*' ? (' 模型 ' + scope) : '') + ' 的冷却状态', false);
+    await loadStatus();
+    loadLogs();
+  } catch (e) {
+    showToast('清除冷却失败: ' + e.message, true);
+  }
+}
+
+function formatLogTime(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return String(isoStr);
+  const pad = n => String(n).padStart(2, '0');
+  const ms = String(d.getMilliseconds()).padStart(3, '0');
+  return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + '.' + ms;
+}
+
+async function loadLogs() {
+  if (!getKey()) {
+    const box = document.getElementById('logsBox');
+    if (box) box.innerHTML = '<div style="color:var(--muted);">请先在右上角填入 CPA 管理密钥后查看实时运行日志</div>';
+    return;
+  }
+  try {
+    const res = await apiCall('/v0/management/gemini-web2api/logs');
+    const logs = res.logs || [];
+    const box = document.getElementById('logsBox');
+    if (!logs.length) {
+      box.innerHTML = '<div style="color:var(--muted);">暂无日志</div>';
+      return;
+    }
+    box.innerHTML = logs.slice(-80).reverse().map(l => {
+      const lvl = String(l.level || 'INFO').toUpperCase();
+      return '<div class="log-line">' +
+        '<span class="log-time">' + escapeHtml(formatLogTime(l.time)) + '</span>' +
+        '<span class="log-lvl ' + escapeHtml(lvl) + '">' + escapeHtml(lvl) + '</span>' +
+        '<span class="log-src">[' + escapeHtml(l.source || 'service') + ']</span>' +
+        '<span class="log-msg">' + escapeHtml(l.message || '') + '</span>' +
+      '</div>';
+    }).join('');
+  } catch (_) {}
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function escapeJs(s) {
+  return String(s || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '\\x22')
+    .replace(/&/g, '\\x26')
+    .replace(/</g, '\\x3c')
+    .replace(/>/g, '\\x3e')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+getKey();
+loadStatus();
+loadLogs();
+if (new URLSearchParams(window.location.search).get('autologin') === '1') {
+  window.history.replaceState({}, '', window.location.pathname);
+  setTimeout(() => loginWithChromeBrowser(), 300);
+}
+setInterval(() => {
+  document.querySelectorAll('[data-until]').forEach(el => {
+    const u = el.getAttribute('data-until');
+    if (u) el.textContent = formatCooldownRemaining(u);
+  });
+}, 1000);
+setInterval(() => {
+  if (!editingProxyAccountId) {
+    loadStatus();
+  }
+  loadLogs();
+}, 6000);
+</script>
+</body>
+</html>
