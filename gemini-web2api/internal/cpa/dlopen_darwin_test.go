@@ -24,7 +24,7 @@ func TestDynamicLibraryDLOpenABI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallSharedLibraryABI failed: %v", err)
 	}
-	if !strings.Contains(got, `"ok":true`) || !strings.Contains(got, `"Name":"gemini-web2api"`) || !strings.Contains(got, `"Version":"1.0.9"`) {
+	if !strings.Contains(got, `"ok":true`) || !strings.Contains(got, `"Name":"gemini-web2api"`) || !strings.Contains(got, `"Version":"`+expectedPluginVersion(t)+`"`) {
 		t.Fatalf("unexpected dlopen response from plugin.register: %s", got)
 	}
 	t.Logf("dlopen C ABI plugin.register response: %s", got)

@@ -3,6 +3,35 @@
 本文件记录 gemini-web2api 插件在本仓库（`luode0320/cpa-workbuddy-plugin`）内的自有变更。
 上游 `jianli9158/cpa-plugin-gemini-web2api` 与 `Mag1cFall/Gemini-Web2API` 的历史变更见各自仓库。
 
+## 1.0.10 (2026-11-21)
+
+### 修复 - 绕开 glibc 同路径 dlopen 复用旧镜像
+
+- 生产实测：`plugin-store install` 覆盖 `plugins/linux/amd64/gemini-web2api-v1.0.9.so` 后，
+  再 install（`overwritten=true`）完全不产生新的 `plugin loaded` 日志，
+  `/proc/<pid>/maps` 里该 .so 的 inode 仍是首次加载时的旧 inode 且标记 `(deleted)`。
+  宿主的 `loader_unix.go` 用的是 `dlopen(path, RTLD_NOW|RTLD_LOCAL)`，
+  glibc 对同一路径会直接复用已有 handle（引用计数 +1），不会重新映射文件，
+  因此**同版本覆盖安装永远换不掉内存里的旧镜像**。
+- 处置：版本号升到 1.0.10，让 .so 文件名变成 `gemini-web2api-v1.0.10.so`，
+  走一次全新路径的 dlopen。这是唯一不重启容器就能换代码的路径。
+- 顺带把两处硬编码版本断言的测试改成回读 `VERSION`（新增
+  `internal/cpa/version_helper_test.go` 的 `expectedPluginVersion`），
+  使版本号只保留 VERSION + CI `-X main.version` 一个真相源。
+
+### 排查结论 - 生产日志 `plugin schema version 10 is not supported` 不属于本插件
+
+- 用生产容器内的 CPython ctypes 直接 `dlopen` 本插件的 .so 调 `plugin.register`，
+  四组不同输入（含 `{"schema_version":10}`）都稳定返回 `schema_version: 6`，
+  与本仓库 `internal/pluginabi/types.go` 的 `SchemaVersion uint32 = 6` 一致。
+- `/proc/1/maps` 显示生产进程同时映射着两个 gemini 系插件：
+  `gemini-web2api-v1.0.9.so`（inode 3940，已删）与 `gemini-cli-v1.0.5.so`（inode 4378，已删）。
+  后者是磁盘上已不存在、但内存仍映射的孤儿，上报 10 的是它
+  （`cpa-plugin-gemini-cli` 的源码 `SchemaVersion = 10`）。
+  两者 warn 行在 `docker logs` 里交错成相邻行，极易误判归属。
+- 本插件当时的真实症状是 `registered=false` / `effective_enabled=false`，
+  即 `plugin.register` 从未成功过一次，随后每次 `plugin.reconfigure` 因未注册而失败。
+
 ## 1.0.9 (2026-11-21)
 
 ### 新增 - 收编为第 14 个自有插件
