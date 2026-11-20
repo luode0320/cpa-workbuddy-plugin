@@ -184,9 +184,12 @@ func chainTestDecoyCreation() map[string]any {
 // [返回] 无。
 // 最近修改时间：2026-11-17 01:42:00；改动原因：新增，回灌解析主用例。
 func TestAssetsFromChainResponseExtractsVideo(t *testing.T) {
-	assets, errParse := assetsFromChainResponse([]byte(chainTestResponse(true)))
+	assets, sawCreation, errParse := assetsFromChainResponse([]byte(chainTestResponse(true)))
 	if errParse != nil {
 		t.Fatalf("解析消息链失败：%v", errParse)
+	}
+	if !sawCreation {
+		t.Error("带创作块的响应应报告 sawCreation=true")
 	}
 	asset, ok := videoAssetAmong(assets)
 	if !ok {
@@ -211,7 +214,7 @@ func TestAssetsFromChainResponseExtractsVideo(t *testing.T) {
 // [返回] 无。
 // 最近修改时间：2026-11-17 01:44:00；改动原因：夹具加假产物，让规则可被哨兵验证。
 func TestAssetsFromChainResponseIgnoresUserMessages(t *testing.T) {
-	assets, errParse := assetsFromChainResponse([]byte(chainTestResponse(true)))
+	assets, _, errParse := assetsFromChainResponse([]byte(chainTestResponse(true)))
 	if errParse != nil {
 		t.Fatalf("解析消息链失败：%v", errParse)
 	}
@@ -234,7 +237,7 @@ func TestAssetsFromChainResponseWithoutVideo(t *testing.T) {
 	raw := `{"cmd":3100,"status_code":0,"downlink_body":{"pull_singe_chain_downlink_body":{"messages":[` +
 		`{"user_type":1,"content_block":[` +
 		`{"block_type":2074,"content":{"creation_block":{"creations":[{"type":2,"id":"x","video":{"download_url":"https://example.com/decoy.mp4","status":3}}]}}}]}]}}}`
-	assets, errParse := assetsFromChainResponse([]byte(raw))
+	assets, _, errParse := assetsFromChainResponse([]byte(raw))
 	if errParse != nil {
 		t.Fatalf("解析消息链失败：%v", errParse)
 	}
@@ -252,25 +255,80 @@ func TestAssetsFromChainResponseWithoutVideo(t *testing.T) {
 // 最近修改时间：2026-11-17 01:42:00；改动原因：新增，锁定业务错误识别。
 func TestAssetsFromChainResponseRejectsBusinessError(t *testing.T) {
 	raw := `{"cmd":3100,"status_code":10001,"status_desc":"chain not found","downlink_body":{}}`
-	if _, errParse := assetsFromChainResponse([]byte(raw)); errParse == nil {
+	if _, _, errParse := assetsFromChainResponse([]byte(raw)); errParse == nil {
 		t.Fatal("status_code 非 0 时应返回错误")
 	}
-	if _, errEmpty := assetsFromChainResponse(nil); errEmpty == nil {
+	if _, _, errEmpty := assetsFromChainResponse(nil); errEmpty == nil {
 		t.Fatal("空响应应返回错误")
 	}
+}
+
+// chainTestRenderingResponse 拼一份「上游已开跑但还没出成品」的消息链响应。
+//
+// 关键差别只在 video 段：status 还是渲染中、download_url 为空、video_list 也还没
+// 生成。此时 parseCreationBlock 会因为「既没有 key 也没有 URL」把资产丢掉，资产
+// 列表与「根本没有创作块」完全一样——这正是必须单独用 sawCreation 区分的场景。
+// [参数] 无。
+// [返回] 响应 JSON 字符串。
+// 最近修改时间：2026-11-21 02:12:00；改动原因：新增，区分「在渲染」与「没开跑」。
+func chainTestRenderingResponse() string {
+	videoModel, _ := json.Marshal(map[string]any{"status": 1, "message": "generating"})
+	videoRaw, _ := json.Marshal(map[string]any{
+		"vid":         "v0269cg10004dbti12i7dldbulb4k8a0",
+		"status":      1,
+		"duration":    0,
+		"video_type":  "mp4",
+		"video_model": string(videoModel),
+	})
+	resp := map[string]any{
+		"cmd":         chainPullCmd,
+		"sequence_id": "seq-fixture",
+		"status_code": 0,
+		"status_desc": "OK",
+		"downlink_body": map[string]any{
+			"pull_singe_chain_downlink_body": map[string]any{
+				"has_more": false,
+				"messages": []any{
+					map[string]any{
+						"user_type": 2, "section_id": "s1", "index": 1,
+						"content_block": []map[string]any{
+							{"block_type": blockTypeText, "content": map[string]any{"text_block": map[string]any{"text": "正在为你生成视频。"}}},
+							{
+								"block_type": blockTypeCreation,
+								"content": map[string]any{
+									"creation_block": map[string]any{
+										"creations": []any{
+											map[string]any{"type": 2, "id": "40579236111431999", "video": json.RawMessage(videoRaw)},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	raw, _ := json.Marshal(resp)
+	return string(raw)
 }
 
 // swapVideoPollTiming 临时把轮询节奏压到毫秒级，返回恢复函数。
 //
 // 为什么需要它：默认间隔 10 秒、总超时 6 分钟，任何「本该跳过却进了等待」的
 // 缺陷都不会失败、只会挂起，用例跑满 6 分钟才暴露，验证成本高到没人愿意做。
-// [参数] interval: 轮询间隔；timeout: 总时长。
+// [参数] interval: 轮询间隔；creationWait: 首块等待上限；pollTimeout: 总时长。
 // [返回] 恢复原值的函数。
-// 最近修改时间：2026-11-17 01:58:00；改动原因：新增，让「不该等待却等待」秒级暴露。
-func swapVideoPollTiming(interval, timeout time.Duration) func() {
-	prevInterval, prevTimeout := videoPollInterval, videoPollTimeout
-	videoPollInterval, videoPollTimeout = interval, timeout
-	return func() { videoPollInterval, videoPollTimeout = prevInterval, prevTimeout }
+// 最近修改时间：2026-11-21 02:13:00；改动原因：总时长与首块等待改为覆盖变量，用例可分别压缩。
+func swapVideoPollTiming(interval, creationWait, pollTimeout time.Duration) func() {
+	prevInterval := videoPollInterval
+	prevCreationWait, prevPoll := videoCreationWaitOverride, videoPollTimeoutOverride
+	videoPollInterval = interval
+	videoCreationWaitOverride, videoPollTimeoutOverride = creationWait, pollTimeout
+	return func() {
+		videoPollInterval = prevInterval
+		videoCreationWaitOverride, videoPollTimeoutOverride = prevCreationWait, prevPoll
+	}
 }
 
 // TestWaitingForVideoStopsWhenContextDone 校验上下文取消能打断轮询。
@@ -330,7 +388,7 @@ func TestPostChainJSONSendsIMContentType(t *testing.T) {
 	defer restore()
 
 	sa := completionTestAccount()
-	if _, errFetch := fetchChainAssets(context.Background(), sa, "38454121040780034"); errFetch != nil {
+	if _, _, errFetch := fetchChainAssets(context.Background(), sa, "38454121040780034"); errFetch != nil {
 		t.Fatalf("拉取消息链失败：%v", errFetch)
 	}
 	if gotType != contentTypeIM {
@@ -368,7 +426,7 @@ func videoConfirmResume() resumePoint {
 // [返回] 无。
 // 最近修改时间：2026-11-17 02:38:00；改动原因：新增，钉死「只有确认轮才回灌」。
 func TestEnsureVideoAssetSkipsFirstRound(t *testing.T) {
-	restoreTiming := swapVideoPollTiming(5*time.Millisecond, 20*time.Millisecond)
+	restoreTiming := swapVideoPollTiming(5*time.Millisecond, 20*time.Millisecond, 20*time.Millisecond)
 	defer restoreTiming()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -400,7 +458,7 @@ func TestEnsureVideoAssetSkipsFirstRound(t *testing.T) {
 // [返回] 无。
 // 最近修改时间：2026-11-21 00:38:00；改动原因：新增，回灌账号归属回归。
 func TestEnsureVideoAssetUsesPassedAccount(t *testing.T) {
-	restoreTiming := swapVideoPollTiming(5*time.Millisecond, 30*time.Millisecond)
+	restoreTiming := swapVideoPollTiming(5*time.Millisecond, 30*time.Millisecond, 30*time.Millisecond)
 	defer restoreTiming()
 
 	var seen []string
@@ -446,7 +504,7 @@ func TestEnsureVideoAssetUsesPassedAccount(t *testing.T) {
 // [返回] 无。
 // 最近修改时间：2026-11-18 23:32:00；改动原因：图片能力删除，非视频替身改用空模式。
 func TestEnsureVideoAssetSkipsOtherModes(t *testing.T) {
-	restoreTiming := swapVideoPollTiming(5*time.Millisecond, 20*time.Millisecond)
+	restoreTiming := swapVideoPollTiming(5*time.Millisecond, 20*time.Millisecond, 20*time.Millisecond)
 	defer restoreTiming()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -518,5 +576,119 @@ func TestWaitingForVideoRejectsEmptyConversation(t *testing.T) {
 	sa := completionTestAccount()
 	if _, errWait := waitVideoAsset(context.Background(), sa, ""); errWait == nil {
 		t.Fatal("会话 id 为空时应立刻返回错误")
+	}
+}
+
+// TestWaitingForVideoFailsFastWithoutCreation 校验「根本没开跑」能在首块上限内报错。
+//
+// 这是 2026-11-21 生产白等 366 秒的回归用例：上游拒答时照样给 conversation_id，
+// 消息链里一条创作块都没有。旧实现只能等到总超时才失败，用户等了 6 分钟才被告知
+// 「超时」，而真相是「压根没开始」。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-21 02:15:00；改动原因：新增，拒答态不再白等满总时长。
+func TestWaitingForVideoFailsFastWithoutCreation(t *testing.T) {
+	// 首块上限远早于总时长：只要判据成立，返回的一定是「没有开始渲染」。
+	restoreTiming := swapVideoPollTiming(2*time.Millisecond, 15*time.Millisecond, 2*time.Second)
+	defer restoreTiming()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 只有文本、没有创作块：上游拒答的形态。
+		_, _ = w.Write([]byte(chainTestResponse(false)))
+	}))
+	defer srv.Close()
+	restoreEndpoint := swapBusinessEndpoint(srv.URL)
+	defer restoreEndpoint()
+
+	started := time.Now()
+	_, errWait := waitVideoAsset(context.Background(), completionTestAccount(), "38454121040780034")
+	if errWait == nil {
+		t.Fatal("没有任何创作块时应返回错误")
+	}
+	if !strings.Contains(errWait.Error(), "上游没有开始渲染") {
+		t.Errorf("错误应说明上游没开跑，实际 %q", errWait.Error())
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Errorf("应在首块上限内失败，实际耗时 %v（总时长 2s）", elapsed)
+	}
+}
+
+// TestWaitingForVideoKeepsWaitingAfterCreation 校验见过创作块后不再按首块上限报错。
+//
+// 判据必须只用「有没有见过块」：块一旦出现就说明上游确实开跑了，此时成品慢属于
+// 正常等待，提前失败会把慢账号的片子误判成失败。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-21 02:16:00；改动原因：新增，防止首块判据误伤慢账号。
+func TestWaitingForVideoKeepsWaitingAfterCreation(t *testing.T) {
+	// 首块上限必须小到在「第 5 轮出成品」之前就到期（第 5 轮约在 8ms）：否则
+	// 把 !sawCreation 守卫去掉，成品也会先到，判据失效却照样通过。
+	restoreTiming := swapVideoPollTiming(2*time.Millisecond, 3*time.Millisecond, 2*time.Second)
+	defer restoreTiming()
+
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if hits < 5 {
+			_, _ = w.Write([]byte(chainTestRenderingResponse()))
+			return
+		}
+		_, _ = w.Write([]byte(chainTestResponse(true)))
+	}))
+	defer srv.Close()
+	restoreEndpoint := swapBusinessEndpoint(srv.URL)
+	defer restoreEndpoint()
+
+	asset, errWait := waitVideoAsset(context.Background(), completionTestAccount(), "38454121040780034")
+	if errWait != nil {
+		t.Fatalf("已开跑的视频不该被判成「没有开始渲染」：%v", errWait)
+	}
+	if asset.URL != "https://example.com/real-video.mp4" {
+		t.Errorf("产物地址错误：%q", asset.URL)
+	}
+	if hits < 5 {
+		t.Errorf("应在首块上限之后继续轮询，实际只拉了 %d 次", hits)
+	}
+}
+
+// TestVideoTimeoutValuesPreferOverride 校验两个等待值的取值优先级。
+//
+// 顺序必须是「用例覆盖 > 配置项 > 兜底」：用例靠覆盖压到毫秒级，生产靠配置项，
+// 两者任一失效都会让「不该等待却等待」重新变回分钟级。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-21 02:17:00；改动原因：新增，锁定视频等待取值顺序。
+func TestVideoTimeoutValuesPreferOverride(t *testing.T) {
+	// 直接改包级原子值：这是 currentConfig 唯一的读源，用完必须还原，
+	// 否则同一进程里后面的用例会带着这份配置跑。
+	savedCfg := currentConfig()
+	t.Cleanup(func() { activeConfig.Store(savedCfg) })
+
+	// 1. 无覆盖、配置为零 → 用内置兜底。
+	activeConfig.Store(Config{})
+	if got := videoPollTimeoutValue(); got != videoPollTimeoutDefault {
+		t.Errorf("配置缺失时应回落兜底 %v，实际 %v", videoPollTimeoutDefault, got)
+	}
+	if got := videoCreationWaitValue(); got != videoCreationWaitDefault {
+		t.Errorf("配置缺失时应回落兜底 %v，实际 %v", videoCreationWaitDefault, got)
+	}
+
+	// 2. 只配配置项 → 用配置项。
+	activeConfig.Store(Config{VideoPollTimeoutSeconds: 45, VideoCreationWaitSeconds: 7})
+	if got := videoPollTimeoutValue(); got != 45*time.Second {
+		t.Errorf("应读配置项 45s，实际 %v", got)
+	}
+	if got := videoCreationWaitValue(); got != 7*time.Second {
+		t.Errorf("应读配置项 7s，实际 %v", got)
+	}
+
+	// 3. 用例覆盖优先级最高。
+	restoreTiming := swapVideoPollTiming(0, 3*time.Millisecond, 5*time.Millisecond)
+	defer restoreTiming()
+	if got := videoPollTimeoutValue(); got != 5*time.Millisecond {
+		t.Errorf("覆盖应优先于配置项，实际 %v", got)
+	}
+	if got := videoCreationWaitValue(); got != 3*time.Millisecond {
+		t.Errorf("覆盖应优先于配置项，实际 %v", got)
 	}
 }

@@ -64,7 +64,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.1.31"
+	version      = "0.1.32"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -84,17 +84,29 @@ type Config struct {
 	StreamTimeoutSeconds int `yaml:"stream_timeout_seconds" json:"stream_timeout_seconds"`
 	// ModelCacheSecs 模型目录缓存时长（秒）。
 	ModelCacheSecs int `yaml:"model_cache_seconds" json:"model_cache_seconds"`
+	// VideoPollTimeoutSeconds 确认轮等待视频产物的总时长（秒）。
+	//
+	// 只作用于视频回灌，与上面两个对话超时互不影响：视频是异步产物，出片要
+	// 1~5 分钟，用对话超时去卡它只会把正常的片子卡死。
+	VideoPollTimeoutSeconds int `yaml:"video_poll_timeout_seconds" json:"video_poll_timeout_seconds"`
+	// VideoCreationWaitSeconds 等待上游落下第一个创作块的上限（秒）。
+	//
+	// 同样是视频专属。上游拒答时照样返回 conversation_id，形态与正常首轮一样，
+	// 只能靠「消息链里到底有没有 2074 块」来区分「在渲染」和「根本没开始」。
+	VideoCreationWaitSeconds int `yaml:"video_creation_wait_seconds" json:"video_creation_wait_seconds"`
 }
 
 // defaultConfig 返回插件默认配置。
 // [参数] 无。
 // [返回] 带默认值的配置结构。
-// 最近修改时间：2026-11-17 00:58:00；改动原因：工作模式删除，只留三个超时/缓存项。
+// 最近修改时间：2026-11-21 02:05:00；改动原因：新增两个视频专属等待项，均不影响对话超时。
 func defaultConfig() Config {
 	return Config{
-		TimeoutSeconds:       120,
-		StreamTimeoutSeconds: 600,
-		ModelCacheSecs:       300,
+		TimeoutSeconds:           120,
+		StreamTimeoutSeconds:     600,
+		ModelCacheSecs:           300,
+		VideoPollTimeoutSeconds:  360,
+		VideoCreationWaitSeconds: 120,
 	}
 }
 
@@ -360,6 +372,12 @@ func configurePlugin(raw []byte) error {
 		}
 		if decoded.ModelCacheSecs > 0 {
 			cfg.ModelCacheSecs = decoded.ModelCacheSecs
+		}
+		if decoded.VideoPollTimeoutSeconds > 0 {
+			cfg.VideoPollTimeoutSeconds = decoded.VideoPollTimeoutSeconds
+		}
+		if decoded.VideoCreationWaitSeconds > 0 {
+			cfg.VideoCreationWaitSeconds = decoded.VideoCreationWaitSeconds
 		}
 	}
 

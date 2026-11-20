@@ -55,10 +55,55 @@ const (
 // 默认值下任何「不该等待却等待」的缺陷都要跑满 6 分钟才暴露，验证成本过高。
 var videoPollInterval = 10 * time.Second
 
-// videoPollTimeout 是等待视频产物的总时长。
+// videoPollTimeoutDefault 是等待视频产物的兜底总时长。
 //
 // 网页提示「预计等待 5 分钟」，实测 150 秒出片；给到 6 分钟留出上游排队余量。
-var videoPollTimeout = 6 * time.Minute
+// 正常路径读配置项 video_poll_timeout_seconds，这里只在该配置缺失时兜底。
+const videoPollTimeoutDefault = 6 * time.Minute
+
+// videoPollTimeoutOverride 让用例把总时长压到毫秒级（见 swapVideoPollTiming）。
+var videoPollTimeoutOverride time.Duration
+
+// videoCreationWaitDefault 是「等上游落下第一个创作块」的兜底上限。
+//
+// 为什么需要这个上限：上游拒答时照样返回 conversation_id，形态与正常首轮一致，
+// 插件无法从回包区分「在渲染」与「根本没开始」。一旦没开始，光等成品只能等满
+// videoPollTimeout（2026-11-21 生产实测白等 366 秒）。首个 2074 块必然早于成品，
+// 用它当「是否真的开跑」的判据能把白等压到一个可接受的量级。
+const videoCreationWaitDefault = 2 * time.Minute
+
+// videoCreationWaitOverride 让用例把首块等待压到毫秒级。
+var videoCreationWaitOverride time.Duration
+
+// videoPollTimeoutValue 返回本次等待视频产物的有效总时长。
+//
+// 优先级：用例覆盖 > 配置项 video_poll_timeout_seconds > 内置兜底。
+// [参数] 无。
+// [返回] 有效总时长。
+// 最近修改时间：2026-11-21 02:06:00；改动原因：视频等待不再写死，改为可配置。
+func videoPollTimeoutValue() time.Duration {
+	if videoPollTimeoutOverride > 0 {
+		return videoPollTimeoutOverride
+	}
+	if secs := currentConfig().VideoPollTimeoutSeconds; secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return videoPollTimeoutDefault
+}
+
+// videoCreationWaitValue 返回本次「等首块出现」的有效上限。
+// [参数] 无。
+// [返回] 有效上限。
+// 最近修改时间：2026-11-21 02:06:00；改动原因：新增，用于区分「在渲染」与「根本没开始」。
+func videoCreationWaitValue() time.Duration {
+	if videoCreationWaitOverride > 0 {
+		return videoCreationWaitOverride
+	}
+	if secs := currentConfig().VideoCreationWaitSeconds; secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return videoCreationWaitDefault
+}
 
 // chainPullRequest 是 /im/chain/single 的请求体。
 type chainPullRequest struct {
@@ -166,23 +211,30 @@ func buildChainPullRequest(conversationID string, limit int) chainPullRequest {
 // assetsFromChainResponse 从消息链响应里提取创作产物。
 //
 // 只取助手消息：用户消息里可能回显确认文本，但不会有 creations。
+//
+// 第二个返回值 sawCreation 表示「这条会话的消息链里到底有没有出现过创作块」。
+// 它必须单独返回：parseCreationBlock 会把「只有 status、没有 key/URL」的占位块
+// 丢掉，所以「在渲染」与「根本没开始」两种情况的资产列表都是空，只看资产无法区分。
 // [参数] raw: 响应原文。
-// [返回] 产物列表与错误。
-// 最近修改时间：2026-11-17 01:40:00；改动原因：新增，视频产物回灌。
-func assetsFromChainResponse(raw []byte) ([]creationAsset, error) {
+// [返回] 产物列表、是否出现过创作块、错误。
+// 最近修改时间：2026-11-21 02:07:00；改动原因：新增 sawCreation，用于区分在渲染与没开跑。
+func assetsFromChainResponse(raw []byte) ([]creationAsset, bool, error) {
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("消息链接口返回空响应")
+		return nil, false, fmt.Errorf("消息链接口返回空响应")
 	}
 	var resp chainPullResponse
 	if errUnmarshal := json.Unmarshal(raw, &resp); errUnmarshal != nil {
-		return nil, fmt.Errorf("消息链响应不是合法 JSON：%w", errUnmarshal)
+		return nil, false, fmt.Errorf("消息链响应不是合法 JSON：%w", errUnmarshal)
 	}
 	// 上游用 status_code 而非 HTTP 状态码表达业务失败。
 	if resp.StatusCode != 0 {
-		return nil, fmt.Errorf("消息链接口返回 %d：%s", resp.StatusCode, resp.StatusDesc)
+		return nil, false, fmt.Errorf("消息链接口返回 %d：%s", resp.StatusCode, resp.StatusDesc)
 	}
 
-	var out []creationAsset
+	var (
+		out         []creationAsset
+		sawCreation bool
+	)
 	for _, msg := range resp.DownlinkBody.PullBody.Messages {
 		if msg.UserType != 2 {
 			continue
@@ -191,10 +243,12 @@ func assetsFromChainResponse(raw []byte) ([]creationAsset, error) {
 			if block.BlockType != blockTypeCreation {
 				continue
 			}
+			// 只要块在，就算上游已经开跑，哪怕它还没产出直链。
+			sawCreation = true
 			out = append(out, parseCreationBlock(block.Content)...)
 		}
 	}
-	return out, nil
+	return out, sawCreation, nil
 }
 
 // videoAssetAmong 从产物列表里挑出第一个可用的视频。
@@ -254,16 +308,16 @@ func postChainJSON(ctx context.Context, sa *StoredAuth, path string, raw []byte)
 
 // fetchChainAssets 拉一次消息链并解析产物。
 // [参数] ctx: 上下文；sa: 账号；conversationID: 会话 id。
-// [返回] 产物列表与错误。
-// 最近修改时间：2026-11-17 01:48:00；改动原因：改走 /im/* 专用请求头。
-func fetchChainAssets(ctx context.Context, sa *StoredAuth, conversationID string) ([]creationAsset, error) {
+// [返回] 产物列表、是否出现过创作块、错误。
+// 最近修改时间：2026-11-21 02:08:00；改动原因：透传 sawCreation，供首块等待判据使用。
+func fetchChainAssets(ctx context.Context, sa *StoredAuth, conversationID string) ([]creationAsset, bool, error) {
 	body, errMarshal := json.Marshal(buildChainPullRequest(conversationID, 0))
 	if errMarshal != nil {
-		return nil, fmt.Errorf("构造消息链请求失败：%w", errMarshal)
+		return nil, false, fmt.Errorf("构造消息链请求失败：%w", errMarshal)
 	}
 	raw, errPost := postChainJSON(ctx, sa, chainPullPath, body)
 	if errPost != nil {
-		return nil, errPost
+		return nil, false, errPost
 	}
 	return assetsFromChainResponse(raw)
 }
@@ -275,16 +329,19 @@ func fetchChainAssets(ctx context.Context, sa *StoredAuth, conversationID string
 // 生产实测：首轮等满 6 分钟回 503）。所以判据是「这一次是不是确认轮」，而不是
 // 「是不是视频模式」—— 两者在首轮同时成立，只看模式必然误入。
 //
-// 超时取 videoPollTimeout 外加一分钟余量：调用方传进来的 ctx 已在上游流结束时
-// 被取消，直接复用会让回灌立刻返回 context canceled。
+// 超时取 videoPollTimeoutValue() 外加一分钟余量：调用方传进来的 ctx 已在上游流
+// 结束时被取消，直接复用会让回灌立刻返回 context canceled。余量必须基于同一个
+// 有效值算，否则配置调大后上下文会先于轮询超时触发，报出来的是 context deadline
+// exceeded 而不是业务文案。
 // [参数] sa: 账号；mode: 生成模式；resume: 本次请求的续接点；res: 待补齐的执行结果。
 // [返回] 错误（视频等不到成品时返回）。
-// 最近修改时间：2026-11-17 02:36:00；改动原因：新增 resume 入参，首轮不再误入回灌。
+// 最近修改时间：2026-11-21 02:09:00；改动原因：总时长改读配置，与对话超时分离。
 func ensureVideoAsset(sa *StoredAuth, mode generationMode, resume resumePoint, res *completionResult) error {
 	if res == nil || mode.Kind != "video" || resume.isZero() || len(res.Assets) > 0 || res.ConversationID == "" {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), videoPollTimeout+time.Minute)
+	pollTimeout := videoPollTimeoutValue()
+	ctx, cancel := context.WithTimeout(context.Background(), pollTimeout+time.Minute)
 	defer cancel()
 	asset, errWait := waitVideoAsset(ctx, sa, res.ConversationID)
 	if errWait != nil {
@@ -305,9 +362,14 @@ var chainPollAccountHook func(*StoredAuth)
 //
 // 为什么要轮询而不是等 SSE：确认轮的 SSE 只回一段「正在生成」的文本就结束了，
 // 成品由上游异步写入会话消息链，没有任何事件会推给本次连接。
+//
+// 为什么要额外等「首块」：上游拒答时照样返回 conversation_id，形态与正常确认轮
+// 一致，插件从回包分不出「在渲染」与「根本没开始」。没开始时干等成品只能等满
+// video_poll_timeout_seconds（2026-11-21 生产实测白等 366 秒）。首个创作块必然
+// 早于成品出现，用它当判据可以把「没开跑」的失败提前到 video_creation_wait_seconds。
 // [参数] ctx: 上下文（取消即返回）；sa: 账号；conversationID: 会话 id。
 // [返回] 视频产物与错误。
-// 最近修改时间：2026-11-17 01:40:00；改动原因：新增，视频产物回灌。
+// 最近修改时间：2026-11-21 02:10:00；改动原因：新增首块等待，拒答态不再白等满总时长。
 func waitVideoAsset(ctx context.Context, sa *StoredAuth, conversationID string) (creationAsset, error) {
 	if chainPollAccountHook != nil {
 		chainPollAccountHook(sa)
@@ -315,21 +377,35 @@ func waitVideoAsset(ctx context.Context, sa *StoredAuth, conversationID string) 
 	if conversationID == "" {
 		return creationAsset{}, fmt.Errorf("视频已提交但会话 id 为空，无法回灌产物")
 	}
-	deadline := time.Now().Add(videoPollTimeout)
+	pollTimeout := videoPollTimeoutValue()
+	creationWait := videoCreationWaitValue()
+	started := time.Now()
+	deadline := started.Add(pollTimeout)
+	creationDeadline := started.Add(creationWait)
+	var sawCreation bool
 	// 第一轮立刻拉一次：短时长视频常在确认轮结束前就已入库。
 	for {
-		assets, errFetch := fetchChainAssets(ctx, sa, conversationID)
+		assets, saw, errFetch := fetchChainAssets(ctx, sa, conversationID)
 		if errFetch == nil {
+			sawCreation = sawCreation || saw
 			if asset, ok := videoAssetAmong(assets); ok {
 				return asset, nil
 			}
+		}
+		// 首块等待只在「还没见过创作块」时生效：见过就说明上游确实开跑了，
+		// 后面多慢都属于正常等待，直接放到总超时。
+		if !sawCreation && !time.Now().Before(creationDeadline) {
+			if errFetch != nil {
+				return creationAsset{}, fmt.Errorf("上游没有开始渲染（%v 内消息链里没有任何创作块，最后一次拉取失败：%v）：这个账号当前可能无法出片，请先用面板「测试模型」确认，或换账号重试", creationWait, errFetch)
+			}
+			return creationAsset{}, fmt.Errorf("上游没有开始渲染（%v 内消息链里没有任何创作块）：这个账号当前可能无法出片，请先用面板「测试模型」确认，或换账号重试", creationWait)
 		}
 		// 拉取失败不立即退出：上游偶发返回非零 status_code，下一轮通常就正常。
 		if time.Now().After(deadline) {
 			if errFetch != nil {
 				return creationAsset{}, fmt.Errorf("等待视频超时，最后一次拉取失败：%w", errFetch)
 			}
-			return creationAsset{}, fmt.Errorf("等待视频超时（%v）：上游仍未产出成品，稍后可用同一 conversation_id 重试", videoPollTimeout)
+			return creationAsset{}, fmt.Errorf("等待视频超时（%v）：上游仍未产出成品，稍后可用同一 conversation_id 重试", pollTimeout)
 		}
 		select {
 		case <-ctx.Done():
