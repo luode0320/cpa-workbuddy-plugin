@@ -48,8 +48,10 @@ type StoredAuth struct {
 	BotID    string `json:"bot_id,omitempty"`
 	// MsToken 是 /chat/completion 必需的风控令牌（见 sign.go）。
 	//
-	// 由豆包页面 localStorage.xmst 提供，本身有 7 天有效期；a_bogus 则在每次
-	// 请求前由内嵌 SDK 现算。缺失时上游回 710022002（未签名分支）。
+	// 首次由豆包页面 localStorage.xmst 随授权一起采集，之后靠每次业务请求的
+	// 响应头 x-ms-token 自动换新（见 completion.go 的 adoptMsTokenFromHeader）。
+	// 不写死有效期：2026-11-21 实测采集后 5.6 天仍可用，上游只做形态/长度粗判，
+	// 「7 天必过期」的旧说法没有实测依据。a_bogus 仍由内嵌 SDK 每次现算。
 	MsToken string `json:"ms_token,omitempty"`
 	// Cookies 是上游滚动下发的 Cookie 快照（见 cookiejar.go）。
 	// 首次导入时为空，第一次请求后由 durableJar 写回；与 CookieHeader 并存：

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -916,7 +917,7 @@ func completionURL(sa *StoredAuth, body []byte) string {
 // 流式请求不设客户端超时：回复可能持续数分钟，由 ctx 的 deadline 约束。
 // [参数] ctx: 上下文；sa: 账号；body: 请求体；onEvent: 事件回调（返回 false 提前结束）。
 // [返回] 请求或读取错误。
-// 最近修改时间：2026-10-17；改动原因：新增，SSE 上游调用。
+// 最近修改时间：2026-11-21 15:10:00；改动原因：接管响应头下发的新 msToken，实现自动续期。
 func streamCompletion(ctx context.Context, sa *StoredAuth, body *completionRequest, onEvent func(completionEvent) bool) error {
 	// 1. 先编码请求体：签名要吃真实 body，必须先序列化再签。
 	raw, errMarshal := json.Marshal(body)
@@ -945,7 +946,14 @@ func streamCompletion(ctx context.Context, sa *StoredAuth, body *completionReque
 		_ = jar.persist(sa)
 	}()
 
-	// 3. 非 200 一律转结构化上游错误，供换号与冷却判定使用。
+	// 3. 顺手接住上游递过来的新 msToken：这是唯一的自动续期通道。
+	//    为什么必须在这里收：`mssdk.bytedance.com` 的换 token 端点要设备侧加密
+	//    串 strData，插件算不出来；而每一次 /chat/completion 的响应头都会带一个
+	//    全新的 x-ms-token（2026-11-21 实测连发 5 次拿到 5 个互不相同的值）。
+	//    丢掉它，账号里的 token 就只能靠用户重新点书签刷新。
+	adoptMsTokenFromHeader(sa, jar, resp.Header)
+
+	// 4. 非 200 一律转结构化上游错误，供换号与冷却判定使用。
 	if resp.StatusCode != http.StatusOK {
 		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return &upstreamError{
@@ -955,6 +963,82 @@ func streamCompletion(ctx context.Context, sa *StoredAuth, body *completionReque
 	}
 
 	return scanSSE(resp.Body, onEvent)
+}
+
+// msTokenHeader 是上游下发新 msToken 的响应头名。
+//
+// 头名大小写不敏感（HTTP/1.1 规定），这里按规范小写书写。
+const msTokenHeader = "x-ms-token"
+
+// adoptMsTokenFromHeader 把响应头里的新 msToken 写回账号并落盘。
+//
+// 为什么整个续期机制只靠这一个响应头：`mssdk.bytedance.com/web/r/token` 需要
+// 设备侧加密串 `strData`，缺它恒回 resultCode:-3（2026-11-21 四组对照实测，
+// 带 Cookie、带 body、GET/POST 都只回同一个 12 字节 protobuf 状态码，不含 token）。
+// 而 `/chat/completion` 每次业务请求都会随响应头递一个新的 x-ms-token，
+// 因此只要正常出一次字，账号里的 token 就被换成上游刚签发的那个。
+//
+// 落盘优先交给 Jar：它带着「文件被外部替换就放弃写入」的闸门，避免本进程用
+// 旧快照盖掉用户刚导入的新凭据。
+// [参数] sa: 账号，MsToken 会被就地更新。
+// [参数] jar: 本次请求绑定的持久化 Jar，可为 nil。
+// [参数] header: 上游响应头。
+// [返回] 无。写入失败只记日志：token 缺失不影响本次回复，只影响下一次续期机会。
+// 最近修改时间：2026-11-21 15:10:00；改动原因：新增，从响应头实现 msToken 自动续期。
+func adoptMsTokenFromHeader(sa *StoredAuth, jar *durableJar, header http.Header) {
+	if sa == nil || header == nil {
+		return
+	}
+	// 1. 取头并做形态粗筛：上游对 token 只按形态/长度粗判，截断或乱码的值会被
+	//    当成伪造并回 710022002，因此宁可继续用旧值，也不要把脏值写进账号文件。
+	token := strings.TrimSpace(header.Get(msTokenHeader))
+	if !isMsTokenShaped(token) {
+		return
+	}
+
+	// 2. 同值不重复落盘：确认轮与回灌会连发多次请求，没必要每次都写文件。
+	if token == strings.TrimSpace(sa.MsToken) {
+		return
+	}
+
+	// 3. 落盘。有 Jar 就交给它，没有才退回直写；不读 jar.path 判断绑定，
+	//    那是未加锁字段，persist 内部自己会处理未绑定的情况。
+	sa.MsToken = token
+	sa.UpdatedAt = time.Now().Format(time.RFC3339)
+	var errSave error
+	if jar != nil {
+		errSave = jar.persist(sa)
+	} else {
+		errSave = writeAuthFileDirect(resolveAuthFilePath(sa.AuthID, sa.PhysicalPath), sa)
+	}
+	if errSave != nil {
+		log.Printf("[doubao] save refreshed ms_token failed for %s: %v", sa.AuthID, errSave)
+		return
+	}
+	log.Printf("[doubao] ms_token refreshed from response header for %s (len=%d)", sa.AuthID, len(token))
+}
+
+// isMsTokenShaped 判断一个值是否符合 msToken 的字符集形态。
+//
+// 不校验长度：实测上游签发的长度在 104~188 之间浮动，写死区间会把合法值挡掉。
+// [参数] token: 待校验的值。
+// [返回] 非空且只含 base64/url-safe 字符时返回 true。
+// 最近修改时间：2026-11-21 15:10:00；改动原因：新增，msToken 形态粗筛。
+func isMsTokenShaped(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, r := range token {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '+', r == '/', r == '=':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // truncateText 截断过长文本，用于错误信息。

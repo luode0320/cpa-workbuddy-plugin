@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -662,5 +663,165 @@ func TestCollectCompletionKeepsSectionIDWhenAckEmpty(t *testing.T) {
 	}
 	if res.ConversationID != "conv-ack" {
 		t.Errorf("ACK 里的会话 id 应覆盖，实际 %q", res.ConversationID)
+	}
+}
+
+// streamWithMsTokenHeader 用给定的响应头值跑一次真实 streamCompletion。
+//
+// 抽成夹具是为了让两个用例只差一个头值，避免复制 20 行 httptest 骨架。
+// [参数] t: 用例句柄；headerValue: 要下发的 x-ms-token 值。
+// [返回] 落盘后的账号文件路径。
+// 最近修改时间：2026-11-21 15:10:00；改动原因：新增，msToken 续期用例夹具。
+func streamWithMsTokenHeader(t *testing.T, headerValue string) string {
+	t.Helper()
+	isolateAccounts(t)
+
+	// 1. 先落一份账号到隔离目录：Jar 只有在 PhysicalPath 非空时才会绑定文件。
+	sa := completionTestAccount()
+	sa.MsToken = "stale-token-value"
+	targetPath := filepath.Join(getAccountsDir(), sa.AuthID+".json")
+	if errWrite := writeAuthFileDirect(targetPath, sa); errWrite != nil {
+		t.Fatalf("写入账号文件失败：%v", errWrite)
+	}
+	loaded, errRead := readAuthFile(targetPath)
+	if errRead != nil {
+		t.Fatalf("回读账号文件失败：%v", errRead)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if headerValue != "" {
+			w.Header().Set(msTokenHeader, headerValue)
+		}
+		_, _ = w.Write([]byte("event: SSE_REPLY_END\ndata: {}\n\n"))
+	}))
+	defer srv.Close()
+	restore := swapCompletionEndpoint(srv.URL)
+	defer restore()
+
+	body := buildCompletionRequest(loaded, "你好", textMode(), "", "", 0, false)
+	if errRun := streamCompletion(context.Background(), loaded, body, func(completionEvent) bool { return true }); errRun != nil {
+		t.Fatalf("流式请求失败：%v", errRun)
+	}
+	return targetPath
+}
+
+// TestStreamCompletionAdoptsMsTokenHeader 验证响应头里的新 token 会写回内存并落盘。
+//
+// 这是 0.1.34 的核心契约：`mssdk.bytedance.com` 换 token 要设备侧 strData，插件
+// 算不出来，唯一可用的自动续期通道就是每次 /chat/completion 响应头下发的 x-ms-token。
+// 最近修改时间：2026-11-21 15:10:00；改动原因：新增，覆盖自动续期主路径。
+func TestStreamCompletionAdoptsMsTokenHeader(t *testing.T) {
+	const freshToken = "J9DBDH2wVrhZTqleZgOi8RA1v9c1DXYAWjdNA4p4apv7MW1K-OZkpvgqwRl5burFlDVOdZpaJTZ2iGpkL3MAJvUzsErJ726gvh5HKOSP"
+	targetPath := streamWithMsTokenHeader(t, freshToken)
+
+	saved, errReload := readAuthFile(targetPath)
+	if errReload != nil {
+		t.Fatalf("回读账号文件失败：%v", errReload)
+	}
+	if saved.MsToken != freshToken {
+		t.Errorf("账号文件里的 msToken 应换成响应头下发的新值，实际 %q", saved.MsToken)
+	}
+}
+
+// TestStreamCompletionIgnoresMalformedMsToken 验证形态不合法的头值不会被采纳。
+//
+// 上游对 token 只做形态/长度粗判：截断或乱码的值会被当成伪造并回 710022002，
+// 所以宁可继续用旧值，也不要把脏值写进账号文件。
+// 最近修改时间：2026-11-21 15:10:00；改动原因：新增，覆盖非法头值拒绝路径。
+func TestStreamCompletionIgnoresMalformedMsToken(t *testing.T) {
+	targetPath := streamWithMsTokenHeader(t, "bad token with space")
+
+	saved, errReload := readAuthFile(targetPath)
+	if errReload != nil {
+		t.Fatalf("回读账号文件失败：%v", errReload)
+	}
+	if saved.MsToken != "stale-token-value" {
+		t.Errorf("非法头值不应覆盖已有 msToken，期望 %q，实际 %q", "stale-token-value", saved.MsToken)
+	}
+}
+
+// TestIsMsTokenShaped 覆盖 msToken 形态判定的正反例。
+// 最近修改时间：2026-11-21 15:10:00；改动原因：新增，形态判定表驱动用例。
+func TestIsMsTokenShaped(t *testing.T) {
+	cases := []struct {
+		name  string
+		token string
+		want  bool
+	}{
+		{"标准 base64", "J9DBDH2wVrhZTqleZgOi8RA1v9c1DXYA", true},
+		{"url-safe 含下划线与连字符", "a_b-c9ZX", true},
+		{"带填充", "abc==", true},
+		{"空串", "", false},
+		{"含空格", "bad token", false},
+		{"含中文", "令牌", false},
+		{"含换行", "abc\ndef", false},
+	}
+	for _, c := range cases {
+		if got := isMsTokenShaped(c.token); got != c.want {
+			t.Errorf("%s：isMsTokenShaped(%q) 期望 %v，实际 %v", c.name, c.token, c.want, got)
+		}
+	}
+}
+
+// TestAdoptMsTokenWithoutJar 验证没有 Jar 时退回直写账号文件。
+//
+// 回灌链路（/im/chain/single）不会拿到 completion 的 Jar，这条分支是它的兜底。
+// 最近修改时间：2026-11-21 15:10:00；改动原因：新增，覆盖无 Jar 落盘分支。
+func TestAdoptMsTokenWithoutJar(t *testing.T) {
+	isolateAccounts(t)
+
+	sa := completionTestAccount()
+	sa.MsToken = "stale-token-value"
+	targetPath := filepath.Join(getAccountsDir(), sa.AuthID+".json")
+	if errWrite := writeAuthFileDirect(targetPath, sa); errWrite != nil {
+		t.Fatalf("写入账号文件失败：%v", errWrite)
+	}
+	loaded, errRead := readAuthFile(targetPath)
+	if errRead != nil {
+		t.Fatalf("回读账号文件失败：%v", errRead)
+	}
+
+	header := http.Header{}
+	header.Set(msTokenHeader, "a_b-c9ZXfresh")
+	adoptMsTokenFromHeader(loaded, nil, header)
+
+	if loaded.MsToken != "a_b-c9ZXfresh" {
+		t.Errorf("内存里的 msToken 应更新，实际 %q", loaded.MsToken)
+	}
+	saved, errReload := readAuthFile(targetPath)
+	if errReload != nil {
+		t.Fatalf("回读账号文件失败：%v", errReload)
+	}
+	if saved.MsToken != "a_b-c9ZXfresh" {
+		t.Errorf("无 Jar 时应直写账号文件，实际 %q", saved.MsToken)
+	}
+}
+
+// TestAdoptMsTokenSkipsUnchanged 验证同值不重复落盘。
+//
+// 确认轮会连发多次请求，每次响应头都带同一个「已是最新」的值时没必要写文件。
+// 最近修改时间：2026-11-21 15:10:00；改动原因：新增，覆盖同值短路。
+func TestAdoptMsTokenSkipsUnchanged(t *testing.T) {
+	isolateAccounts(t)
+
+	sa := completionTestAccount()
+	sa.MsToken = "same-token-value"
+	targetPath := filepath.Join(getAccountsDir(), sa.AuthID+".json")
+	if errWrite := writeAuthFileDirect(targetPath, sa); errWrite != nil {
+		t.Fatalf("写入账号文件失败：%v", errWrite)
+	}
+	loaded, errRead := readAuthFile(targetPath)
+	if errRead != nil {
+		t.Fatalf("回读账号文件失败：%v", errRead)
+	}
+	before := fileDigest(targetPath)
+
+	header := http.Header{}
+	header.Set(msTokenHeader, "same-token-value")
+	adoptMsTokenFromHeader(loaded, nil, header)
+
+	if after := fileDigest(targetPath); after != before {
+		t.Errorf("同值不应重写账号文件，摘要由 %s 变成了 %s", before, after)
 	}
 }

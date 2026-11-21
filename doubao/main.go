@@ -64,7 +64,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.1.33"
+	version      = "0.1.34"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value

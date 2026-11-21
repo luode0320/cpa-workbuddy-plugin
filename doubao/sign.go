@@ -23,10 +23,11 @@ import (
 // 签名不是可选项，而是必需参数。a_bogus 由豆包页面下发的 bdms-sdk 生成，
 // 算法跑在混淆解释器里、且带环境探测位图，静态复刻不可行；因此这里直接
 // 内嵌官方 SDK，用 goja 在插件进程内还原它的 XHR hook，让 SDK 自己把
-// a_bogus 追加到 URL 上。msToken 由页面 localStorage.xmst（有效期 7 天）
-// 随授权一起采集，存进账号文件。
+// a_bogus 追加到 URL 上。msToken 首次由页面 localStorage.xmst 随授权采集，
+// 之后靠每次 /chat/completion 响应头下发的 x-ms-token 自动换新，不需要用户
+// 重新点书签（见 completion.go 的 adoptMsTokenFromHeader）。
 //
-// 最近修改时间：2026-11-15 01:00:00；改动原因：新增，补齐 /chat/completion 必需签名。
+// 最近修改时间：2026-11-21 15:10:00；改动原因：更正 msToken 续期口径，改为响应头自动换新。
 
 //go:embed assets/bdms-sdk.js
 var bdmsSDKSource string
