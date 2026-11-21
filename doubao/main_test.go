@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -36,6 +37,46 @@ func TestDoubaoRegistrationIdentity(t *testing.T) {
 	}
 	if len(caps.ExecutorInputFormats) == 0 || caps.ExecutorInputFormats[0] != "openai" {
 		t.Fatalf("执行器输入格式应为 openai，实际为 %v", caps.ExecutorInputFormats)
+	}
+}
+
+// TestDoubaoRegistrationDeclaresAllConfigFields 校验注册元数据把 Config 的每个键都声明出来。
+//
+// 为什么必须锁：宿主只把 config_fields 里声明过的键展示给管理端，漏声明的键虽然能被
+// configurePlugin 读到、能生效，但用户在面板上看不到也改不了，等于半个隐形配置。
+//
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-22 00:20:00；改动原因：新增，防止新增配置项后忘记同步声明。
+func TestDoubaoRegistrationDeclaresAllConfigFields(t *testing.T) {
+	reg := doubaoRegistration()
+
+	declared := make(map[string]pluginapi.ConfigFieldType, len(reg.Metadata.ConfigFields))
+	for _, field := range reg.Metadata.ConfigFields {
+		if field.Name == "" {
+			t.Fatal("配置字段名不能为空")
+		}
+		if field.Description == "" {
+			t.Fatalf("配置字段 %s 缺少描述", field.Name)
+		}
+		declared[field.Name] = field.Type
+	}
+
+	// 1. Config 结构体的 yaml 键必须全部在声明表里。
+	cfgType := reflect.TypeOf(Config{})
+	for i := 0; i < cfgType.NumField(); i++ {
+		key := cfgType.Field(i).Tag.Get("yaml")
+		if key == "" || key == "-" {
+			continue
+		}
+		if _, ok := declared[key]; !ok {
+			t.Fatalf("Config 字段 %s（yaml 键 %s）未在注册元数据里声明", cfgType.Field(i).Name, key)
+		}
+	}
+
+	// 2. 布尔项的声明类型必须是 boolean，否则管理端会渲染成文本框。
+	if declared["keepalive_enabled"] != pluginapi.ConfigFieldTypeBoolean {
+		t.Fatalf("keepalive_enabled 应声明为 boolean，实际为 %q", declared["keepalive_enabled"])
 	}
 }
 

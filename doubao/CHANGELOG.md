@@ -1,3 +1,27 @@
+## 0.1.36 (2026-11-22)
+
+### 修复
+
+- **注册元数据漏声明四个配置项，导致面板看不到也改不了**。`doubaoRegistration()` 的
+  `ConfigFields` 此前只列了 `timeout_seconds` / `stream_timeout_seconds` / `model_cache_seconds`
+  三项，而 0.1.32 的 `video_poll_timeout_seconds` / `video_creation_wait_seconds` 与 0.1.35 的
+  `keepalive_enabled` / `keepalive_interval_seconds` 都只进了 `Config` 结构体。
+  宿主只把 `config_fields` 里声明过的键展示给管理端，所以这四项虽然能被 `configurePlugin` 读到、
+  也确实生效（生产实测 30 分钟保活正常跑），但用户在面板上既看不到、也改不了，等于半个隐形配置。
+  现在七项全部声明，`keepalive_enabled` 按布尔类型声明（否则管理端会渲染成文本框）。
+
+### 新增
+
+- `TestDoubaoRegistrationDeclaresAllConfigFields`：用反射遍历 `Config` 结构体的 `yaml` 标签，
+  逐个核对是否已在注册元数据里声明，并单独断言 `keepalive_enabled` 的类型是 `boolean`。
+  以后再新增配置项忘记同步声明，本地门禁就会红。
+
+### 已知
+
+- 面板里只能看到配置项名称、类型与描述，**当前没有可视化编辑表单**；改值仍需走
+  `PUT /v0/management/plugins/doubao-provider/config` 的 `config_yaml`。声明齐全解决的是
+  「面板不展示」，不是「面板可编辑」。
+
 ## 0.1.35 (2026-11-21)
 
 ### 新增

@@ -64,7 +64,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.1.35"
+	version      = "0.1.36"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -268,7 +268,7 @@ type registrationCapability struct {
 // doubaoRegistration 返回插件注册元数据与能力声明。
 // [参数] 无。
 // [返回] 注册结构。
-// 最近修改时间：2026-11-17 01:07:00；改动原因：配置字段收敛为超时与缓存三项。
+// 最近修改时间：2026-11-22 00:20:00；改动原因：补齐视频等待与空闲保活四项配置声明，此前只在插件内生效、面板看不到。
 func doubaoRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
@@ -282,6 +282,10 @@ func doubaoRegistration() registration {
 				{Name: "timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "非流式上游请求超时（秒）。"},
 				{Name: "stream_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "流式上游请求超时（秒）。"},
 				{Name: "model_cache_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "模型目录缓存时长（秒）。"},
+				{Name: "video_poll_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "确认轮等待视频产物的总时长（秒），只作用于视频回灌。"},
+				{Name: "video_creation_wait_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "等待上游落下第一个创作块的上限（秒），超时即判定未开始渲染。"},
+				{Name: "keepalive_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "是否在空闲期定时刷新 msToken。"},
+				{Name: "keepalive_interval_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "空闲保活间隔（秒），默认 1800。"},
 			},
 		},
 		Capabilities: registrationCapability{

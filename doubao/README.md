@@ -293,6 +293,18 @@ print(media[0]["url"])
 | `keepalive_enabled` | 布尔 | 是否在空闲期定时刷新 `msToken`，默认 `true` |
 | `keepalive_interval_seconds` | 整数 | 保活间隔（秒），默认 1800；只在 `keepalive_enabled` 为真时生效 |
 
+七项都在插件注册元数据里声明过（`ConfigFields`），所以管理端能列出名称、类型与描述。
+**但当前没有可视化编辑表单**：改值仍需 `PUT /v0/management/plugins/doubao-provider/config`
+的 `config_yaml`，例如：
+
+```bash
+curl -X PUT https://cpa.luode.vip/v0/management/plugins/doubao-provider/config \
+  -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"enabled":true,"priority":20,"config_yaml":"keepalive_interval_seconds: 900\\n"}'
+```
+
+`config_yaml` 写空串表示全部回到默认值（保活开启、间隔 1800 秒）。
+
 早期版本的 `work_*` 七项配置已删除；存量 `config.yaml` 里留着这批键不会报错，
 yaml 会宽松忽略。
 
