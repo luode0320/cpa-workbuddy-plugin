@@ -227,6 +227,77 @@ func isCozeSessionCookie(name string) bool {
 	return false
 }
 
+// parseCookieHeader 把 Cookie 头解析成「小写名 → 值」的映射。
+// [参数] header: 完整 Cookie 头。
+// [返回] 名值映射；空头返回空映射。
+// 最近修改时间：2026-11-21；改动原因：新增，换发判据需要旧值基线。
+func parseCookieHeader(header string) map[string]string {
+	out := map[string]string{}
+	for _, part := range strings.Split(header, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		eq := strings.Index(part, "=")
+		if eq <= 0 {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(part[:eq]))
+		if name == "" {
+			continue
+		}
+		out[name] = strings.TrimSpace(part[eq+1:])
+	}
+	return out
+}
+
+// mergeSessionCookies 把本轮下发的 Cookie 叠加到既有会话上，得到新容器。
+//
+// 为什么不能直接新建容器：token beat 每一轮都会下发 odin_tt / ttwid /
+// s_v_web_id 等埋点 Cookie，而会话主项（sessionid / sid_guard 等）只在
+// 真正换发时才出现。若用下发结果整份替换，一次埋点响应就会把 sessionid
+// 抹掉，账号下一轮直接退化成「凭据为空」（2026-11-21 生产复盘实证）。
+// 因此先按原 Cookie 头重建容器，再叠加本轮下发：旧会话被新值覆盖，
+// 埋点项各自补齐，两者都不丢。
+// [参数] prevHeader: 账号现有的 Cookie 头；fresh: 本轮上游下发的 Cookie。
+// [返回] 合并后的新容器。
+// 最近修改时间：2026-11-21；改动原因：新增，修复续期整份替换丢会话主项。
+func mergeSessionCookies(prevHeader string, fresh []*http.Cookie) *cookieStore {
+	store := newCookieStore()
+	seedStoreFromHeader(store, prevHeader, cozeSiteHost+"/")
+	if len(fresh) > 0 {
+		store.SetCookies(mustParseURL(cozeSiteHost+"/"), fresh)
+	}
+	return store
+}
+
+// rotatedSessionCookies 判断本轮下发是否真的换掉了会话主 Cookie。
+//
+// 判据不能用「有没有下发 Cookie」：死会话打 beat 仍会拿到 9 条埋点 Cookie
+// （ttwid / s_v_web_id / biz_trace_id / Hm_lvt_* / HMACCOUNT / _gcl_au），
+// 一条会话主项都没有。按条数判会把这种响应当成成功换发并刷新 LastRenewAt，
+// 面板「最近续期」一路前进而会话早已失效（2026-11-21 生产复盘实证）。
+// [参数] prevHeader: 账号现有的 Cookie 头；fresh: 本轮上游下发的 Cookie。
+// [返回] 会话主项存在且值确实变化时返回 true。
+// 最近修改时间：2026-11-21；改动原因：新增，换发判据从条数改为会话主项。
+func rotatedSessionCookies(prevHeader string, fresh []*http.Cookie) bool {
+	prev := parseCookieHeader(prevHeader)
+	for _, c := range fresh {
+		if c == nil || !isCozeSessionCookie(c.Name) {
+			continue
+		}
+		value := strings.TrimSpace(c.Value)
+		if value == "" {
+			continue
+		}
+		if old, ok := prev[strings.ToLower(strings.TrimSpace(c.Name))]; ok && old == value {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // fileDigest 计算文件内容摘要；文件不存在或不可读时返回空串。
 // [参数] path: 文件路径。
 // [返回] 十六进制摘要。

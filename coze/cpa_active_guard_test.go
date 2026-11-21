@@ -23,9 +23,12 @@ func TestActiveInstanceIsCurrentDetectsRetiredInstance(t *testing.T) {
 	original := cpaActiveGuardFetch
 	t.Cleanup(func() { cpaActiveGuardFetch = original })
 
-	// 宿主报告的是新版本（0.7.5），本实例是旧版本（0.7.4）：已退役。
+	// 宿主报告的是另一个版本，本实例不是它：已退役。
+	//
+	// 这里的版本号刻意用 `version + ".0.0"` 而不是写死具体值：写死会被下一次版本 bump
+	// 撞上（宿主报告版本恰好等于编译期版本 ⇒ 判定为活跃 ⇒ 用例假 FAIL）。
 	cpaActiveGuardFetch = func() string {
-		return "plugins/linux/amd64/coze-provider-v0.7.9.so"
+		return "plugins/linux/amd64/coze-provider-v" + version + ".0.0.so"
 	}
 	if activeInstanceIsCurrent() {
 		t.Fatal("宿主报告的版本与本实例不一致时必须判定为已退役")
@@ -69,7 +72,7 @@ func TestEnsureActiveInstanceBeforeWriteBlocksRetiredInstance(t *testing.T) {
 	logf := func(string, string, map[string]any) { logged++ }
 
 	cpaActiveGuardFetch = func() string {
-		return "plugins/linux/amd64/coze-provider-v0.0.1-retired.so"
+		return "plugins/linux/amd64/coze-provider-v" + version + "-retired.so"
 	}
 	if ensureActiveInstanceBeforeWrite(logf) {
 		t.Fatal("已退役实例必须被拦下写盘")

@@ -109,6 +109,65 @@ OpenAI 请求
 宿主自动刷新循环对本插件只重排不执行（`handleDueAuth` 的 `exec == nil`
 分支），因此定时续期由插件自己负责。
 
+### 换发判据：看会话主项，不看下发条数
+
+`renewSession` 判定「这一轮到底换发成功没有」的唯一依据是**会话主 Cookie
+（`sessionid` / `sessionid_ss` / `sid_tt` / `sid_guard`）的值是否变化**，
+下发条数不算数。
+
+原因（2026-11-21 生产复盘）：死会话打 `token/beat` 依然会下发 9 条埋点
+Cookie（`ttwid` / `s_v_web_id` / `biz_trace_id` / `Hm_lvt_*` 等），一条
+会话主项都没有。旧实现只判 `len(Set-Cookie) > 0`，会把这种「有下发、无换发」
+记成成功并刷新 `last_renew_at` —— 时间戳一路前进，会话其实早已失效，面板
+看不出任何异常。
+
+另外，新 Cookie **叠加**在账号既有 Cookie 之上，不整份替换：扣子把凭据拆在
+多个同义名上（`uid_tt` / `uid_tt_ss` / `session_tlb_tag` 各出现两次），
+整份替换会丢掉没被本轮重新下发的那些项。
+
+### 两级换发：裸 HTTP 失败后降级到真实浏览器
+
+同一份 Cookie，Go 进程直连 `token/beat/v2/` 会被判 `error_code:401` /
+`session_expired`，而**真实页面内同源 fetch 同一端点却能换发**——差别不在
+Cookie，在客户端特征（TLS 指纹 / UA / 埋点 Cookie / referer / 浏览器侧前置
+会话状态）。因此续期做成两级：
+
+1. **裸 HTTP**（默认路径）：`renewSession`，无进程开销；
+2. **真实浏览器**（`browser_keep_enabled` 开启时）：CDP 起一个独立 profile
+   的浏览器，注入账号 Cookie，打开 `www.coze.cn`，在页面上下文内执行同源
+   fetch 完成换发，再从浏览器 Cookie 罐读回结果。
+
+降级触发条件有三条，缺一不可：
+
+- 裸 HTTP 报错且错误文案命中会话过期（网络抖动 / 限流 / 5xx **不**降级，
+  起浏览器只会白跑一次 90 秒超时）；
+- 裸 HTTP 没报错但没换到会话主项（埋点 Cookie 不算换发）；
+- 浏览器保活开关已开启。
+
+两级都失败时返回的是**包装错误**，裸 HTTP 的原始原因在前（`isSessionExpiredError`
+仍能命中），浏览器侧原因在后。浏览器保活**救不回已被上游吊销的会话**：服务端
+换锁之后任何客户端特征都换不出新 Cookie，只能重新授权。它的价值是把**活号**
+的寿命从「几天」拉到「数月」——桌面端闲置约一个月即被吊销，持续保活则不会。
+
+### 失败退避：4h → 8h → 24h → 48h
+
+连续失败（含「未换发」）的账号进入阶梯退避，封顶 48 小时：即使账号长期失效，
+每天仍有一次自愈机会。成功一次即清零。
+
+退避前实测：12 个账号里 5 个已失效，8 天累计约 240 次必然失败的上游请求，
+全是白耗配额与风控额度，还把真正的告警淹掉。退避表只放内存（热重载清零后
+以 4 小时重新起步），是节流手段不是业务事实。
+
+### 日志与告警
+
+每轮结果分三档记录，不再混写：真换发打 info「定时续期完成」；上游报错打
+warn「定时续期失败」；上游正常响应但没换到会话主项打 warn「定时续期未换发」。
+旧实现两种走向都打「定时续期完成」，会话死了很久也看不出来。
+
+`renew_alert_webhook` 配置后，账号 `auth_invalid` 的 false→true（失效）与
+true→false（恢复）各推一条 JSON，同一账号连续判定只推第一条；正文里手机号
+中间四位遮蔽，不携带 Cookie 原值。
+
 ## 积分巡检与低额自动禁用
 
 插件每小时跑一轮全量巡检（`credit_refresh_interval_seconds`，默认 3600 秒），
@@ -151,6 +210,15 @@ OpenAI 请求
 | `renew_interval_seconds` | 14400 | 定时续期间隔（秒），默认 4 小时 |
 | `credit_refresh_interval_seconds` | 3600 | 积分巡检间隔（秒），承担签到、落盘与分级 |
 | `min_routable_credits` | 10 | 积分红线：低于此值不路由且自动禁用；填 `0` 关闭整个机制 |
+| `renew_alert_webhook` | 空 | 账号失效/恢复的通知地址；空则只写日志 |
+| `browser_keep_enabled` | false | 裸 HTTP 换发失败时是否降级到真实浏览器 |
+| `browser_keep_chrome_path` | 空 | 浏览器可执行文件路径；空则按 `COZE_CHROME_PATH` / `CHROME_PATH` / `BROWSER_PATH` 与常见安装位置依次探测 |
+| `browser_keep_headless` | true | 保活浏览器是否无头；遇到滑动验证须置 `false` 转可见窗口 |
+| `browser_keep_profile_dir` | 空 | 浏览器 profile 根目录；空则用 `~/.antigravity_cockpit/coze_browser_profiles`，每个账号一个子目录 |
+
+浏览器保活**默认关闭**：它要起真实浏览器进程（单实例约 200MB 内存加磁盘 profile），
+多数精简 Linux 容器根本没装 Chrome。开局前先用面板「浏览器保活」按钮或
+`GET /browser-status` 确认 `available` 为真——报的是可执行文件探测结果，不是开关状态。
 
 ## 管理接口
 
@@ -163,7 +231,9 @@ OpenAI 请求
 | GET | `/credits` | 单账号积分（`force=1` 跳过缓存并落盘） |
 | POST | `/claim-daily` | 手动补领当日登录积分 |
 | POST | `/login-start` | 生成一次性授权会话与脚本 |
-| POST | `/renew` | 手动续期 |
+| POST | `/renew` | 手动续期（裸 HTTP，不触发浏览器降级） |
+| POST | `/browser-revive` | 用真实浏览器为指定账号换发一次（`body: {auth_id}`），裸 HTTP 被判失效时用 |
+| GET | `/browser-status` | 浏览器保活开关、浏览器可执行文件探测结果与正在保活的账号 |
 | POST | `/delete` / `/enable` / `/disable` | 账号管理 |
 | GET | `/export` | 导出全部账号凭据为单个 JSON 备份（含 Cookie 原文） |
 | POST | `/import-cred` | 从备份恢复单条账号（`body: {cred}`） |

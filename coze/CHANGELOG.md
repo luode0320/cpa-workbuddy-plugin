@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.7.9 (2026-11-21)
+
+### Fix - 续期换发判据只看「下发条数」，死会话被记成续期成功
+
+- 缺陷(2026-11-21 定位): 面板里多个账号 `last_renew_at` 一直在前进，实际早已被上游判失效。`renewSession` 第一步的判据是 `if len(step1Cookies) > 0`——只数「有没有下发 Cookie」，不问「下发的是不是会话主项」。
+- 根因: 扣子的令牌端点在会话已死时仍返回 HTTP 200 并下发 9 条埋点 Cookie（`ttwid` / `s_v_web_id` / `biz_trace_id` / `Hm_lvt_*` / `HMACCOUNT` / `_gcl_au`），一条会话主项都没有；旧判据把这些埋点当成功，`applyRenewal` 随即刷新 `LastRenewAt` 并清 `AuthInvalid`，于是「时间戳在跑、会话早死」。
+- 修复: 新增 `rotatedSessionCookies(prevHeader, fresh)` —— 只认 `cozeSessionCookieNames`（`sessionid` / `sessionid_ss` / `sid_tt` / `sid_guard`）命中且值确实变化；形态 A（第一步直接下发）与形态 B（token 换回 Cookie）两个返回点都改用它。未换发时返回 `Renewed=false` + `Note`（`unattemptedNote` 会写明本轮下发了几条、无会话主项），不返 error——这不是上游故障，是「没换到东西」。
+- 同源修复: 两处 `store := newCookieStore(); store.SetCookies(fresh)` 改为 `mergeSessionCookies(prevHeader, fresh)`。旧写法整份替换会丢会话主项——扣子把凭据拆在 `uid_tt` / `uid_tt_ss` / `session_tlb_tag` 各两份上，替换而非叠加等于自断凭据。
+- 影响范围: 仅 `renewSession` 的两条判据与两处合并语义，以及 `renewResult` 的 Note 文案。裸 HTTP 换发的请求形态、端点、步数全部未变。
+
+### Fix - 续期失败与续期「没换发」在日志上不可区分
+
+- 缺陷: `runRenewTick` 无论 `res.Renewed` 真假都打 info「定时续期完成」，只有真报 error 才打 warn。判据修好之后，「没换到」会变成大量假成功日志，运维看不到。
+- 修复: 三分支分开——`Renewed` 真 → info「定时续期完成」；`errRenew` → warn「定时续期失败」；其余（`res == nil || !res.Renewed`）→ warn「定时续期未换发」并带 `note`。轮末汇总新增 `not_renewed` 计数。
+
+### Fix - 死会话每 4 小时被重试，8 天约 240 次无效上游请求
+
+- 修复: `renewTargets` 之后加阶梯退避 `4h → 8h → 24h → 48h`（封顶 48h，保证长期失效账号每天仍有一次自愈机会），成功即清零。跳过时打 info「定时续期跳过退避中的账号」，失败/未换发时 warn 带 `fail_count` 与 `retry_after`。
+- 刻意不持久化: 退避表只在内存，热重载清零。它是节流手段不是业务事实，落盘换来的复杂度不值。
+- 刻意不加 `AuthInvalid` 过滤: Cookie 可能只是主会话项过期，下一轮仍值得试；按失效标记跳过会让「自愈」永远不发生。
+
+### Fix - 续期写盘未接活跃实例闸门
+
+- 缺陷: 积分巡检 `credit_sweep.go:53` 早有 `ensureActiveInstanceBeforeWrite` 闸门，续期链路的 `applyRenewal` / `markSessionInvalid` 直写物理文件，热重载后退役实例仍能覆盖新实例的凭据。
+- 修复: 两条写路径各插一道实例闸门，与既有的「只有真换发才写」和「账号文件未被外部替换」构成三道闸门。
+
+### Feat - 账号失效/恢复告警
+
+- 新增 `renew_alert_webhook` 配置。`notifyAuthStateChange` 只在状态真正迁移时推一次（`AuthInvalid` false→true 推 `coze_auth_invalid`，true→false 推 `coze_auth_recovered`），内存去重，重载后按当前状态重新判断。
+- 刻意保守: 推送放在 `writeAuthFileDirect` 成功之后；未配 webhook 时也维护去重表，补配后不会把历史失效重推一遍；手机号走 `maskMobile` 遮蔽，不带 Cookie 原值。
+
+### Feat - 浏览器保活：裸 HTTP 被判失效时降级到真实浏览器换发
+
+- 背景(2026-11-21 实测): 同一份 Cookie，Go 进程直连 `/passport/token/beat/v2/` 得 `error_code:401 会话过期`，真实页面内同源 `fetch` 同一端点却能换发。差别不在 Cookie，在 TLS 指纹 / UA / 埋点 Cookie / referer / 浏览器侧前置会话状态。
+- 新增 `coze/cdp.go`（Chrome DevTools Protocol 客户端：启动/探活/注入 Cookie/导航/页面内求值/取回 Cookie）与 `coze/browser_keep.go`（`reviveSession`：独立 profile 起浏览器 → 注入 Cookie → 页面内两步 beat → 取回 Cookie → 与旧 Cookie 合并 → 仍由 `rotatedSessionCookies` 判定成败）。
+- 降级条件: 只有命中 `isSessionExpiredError` 才起浏览器；网络抖动 / 限流 / 5xx 直接返回原错误，白跑 90 秒没有意义。两条都失败时包装错误把原错误放前面，`isSessionExpiredError` 才能继续命中。
+- 配置: `browser_keep_enabled`（默认 false —— 要起真实浏览器进程约 200MB，多数精简 Linux 容器没装 Chrome）/ `browser_keep_chrome_path` / `browser_keep_headless`（默认 true，遇滑动验证须置 false）/ `browser_keep_profile_dir`（每账号一子目录，共用会互相覆盖）。
+- 管理入口: `POST /browser-revive`（指定账号手动换发一次）、`GET /browser-status`（开关 + 可执行文件探测 + 正在保活的账号）。面板新增「浏览器续期」按钮与「浏览器保活」状态按钮。
+- 明确的能力边界: 救不回已被服务端吊销的会话（那需要重新登录）；价值是把活号的寿命从「几天」拉到「数月」——桌面端闲置约一个月同样会被吊销。
+
+### 验证
+
+- `python scripts/cgo-shim-build.py coze`：build / vet / test 全绿。
+- 新增 60 个用例覆盖判据、合并、退避阶梯、实例闸门、告警去重、CDP 协议、浏览器保活与两个管理路由；哨兵变异（把断言改成必失败值）确认测试真实进编译链路。
+- `panel.html` 两个 script 块 `node --check` 通过；`gofmt` 对 17 个改动文件零差异。
 ## 0.7.8 (2026-11-20)
 
 ### Fix - 兜底模型目录写死了上游已下线的 doubao-seed-2-0-pro-260215

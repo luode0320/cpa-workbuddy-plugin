@@ -82,6 +82,8 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/register-host", Description: "把本地已落盘的账号补注册到宿主认证目录（body: {}）。"},
 			{Method: http.MethodGet, Path: base + "/export", Description: "导出全部账号凭据为单个 JSON 备份文件（含完整 Cookie 原文）。"},
 			{Method: http.MethodPost, Path: base + "/import-cred", Description: "从备份恢复一条账号凭据（body: {cred}）。"},
+			{Method: http.MethodPost, Path: base + "/browser-revive", Description: "用真实浏览器为指定账号手动换发一次（body: {auth_id}）。"},
+			{Method: http.MethodGet, Path: base + "/browser-status", Description: "查询浏览器保活的开关、浏览器可执行文件与正在保活的账号。"},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "Coze", Description: "扣子 Provider 管理面板：授权登录、账号管理与续期。"},
@@ -206,6 +208,12 @@ func handleManagement(raw []byte) ([]byte, error) {
 
 	case method == http.MethodPost && subPath == "/import-cred":
 		return handleImportCred(req.Body)
+
+	case method == http.MethodPost && subPath == "/browser-revive":
+		return handleBrowserRevive(req.Body)
+
+	case method == http.MethodGet && subPath == "/browser-status":
+		return makeJSONResponse(handleBrowserStatus())
 
 	default:
 		return makeHTTPResponse(http.StatusNotFound, []byte(`{"error":"not_found"}`))
@@ -444,6 +452,103 @@ func renewNote(res *renewResult) string {
 		return ""
 	}
 	return res.Note
+}
+
+// handleBrowserRevive 用真实浏览器为指定账号手动换发一次。
+//
+// 与 /renew 的分工：/renew 走裸 HTTP，失败即报；本入口直接走浏览器，
+// 供运维在「面板显示待重新授权、但账号其实刚用过」时手工验证一次，
+// 也是浏览器保活链路唯一可即时触发的观测点。
+// [参数] body: 含 auth_id 的请求体。
+// [返回] 管理响应。
+// 最近修改时间：2026-11-21；改动原因：新增，浏览器保活的显式入口。
+func handleBrowserRevive(body []byte) ([]byte, error) {
+	authID := extractAuthID(body)
+	if authID == "" {
+		return makeHTTPResponse(http.StatusBadRequest, []byte(`{"error":"auth_id 不能为空"}`))
+	}
+	sa, errFind := findAuthByID(authID)
+	if errFind != nil {
+		return makeHTTPResponse(http.StatusOK, mustJSON(map[string]any{"ok": false, "error": errFind.Error()}))
+	}
+	res, errRevive := browserKeeperDefault.reviveSession(sa)
+	if errRevive != nil {
+		// 与 /renew 一致：上游明确判定失效时留下标记，面板才会显示真实状态。
+		markSessionInvalid(sa, errRevive.Error())
+		return makeHTTPResponse(http.StatusOK, mustJSON(map[string]any{"ok": false, "error": errRevive.Error()}))
+	}
+	if errApply := applyRenewal(sa, res); errApply != nil {
+		return makeHTTPResponse(http.StatusOK, mustJSON(map[string]any{"ok": false, "error": errApply.Error()}))
+	}
+	return makeHTTPResponse(http.StatusOK, mustJSON(map[string]any{
+		"ok":      true,
+		"renewed": res != nil && res.Renewed,
+		"note":    renewNote(res),
+		"message": "浏览器保活完成",
+	}))
+}
+
+// handleBrowserStatus 返回浏览器保活的运行状态。
+//
+// 面板开关只改配置，能不能真跑起来还取决于镜像里有没有浏览器二进制；
+// 这里把「开关 / 解析到的可执行文件 / 当前在跑的账号」一次说清，
+// 免得运维只能靠日志猜。
+// [参数] 无。
+// [返回] 状态载荷。
+// 最近修改时间：2026-11-21；改动原因：新增，保活可观测性入口。
+func handleBrowserStatus() map[string]any {
+	cfg := currentConfig()
+	payload := map[string]any{
+		"enabled":     cfg.BrowserKeepEnabled,
+		"headless":    cfg.browserKeepHeadless(),
+		"chrome_path": cfg.BrowserKeepChromePath,
+		"busy":        browserKeeperDefault.busyKeys(),
+	}
+	binary, errBinary := findChromeBinary(cfg.BrowserKeepChromePath)
+	if errBinary != nil {
+		payload["available"] = false
+		payload["error"] = errBinary.Error()
+		return payload
+	}
+	payload["available"] = true
+	payload["resolved_path"] = binary
+	return payload
+}
+
+// findAuthByID 按账号标识查找账号。
+// [参数] authID: 账号标识，允许带 .json 后缀。
+// [返回] 账号与错误。
+// 最近修改时间：2026-11-21；改动原因：新增，抽出自 renewAccountByID 的查找段。
+func findAuthByID(authID string) (*StoredAuth, error) {
+	authID = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(authID), ".json"))
+	if authID == "" {
+		return nil, fmt.Errorf("账号标识为空")
+	}
+	accounts, errList := listAllAuthFiles()
+	if errList != nil {
+		return nil, errList
+	}
+	for _, sa := range accounts {
+		if sa.AuthID == authID {
+			return sa, nil
+		}
+	}
+	return nil, fmt.Errorf("账号不存在：%s", authID)
+}
+
+// mustJSON 把载荷编码为 JSON，编码失败时回落错误对象。
+//
+// 管理响应里再抛编码错误只会变成 500，而调用方要的是「哪条失败了」，
+// 因此这里把编码失败也折成一条可读的 JSON。
+// [参数] payload: 响应载荷。
+// [返回] JSON 字节。
+// 最近修改时间：2026-11-21；改动原因：新增，避免管理入口重复写 marshal。
+func mustJSON(payload map[string]any) []byte {
+	body, errMarshal := json.Marshal(payload)
+	if errMarshal != nil {
+		return []byte(`{"ok":false,"error":"响应编码失败"}`)
+	}
+	return body
 }
 
 // handleLoginStartFromPanel 供面板直接生成一次授权会话与脚本。

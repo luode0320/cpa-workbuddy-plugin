@@ -205,8 +205,9 @@ button.danger:hover{background:var(--err);color:#fff}
   </div>
 
   <div class="bar">
-    <button id="btnLogin" title="打开扣子一键授权页：拖一次书签，之后登录完在扣子页面点一下书签即可完成">登录扣子</button>
+    <button id="btnLogin" title="首次播种授权：拖一次书签，之后登录完在扣子页面点一下书签即可完成。授权后靠续期与浏览器保活维持，不需要反复重登">登录扣子</button>
     <button class="sec" id="btnRefresh">刷新账号</button>
+    <button class="sec" id="btnBrowserKeep" title="浏览器保活状态：同一份 Cookie，裸 HTTP 打令牌端点会被判会话过期，真实页面内同源换发却能成功。开关在插件配置 browser_keep_enabled">保活未知</button>
     <button class="sec" id="btnSweep" title="立即对所有账号执行一轮积分巡检（含签到领取与低额分级）">立即巡检</button>
     <button class="sec" id="btnEnableAll" title="启用全部已禁用账号">全部启用</button>
     <button class="sec" id="btnDisableAll" title="禁用全部账号（不再参与路由）">全部禁用</button>
@@ -572,7 +573,8 @@ function card(a){
     '<button data-act="test" data-id="'+id+'" title="校验登录态与模型可见性">测试</button>'+
     '<button data-act="claimDaily" data-id="'+id+'" title="立即领取当日登录积分（当天不领即过期）">领今日积分</button>'+
     '<button class="sec" data-act="credits" data-id="'+id+'" title="强制刷新积分并落盘（不等待下一轮巡检）">刷新积分</button>'+
-    '<button class="sec" data-act="renew" data-id="'+id+'" title="立即刷新会话 Cookie">续期</button>'+
+    '<button class="sec" data-act="renew" data-id="'+id+'" title="立即用裸 HTTP 刷新会话 Cookie">续期</button>'+
+    '<button class="sec" data-act="browserRevive" data-id="'+id+'" title="用真实浏览器为这个账号换发一次（裸 HTTP 被判失效时用）">浏览器续期</button>'+
     '<button class="sec" data-act="'+toggleAct+'" data-id="'+id+'">'+toggleText+'</button>'+
     '</div></div>';
 }
@@ -707,6 +709,38 @@ async function pollSweepDone(maxRounds){
   }
 }
 
+// loadBrowserStatus 拉取浏览器保活状态并回写工具条按钮。
+//
+// 开关写在插件配置里（browser_keep_enabled），面板只读不改：改配置要走
+// 宿主配置通道，面板直接写会把人工维护的其他配置项一起冲掉。
+// [参数] notify: 是否弹提示（手动点击时为 true，随页面加载时为 false）。
+// [返回] 无。
+async function loadBrowserStatus(notify){
+  const btn=document.getElementById("btnBrowserKeep");
+  if(!btn) return;
+  try{
+    const d=await api("/browser-status");
+    if(!d||d.error){
+      btn.textContent="保活不可查";
+      btn.title=(d&&d.error)||"状态查询失败";
+      return;
+    }
+    const on=!!d.enabled;
+    btn.textContent=on?"保活 开":"保活 关";
+    const detail=on
+      ?(d.available?("浏览器："+d.resolved_path):("浏览器不可用："+(d.error||"未找到")))
+      :"开关在插件配置 browser_keep_enabled，开启后裸 HTTP 被判失效时会自动降级到真实浏览器";
+    btn.title=detail;
+    if(notify){
+      const busyList=(d.busy||[]).join("、");
+      toast(on?"浏览器保活已开启":"浏览器保活未开启",on?"ok":"warn",detail+(busyList?("；正在保活："+busyList):""));
+    }
+  }catch(e){
+    btn.textContent="保活不可查";
+    btn.title=e&&e.message?e.message:String(e);
+  }
+}
+
 async function load(){
   const btn=document.getElementById("btnRefresh");
   busy(btn,true);
@@ -721,6 +755,7 @@ async function load(){
     lastRedline=Number(d&&d.redline)||0;
     render();
     renderSweep(d);
+    loadBrowserStatus(false);
   }catch(e){
     const msg=e&&e.message?e.message:String(e);
     if(!lastAccounts.length) document.getElementById("grid").innerHTML='<div class="loading">'+esc(msg)+'</div>';
@@ -734,6 +769,11 @@ function findAccount(id){
   return (lastAccounts||[]).find(a=>a.auth_id===id)||null;
 }
 
+// ACT_ENDPOINTS 把卡片动作名映射到管理路由。
+// 动作用驼峰（与 DOM 属性一致），路由用短横线（与 Go 侧注册一致），
+// 两者不能靠字符串拼接对上，必须显式列表。
+const ACT_ENDPOINTS={browserRevive:"/browser-revive"};
+
 async function act(kind, id, btn){
   if(kind==="delete"){openDeleteModal(id);return}
   if(kind==="test"){openTestModal(id);return}
@@ -742,14 +782,17 @@ async function act(kind, id, btn){
   busy(btn,true);
   try{
     let data;
+    const endpoint=ACT_ENDPOINTS[kind]||("/"+kind);
     if(kind==="renew"){
       data=await api("/renew",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_id:id})});
     }else{
-      data=await api("/"+kind,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_id:id})});
+      data=await api(endpoint,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_id:id})});
     }
     if(data&&data.ok){
       if(kind==="renew"){
         toast("续期完成","ok",data.note||data.message||"");
+      }else if(kind==="browserRevive"){
+        toast("浏览器续期完成","ok",data.note||data.message||"");
       }else{
         toast(kind==="enable"?"已启用账号":"已禁用账号","ok",(findAccount(id)||{}).label||id);
       }
@@ -1079,6 +1122,7 @@ document.getElementById("btnLogin").addEventListener("click",()=>{
   window.open("/v0/resource/plugins/coze-provider/login","_blank","noopener");
 });
 document.getElementById("btnRefresh").addEventListener("click",()=>load());
+document.getElementById("btnBrowserKeep").addEventListener("click",()=>loadBrowserStatus(true));
 document.getElementById("btnSweep").addEventListener("click",()=>triggerSweep());
 document.getElementById("btnEnableAll").addEventListener("click",()=>setAll(false));
 document.getElementById("btnDisableAll").addEventListener("click",()=>setAll(true));

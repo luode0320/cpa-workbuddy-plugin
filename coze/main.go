@@ -65,7 +65,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.7.8"
+	version      = "0.7.9"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -94,6 +94,26 @@ type Config struct {
 	// 写进宿主路由真相源（MySQL 存储下直写物理文件会被 persist 覆盖）。
 	CPAManagementURL string `yaml:"cpa_management_url,omitempty" json:"cpa_management_url,omitempty"`
 	CPAManagementKey string `yaml:"cpa_management_key,omitempty" json:"cpa_management_key,omitempty"`
+	// RenewAlertWebhook 是账号失效 / 恢复告警的投递地址，留空即不推送。
+	//
+	// 只推状态迁移（可用↔待重新授权），不推每轮续期结果：定时器每 4 小时
+	// 一轮，逐轮推送会让告警通道被同一个死号刷满。
+	RenewAlertWebhook string `yaml:"renew_alert_webhook,omitempty" json:"renew_alert_webhook,omitempty"`
+	// BrowserKeepEnabled 控制是否允许用真实浏览器兜底换发。
+	//
+	// 默认关闭：它要起进程、占内存，且在多数精简容器里根本没有浏览器
+	// 二进制。只有裸 HTTP 换发被上游判失效、且运维确认镜像里装了 Chrome
+	// 时才值得打开。
+	BrowserKeepEnabled bool `yaml:"browser_keep_enabled,omitempty" json:"browser_keep_enabled,omitempty"`
+	// BrowserKeepChromePath 是浏览器可执行文件路径，空则自动探测。
+	BrowserKeepChromePath string `yaml:"browser_keep_chrome_path,omitempty" json:"browser_keep_chrome_path,omitempty"`
+	// BrowserKeepHeadless 控制是否无头运行，默认 true。
+	//
+	// 指针是为了区分「未配置」与「显式 false」：要截滑动验证时必须开可见窗口，
+	// 用值类型会让缺省键把可见模式一起关掉。
+	BrowserKeepHeadless *bool `yaml:"browser_keep_headless,omitempty" json:"browser_keep_headless,omitempty"`
+	// BrowserKeepProfileDir 是浏览器 profile 根目录，空则落在账号目录旁。
+	BrowserKeepProfileDir string `yaml:"browser_keep_profile_dir,omitempty" json:"browser_keep_profile_dir,omitempty"`
 }
 
 // defaultConfig 返回插件默认配置。
@@ -102,11 +122,13 @@ type Config struct {
 // 最近修改时间：2026-10-20；改动原因：新增积分路由红线与刷新间隔默认值。
 func defaultConfig() Config {
 	redline := defaultMinRoutableCredits
+	headless := true
 	return Config{
 		TimeoutSeconds:       30,
 		RenewIntervalSeconds: 4 * 3600,
 		MinRoutableCredits:   &redline,
 		CreditRefreshSeconds: creditRefreshDefaultSeconds,
+		BrowserKeepHeadless:  &headless,
 	}
 }
 
@@ -404,6 +426,15 @@ func configurePlugin(raw []byte) error {
 		// 漏抄这两个字段会让管理 API 通道永远拿不到密钥（0.6.3 首版实测）。
 		cfg.CPAManagementURL = decoded.CPAManagementURL
 		cfg.CPAManagementKey = decoded.CPAManagementKey
+		// 告警地址同为字符串配置：空串表示关闭推送，直接照抄。
+		cfg.RenewAlertWebhook = decoded.RenewAlertWebhook
+		cfg.BrowserKeepEnabled = decoded.BrowserKeepEnabled
+		cfg.BrowserKeepChromePath = decoded.BrowserKeepChromePath
+		cfg.BrowserKeepProfileDir = decoded.BrowserKeepProfileDir
+		// 无头开关用指针：缺省键保持默认 true，显式 false 才切可见窗口。
+		if decoded.BrowserKeepHeadless != nil {
+			cfg.BrowserKeepHeadless = decoded.BrowserKeepHeadless
+		}
 	}
 	activeConfig.Store(cfg)
 	applyCreditConfig(cfg)

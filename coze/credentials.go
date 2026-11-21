@@ -333,10 +333,15 @@ type renewResult struct {
 //
 // 实测契约：带 Cookie 调 token beat 返回新 x-tt-token 且 Set-Cookie 为 0 条；
 // 再用该 token 调同一端点才拿到新 Cookie。实现同时兼容「一次调用就下发
-// Set-Cookie」的形态——若第一步已下发 Cookie，直接用，不再走第二步。
+// Set-Cookie」的形态——若第一步已换掉会话主 Cookie，直接用，不再走第二步。
+//
+// 两条判据缺一不可（2026-11-21 生产复盘补入）：
+//   - 是否换发看会话主项是否变化，不看下发条数；
+//   - 新容器必须叠加在既有 Cookie 之上，不整份替换。
+//
 // [参数] sa: 待续期账号。
 // [返回] 续期结果与错误。
-// 最近修改时间：2026-10-18；改动原因：新增，滚动续期内核。
+// 最近修改时间：2026-11-21；改动原因：换发判据改为会话主项，Cookie 改为叠加合并。
 func renewSession(sa *StoredAuth) (*renewResult, error) {
 	if sa == nil || strings.TrimSpace(sa.CookieHeader) == "" {
 		return nil, fmt.Errorf("账号凭据为空")
@@ -353,22 +358,27 @@ func renewSession(sa *StoredAuth) (*renewResult, error) {
 		return nil, fmt.Errorf("续期失败（第一步）：%s", step1.describe())
 	}
 
-	// 形态 A：上游直接下发了新 Cookie，省去第二步。
-	if len(step1Cookies) > 0 {
-		store := newCookieStore()
-		store.SetCookies(mustParseURL(cozeSiteHost+"/"), step1Cookies)
+	// 形态 A：上游在第一步就换掉了会话主 Cookie，省去第二步。
+	//
+	// 判据必须锚定「会话主项是否真的变了」，不能只看下发条数：死会话打
+	// beat 同样会下发若干埋点 Cookie，按条数判会把未换发误记成成功，
+	// LastRenewAt 一路前进而会话早已失效。
+	if rotatedSessionCookies(sa.CookieHeader, step1Cookies) {
+		store := mergeSessionCookies(sa.CookieHeader, step1Cookies)
 		return &renewResult{
 			Renewed:      true,
 			Store:        store,
 			Cookies:      store.snapshot(),
 			CookieHeader: store.header(),
-			Note:         fmt.Sprintf("第一步直接下发 %d 条 Cookie", len(step1Cookies)),
+			Note:         fmt.Sprintf("第一步直接下发 %d 条 Cookie（含会话主项）", len(step1Cookies)),
 		}, nil
 	}
 
 	// 形态 B：只拿到 token，需要用 token 再换一次 Cookie。
 	if newToken == "" {
-		return &renewResult{Note: "上游既未下发 Cookie 也未返回 x-tt-token"}, nil
+		return &renewResult{
+			Note: unattemptedNote("上游既未下发会话 Cookie 也未返回 x-tt-token", len(step1Cookies)),
+		}, nil
 	}
 
 	step2, step2Cookies, _, errStep2 := doTokenBeat(client, newToken, "")
@@ -378,29 +388,54 @@ func renewSession(sa *StoredAuth) (*renewResult, error) {
 	if !step2.isSuccess() {
 		return nil, fmt.Errorf("续期失败（第二步）：%s", step2.describe())
 	}
-	if len(step2Cookies) == 0 {
-		return &renewResult{Note: "第二步未下发 Cookie"}, nil
+	if !rotatedSessionCookies(sa.CookieHeader, step2Cookies) {
+		return &renewResult{
+			Note: unattemptedNote("第二步未换到会话主 Cookie", len(step2Cookies)),
+		}, nil
 	}
 
-	store := newCookieStore()
-	store.SetCookies(mustParseURL(cozeSiteHost+"/"), step2Cookies)
+	store := mergeSessionCookies(sa.CookieHeader, step2Cookies)
 	return &renewResult{
 		Renewed:      true,
 		Store:        store,
 		Cookies:      store.snapshot(),
 		CookieHeader: store.header(),
-		Note:         fmt.Sprintf("双向换发完成：token 换回 %d 条 Cookie", len(step2Cookies)),
+		Note:         fmt.Sprintf("双向换发完成：token 换回 %d 条 Cookie（含会话主项）", len(step2Cookies)),
 	}, nil
 }
 
+// unattemptedNote 拼装「未换发」的说明文案。
+//
+// 保留上游下发条数：运维据此区分「上游什么都没给」（条数 0，多为端点异常）
+// 与「只给了埋点 Cookie」（条数 >0，会话已被上游吊销），避免面板上看不出差异。
+// [参数] reason: 未换发原因；count: 本轮下发的 Cookie 条数。
+// [返回] 说明文案。
+// 最近修改时间：2026-11-21；改动原因：新增，未换发原因可区分。
+func unattemptedNote(reason string, count int) string {
+	if count == 0 {
+		return reason + "（本轮下发 0 条 Cookie）"
+	}
+	return fmt.Sprintf("%s（本轮下发 %d 条 Cookie，无会话主项）", reason, count)
+}
+
+// renewCanWriteFn 是续期写盘的活跃实例闸门注入点，供单测替换。
+//
+// 默认接 ensureActiveInstanceBeforeWrite：插件热重载后旧实例仍在内存里跑着
+// 定时器，它手里是上一版的 Cookie 与阈值，写盘会把新实例刚换到的凭据覆盖
+// 回旧值。积分巡检早已接了这个闸门（credit_sweep.go:53），续期链路漏接。
+var renewCanWriteFn = ensureActiveInstanceBeforeWrite
+
 // applyRenewal 把续期结果写回账号并落盘。
 //
-// 防覆盖：写盘前比对「读取该账号时」记录的内容摘要，若文件已被外部
-// （用户重新授权 / 另一实例）替换则放弃本次写入，避免旧快照覆盖刚授权的
-// 新凭据。摘要必须在读取时锚定——写前才取会永远比对到自己。
+// 防覆盖三闸门，顺序不可调换：
+//  1. 只有真换发才写（Renewed=false 时不落盘，避免刷新 LastRenewAt）；
+//  2. 当前实例必须仍是宿主认可的活跃实例（热重载后的旧实例不得写盘）；
+//  3. 账号文件在读取之后未被外部替换（用户重新授权会换掉整份凭据）。
+//
+// 摘要必须在读取时锚定——写前才取会永远比对到自己。
 // [参数] sa: 账号；res: 续期结果。
-// [返回] 写入错误；被外部替换而放弃时返回 nil。
-// 最近修改时间：2026-10-18；改动原因：新增，续期落盘与防覆盖闸门；判据锚点改为读取时刻。
+// [返回] 写入错误；被外部替换或实例退役而放弃时返回 nil。
+// 最近修改时间：2026-11-21；改动原因：新增活跃实例闸门，堵住热重载后旧实例覆盖。
 func applyRenewal(sa *StoredAuth, res *renewResult) error {
 	if sa == nil || res == nil || !res.Renewed {
 		return nil
@@ -408,10 +443,16 @@ func applyRenewal(sa *StoredAuth, res *renewResult) error {
 	if sa.PhysicalPath == "" {
 		return fmt.Errorf("账号缺少物理路径，无法落盘")
 	}
+	if renewCanWriteFn != nil && !renewCanWriteFn(hostLogf) {
+		return nil
+	}
 	if accountReplaced(sa) {
 		return nil
 	}
 
+	// 失效状态要留旧值：告警只在真正发生迁移时推一条，
+	// 每轮续期都成功的老账号不该产生任何告警。
+	prevInvalid := sa.AuthInvalid
 	sa.CookieHeader = res.CookieHeader
 	sa.Cookies = res.Cookies
 	sa.LastRenewAt = time.Now().Format(time.RFC3339)
@@ -423,6 +464,9 @@ func applyRenewal(sa *StoredAuth, res *renewResult) error {
 	}
 	// 写入成功后刷新基准，使同一进程内的后续轮次以新内容为起点。
 	sa.LoadedDigest = fileDigest(sa.PhysicalPath)
+	// 告警放在落盘之后：写盘失败时状态并没有真的迁移，
+	// 提前推送会让人去查一个并不成立的状态变化。
+	notifyAuthStateChange(prevInvalid, false, sa)
 	return nil
 }
 
@@ -430,22 +474,31 @@ func applyRenewal(sa *StoredAuth, res *renewResult) error {
 //
 // 只在错误文案来自上游会话判定时调用：网络抖动、限流等瞬态失败不能
 // 把账号标成失效，否则面板会误报，用户会去重新授权一个本来可用的账号。
+//
+// 同样受活跃实例闸门约束：热重载后的旧实例手里是旧凭据，它判出的「失效」
+// 可能只是旧 Cookie 的问题，写进文件会把新实例刚续好的账号标成待授权。
 // [参数] sa: 账号；reason: 上游错误文案。
 // [返回] 无。
-// 最近修改时间：2026-10-19；改动原因：新增，失效状态落盘。
+// 最近修改时间：2026-11-21；改动原因：新增活跃实例闸门，旧实例不得写失效标记。
 func markSessionInvalid(sa *StoredAuth, reason string) {
 	if sa == nil || sa.PhysicalPath == "" || !isSessionExpiredError(reason) {
+		return
+	}
+	if renewCanWriteFn != nil && !renewCanWriteFn(hostLogf) {
 		return
 	}
 	if accountReplaced(sa) {
 		return
 	}
+	prevInvalid := sa.AuthInvalid
 	sa.AuthInvalid = true
 	sa.UpdatedAt = time.Now().Format(time.RFC3339)
 	if errWrite := writeAuthFileDirect(sa.PhysicalPath, sa); errWrite != nil {
 		return
 	}
 	sa.LoadedDigest = fileDigest(sa.PhysicalPath)
+	// 同一账号连续 N 轮判定失效只推第一条：去重表按账号记住已推送状态。
+	notifyAuthStateChange(prevInvalid, true, sa)
 }
 
 // isSessionExpiredError 判断错误是否表示上游判定会话已失效。
@@ -483,31 +536,21 @@ func accountReplaced(sa *StoredAuth) bool {
 // renewAccountByID 按账号标识执行一轮续期并落盘。
 // [参数] authID: 账号标识。
 // [返回] 续期结果与错误。
-// 最近修改时间：2026-10-18；改动原因：新增，面板与定时巡检共用入口。
+// 最近修改时间：2026-11-21；改动原因：查找段抽出为 findAuthByID 后改为复用，去掉重复遍历。
 func renewAccountByID(authID string) (*renewResult, error) {
-	authID = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(authID), ".json"))
-	if authID == "" {
-		return nil, fmt.Errorf("账号标识为空")
+	sa, errFind := findAuthByID(authID)
+	if errFind != nil {
+		return nil, errFind
 	}
-	accounts, errList := listAllAuthFiles()
-	if errList != nil {
-		return nil, errList
+	res, errRenew := renewSession(sa)
+	if errRenew != nil {
+		// 上游明确说会话过期时留下标记：否则面板会一直显示「可用」，
+		// 用户看不出这个账号已经需要重新授权。
+		markSessionInvalid(sa, errRenew.Error())
+		return nil, errRenew
 	}
-	for _, sa := range accounts {
-		if sa.AuthID != authID {
-			continue
-		}
-		res, errRenew := renewSession(sa)
-		if errRenew != nil {
-			// 上游明确说会话过期时留下标记：否则面板会一直显示「可用」，
-			// 用户看不出这个账号已经需要重新授权。
-			markSessionInvalid(sa, errRenew.Error())
-			return nil, errRenew
-		}
-		if errApply := applyRenewal(sa, res); errApply != nil {
-			return nil, errApply
-		}
-		return res, nil
+	if errApply := applyRenewal(sa, res); errApply != nil {
+		return nil, errApply
 	}
-	return nil, fmt.Errorf("账号不存在：%s", authID)
+	return res, nil
 }

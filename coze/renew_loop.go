@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -120,27 +121,122 @@ type renewDeps struct {
 	list  func() ([]*StoredAuth, error)
 	renew func(*StoredAuth) (*renewResult, error)
 	logf  func(level, message string, fields map[string]any)
+	// backoff 是退避状态注入点，nil 时回落全局表。
+	//
+	// 生产必须共用同一张表（跨轮次才有记忆），单测则需要每例独立，
+	// 否则前一个用例记的失败会让后一个用例被莫名跳过。
+	backoff *renewBackoffState
+}
+
+// renewSessionFn 是裸 HTTP 换发的注入点。
+//
+// 抽成变量只为让单测在不发真实上游请求的前提下驱动降级链：真实
+// renewSession 会直连扣子令牌端点，测试环境里既不可达也不该被调用。
+var renewSessionFn = renewSession
+
+// browserReviveFn 是浏览器保活的注入点。
+//
+// 同理：降级链的判定逻辑（何时降级、降级失败如何合并错误）必须能在
+// 没有 Chrome 的机器上被锁定。
+var browserReviveFn = func(sa *StoredAuth) (*renewResult, error) {
+	return browserKeeperDefault.reviveSession(sa)
 }
 
 // defaultRenewDeps 返回生产依赖：宿主账号列表、真实续期与宿主日志。
+//
+// 续期分两级：先用裸 HTTP 走令牌换发，换不到会话主项时再降级到真实
+// 浏览器重试一次（2026-11-21 实测：同一份 Cookie，Go 进程直连令牌端点
+// 被判会话过期，真实页面内同源 fetch 却能换发，差别在客户端特征）。
+//
+// 降级触发条件有三条，缺一不可：
+//   - 裸 HTTP 报错且错误文本命中会话过期；
+//   - 裸 HTTP 没报错但没换到会话主项（Renewed=false）——埋点 Cookie 不等于
+//     换发，这种「看似成功实则无变化」与失效是同一处置；
+//   - 浏览器保活开关已开启（未开启时保活自身返回 errBrowserKeepDisabled，
+//     该错误会被合并进主错误，提示运维可以开开关）。
+//
 // [参数] 无。
 // [返回] 依赖集合。
-// 最近修改时间：2026-10-18；改动原因：新增，生产实现装配。
+// 最近修改时间：2026-11-21；改动原因：新增浏览器保活降级，兜住被判失效的活会话。
 func defaultRenewDeps() renewDeps {
 	return renewDeps{
-		list: listAllAuthFiles,
-		renew: func(sa *StoredAuth) (*renewResult, error) {
-			res, errRenew := renewSession(sa)
-			if errRenew != nil {
-				return nil, errRenew
-			}
-			if errApply := applyRenewal(sa, res); errApply != nil {
-				return nil, errApply
-			}
-			return res, nil
-		},
-		logf: hostLogf,
+		list:  listAllAuthFiles,
+		logf:  hostLogf,
+		renew: renewWithBrowserFallback,
 	}
+}
+
+// renewWithBrowserFallback 执行一轮续期，必要时降级到真实浏览器。
+//
+// 两级都失败时返回包装错误：保留裸 HTTP 的原始原因（isSessionExpiredError
+// 仍能命中），并附上浏览器侧的原因，避免「已经被判失效」这个事实被
+// 「浏览器保活未启用」之类的次要原因顶掉。
+// [参数] sa: 账号。
+// [返回] 续期结果与错误。
+// 最近修改时间：2026-11-21；改动原因：新增，续期降级链主线。
+func renewWithBrowserFallback(sa *StoredAuth) (*renewResult, error) {
+	res, errRenew := renewSessionFn(sa)
+	if errRenew != nil {
+		if !isSessionExpiredError(errRenew.Error()) {
+			return nil, errRenew
+		}
+		res, errRenew = renewViaBrowser(sa, errRenew)
+		if errRenew != nil {
+			return nil, errRenew
+		}
+		return finishRenewal(sa, res)
+	}
+	if res == nil || !res.Renewed {
+		// 裸 HTTP 没换到会话主项：再给浏览器一次机会。
+		// 降级失败不覆盖原结果，让调用方仍能拿到「未换发」的 Note 与条数。
+		if resBrowser, errBrowser := renewViaBrowser(sa, nil); errBrowser == nil {
+			return finishRenewal(sa, resBrowser)
+		}
+	}
+	return finishRenewal(sa, res)
+}
+
+// renewViaBrowser 用真实浏览器再换发一次。
+//
+// prevErr 非空表示裸 HTTP 已失败，此时浏览器侧失败要合并进原错误；
+// prevErr 为空表示裸 HTTP 未换发但无错误，浏览器侧失败只上抛自身错误，
+// 由调用方决定是否回落原结果。
+// [参数] sa: 账号；prevErr: 裸 HTTP 的原始错误，可为 nil。
+// [返回] 浏览器换发结果与错误。
+// 最近修改时间：2026-11-21；改动原因：新增，降级链第二级。
+func renewViaBrowser(sa *StoredAuth, prevErr error) (*renewResult, error) {
+	if browserReviveFn == nil {
+		return nil, prevErr
+	}
+	res, errRevive := browserReviveFn(sa)
+	if errRevive != nil {
+		if prevErr != nil {
+			return nil, fmt.Errorf("%w；浏览器保活也失败：%v", prevErr, errRevive)
+		}
+		return nil, errRevive
+	}
+	if res == nil || !res.Renewed {
+		if prevErr != nil {
+			return nil, prevErr
+		}
+		return nil, fmt.Errorf("浏览器保活未换到会话主项：%s", renewNote(res))
+	}
+	hostLogf("info", "浏览器保活已换发会话", map[string]any{
+		"auth_id": alertKeyOf(sa),
+		"note":    res.Note,
+	})
+	return res, nil
+}
+
+// finishRenewal 把续期结果写回账号。
+// [参数] sa: 账号；res: 续期结果。
+// [返回] 续期结果与写入错误。
+// 最近修改时间：2026-11-21；改动原因：新增，抽出写盘收尾让降级链两处共用。
+func finishRenewal(sa *StoredAuth, res *renewResult) (*renewResult, error) {
+	if errApply := applyRenewal(sa, res); errApply != nil {
+		return nil, errApply
+	}
+	return res, nil
 }
 
 // renewTargets 从账号列表里挑出本轮需要续期的账号。
@@ -173,6 +269,126 @@ func renewTargets(accounts []*StoredAuth) ([]*StoredAuth, []string) {
 	return out, pathless
 }
 
+// renewBackoffSteps 是连续失败后的阶梯退避间隔。
+//
+// 为什么需要退避：失效账号打 token beat 必定返回会话过期，而定时器每
+// 4 小时就跑一轮。实测 12 个账号里 5 个已失效，8 天累计约 240 次必然
+// 失败的上游请求——全是白耗配额与风控额度，还淹掉真正的告警。
+// 阶梯到 48 小时封顶：即使账号长期失效，每天仍有一次机会自愈，不会
+// 因为退避太长而错过上游恢复的窗口。
+var renewBackoffSteps = []time.Duration{
+	4 * time.Hour,
+	8 * time.Hour,
+	24 * time.Hour,
+	48 * time.Hour,
+}
+
+// renewBackoffEntry 是单个账号的退避状态。
+type renewBackoffEntry struct {
+	// failCount 是连续失败次数，成功一次即清零。
+	failCount int
+	// nextTryAt 是下一次允许尝试的时刻。
+	nextTryAt time.Time
+}
+
+// renewBackoffState 保存全部账号的退避状态。
+//
+// 只放内存不落盘：热重载后清零，失效账号会以 4 小时重新起步。这点代价
+// 换掉一整套持久化与并发写盘逻辑，值得——退避是节流手段，不是业务事实，
+// 丢了下轮重建即可。
+type renewBackoffState struct {
+	mu      sync.Mutex
+	entries map[string]renewBackoffEntry
+	// now 是时钟注入点，测试用它跳过真实等待。
+	now func() time.Time
+}
+
+// newRenewBackoffState 创建空的退避状态。
+// [参数] 无。
+// [返回] 已初始化 entries 的状态。
+// 最近修改时间：2026-11-21；改动原因：新增，退避表构造入口。
+func newRenewBackoffState() *renewBackoffState {
+	return &renewBackoffState{entries: map[string]renewBackoffEntry{}, now: time.Now}
+}
+
+// delayFor 返回连续失败 count 次后应等待的时长。
+//
+// 只做阶梯取值，不读状态也不加锁：持锁路径（recordFail）与非持锁调用方
+// 共用同一份实现，避免出现两份迟早会漂移的阶梯。
+// [参数] count: 连续失败次数（>=1）。
+// [返回] 退避时长，超出阶梯长度时取最后一档。
+// 最近修改时间：2026-11-21；改动原因：新增，阶梯取值唯一出口。
+func (b *renewBackoffState) delayFor(count int) time.Duration {
+	if count < 1 {
+		count = 1
+	}
+	if count > len(renewBackoffSteps) {
+		count = len(renewBackoffSteps)
+	}
+	return renewBackoffSteps[count-1]
+}
+
+// shouldSkip 判断账号是否仍在退避窗口内。
+// [参数] authID: 账号标识。
+// [返回] 未到下次尝试时刻时返回 true。
+// 最近修改时间：2026-11-21；改动原因：新增，退避过滤判据。
+func (b *renewBackoffState) shouldSkip(authID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry, ok := b.entries[authID]
+	if !ok {
+		return false
+	}
+	return b.now().Before(entry.nextTryAt)
+}
+
+// recordFail 记一次失败并顺延下次尝试时刻。
+// [参数] authID: 账号标识。
+// [返回] 本次失败累计的连续次数。
+// 最近修改时间：2026-11-21；改动原因：新增，失败累计与顺延。
+func (b *renewBackoffState) recordFail(authID string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry := b.entries[authID]
+	entry.failCount++
+	entry.nextTryAt = b.now().Add(b.delayFor(entry.failCount))
+	b.entries[authID] = entry
+	return entry.failCount
+}
+
+// recordSuccess 清除账号的退避状态。
+// [参数] authID: 账号标识。
+// [返回] 无。
+// 最近修改时间：2026-11-21；改动原因：新增，成功即清零。
+func (b *renewBackoffState) recordSuccess(authID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.entries, authID)
+}
+
+// renewBackoff 是定时续期共用的退避状态。
+var renewBackoff = newRenewBackoffState()
+
+// splitByBackoff 把待续期账号拆成「本轮执行」与「退避中跳过」两组。
+// [参数] targets: 待续期账号；state: 退避状态。
+// [返回] 本轮执行的账号与被跳过的账号标识。
+// 最近修改时间：2026-11-21；改动原因：新增，退避过滤与目标筛选分离。
+func splitByBackoff(targets []*StoredAuth, state *renewBackoffState) ([]*StoredAuth, []string) {
+	if state == nil {
+		return targets, nil
+	}
+	run := make([]*StoredAuth, 0, len(targets))
+	var skipped []string
+	for _, sa := range targets {
+		if state.shouldSkip(sa.AuthID) {
+			skipped = append(skipped, sa.AuthID)
+			continue
+		}
+		run = append(run, sa)
+	}
+	return run, skipped
+}
+
 // runRenewTick 执行一轮续期：并发续期所有启用账号，单账号失败不影响其它账号。
 // [参数] deps: 依赖集合。
 // [返回] 本轮成功续期的账号数。
@@ -196,9 +412,23 @@ func runRenewTick(deps renewDeps) int {
 		return 0
 	}
 
+	// 退避过滤：连续失败的账号在上游恢复前不再每轮打过去。
+	backoff := deps.backoff
+	if backoff == nil {
+		backoff = renewBackoff
+	}
+	targets, skipped := splitByBackoff(targets, backoff)
+	if len(skipped) > 0 && deps.logf != nil {
+		deps.logf("info", "定时续期跳过退避中的账号", map[string]any{"auth_ids": skipped})
+	}
+	if len(targets) == 0 {
+		return 0
+	}
+
 	sem := make(chan struct{}, renewConcurrency)
 	var wg sync.WaitGroup
 	var renewed atomic.Int32
+	var notRenewed atomic.Int32
 	for _, sa := range targets {
 		wg.Add(1)
 		go func(acc *StoredAuth) {
@@ -211,21 +441,40 @@ func runRenewTick(deps renewDeps) int {
 				// 上游明确判定会话过期时落失效标记，面板才能如实显示
 				// 「待重新授权」，而不是继续显示可用。
 				markSessionInvalid(acc, errRenew.Error())
+				failCount := backoff.recordFail(acc.AuthID)
 				if deps.logf != nil {
 					deps.logf("warn", "定时续期失败", map[string]any{
-						"auth_id": acc.AuthID,
-						"error":   errRenew.Error(),
+						"auth_id":     acc.AuthID,
+						"error":       errRenew.Error(),
+						"fail_count":  failCount,
+						"retry_after": backoff.delayFor(failCount).String(),
 					})
 				}
 				return
 			}
+			// 未换发与真换发必须分开上报：旧实现无论结果都打「定时续期完成」，
+			// 生产日志里两种走向完全不可区分，会话死了很久也看不出来。
 			if res != nil && res.Renewed {
 				renewed.Add(1)
+				backoff.recordSuccess(acc.AuthID)
+				if deps.logf != nil {
+					deps.logf("info", "定时续期完成", map[string]any{
+						"auth_id": acc.AuthID,
+						"note":    renewNote(res),
+					})
+				}
+				return
 			}
+			// 未换发同样计入退避：上游已不认这个会话，每轮再打一遍只是
+			// 徒增上游请求，结局不会变。与失败分支共用同一张退避表。
+			notRenewed.Add(1)
+			failCount := backoff.recordFail(acc.AuthID)
 			if deps.logf != nil {
-				deps.logf("info", "定时续期完成", map[string]any{
-					"auth_id": acc.AuthID,
-					"note":    renewNote(res),
+				deps.logf("warn", "定时续期未换发", map[string]any{
+					"auth_id":     acc.AuthID,
+					"note":        renewNote(res),
+					"fail_count":  failCount,
+					"retry_after": backoff.delayFor(failCount).String(),
 				})
 			}
 		}(sa)
@@ -234,8 +483,9 @@ func runRenewTick(deps renewDeps) int {
 
 	if deps.logf != nil {
 		deps.logf("info", "定时续期一轮结束", map[string]any{
-			"accounts": len(targets),
-			"renewed":  int(renewed.Load()),
+			"accounts":    len(targets),
+			"renewed":     int(renewed.Load()),
+			"not_renewed": int(notRenewed.Load()),
 		})
 	}
 	return int(renewed.Load())

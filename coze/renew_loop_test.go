@@ -18,6 +18,11 @@ type renewRecorder struct {
 	calls   map[string]int
 	renewed map[string]bool
 	logs    []string
+	// backoff 是本记录器独占的退避状态。
+	//
+	// 必须独占：全局 renewBackoff 会跨用例保留失败计数，前一个用例
+	// 记的失败会让后一个用例的账号被莫名跳过，测试互相污染。
+	backoff *renewBackoffState
 }
 
 // newRenewRecorder 构造空记录器。
@@ -25,7 +30,11 @@ type renewRecorder struct {
 // [返回] 记录器。
 // 最近修改时间：2026-10-18；改动原因：新增，测试记录器。
 func newRenewRecorder() *renewRecorder {
-	return &renewRecorder{calls: map[string]int{}, renewed: map[string]bool{}}
+	return &renewRecorder{
+		calls:   map[string]int{},
+		renewed: map[string]bool{},
+		backoff: newRenewBackoffState(),
+	}
 }
 
 // deps 生成一整套注入依赖：list 返回给定账号，renew 按 authID 决定成败。
@@ -56,6 +65,7 @@ func (r *renewRecorder) deps(accounts []*StoredAuth, failIDs ...string) renewDep
 			r.logs = append(r.logs, level+" "+message)
 			r.mu.Unlock()
 		},
+		backoff: r.backoff,
 	}
 }
 
