@@ -259,6 +259,10 @@ print(media[0]["url"])
   `video_poll_timeout_seconds` / `video_creation_wait_seconds`）：改完要重装插件（
   `plugin-store install`，会触发一次真实加载）才会生效。
 
+**注意一条单向性**：把 `keepalive_enabled` 改成 `false` 之后，保活协程会自行退出，而退出是终态——
+再改回 `true` **不会**让它重新起来（协程只在插件被重新加载时创建）。只想临时停一会儿的话，
+把 `keepalive_interval_seconds` 改大（比如 86400）比关掉更安全；确实关过又想恢复，重装一次插件即可。
+
 ## 认证方式
 
 **复用用户浏览器登录态**：用户在自有浏览器登录豆包后，由授权书签把一次性令牌交给插件，
