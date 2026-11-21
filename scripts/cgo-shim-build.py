@@ -80,13 +80,6 @@ func cgoFreeHostBuffer(*cliproxy_host_api, unsafe.Pointer, uintptr)             
 func cgoStoreHostAPI(*cliproxy_host_api)                                                {}
 func cgoCallHostAPI(*int8, *uint8, uintptr, *cliproxy_buffer) int32                     { return 0 }
 func cgoFreeHostBufferAPI(unsafe.Pointer, uintptr)                                      {}
-
-// gemini-web2api 用 preamble 里的静态封装（invoke_host_call / invoke_host_free /
-// fill_plugin_api）访问宿主 API 与回填插件 API 表，这三个符号同样必须给桩，
-// 否则 shim 阶段的 C.* 替换会留下未定义引用。
-func cgoInvokeHostCall(*cliproxy_host_api, *int8, *uint8, uintptr, *cliproxy_buffer) int32 { return 0 }
-func cgoInvokeHostFree(*cliproxy_host_api, unsafe.Pointer, uintptr)                          {}
-func cgoFillPluginAPI(*cliproxy_plugin_api)                                                  {}
 '''
 
 # Ordered longest-first so typed names replace before generic ones.
@@ -106,9 +99,6 @@ C_REPLACEMENTS = [
     ("C.GoString", "cgoGoString"),
     ("C.CString", "cgoCString"),
     ("C.CBytes", "cgoCBytes"),
-    ("C.invoke_host_call", "cgoInvokeHostCall"),
-    ("C.invoke_host_free", "cgoInvokeHostFree"),
-    ("C.fill_plugin_api", "cgoFillPluginAPI"),
     ("C.store_host_api", "cgoStoreHostAPI"),
     ("C.call_host_api", "cgoCallHostAPI"),
     # 必须排在 "C.free" 之前：字符串前缀替换会把 C.free_host_buffer 拆成

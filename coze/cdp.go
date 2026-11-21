@@ -27,9 +27,9 @@ import (
 // 的埋点与 TLS 指纹。这里只做「起浏览器 / 连调试口 / 发 CDP 命令」，
 // 业务语义在 browser_keep.go。
 //
-// 实现照抄同仓 gemini-web2api/internal/chromeauth/login_native.go 已跑通
-// 的 CDP 客户端（:695-734 cdpCall、:444-475 waitForCDPReady、:423-434
-// pickFreeLocalPort），保持两处行为一致，避免再踩一遍同样的坑。
+// 这套 CDP 客户端与「起浏览器 / 连调试口 / 发命令」的分层沿用 coze 自己的
+// 浏览器保活实现，改动时保持 cdpCall、waitForCDPReady、pickFreeLocalPort
+// 三处的行为一致，避免再踩一遍同样的坑。
 
 const (
 	// cdpReadyTimeout 是等待远程调试端口就绪的上限。
