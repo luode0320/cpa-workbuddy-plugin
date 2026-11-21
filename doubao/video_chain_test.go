@@ -543,6 +543,42 @@ func TestEnsureVideoAssetSkipsOtherModes(t *testing.T) {
 	}
 }
 
+// TestEnsureVideoAssetIgnoresPlaceholder 校验已有占位块时仍会继续回灌。
+//
+// 确认轮的 SSE 里可能先推一个只有 status 与 key、没有直链的 2074 块。旧实现用
+// len(res.Assets) > 0 判「已有产物」，这种占位块会把回灌整个短路掉，客户端最后
+// 拿到的是没有 URL 的空结局。判据必须是「有可播放的成品」。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-21 13:30:00；改动原因：新增，占位块不得短路回灌。
+func TestEnsureVideoAssetIgnoresPlaceholder(t *testing.T) {
+	restoreTiming := swapVideoPollTiming(5*time.Millisecond, 30*time.Millisecond, 30*time.Millisecond)
+	defer restoreTiming()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(chainTestResponse(true)))
+	}))
+	defer srv.Close()
+	restoreEndpoint := swapBusinessEndpoint(srv.URL)
+	defer restoreEndpoint()
+
+	sa := completionTestAccount()
+	// 只有 key、没有直链：这是占位块，不是成品。
+	res := &completionResult{
+		ConversationID: "38454121040780034",
+		Assets:         []creationAsset{{ID: "v", Type: 2, Key: "tos-cn-p-bucket/v"}},
+	}
+	if errVideo := ensureVideoAsset(sa, generationMode{Skill: skillVideoGen, Kind: "video"}, videoConfirmResume(), res); errVideo != nil {
+		t.Fatalf("存在占位块时仍应继续回灌：%v", errVideo)
+	}
+	if len(res.Assets) != 2 {
+		t.Fatalf("回灌应补进成品，实际 %d 条：%+v", len(res.Assets), res.Assets)
+	}
+	if !hasPlayableAsset(res.Assets) {
+		t.Errorf("回灌后应存在可播放成品：%+v", res.Assets)
+	}
+}
+
 // TestEnsureVideoAssetAppendsFetchedAsset 校验确认轮会把回灌到的产物补进结果。
 // [参数] t: 测试上下文。
 // [返回] 无。

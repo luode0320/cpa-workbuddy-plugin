@@ -64,7 +64,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.1.32"
+	version      = "0.1.33"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -348,7 +348,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 // 与缓存窗口冲成 0。未知键（如早期版本的 work_* 系列）由 yaml 宽松忽略。
 // [参数] raw: 宿主 reconfigure 载荷，config_yaml 为 base64 解码后的 YAML 字节。
 // [返回] 解析错误。
-// 最近修改时间：2026-11-17 01:05:00；改动原因：删除工作模式配置项，只留三个超时/缓存项。
+// 最近修改时间：2026-11-21 13:32:00；改动原因：配置项增至五个（新增两个视频专属等待项）。
 func configurePlugin(raw []byte) error {
 	var req struct {
 		ConfigYAML []byte `json:"config_yaml"`

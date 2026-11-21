@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -67,18 +68,17 @@ func TestParseCreationBlockVideoFallsBackToVideoModel(t *testing.T) {
 	}
 }
 
-// TestParseCreationBlockVideoFallsBackToCover 校验连清晰度清单都没有时退到封面。
+// TestParseCreationBlockVideoIgnoresCover 校验封面不会被当成成品地址。
+//
+// 封面是一张 JPEG：把它写进 URL，下游 media 里就会出现 {"type":"video","url":"...png"}
+// 这种自相矛盾的条目。占位阶段就让 URL 为空，由回灌层继续等。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-17 01:24:00；改动原因：新增，封面只在没成品时使用。
-func TestParseCreationBlockVideoFallsBackToCover(t *testing.T) {
+// 最近修改时间：2026-11-21 13:30:00；改动原因：封面不再兜底地址，改为断言不外泄。
+func TestParseCreationBlockVideoIgnoresCover(t *testing.T) {
 	block := json.RawMessage(`{"creation_block":{"creations":[{"type":2,"id":"v-3","video":{"status":1,"cover":{"image_thumb":{"url":"https://example.com/t.png","width":384,"height":216},"image_preview":{"url":"https://example.com/p.png","width":1280,"height":720}}}}]}}`)
-	assets := parseCreationBlock(block)
-	if len(assets) != 1 {
-		t.Fatalf("应解析出 1 个视频，实际 %d", len(assets))
-	}
-	if assets[0].URL != "https://example.com/p.png" {
-		t.Errorf("封面回退应优先 image_preview，实际 %q", assets[0].URL)
+	if assets := parseCreationBlock(block); len(assets) != 0 {
+		t.Fatalf("只有封面、没有成品直链时不应产出资产，实际 %+v", assets)
 	}
 }
 
@@ -262,14 +262,18 @@ func TestMergeAssetsKeepsDuration(t *testing.T) {
 // TestDescribeAssets 校验媒体摘要文案。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-18 23:20:00；改动原因：图片能力删除，只保留视频摘要断言。
+// 最近修改时间：2026-11-21 13:30:00；改动原因：摘要只统计有直链的成品，与 media 对齐。
 func TestDescribeAssets(t *testing.T) {
-	got := describeAssets([]creationAsset{{Type: 2, Model: "Seedance", Width: 384, Height: 216}})
+	got := describeAssets([]creationAsset{{Type: 2, URL: "https://example.com/v.mp4", Model: "Seedance", Width: 384, Height: 216}})
 	if !strings.Contains(got, "已生成视频") || !strings.Contains(got, "Seedance") || !strings.Contains(got, "384×216") {
 		t.Errorf("摘要应包含类型、生成器与尺寸，实际 %q", got)
 	}
 	if got := describeAssets(nil); got != "" {
 		t.Errorf("无资源时应返回空串，实际 %q", got)
+	}
+	// 占位块没有直链：说「已生成」会与空的 media 矛盾。
+	if got := describeAssets([]creationAsset{{Type: 2, Model: "Seedance", Width: 384, Height: 216}}); got != "" {
+		t.Errorf("只有占位块时应返回空串，实际 %q", got)
 	}
 }
 
@@ -299,4 +303,107 @@ func extractCreationBlock(t *testing.T, frame string) json.RawMessage {
 	}
 	t.Fatal("测试帧中未找到 CREATION 块")
 	return nil
+}
+
+// TestCreationAssetPlayable 校验可播放判据只看是否有成品直链。
+//
+// 这条判据是回灌与渲染共用的分界线：占位块有 key、有状态，但没有 URL，
+// 一旦被判成「已出片」，客户端会拿到一条打不开的链接，正文却写着「已生成」。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-21 13:30:00；改动原因：新增，锁定 playable / hasPlayableAsset。
+func TestCreationAssetPlayable(t *testing.T) {
+	cases := []struct {
+		name  string
+		asset creationAsset
+		want  bool
+	}{
+		{"成品", creationAsset{Type: 2, URL: "https://example.com/v.mp4"}, true},
+		{"只有空白直链", creationAsset{Type: 2, URL: "   "}, false},
+		{"占位块只有 key", creationAsset{Type: 2, Key: "tos-cn-p-bucket/v"}, false},
+		{"非视频类型", creationAsset{Type: 1, URL: "https://example.com/v.mp4"}, false},
+	}
+	for _, c := range cases {
+		if got := c.asset.playable(); got != c.want {
+			t.Errorf("%s：playable 应为 %v，实际 %v", c.name, c.want, got)
+		}
+	}
+
+	if !hasPlayableAsset([]creationAsset{{Type: 2, Key: "k"}, {Type: 2, URL: "https://example.com/v.mp4"}}) {
+		t.Error("混合列表里只要有一条可播放就应判 true")
+	}
+	if hasPlayableAsset([]creationAsset{{Type: 2, Key: "k"}, {Type: 2}}) {
+		t.Error("全是没有直链的占位块时应判 false")
+	}
+}
+
+// TestAttachAssetsSkipsPlaceholder 校验占位块不会写进 content 与 media。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-21 13:30:00；改动原因：新增，占位块不得冒充成品。
+func TestAttachAssetsSkipsPlaceholder(t *testing.T) {
+	resp := buildChatCompletion("doubao/video", "正在生成", "", "conv-1", "生成视频")
+	attachAssets(resp, []creationAsset{{ID: "v", Type: 2, Key: "tos-cn-p-bucket/v"}})
+
+	message := resp["choices"].([]map[string]any)[0]["message"].(map[string]any)
+	parts, ok := message["content"].([]map[string]any)
+	if !ok || len(parts) != 1 || parts[0]["text"] != "正在生成" {
+		t.Fatalf("没有成品直链时应只剩原文一段，实际 %+v", message["content"])
+	}
+	if media, _ := resp["media"].([]map[string]any); len(media) != 0 {
+		t.Errorf("没有成品直链时 media 应为空，实际 %+v", media)
+	}
+}
+
+// TestAttachAssetsAcceptsGenericChoices 校验 choices 经过 JSON 往返后仍能挂上附件。
+//
+// 直接断言 []map[string]any 只在「同进程刚构造完」时成立；中间过一次序列化，
+// choices 会退化成 []any，旧实现会静默 return，附件全丢且不报错。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-21 13:30:00；改动原因：新增，覆盖 firstChoiceMessage 的泛型分支。
+func TestAttachAssetsAcceptsGenericChoices(t *testing.T) {
+	resp := map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "生成好了"}}}}
+	attachAssets(resp, []creationAsset{{ID: "v", Type: 2, URL: "https://example.com/v.mp4"}})
+
+	message := resp["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	parts, ok := message["content"].([]map[string]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("JSON 往返后应挂上 [原文 + 链接] 两段，实际 %+v", message["content"])
+	}
+	if _, has := resp["media"]; !has {
+		t.Error("JSON 往返后仍应写入 media")
+	}
+}
+
+// TestBestStreamStableOnTie 校验同分辨率多码率时取到的是固定那条。
+//
+// video_list 是 map，遍历顺序随机；只按像素面积比较，同分时会随机挑一条直链，
+// 排障时同一份响应换个进程就复现不了。定序后必须稳定取 key 最小的那条。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-21 13:32:00；改动原因：新增，锁定同分时的确定性。
+func TestBestStreamStableOnTie(t *testing.T) {
+	aURL := base64.StdEncoding.EncodeToString([]byte("https://example.com/a.mp4"))
+	bURL := base64.StdEncoding.EncodeToString([]byte("https://example.com/b.mp4"))
+	model := fmt.Sprintf(`{"status":10,"video_list":{"video_b":{"vwidth":1280,"vheight":720,"main_url":"%s"},"video_a":{"vwidth":1280,"vheight":720,"main_url":"%s"}}}`,
+		bURL, aURL)
+	video := &creationVideo{VideoModel: model}
+
+	first, width, height := video.bestStream()
+	if first == "" {
+		t.Fatal("同分时应至少挑出一条直链")
+	}
+	for i := 0; i < 20; i++ {
+		got, _, _ := video.bestStream()
+		if got != first {
+			t.Fatalf("同分辨率多码率应稳定取同一条，第 %d 次得到 %q，首次是 %q", i, got, first)
+		}
+	}
+	if first != "https://example.com/a.mp4" {
+		t.Errorf("同分时应按 key 定序取 video_a，实际 %q", first)
+	}
+	if width != 1280 || height != 720 {
+		t.Errorf("尺寸应跟随所选清晰度 1280×720，实际 %d×%d", width, height)
+	}
 }

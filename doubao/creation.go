@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"sort"
 	"strings"
 )
 
@@ -18,10 +19,10 @@ import (
 //	content.creation_block.creations[i].video.download_url       成品直链（带签名）
 //	content.creation_block.creations[i].video.width / height     字符串，不是数字
 //	content.creation_block.creations[i].video.video_model        字符串套 JSON，内含 video_list
-//	content.creation_block.creations[i].video.cover              只有 key 与两个变体，没有 url
+//	content.creation_block.creations[i].video.cover              只有 key 与两个变体，没有 url（不是成品，不参与取值）
 //
 // 解析见 creation_parse.go，OpenAI 多模态转换见 creation_render.go。
-// 最近修改时间：2026-11-18 22:40:00；改动原因：按 CHG-001 删除图片块结构。
+// 最近修改时间：2026-11-21 13:32:00；改动原因：bestStream 同分时按 key 定序，结果可复现。
 
 // creationAsset 是一份生成结果，已解析到可访问 URL。
 type creationAsset struct {
@@ -55,6 +56,31 @@ type creationAsset struct {
 // [返回] 视频返回 true。
 // 最近修改时间：2026-11-18 22:40:00；改动原因：图片能力删除，注释说明保留理由。
 func (a creationAsset) isVideo() bool { return a.Type == 2 }
+
+// playable 判断该资源是否已经有可播放的成品直链。
+//
+// 为什么不能只看 len(assets) > 0：上游会把「生成中」的占位块也推进来，那种块有
+// id、有状态、甚至可能带封面，但 URL 是空的。用它当「已经有产物」的判据会让回灌
+// 被整个跳过，客户端最后拿到一个没有直链的空结局。
+// [参数] 无。
+// [返回] 有直链返回 true。
+// 最近修改时间：2026-11-21 13:30:00；改动原因：新增，区分占位块与真成品。
+func (a creationAsset) playable() bool {
+	return a.isVideo() && strings.TrimSpace(a.URL) != ""
+}
+
+// hasPlayableAsset 判断一批生成结果里是否已经有可播放的成品。
+// [参数] assets: 生成结果列表。
+// [返回] 存在可播放成品返回 true。
+// 最近修改时间：2026-11-21 13:30:00；改动原因：新增，替代裸的 len(assets) 判据。
+func hasPlayableAsset(assets []creationAsset) bool {
+	for _, asset := range assets {
+		if asset.playable() {
+			return true
+		}
+	}
+	return false
+}
 
 // creationItem 是 creations[] 中的一条。
 type creationItem struct {
@@ -186,14 +212,24 @@ func (v *creationVideo) videoModelOf() *videoModelDetail {
 // 面积与文件体积取最大，避免依赖 video_1 / video_2 的键名顺序（同一份响应里
 // video_2 是 720p h265、video_1 是 720p h264，键名不表达清晰度）。
 // [返回] 解码后的地址与尺寸；没有可用条目时返回空。
-// 最近修改时间：2026-11-17 01:20:00；改动原因：新增，从 video_model 取回直链。
+// 最近修改时间：2026-11-21 13:32:00；改动原因：同分时按 key 定序，消除 map 遍历的随机性。
 func (v *creationVideo) bestStream() (string, int, int) {
 	detail := v.videoModelOf()
 	if detail == nil {
 		return "", 0, 0
 	}
+	// video_list 是 map，遍历顺序随机；同分辨率多码率时 score 相同，只按 score
+	// 比较会让每次请求挑到不同的直链，排障时不可复现。因此同分时再按 key 定序，
+	// 把「随机」压成「固定」。
+	keys := make([]string, 0, len(detail.VideoList))
+	for key := range detail.VideoList {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
 	bestURL, bestW, bestH, bestScore := "", 0, 0, int64(-1)
-	for _, entry := range detail.VideoList {
+	for _, key := range keys {
+		entry := detail.VideoList[key]
 		raw := entry.MainURL
 		if strings.TrimSpace(raw) == "" {
 			raw = entry.BackupURL1

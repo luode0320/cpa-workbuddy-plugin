@@ -20,7 +20,7 @@ import (
 
 // activeTestTimeout 是单次手动测试的等待上限。
 //
-// 测试只等首个有效输出帧，正常在 1~3 秒内返回；20 秒用于覆盖上游排队
+// 测试要等首轮把会话建起来（SSE_ACK），实测 5~8 秒；20 秒用于覆盖上游排队
 // 与网络抖动，超过则判定账号或链路不可用。
 const activeTestTimeout = 20 * time.Second
 
@@ -111,7 +111,7 @@ func handleModelsQuery(req pluginapi.ManagementRequest) map[string]any {
 		"source":  "aliases",
 	}
 
-	// 2. 上游代号只作对照展示：它们无法映射到插件的图片或视频别名。
+	// 2. 上游代号只作对照展示：它们无法映射到插件的视频别名。
 	upstream, errDiscover := cachedUpstreamModels(sa, force)
 	if errDiscover != nil {
 		res["upstream_error"] = errDiscover.Error()

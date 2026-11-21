@@ -23,17 +23,13 @@ import (
 // [返回] 含响应头的信封 JSON 与错误。
 // 最近修改时间：2026-10-17；改动原因：新增，流式执行入口。
 func executorExecuteStream(raw []byte) ([]byte, error) {
-	var streamReq executorStreamRequest
-	if len(raw) > 0 {
-		if errUnmarshal := json.Unmarshal(raw, &streamReq); errUnmarshal != nil {
-			return nil, fmt.Errorf("解析流式执行请求失败：%w", errUnmarshal)
-		}
-	}
-
-	_, sa, chat, errDecode := decodeExecutorRequest(raw)
+	// 只解一次：decodeExecutorRequest 已经把同一份 raw 解进 pluginapi.ExecutorRequest，
+	// 这里再解一遍只为拿 stream_id，等于把整个请求体（含 StorageJSON）解析两次。
+	req, sa, chat, errDecode := decodeExecutorRequest(raw)
 	if errDecode != nil {
 		return nil, errDecode
 	}
+	streamID := streamIDOf(raw, req)
 	prompt, errPrompt := buildPrompt(chat.Messages)
 	if errPrompt != nil {
 		return nil, errPrompt
@@ -54,12 +50,37 @@ func executorExecuteStream(raw []byte) ([]byte, error) {
 
 	// 同步收集模式：宿主未提供 stream_id 时一次性返回全部帧。
 	resume := chat.resumePointOf()
-	if streamReq.StreamID == "" {
+	if streamID == "" {
 		return collectStreamResponse(sa, mode, resume, params, chat, prompt)
 	}
 
-	go pumpCompletionStream(streamReq.StreamID, sa, mode, resume, params, chat, prompt)
+	go pumpCompletionStream(streamID, sa, mode, resume, params, chat, prompt)
 	return okEnvelope(streamResponse{Headers: streamHeaders()})
+}
+
+// streamIDOf 取出宿主用于接收帧的流标识。
+//
+// stream_id 不在 pluginapi.ExecutorRequest 里（那是插件自己的信封字段），所以只能
+// 从原始 JSON 里补一次最小解析。这里只解出这一个键，不碰 StorageJSON 等大字段。
+// [参数] raw: 宿主请求 JSON；req: 已解析的宿主请求（可能为 nil）。
+// [返回] 流标识，缺失时为空串。
+// 最近修改时间：2026-11-21 13:32:00；改动原因：新增，替代对整份 raw 的二次解析。
+func streamIDOf(raw []byte, req *pluginapi.ExecutorRequest) string {
+	if req != nil && req.Metadata != nil {
+		if v, ok := req.Metadata["stream_id"].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	if len(raw) == 0 {
+		return ""
+	}
+	var probe struct {
+		StreamID string `json:"stream_id"`
+	}
+	if json.Unmarshal(raw, &probe) != nil {
+		return ""
+	}
+	return strings.TrimSpace(probe.StreamID)
 }
 
 // collectStreamResponse 在无宿主流标识时同步收集全部帧。

@@ -131,7 +131,8 @@ curl -s https://cpa.luode.vip/v1/chat/completions \
 ```
 
 `duration` 是产物真实时长，`width` / `height` 是上游给的**预览尺度**，不是成品分辨率
-（成品实测 1280×720）；需要真实分辨率请下载后用 `ffprobe` 读。
+（成品实测 1280×720）；需要真实分辨率请下载后用 `ffprobe` 读。没有成品直链的占位块不会
+出现在 `media` 里 —— 插件只把带 URL 的成品交出去，封面图不再冒充视频地址。
 
 ### Python（官方 openai SDK）
 
@@ -253,6 +254,8 @@ print(media[0]["url"])
 | `timeout_seconds` | 整数 | 非流式上游请求超时（秒），默认 120 |
 | `stream_timeout_seconds` | 整数 | 流式上游请求超时（秒），默认 600 |
 | `model_cache_seconds` | 整数 | 模型目录缓存时长（秒），默认 300 |
+| `video_poll_timeout_seconds` | 整数 | 等视频产物的总时长（秒），默认 360；只作用于视频回灌 |
+| `video_creation_wait_seconds` | 整数 | 等上游落下第一个创作块的上限（秒），默认 120；只作用于视频回灌 |
 
 早期版本的 `work_*` 七项配置已删除；存量 `config.yaml` 里留着这批键不会报错，
 yaml 会宽松忽略。

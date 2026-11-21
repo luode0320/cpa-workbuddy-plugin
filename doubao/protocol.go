@@ -28,7 +28,7 @@ import (
 //     影响尚未分离。采集链路见 login.go 的 callbackSVWebIDHeader，读取入口见
 //     fingerprintOf。
 //
-//   - 工作模式（agent_mode=1）整条协议已随「只做图片与视频」删除（2026-11-17）：
+//   - 工作模式（agent_mode=1）整条协议已随「只做视频」删除（2026-11-17）：
 //     该管线依赖账号被投放 pc_incentive_task_mvp_v3 活动，且必须做会话续接与
 //     异步产物回灌，与视频的产物模型无关。删掉的常量与 atoiSafe
 //     只服务那条管线，任何一处都不再被引用。
@@ -80,7 +80,7 @@ const (
 	// blockTypeDeepThink 是深度思考块类型。
 	blockTypeDeepThink = 10040
 
-	// blockTypeCreation 是生成结果块类型（图片/视频）。
+	// blockTypeCreation 是生成结果块类型（视频）。
 	blockTypeCreation = 2074
 
 	// skillVideoGen 是视频生成能力的上游 skill id。

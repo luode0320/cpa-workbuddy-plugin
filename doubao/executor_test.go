@@ -499,3 +499,29 @@ func TestPumpCompletionStreamEmitsError(t *testing.T) {
 		t.Fatal("不应走到这里")
 	}
 }
+
+// TestStreamIDOf 校验流标识的取值顺序与容错。
+//
+// stream_id 不在 pluginapi.ExecutorRequest 里，是插件自己的信封字段；为了不再
+// 把整份请求体解析两次，改成「先看 Metadata，再对 raw 做最小解析」。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-21 13:32:00；改动原因：新增，锁定单次解析后的取值路径。
+func TestStreamIDOf(t *testing.T) {
+	raw := []byte(`{"stream_id":"stream-from-raw","payload":{"messages":[]}}`)
+	if got := streamIDOf(raw, nil); got != "stream-from-raw" {
+		t.Errorf("应从原始 JSON 取出 stream_id，实际 %q", got)
+	}
+
+	req := &pluginapi.ExecutorRequest{Metadata: map[string]any{"stream_id": "stream-from-meta"}}
+	if got := streamIDOf(raw, req); got != "stream-from-meta" {
+		t.Errorf("Metadata 优先，实际 %q", got)
+	}
+
+	if got := streamIDOf([]byte(`{}`), nil); got != "" {
+		t.Errorf("缺失时应返回空串，实际 %q", got)
+	}
+	if got := streamIDOf([]byte(`not json`), nil); got != "" {
+		t.Errorf("非法 JSON 应返回空串，实际 %q", got)
+	}
+}

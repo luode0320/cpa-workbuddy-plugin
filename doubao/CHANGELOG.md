@@ -1,3 +1,40 @@
+## 0.1.33 (2026-11-21)
+
+### 修复
+- **生成中的占位块会让回灌被整个跳过，并把封面图当视频返回**。`assetFromVideo` 在
+  `download_url` 缺失时会退到 `cover.image_preview`，而 `ensureVideoAsset` 用
+  `len(res.Assets) > 0` 判「已有产物」。两者叠加：确认轮的 SSE 里只要先推一个
+  `status=1` 带封面的 2074 块，回灌就整段跳过，客户端最后拿到
+  `{"type":"video","url":"...png"}` 这种把 JPEG 标成视频的条目。
+  修法：新增 `playable()` / `hasPlayableAsset()` 两个判据，回灌守卫改用
+  「有可播放的成品」；`assetFromVideo` 的封面兜底整段删除，占位阶段 URL 保持为空。
+- **正文说「已生成视频」而 `media` 是空的**。`describeAssets` 只统计 `len(assets)`，
+  `mediaExtension` 却会跳过没有 URL 的条目，两边口径不一致。改为两边都用 `playable()`。
+- **`SSE_ACK` 把有效的 `section_id` 抹成空串**。确认轮带着上一轮的 `section_id` 进来，
+  上游 ACK 里这个字段可能为空，原实现无条件赋值；而对外输出是「非空才写」，结果客户端
+  下一次续接直接断链。改为逐字段非空才覆盖。
+- **`attachAssets` 依赖 `[]map[string]any` 的具体类型断言**。只要响应过一道 JSON 往返，
+  `choices` 会退化成 `[]any`，旧实现静默 `return`，附件全丢且不报错。新增
+  `firstChoiceMessage()` 兼容两种形态。
+- **`bestStream` 同分辨率多码率时取值不确定**。`video_list` 是 map，遍历顺序随机，
+  同分时只按像素面积比较会随机挑一条直链。改为先按 key 定序，同分时结果可复现。
+- **`executorExecuteStream` 对同一份 `raw` 解了两次**。第一次只为拿 `stream_id`，
+  会把含 `StorageJSON` 的整个请求体再解析一遍。新增 `streamIDOf()`：先查
+  `Metadata["stream_id"]`，再对 raw 做最小结构体解析。
+
+### 变更
+- `creation_parse.go` 的 `assetFromVideo` 不再用封面兜底地址与尺寸。封面是一张 JPEG，
+  塞进 `URL` 会让下游出现自相矛盾的类型标记。占位阶段资产仍然返回（`Key` 非空即返回），
+  回灌层靠 `sawCreation` 判断上游是否真的开跑，丢掉占位块会误报「上游没有开始渲染」。
+- 没有成品直链时，`media[]` 里不会出现该条目，`width` / `height` 也可能整体缺失
+  （封面不再补尺寸）。需要真实分辨率仍以下载后 `ffprobe` 为准。
+
+### 已知
+- 占位块与成品的区分只依赖「URL 是否非空」。若将来上游给占位块也带上可访问地址
+  （例如临时占位视频），这层判据会失效，需要改看 `status`。
+- 本次改动不影响对话超时（`timeout_seconds` 120）与流式超时（`stream_timeout_seconds`
+  600），也不改动两个视频专属等待项。
+
 ## 0.1.32 (2026-11-21)
 
 ### 修复

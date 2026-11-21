@@ -1107,7 +1107,12 @@ func collectCompletionWithResume(ctx context.Context, sa *StoredAuth, text strin
 				if ack.AckClientMeta.ConversationID != "" {
 					convID = ack.AckClientMeta.ConversationID
 				}
-				sectionID = ack.AckClientMeta.SectionID
+				// 逐字段非空才覆盖：确认轮带着 section_id 进来，上游 ACK 里这个字段
+				// 可能为空，无条件赋值会把有效的续接点抹成空串，客户端下一次续接
+				// 就断了（attachResumePoint 遇到空串会整条省略）。
+				if ack.AckClientMeta.SectionID != "" {
+					sectionID = ack.AckClientMeta.SectionID
+				}
 				if len(ack.QueryList) > 0 {
 					msgIndex = ack.QueryList[0].MessageIndex
 				}

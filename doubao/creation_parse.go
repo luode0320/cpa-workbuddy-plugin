@@ -61,11 +61,13 @@ func parseCreationBlock(raw json.RawMessage) []creationAsset {
 
 // assetFromVideo 把视频条目转成生成结果。
 //
-// 取地址的顺序是 download_url → video_model 里最清晰的 main_url → 封面图：
-// 前两者是成品本身，封面只是「还没生成好」时的占位，交出去也不会是视频。
+// 地址只取成品：download_url → video_model 里最清晰的 main_url。封面图不是成品，
+// 它是一张 JPEG，塞进 URL 会让 media 里出现 {"type":"video","url":"...jpg"} 这种
+// 自相矛盾的条目，客户端按视频去播放只会失败。占位阶段就让它没有 URL，由回灌层
+// 继续等（见 playable）。
 // [参数] item: 生成物条目。
 // [返回] 生成结果与是否可用。
-// 最近修改时间：2026-11-17 22:10:00；改动原因：同时读产物真实时长。
+// 最近修改时间：2026-11-21 13:30:00；改动原因：封面不再兜底地址与尺寸，避免冒充成品。
 func assetFromVideo(item creationItem) (creationAsset, bool) {
 	video := item.Video
 	if video == nil {
@@ -87,8 +89,8 @@ func assetFromVideo(item creationItem) (creationAsset, bool) {
 	if h, errH := strconv.Atoi(strings.TrimSpace(video.Height)); errH == nil && h > 0 {
 		asset.Height = h
 	}
-	// download_url 缺失时退到清晰度清单里的直链，比封面更接近成品。
-	if asset.URL == "" {
+	// download_url 缺失时退到清晰度清单里的直链；它同样是成品，尺寸也更准。
+	if strings.TrimSpace(asset.URL) == "" {
 		if addr, w, h := video.bestStream(); addr != "" {
 			asset.URL = addr
 			if w > 0 {
@@ -99,25 +101,9 @@ func assetFromVideo(item creationItem) (creationAsset, bool) {
 			}
 		}
 	}
-	if video.Cover != nil {
-		// 封面兼作海报帧，也是视频地址未就绪时的最后回退。
-		if asset.URL == "" {
-			if video.Cover.ImagePreview != nil && video.Cover.ImagePreview.URL != "" {
-				asset.URL = video.Cover.ImagePreview.URL
-			} else if video.Cover.ImageThumb != nil {
-				asset.URL = video.Cover.ImageThumb.URL
-			}
-		}
-		if asset.Width == 0 && video.Cover.ImagePreview != nil {
-			asset.Width = video.Cover.ImagePreview.Width
-			asset.Height = video.Cover.ImagePreview.Height
-		}
-		if asset.Width == 0 && video.Cover.ImageThumb != nil {
-			asset.Width = video.Cover.ImageThumb.Width
-			asset.Height = video.Cover.ImageThumb.Height
-		}
-	}
-	if asset.Key == "" && asset.URL == "" {
+	// 占位帧也要交出去：回灌层靠「有没有出现过创作块」判断上游是否真的开跑，
+	// 丢掉占位块会让它以为上游没启动，直接误报「上游没有开始渲染」。
+	if asset.Key == "" && strings.TrimSpace(asset.URL) == "" {
 		return asset, false
 	}
 	return asset, true

@@ -12,8 +12,7 @@ import (
 
 // 本文件实现视频产物的异步回灌。
 //
-// 图片是同步产物：同一次 /chat/completion 的 SSE 里 block_type=2074 就把直链带齐了。
-// 视频不是——确认轮只回一句「本次使用 Seedance 2.0 Mini 生成，预计等待 5 分钟」，
+// 视频产物是异步的：确认轮只回一句「本次使用 Seedance 2.0 Mini 生成，预计等待 5 分钟」，
 // 真正的成品要等上游把一条助手消息写进会话消息链，再由客户端主动拉取：
 //
 //	POST /im/chain/single  {"cmd":3100,...}  →  downlink_body.pull_singe_chain_downlink_body.messages[]
@@ -251,13 +250,13 @@ func assetsFromChainResponse(raw []byte) ([]creationAsset, bool, error) {
 	return out, sawCreation, nil
 }
 
-// videoAssetAmong 从产物列表里挑出第一个可用的视频。
+// videoAssetAmong 从产物列表里挑出第一个可播放的视频。
 // [参数] assets: 产物列表。
 // [返回] 视频产物与是否存在。
-// 最近修改时间：2026-11-17 01:40:00；改动原因：新增，取视频而非图片。
+// 最近修改时间：2026-11-21 13:30:00；改动原因：改用 playable 判据，占位块不算成品。
 func videoAssetAmong(assets []creationAsset) (creationAsset, bool) {
 	for _, asset := range assets {
-		if asset.isVideo() && asset.URL != "" {
+		if asset.playable() {
 			return asset, true
 		}
 	}
@@ -329,15 +328,18 @@ func fetchChainAssets(ctx context.Context, sa *StoredAuth, conversationID string
 // 生产实测：首轮等满 6 分钟回 503）。所以判据是「这一次是不是确认轮」，而不是
 // 「是不是视频模式」—— 两者在首轮同时成立，只看模式必然误入。
 //
+// 跳过条件是「已经有可播放的成品」，不是「已经有资产」：确认轮的 SSE 里可能先推
+// 一个只有状态、没有直链的占位块，若把它当成已出片，这次请求就会带着空结局返回。
+//
 // 超时取 videoPollTimeoutValue() 外加一分钟余量：调用方传进来的 ctx 已在上游流
 // 结束时被取消，直接复用会让回灌立刻返回 context canceled。余量必须基于同一个
 // 有效值算，否则配置调大后上下文会先于轮询超时触发，报出来的是 context deadline
 // exceeded 而不是业务文案。
 // [参数] sa: 账号；mode: 生成模式；resume: 本次请求的续接点；res: 待补齐的执行结果。
 // [返回] 错误（视频等不到成品时返回）。
-// 最近修改时间：2026-11-21 02:09:00；改动原因：总时长改读配置，与对话超时分离。
+// 最近修改时间：2026-11-21 13:30:00；改动原因：跳过条件改用 hasPlayableAsset，占位块不再短路回灌。
 func ensureVideoAsset(sa *StoredAuth, mode generationMode, resume resumePoint, res *completionResult) error {
-	if res == nil || mode.Kind != "video" || resume.isZero() || len(res.Assets) > 0 || res.ConversationID == "" {
+	if res == nil || mode.Kind != "video" || resume.isZero() || hasPlayableAsset(res.Assets) || res.ConversationID == "" {
 		return nil
 	}
 	pollTimeout := videoPollTimeoutValue()

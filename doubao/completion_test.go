@@ -624,3 +624,43 @@ func asUpstreamError(err error, target **upstreamError) bool {
 
 // 确保 time 包被使用（context 超时在测试中显式约束，避免测试挂死）。
 var _ = time.Second
+
+// TestCollectCompletionKeepsSectionIDWhenAckEmpty 校验 ACK 里的空 section_id 不会抹掉续接点。
+//
+// 确认轮是带着上一轮的 section_id 进来的；上游 ACK 有时只回 conversation_id，
+// section_id 留空。无条件赋值会把有效续接点抹成空串，而对外输出又是「非空才写」，
+// 结果客户端下一次续接直接断链。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-21 13:30:00；改动原因：新增，锁定 ACK 逐字段非空覆盖。
+func TestCollectCompletionKeepsSectionIDWhenAckEmpty(t *testing.T) {
+	const stream = "event: SSE_ACK\n" +
+		"data: {\"ack_client_meta\":{\"conversation_id\":\"conv-ack\",\"section_id\":\"\"}}\n\n" +
+		"event: STREAM_MSG_NOTIFY\n" +
+		"data: {\"content\":{\"content_block\":[{\"block_type\":10000,\"content\":{\"text_block\":{\"text\":\"好的\"}}}]}}\n\n" +
+		"event: SSE_REPLY_END\n" +
+		"data: {}\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer srv.Close()
+	restore := swapCompletionEndpoint(srv.URL)
+	defer restore()
+
+	sa := completionTestAccount()
+	sa.PhysicalPath = ""
+	resume := resumePoint{ConversationID: "38454121040780034", SectionID: "38454121040780290", MessageIndex: 5}
+
+	res, errRun := collectCompletionWithResume(context.Background(), sa, "确认，开始生成", generationMode{Skill: skillVideoGen, Kind: "video"}, resume, false, nil)
+	if errRun != nil {
+		t.Fatalf("聚合失败：%v", errRun)
+	}
+	if res.SectionID != resume.SectionID {
+		t.Errorf("ACK 里 section_id 为空时不得抹掉续接点，期望 %q，实际 %q", resume.SectionID, res.SectionID)
+	}
+	if res.ConversationID != "conv-ack" {
+		t.Errorf("ACK 里的会话 id 应覆盖，实际 %q", res.ConversationID)
+	}
+}
