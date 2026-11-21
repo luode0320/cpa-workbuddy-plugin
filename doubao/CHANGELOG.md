@@ -1,3 +1,36 @@
+## 0.1.35 (2026-11-21)
+
+### 新增
+
+- 空闲期保活定时器：新增 `keepalive.go`，按 `keepalive_interval_seconds`（默认 1800 秒）定时向
+  `/samantha/user/preference/get` 发一次只读偏好查询，从响应头接管新的 `x-ms-token` 并写回账号文件。
+  这样即使整段时间没有任何业务请求，`msToken` 也会跟着上游换新，不必等到下一次对话才发现状态不明。
+  - 选端点理由：它不在签名清单（`bdmsExcludePaths`）里，不需要 `a_bogus`；只读偏好查询，不消耗对话额度、
+    不改账号状态；每次响应都带 `x-ms-token`（2026-11-21 实测 2/2 命中）。
+  - 默认开启。代价是每账号每天 48 次只读查询；确实不想产生任何额外流量的实例可以写
+    `keepalive_enabled: false` 显式关掉。
+  - 首轮不立刻跑：热重载可能连着来几次，配置刚落地就对上游发请求没有收益，等第一个 tick 即可。
+  - 保活失败一律只记日志，不计入 failover 冷却账本——它不属于任何一次请求的失败，
+    否则一次网络抖动就会把健康账号踢下线。
+- 新增配置项 `keepalive_enabled`（布尔，默认 `true`）与 `keepalive_interval_seconds`
+  （整数，默认 1800，只在开关为真时生效，`<=0` 回落默认值）。
+
+### 修正
+
+- `configurePlugin` 改用 `configOverride` 中间结构解码，布尔项走 `*bool`。原因是保活默认值改为
+  `true` 之后，Go 的 `bool` 零值是 `false`，用值类型解码会把「配置里没写这个键」误判成
+  「用户显式关掉」——只改一次 `timeout_seconds` 的 reconfigure 就会把保活静默冲掉。
+  这条回归已固化成 `TestConfigurePluginKeepaliveSurvivesUnrelatedReconfigure`。
+- `cliproxyPluginShutdown` 卸载时先 `stopKeepalive()`：保活每轮都要读宿主 API 与账号目录，
+  宿主已在卸载插件，放任它跑只会拿到「宿主 API 不可用」并刷日志。
+
+### 已知
+
+- 保活只解决「空闲期也能换 token」，解决不了「token 已经失效到发不出任何请求」——那一态仍需
+  用户重新点一次授权书签。
+- 一轮保活最长可按 `timeout_seconds`（默认 120 秒）跑满；`stopKeepalive` 只等 5 秒，
+  超时会记一行 `keepalive goroutine did not stop within`，属正常兜底，不阻塞 reconfigure。
+
 ## 0.1.34 (2026-11-21)
 
 ### 新增

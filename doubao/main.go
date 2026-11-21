@@ -64,7 +64,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.1.34"
+	version      = "0.1.35"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -94,12 +94,22 @@ type Config struct {
 	// 同样是视频专属。上游拒答时照样返回 conversation_id，形态与正常首轮一样，
 	// 只能靠「消息链里到底有没有 2074 块」来区分「在渲染」和「根本没开始」。
 	VideoCreationWaitSeconds int `yaml:"video_creation_wait_seconds" json:"video_creation_wait_seconds"`
+	// KeepaliveEnabled 是否在空闲期定时刷新 msToken。
+	//
+	// 默认开启：msToken 只有「上游响应头」这一个来源，不主动发请求就永远拿不到
+	// 新值。保活只是一次只读偏好查询，不消耗对话额度，代价远低于「账号闲置到
+	// 令牌状态不明」。确实不想产生任何额外流量的实例可以显式关掉。
+	KeepaliveEnabled bool `yaml:"keepalive_enabled" json:"keepalive_enabled"`
+	// KeepaliveIntervalSeconds 保活间隔（秒）。
+	//
+	// 只在 KeepaliveEnabled 为真时生效；<=0 时回落到默认 30 分钟。
+	KeepaliveIntervalSeconds int `yaml:"keepalive_interval_seconds" json:"keepalive_interval_seconds"`
 }
 
 // defaultConfig 返回插件默认配置。
 // [参数] 无。
 // [返回] 带默认值的配置结构。
-// 最近修改时间：2026-11-21 02:05:00；改动原因：新增两个视频专属等待项，均不影响对话超时。
+// 最近修改时间：2026-11-21 21:50:00；改动原因：新增保活开关与间隔，默认关闭。
 func defaultConfig() Config {
 	return Config{
 		TimeoutSeconds:           120,
@@ -107,6 +117,8 @@ func defaultConfig() Config {
 		ModelCacheSecs:           300,
 		VideoPollTimeoutSeconds:  360,
 		VideoCreationWaitSeconds: 120,
+		KeepaliveEnabled:         true,
+		KeepaliveIntervalSeconds: defaultKeepaliveIntervalSeconds,
 	}
 }
 
@@ -172,6 +184,10 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 
 //export cliproxyPluginShutdown
 func cliproxyPluginShutdown() {
+	// 1. 先停保活协程：它每轮都会读宿主 API 与账号目录，宿主已经在卸载插件，
+	//    让它在释放后继续跑只会拿到「宿主 API 不可用」并刷日志。
+	stopKeepalive()
+
 	hostAPIMu.Lock()
 	hostAPI = nil
 	hostAPIMu.Unlock()
@@ -342,13 +358,30 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	}
 }
 
+// configOverride 是宿主下发的 YAML 解码中间结构。
+//
+// 为什么不直接用 Config 解码：keepalive_enabled 的默认值是 true，而 Go 的
+// bool 零值是 false，直接用 Config 会把「配置里没写这个键」误判成「用户显式
+// 关掉」，一 reconfigure 就把默认值冲掉。指针才能区分「没写」与「写了 false」。
+// 数值项仍用值类型：它们的零值本来就代表「没写」，由默认值兜底。
+type configOverride struct {
+	TimeoutSeconds           int   `yaml:"timeout_seconds"`
+	StreamTimeoutSeconds     int   `yaml:"stream_timeout_seconds"`
+	ModelCacheSecs           int   `yaml:"model_cache_seconds"`
+	VideoPollTimeoutSeconds  int   `yaml:"video_poll_timeout_seconds"`
+	VideoCreationWaitSeconds int   `yaml:"video_creation_wait_seconds"`
+	KeepaliveEnabled         *bool `yaml:"keepalive_enabled"`
+	KeepaliveIntervalSeconds int   `yaml:"keepalive_interval_seconds"`
+}
+
 // configurePlugin 解析宿主下发的 YAML 配置并更新运行期配置。
 //
 // 数值项按「>0 才覆盖」处理，保证缺省键保留默认值，无关项热更新不会把超时
 // 与缓存窗口冲成 0。未知键（如早期版本的 work_* 系列）由 yaml 宽松忽略。
+// 布尔项走指针判空：只有配置里真的写了这个键才覆盖默认值。
 // [参数] raw: 宿主 reconfigure 载荷，config_yaml 为 base64 解码后的 YAML 字节。
 // [返回] 解析错误。
-// 最近修改时间：2026-11-21 13:32:00；改动原因：配置项增至五个（新增两个视频专属等待项）。
+// 最近修改时间：2026-11-21 21:50:00；改动原因：新增保活开关与间隔，并按新配置重建定时器。
 func configurePlugin(raw []byte) error {
 	var req struct {
 		ConfigYAML []byte `json:"config_yaml"`
@@ -359,7 +392,7 @@ func configurePlugin(raw []byte) error {
 
 	cfg := defaultConfig()
 	if len(req.ConfigYAML) > 0 {
-		var decoded Config
+		var decoded configOverride
 		if err := yaml.Unmarshal(req.ConfigYAML, &decoded); err != nil {
 			return err
 		}
@@ -379,10 +412,19 @@ func configurePlugin(raw []byte) error {
 		if decoded.VideoCreationWaitSeconds > 0 {
 			cfg.VideoCreationWaitSeconds = decoded.VideoCreationWaitSeconds
 		}
+		if decoded.KeepaliveIntervalSeconds > 0 {
+			cfg.KeepaliveIntervalSeconds = decoded.KeepaliveIntervalSeconds
+		}
+		if decoded.KeepaliveEnabled != nil {
+			cfg.KeepaliveEnabled = *decoded.KeepaliveEnabled
+		}
 	}
 
 	// 2. 整体替换运行期配置，热更新立即对后续请求生效。
 	activeConfig.Store(cfg)
+
+	// 3. 配置落地之后再重建定时器：先启后配会让新协程读到旧间隔。
+	restartKeepalive(cfg)
 	return nil
 }
 
