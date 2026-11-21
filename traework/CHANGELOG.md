@@ -1,5 +1,16 @@
 # TraeWork Plugin Changelog
 
+## 0.5.58 (2026-11-21)
+
+### Fix - 短命进程留下的孤儿实例标记让全部常驻循环永久停摆（积分快照停更 12 小时）
+
+- 现象(用户反馈 2026-11-21): 面板 70 个账号的「快照」时间停在 2026-11-20 23:49，此后 12 小时不再更新；面板手动点「刷新」单卡仍能立刻拿到新积分，说明上游凭证与网络正常，只是后台定时刷新不动了。
+- 直接证据: 容器内 `/CLIProxyAPI/data/traework-credits.json` 的 mtime 停在 `Nov 20 23:49`；`automation` 侧 11-20 23:55:42 ~ 11-21 00:03:17 集中出现 11 条 `[traework] <loop> stopped: superseded by newer instance`，覆盖 watchdog / keepalive / auto checkin / checkin retry / auth flag guard / failover probe / failover reconcile / slow pool size / stale disable correct 全部常驻循环，此后全量 grep 该关键词为空。traework 探活日志按小时统计：12 点 25 条、16 点 21 条、20 点 21 条、22 点 10 条（最后一条 22:19:19），之后 0 条。
+- 根因: `instance_guard.go` 只比对标记文件内容与自己的 `instanceGuardID`，不判断标记所有者是否还活着。容器内执行过一次 `./CLIProxyAPI --version`（或任何加载了本插件的短命进程）会走一遍插件 `init()` → `claimPluginInstance()` 写入带自己 pid 的新标记 → 进程随即退出，留下**孤儿标记**。长驻 pid 1 的 `pluginInstanceSuperseded()` 从此恒为 true，十个常驻循环在各自下一拍 `retireIfSuperseded` 后 `return` 永久退出；`sync.Once` 已执行完毕，重新 dlopen 同一个 `.so` 不会重跑 `init()`，所以**任何宿主 API（同版本重装、DELETE+install、改配置、手动删标记）都无法复活循环**，唯一解是重启容器或换 `.so` 字节。生产已在 13:05:59 用一次 `--version` 复现：标记从 `dn077061ruh9-952` 变为 `dn0mlp9ckt4o-1930`（pid 1930 = 那条命令自身）。
+- 修复: `instance_guard.go` 新增 `orphanOwnerMarker()`，从标记尾部解析 pid 并判其是否存活（`instance_pid_unix.go` 用 `syscall.Kill(pid, 0)`，EPERM 视为存活；`instance_pid_windows.go` 用 `os.FindProcess`）。判定为孤儿时：`claimPluginInstance()` 先打一条 `taking over orphan instance marker` 日志再接管；`pluginInstanceSuperseded()` 直接接管标记并返回 false，让循环继续跑。解析不出 pid 的标记仍保留历史语义（视为更新实例），只有可证明已死的 pid 才走接管，避免削弱热重载去重。
+- 影响范围: 仅实例守卫——新增两个平台文件与 `orphanOwnerMarker`，`retireIfSuperseded` 签名与所有调用点不变；watchdog / 签到 / 保活 / 探活 / 换号各链路行为零改动。
+- 验证: `python scripts/cgo-shim-build.py traework` build / vet / test 全绿；新增 `TestPluginInstanceSupersededTakesOverOrphanMarker`（伪造死 pid 标记必须放行并接管）、`TestOrphanOwnerMarkerKeepsUnknownMarkersAuthoritative`（解析不出 pid 的标记不得判孤儿、空标记必须接管、自身 pid 不算孤儿），并把 `TestPluginInstanceSupersededDetectsNewOwner` 的新实例标记改为带存活 pid，避免与孤儿接管语义混淆。
+
 ## 0.5.57 (2026-11-14)
 
 ### Fix - 面板搜索框被浏览器表单历史自动填回上次搜索词
