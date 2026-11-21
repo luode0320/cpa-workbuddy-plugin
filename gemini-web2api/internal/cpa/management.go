@@ -105,10 +105,11 @@ func (p *Plugin) handleCLIRun(raw []byte) (any, error) {
 // 其余 /login 系列照旧注册但不挂 Menu，仅供桥接页与浏览器扩展免密访问。
 //
 // [参数] 无。
-// [返回] rpcManagementRegistrationResponse，含 16 条管理路由与 7 条资源路由。
+// [返回] rpcManagementRegistrationResponse，含 16 条管理路由与 8 条资源路由。
 // [返回] error，始终为 nil，保留签名以对齐宿主 management.register 分发。
 // 最近修改时间：2026-11-21；改动原因：面板收口为单入口 /panel，Menu 名改为 Gemini Web；
-// 补注册历史面板路径 /accounts 与 /webui，避免宿主精确匹配下旧链接 404。
+// 补注册历史面板路径 /accounts、/webui 与桥接页真实 origin 上报接口 /login/origin，
+// 避免宿主精确匹配下旧链接与 origin 上报双双 404。
 func (p *Plugin) handleManagementRegister() (any, error) {
 	return rpcManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
@@ -165,6 +166,10 @@ func (p *Plugin) handleManagementRegister() (any, error) {
 				Path:        "/login/poll",
 				Description: "桥接页轮询一键授权的导入进度",
 			},
+			{
+				Path:        "/login/origin",
+				Description: "接收桥接页上报的浏览器真实 origin，用于生成可访问的授权链接",
+			},
 		},
 	}, nil
 }
@@ -220,11 +225,17 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 		method = http.MethodGet
 	}
 
-	// 登录面（桥接页 / 扩展下载 / Cookie 回传 / 轮询）必须先于静态面板分发，
-	// 否则 /v0/resource/plugins/gemini-web2api 前缀会把它们一起吞成面板 HTML。
+	// 登录面（桥接页 / 扩展下载 / Cookie 回传 / 轮询 / origin 上报）必须先于
+	// 静态面板分发，否则 /v0/resource/plugins/gemini-web2api 前缀会把它们一起
+	// 吞成面板 HTML。
 	if action := p.handleLoginResource(req, path); action.Handled {
 		return action.Response, nil
 	}
+
+	// 顺带记录一次外部 origin：宿主转交的请求头通常不含 Host（Go 把它放在
+	// r.Host，cloneHeader 只复制 r.Header），但只要哪天反代补上
+	// X-Forwarded-Host / X-Forwarded-Proto，这里就能自动接住，无需再改代码。
+	rememberPublicOrigin(req.Headers)
 
 	// Serve static Web Resource UI only
 	// /panel 是控制台入口（与兄弟插件统一），/accounts 与 /webui 作为历史路径

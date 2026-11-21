@@ -3,6 +3,67 @@
 本文件记录 gemini-web2api 插件在本仓库（`luode0320/cpa-workbuddy-plugin`）内的自有变更。
 上游 `jianli9158/cpa-plugin-gemini-web2api` 与 `Mag1cFall/Gemini-Web2API` 的历史变更见各自仓库。
 
+## 1.0.14 (2026-11-21)
+
+### 修复 - 一键授权的链接不再回落 127.0.0.1
+
+控制台「OAuth 登录」弹窗给出的地址一直是 `http://127.0.0.1:8317/v0/resource/plugins/gemini-web2api/login`，
+在用户浏览器里打不开，整条授权链断在第一步。取证结论是**三个环节同时缺信息**，插件自己能补的只有最后一个：
+
+1. 宿主 `internal/pluginhost/management.go` 的 `ServeResourceHTTP` / `ServeManagementHTTP`
+   都用 `cloneHeader(r.Header)` 转交请求头，而 Go 标准库把 `Host` 放在 `r.Host` 独立字段、
+   不进 `r.Header`，所以插件侧 `Headers.Get("Host")` 恒为空；
+2. 生产 nginx 的 `conf.d/proxy.conf` 只设了 `Host` / `X-Real-IP` / `X-Forwarded-For`，
+   没有 `X-Forwarded-Host`、没有 `X-Forwarded-Proto`；
+3. 宿主 `auth_files_oauth_callback.go` 的 `managementCallbackURL` 硬编码
+   `fmt.Sprintf("%s://127.0.0.1:%d%s", scheme, h.cfg.Port, path)`，`StartLogin` 只把这个
+   loopback 地址当 `BaseURL` 传给插件，SDK 的 `AuthLoginStartRequest` 里没有任何请求头字段。
+
+处置：真实 origin 改由**浏览器自己上报**。面板页与桥接页一定跑在用户真实域名下，
+它们的 `location.origin` 是唯一可靠来源：
+
+- 新增资源路由 `GET /v0/resource/plugins/gemini-web2api/login/origin?origin=<location.origin>`，
+  把上报值写进包级缓存（`internal/cpa/public_origin.go`）。
+- 面板 `webui.html` 载入时调用 `reportPanelOrigin()`，桥接页载入时调用 `syncOrigin()`；
+  桥接页还会就地把配对码从 `cpa|<旧 origin>|<state>` 改写成 `cpa|<真实 origin>|<state>`，
+  保证扩展推送时打到的是用户能访问的地址。
+- `auth.login.start` 与桥接页渲染统一走新的 `effectiveLoginOrigin`：
+  请求头（`X-Forwarded-Host` → `Host`，非回环时）→ 浏览器上报缓存 → 宿主 `BaseURL`。
+  请求头前两级都没有主机信息时，`originFromHeaders` 会再试一次 `Referer`——
+  控制台 SPA 用同源 fetch 打管理路由时一定带上完整页面地址，从中能还原出
+  `https://cpa.luode.vip` 这类真实域名，是这条链上最后一道自动兜底。
+- 回环 origin 不允许覆盖已有真实域名，否则容器内自测、健康检查、运维 curl
+  一次就会把线上链接改回 `127.0.0.1`。
+- 顺带在 `handleManagementHandle` 入口补调 `rememberPublicOrigin(req.Headers)`：
+  当前链路拿不到 Host，但只要哪天反代补上 `X-Forwarded-Host`，
+  这条兜底通道会自动接住，不需要再改代码。
+
+### 调整 - 面板概览卡按 workbuddy 口径精简
+
+- 标题改为「账号汇总 · 全部账号」，五项指标收敛为
+  **可用账号 / 冷却中 / 需重登 / 已停用 / 已发现模型**，
+  一条 `可路由占比（可用 / 总数）` 进度条 + `可用 · 冷却 · 需重登 · 停用 · 路由` 明细。
+- **移除**概览卡下方整排服务开关与状态位：启动/停止生成服务、重启访客会话、
+  停止访客会话、Chrome 可用性 badge。插件随宿主常驻运行，访客会话也会自动重建，
+  这些开关在生产上没有实际价值，与 workbuddy 的面板也不一致。
+- 删除因此失去调用方的四个前端函数：`toggleService`、`relaunchGuest`、
+  `stopGuest`、`loginWithChrome`；同时下线工具栏的「启动本机 Chrome 无痕登录」按钮
+  （生产镜像里没有桌面浏览器，`FindLocalChromeBinary()` 恒为空，该路径永远失败）。
+  后端 `/service/start|stop`、`/guest/relaunch|stop`、`/accounts/login-browser`
+  路由保持不变，需要时仍可通过管理 API 调用。
+- 工具栏「导入 Cookie / StorageState」改名为「粘贴 Cookie 导入」，
+  副标题与空状态引导文案同步。
+
+### 测试
+
+- 新增 `internal/cpa/public_origin_internal_test.go`（白盒包）：`splitOrigin`、
+  `isLoopbackHost`（含 `::1`、`[::1]:8317` 与裸 IPv6）、`firstHeaderValue`、
+  回环不覆盖真实域名、`effectiveLoginOrigin` 三级优先级、origin 上报端点写入缓存。
+- `login_bridge_test.go` 增补 `/login/origin` 注册断言、桥接页含 origin 上报地址、
+  上报后 `auth.login.start` 返回真实域名，以及面板已下线上述服务开关的反向断言。
+- `plugin_test.go` 的登录 URL 断言从写死 `http://127.0.0.1:8317` 改为
+  「绝对 URL + 命中桥接页路径」——origin 缓存是包级状态，写死主机名会让用例产生顺序依赖。
+
 ## 1.0.13 (2026-11-21)
 
 ### 调整 - 面板去掉运行日志，概览卡改为常驻

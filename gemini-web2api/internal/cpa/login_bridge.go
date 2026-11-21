@@ -42,6 +42,13 @@ const (
 	loginPollPath = loginResourcePrefix + "/login/poll"
 	// loginExtensionPath 下载浏览器授权助手扩展 zip。
 	loginExtensionPath = loginResourcePrefix + "/login/extension.zip"
+	// loginOriginPath 接收浏览器上报的真实 origin。
+	//
+	// 为什么需要它：宿主转交的请求头里没有 Host（Go 把它放在 r.Host 独立字段，
+	// cloneHeader 只复制 r.Header），生产 nginx 也没设 X-Forwarded-Host，
+	// 插件无法自行还原 https://cpa.luode.vip 这类域名。面板页与桥接页都跑在
+	// 用户真实域名下，由它们的 location.origin 上报是唯一可靠来源。
+	loginOriginPath = loginResourcePrefix + "/login/origin"
 	// loginPairPrefix 是扩展识别配对码的前缀。
 	loginPairPrefix = "cpa"
 )
@@ -73,6 +80,8 @@ func (p *Plugin) handleLoginResource(req rpcManagementRequest, path string) logi
 		return loginAction{Handled: true, Response: p.handleLoginSubmit(req)}
 	case loginPollPath:
 		return loginAction{Handled: true, Response: p.handleLoginStatus(req)}
+	case loginOriginPath:
+		return loginAction{Handled: true, Response: handleLoginOrigin(req)}
 	default:
 		return loginAction{}
 	}
@@ -88,7 +97,7 @@ func (p *Plugin) handleLoginResource(req rpcManagementRequest, path string) logi
 // 最近修改时间：2026-11-21；改动原因：新增。
 func (p *Plugin) renderLoginBridge(req rpcManagementRequest) pluginapi.ManagementResponse {
 	state := p.ensureLoginState(strings.TrimSpace(req.Query.Get("state")))
-	origin := publicOriginFromRequest(req)
+	origin := effectiveLoginOrigin(req.Headers, "")
 	pair := loginPairPrefix + "|" + origin + "|" + state
 	page := strings.NewReplacer(
 		"{{PAIR}}", htmlEscape(pair),
@@ -97,6 +106,7 @@ func (p *Plugin) renderLoginBridge(req rpcManagementRequest) pluginapi.Managemen
 		"{{EXT_URL}}", htmlEscape(loginExtensionPath),
 		"{{SUBMIT_URL}}", htmlEscape(loginSubmitPath),
 		"{{POLL_URL}}", htmlEscape(loginPollPath),
+		"{{ORIGIN_URL}}", htmlEscape(loginOriginPath),
 	).Replace(loginBridgeHTML)
 	return pluginapi.ManagementResponse{
 		StatusCode: http.StatusOK,
@@ -132,6 +142,26 @@ func (p *Plugin) handleLoginSubmit(req rpcManagementRequest) pluginapi.Managemen
 		"status": "importing",
 		"state":  state,
 	})
+}
+
+// handleLoginOrigin 记录浏览器上报的真实 origin。
+//
+// 面板页与桥接页在加载时都会把自己的 location.origin 报上来，
+// 这样宿主弹窗给出的授权链接、桥接页里的配对码都能落在用户真实域名上，
+// 而不是回落到容器内的 127.0.0.1:8317。
+// [参数] req 携带 query：origin（浏览器 location.origin）。
+// [返回] JSON 管理响应，回带已记录生效的 origin。
+// 最近修改时间：2026-11-21；改动原因：新增，修复授权链接回落 127.0.0.1 的问题。
+func handleLoginOrigin(req rpcManagementRequest) pluginapi.ManagementResponse {
+	reported := strings.TrimSpace(req.Query.Get("origin"))
+	if reported == "" {
+		return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": "origin is required"})
+	}
+	if _, host := splitOrigin(reported); host == "" {
+		return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": "origin must be an absolute http(s) URL"})
+	}
+	reportPublicOrigin(reported)
+	return jsonManagementResponse(http.StatusOK, map[string]any{"status": "ok", "origin": currentPublicOrigin()})
 }
 
 // handleLoginStatus 返回指定 state 的登录进度，供桥接页轮询。
@@ -287,29 +317,69 @@ func (p *Plugin) finishLogin(state, accountID, email, errMessage string) {
 	}
 }
 
-// publicOriginFromRequest 从请求头还原浏览器可访问的外部 origin。
+// effectiveLoginOrigin 依次尝试请求头、浏览器上报缓存与宿主 BaseURL，得出对外 origin。
 //
-// 资源路由不走管理鉴权，也没有结构化 BaseURL，只能靠 Host 与
-// X-Forwarded-Proto 反推；两者都缺时回落到本机默认端口。
-// [参数] req 是宿主转来的管理请求。
-// [返回] 形如 https://cpa.example.com 的 origin，无尾斜杠。
-// 最近修改时间：2026-11-21；改动原因：新增。
-func publicOriginFromRequest(req rpcManagementRequest) string {
-	host := strings.TrimSpace(req.Headers.Get("Host"))
+// 顺序是有意为之：生产链路上宿主转交的 Headers 里没有 Host（Go 把 Host 放在
+// r.Host，cloneHeader 只复制 r.Header），nginx 也没设 X-Forwarded-Host，
+// 所以第一级通常拿不到值；真正可靠的是浏览器在面板页 / 桥接页上报的
+// location.origin，即第二级缓存；第三级才退回宿主给的 BaseURL。
+//
+// 请求头里只拿到回环地址时不采信：那说明请求来自容器内自测或运维 curl，
+// 拿它当对外地址等于把 127.0.0.1 又交给用户，不如直接走缓存或 BaseURL。
+// [参数] h 是本次请求头；fallbackBaseURL 是宿主 auth.login.start 给的 BaseURL，可为空。
+// [返回] 形如 https://cpa.example.com 的 origin，无尾斜杠；全部未知时返回空字符串。
+// 最近修改时间：2026-11-21；改动原因：新增，替代只会回落的 publicOriginFromRequest。
+func effectiveLoginOrigin(h http.Header, fallbackBaseURL string) string {
+	if origin := originFromHeaders(h); origin != "" && !isLoopbackOrigin(origin) {
+		return origin
+	}
+	if origin := currentPublicOrigin(); origin != "" {
+		return origin
+	}
+	return resolveHostOrigin(fallbackBaseURL)
+}
+
+// originFromHeaders 只从请求头还原 origin，不做任何回落。
+//
+// 取值顺序：X-Forwarded-Host → Host → Referer。前两级在当前生产链路上通常为空
+// （宿主 cloneHeader 不包含 r.Host，反代也没设 X-Forwarded-Host），第三级的
+// Referer 是兜底中的兜底：控制台 SPA 用同源 fetch 打管理路由时会带上完整页面
+// 地址，从中能还原出 https://cpa.luode.vip 这类真实域名。
+// [参数] h 是请求头。
+// [返回] 形如 https://cpa.example.com 的 origin；头里没有主机信息时返回空字符串。
+// 最近修改时间：2026-11-21；改动原因：新增 Referer 兜底，让面板一打开就能缓存真实域名。
+func originFromHeaders(h http.Header) string {
+	if h == nil {
+		return ""
+	}
+	host := firstHeaderValue(h.Get("X-Forwarded-Host"))
 	if host == "" {
-		return resolveHostOrigin("")
+		host = firstHeaderValue(h.Get("Host"))
 	}
-	scheme := strings.ToLower(strings.TrimSpace(req.Headers.Get("X-Forwarded-Proto")))
-	if idx := strings.IndexByte(scheme, ','); idx >= 0 {
-		scheme = strings.TrimSpace(scheme[:idx])
+	if host == "" {
+		// Referer 自带 scheme，直接解析后返回，避免再和默认 scheme 打架。
+		if scheme, refHost := splitOrigin(firstHeaderValue(h.Get("Referer"))); refHost != "" {
+			return scheme + "://" + refHost
+		}
+		return ""
 	}
+	scheme := firstHeaderValue(h.Get("X-Forwarded-Proto"))
 	if scheme != "http" && scheme != "https" {
 		scheme = "https"
-		if strings.HasPrefix(host, "127.0.0.1") || strings.HasPrefix(host, "localhost") || strings.HasPrefix(host, "0.0.0.0") {
+		if isLoopbackHost(host) {
 			scheme = "http"
 		}
 	}
 	return scheme + "://" + host
+}
+
+// isLoopbackOrigin 判断 origin 是否指向本机。
+// [参数] origin 是完整 origin 字符串。
+// [返回] true 表示回环 origin（或无法解析）。
+// 最近修改时间：2026-11-21；改动原因：新增。
+func isLoopbackOrigin(origin string) bool {
+	_, host := splitOrigin(origin)
+	return host == "" || isLoopbackHost(host)
 }
 
 // loginExtensionResponse 输出授权助手扩展的 zip 下载响应。

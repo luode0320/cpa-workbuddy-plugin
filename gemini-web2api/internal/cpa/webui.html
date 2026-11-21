@@ -193,7 +193,7 @@ button.danger:hover{background:var(--err);color:#fff}
 <body>
 <div class="wrap">
   <h1>Gemini Web 面板</h1>
-  <div class="sub">gemini.google.com 网页会话 · 一键授权 / Cookie 导入 · 访客会话兜底</div>
+  <div class="sub">gemini.google.com 网页会话账号池 · 一键授权或粘贴 Cookie 导入 · 未导入账号时用访客会话兜底</div>
 
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账户数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
@@ -205,8 +205,7 @@ button.danger:hover{background:var(--err);color:#fff}
 
   <div class="bar">
     <button id="loginBtn" onclick="openLoginBridge()">一键授权</button>
-    <button class="sec" id="importBtn" onclick="openImportModal()">导入 Cookie / StorageState</button>
-    <button class="sec" id="chromeBtn" onclick="loginWithChrome(this)" title="在本机启动隔离的 Chrome 无痕窗口完成 Google 登录；服务器部署时镜像里没有桌面浏览器，请改用一键授权或粘贴 Cookie">启动本机 Chrome 无痕登录</button>
+    <button class="sec" id="importBtn" onclick="openImportModal()">粘贴 Cookie 导入</button>
     <button class="sec" onclick="syncAuthFiles(this)" title="把所有已导入账户写成 CPA auth 文件，供宿主直接调度">同步至 CPA 凭证目录</button>
     <input id="searchInput" class="search" type="search" placeholder="搜索 邮箱 / 账户 ID" oninput="onSearchChange(this.value)" autocomplete="off" spellcheck="false">
     <button class="sec" onclick="load()">刷新</button>
@@ -560,7 +559,7 @@ function sortedAccounts(accounts){
 function renderGrid(){
   const g=document.getElementById("grid");
   if(!lastAccounts.length){
-    g.innerHTML='<div class="empty">还没有导入账户。当前用 <strong>访客会话</strong> 兜底（仅 gemini-auto 可用）；<br>点上方 <strong>「一键授权」</strong> 引入 Google 账号，或用 <strong>「导入 Cookie / StorageState」</strong> 粘贴会话。</div>';
+    g.innerHTML='<div class="empty">还没有导入账户。当前用 <strong>访客会话</strong> 兜底（仅 gemini-auto 可用）；<br>点上方 <strong>「一键授权」</strong> 引入 Google 账号，或用 <strong>「粘贴 Cookie 导入」</strong> 粘贴会话。</div>';
     return;
   }
   g.innerHTML=sortedAccounts(lastAccounts).map(card).join("");
@@ -619,33 +618,27 @@ function renderSummary(d){
   const cooldown=Number(counts.cooldown||0);
   const authRequired=Number(counts.auth_required||0);
   const disabled=Number(counts.disabled||0);
-  const running=!!st.running&&String(st.state||"").toUpperCase()==="RUNNING";
-  const guest=st.guest_state||"disabled";
   const models=Number(src.models_count||0);
-  // 可路由占比与卡片里的账户健康度同口径：就绪账户 / 总账户。
-  // 没有账户时画灰条而不是空条，避免首屏出现「有进度条但无数据」的误解。
+  // 与 workbuddy 的用量汇总卡同口径：五项指标 + 一条进度条，不再堆服务开关。
+  // 控制台里那排「启动/停止生成服务、重启/停止访客会话」对本插件没有实际价值
+  // （插件随宿主常驻运行，访客会话也会自动重建），因此从概览卡移除。
+  // 可路由占比与卡片里的账户健康度同口径：就绪账户 / 总账户；
+  // 没有账户时画灰条，避免出现「有进度条却无数据」的误解。
   const pct=total?Math.round(ready*100/total):0;
   const barColor=!total?"var(--mut)":(pct>=50?"var(--ok)":(pct>0?"var(--warn)":"var(--err)"));
   box.innerHTML=
-    '<div class="summary-hd"><div class="summary-title">运行概览 · 全部账户</div>'+
-      '<div class="summary-meta">'+total+' 个账户 · 就绪 '+ready+' · 冷却 '+cooldown+' · 需重登 '+authRequired+' · 停用 '+disabled+'</div></div>'+
+    '<div class="summary-hd"><div class="summary-title">账号汇总 · 全部账号</div>'+
+      '<div class="summary-meta">'+total+' 个账号 · 可用 '+ready+' · 冷却 '+cooldown+' · 需重登 '+authRequired+' · 停用 '+disabled+'</div></div>'+
     '<div class="summary-grid">'+
-      '<div class="summary-item"><div class="k">生成服务</div><div class="v '+(running?"ok":"err")+'">'+esc(String(st.state||"STOPPED").toUpperCase())+'</div></div>'+
-      '<div class="summary-item"><div class="k">账户 就绪 / 总</div><div class="v">'+ready+" / "+total+'</div></div>'+
+      '<div class="summary-item"><div class="k">可用账号</div><div class="v '+(ready?"ok":"muted")+'">'+ready+'</div></div>'+
+      '<div class="summary-item"><div class="k">冷却中</div><div class="v '+(cooldown?"warn":"muted")+'">'+cooldown+'</div></div>'+
+      '<div class="summary-item"><div class="k">需重登</div><div class="v '+(authRequired?"err":"muted")+'">'+authRequired+'</div></div>'+
+      '<div class="summary-item"><div class="k">已停用</div><div class="v muted">'+disabled+'</div></div>'+
       '<div class="summary-item"><div class="k">已发现模型</div><div class="v">'+models+'</div></div>'+
-      '<div class="summary-item"><div class="k">冷却中</div><div class="v '+(cooldown?"warn":"ok")+'">'+cooldown+'</div></div>'+
-      '<div class="summary-item"><div class="k">访客会话</div><div class="v '+(guest==="ready"?"ok":"muted")+'">'+esc(guest)+'</div></div>'+
-      '<div class="summary-item"><div class="k">并发请求</div><div class="v">'+Number(src.active_requests||0)+'</div></div>'+
     '</div>'+
-    '<div class="pb"><div class="pb-label"><span>可路由占比（就绪 / 总数）</span><span>'+pct+'%</span></div>'+
+    '<div class="pb"><div class="pb-label"><span>可路由占比（可用 / 总数）</span><span>'+pct+'%</span></div>'+
       '<div class="pb-track"><div class="pb-bar" style="width:'+pct+'%;background:'+barColor+'"></div></div>'+
-      '<div class="pb-meta">路由 '+esc(st.routing_strategy||"-")+' · 数据目录 '+esc(src.data_dir||"-")+'</div></div>'+
-    '<div class="bar" style="margin:12px 0 0">'+
-      '<button class="'+(running?"danger":"")+'" onclick="toggleService(this)">'+(running?"停止生成服务":"启动生成服务")+'</button>'+
-      '<button class="sec" onclick="relaunchGuest(this)">重启访客会话</button>'+
-      '<button class="sec" onclick="stopGuest(this)">停止访客会话</button>'+
-      '<span class="badge stat" title="'+(src.chrome_available?"本机已检测到 Chrome，可用无痕窗口登录":"服务器镜像内没有 Chrome，Chrome 登录路径会被自动跳过")+'">'+(src.chrome_available?"本机 Chrome 可用":"无本机 Chrome")+'</span>'+
-    '</div>';
+      '<div class="pb-meta">可用 '+ready+' · 冷却 '+cooldown+' · 需重登 '+authRequired+' · 停用 '+disabled+' · 路由 '+esc(st.routing_strategy||"-")+'</div></div>';
 }
 
 async function load(){
@@ -681,23 +674,27 @@ async function load(){
 }
 
 /* ---------- actions ---------- */
+// reportPanelOrigin 把面板所在页面的真实 origin 上报给插件。
+//
+// 宿主转交的请求头里没有 Host（Go 把 Host 放在 r.Host 独立字段，cloneHeader
+// 只复制 r.Header），生产 nginx 也没设 X-Forwarded-Host，插件自己还原不出
+// https://cpa.luode.vip 这类域名，只能回落容器内的 127.0.0.1:8317；那样控制台
+// 弹窗给出的授权链接在用户浏览器里打不开。面板一定跑在真实域名下，所以由它
+// 上报 location.origin 是最可靠的来源。资源路由免管理密钥，这里直接 fetch。
+function reportPanelOrigin(){
+  var origin = "";
+  try { origin = window.location.origin || ""; } catch (e) { origin = ""; }
+  if (!origin || origin === "null") return;
+  fetch("/v0/resource/plugins/gemini-web2api/login/origin?origin=" + encodeURIComponent(origin), { method: "GET", cache: "no-store" })
+    .catch(function(){ /* 上报失败不影响面板主流程 */ });
+}
+
 // openLoginBridge 在新标签打开一键授权桥接页。
 //
 // 桥接页走资源路由（/v0/resource/plugins/gemini-web2api/login），
 // 不需要管理密钥，因此这里用相对路径直接跳转即可。
 function openLoginBridge(){
   window.open("/v0/resource/plugins/gemini-web2api/login","_blank");
-}
-async function loginWithChrome(btn){
-  busy(btn,true,"等待 Chrome 窗口完成登录…");
-  try{
-    const d=await api("/accounts/login-browser",{method:"POST",body:JSON.stringify({})});
-    if(d.error) throw new Error(d.error);
-    toast("Chrome 登录成功，已导入账户 "+(d.account&&d.account.id?d.account.id:""),"ok");
-    await load();
-  }catch(e){
-    toast("Chrome 登录未完成","err",e.message);
-  }finally{busy(btn,false)}
 }
 async function reloginAccount(id,btn){
   busy(btn,true,"等待重登…");
@@ -760,42 +757,6 @@ async function syncAuthFiles(btn){
     toast("同步失败","err",e.message);
   }finally{busy(btn,false)}
 }
-async function toggleService(btn){
-  const st=(lastStatus&&lastStatus.status)||{};
-  const running=!!st.running&&String(st.state||"").toUpperCase()==="RUNNING";
-  busy(btn,true,running?"停止中…":"启动中…");
-  try{
-    const d=await api(running?"/service/stop":"/service/start",{method:"POST",body:JSON.stringify({})});
-    if(d.error) throw new Error(d.error);
-    toast(running?"生成服务已停止":"生成服务已启动","ok");
-    await load();
-  }catch(e){
-    toast("切换服务状态失败","err",e.message);
-  }finally{busy(btn,false)}
-}
-async function relaunchGuest(btn){
-  busy(btn,true,"重建中…");
-  try{
-    const d=await api("/guest/relaunch",{method:"POST",body:JSON.stringify({})});
-    if(d.error) throw new Error(d.error);
-    toast("访客会话已重建","ok");
-    await load();
-  }catch(e){
-    toast("重启访客会话失败","err",e.message);
-  }finally{busy(btn,false)}
-}
-async function stopGuest(btn){
-  busy(btn,true,"停止中…");
-  try{
-    const d=await api("/guest/stop",{method:"POST",body:JSON.stringify({})});
-    if(d.error) throw new Error(d.error);
-    toast("访客会话已停止","ok");
-    await load();
-  }catch(e){
-    toast("停止访客会话失败","err",e.message);
-  }finally{busy(btn,false)}
-}
-
 /* ---------- modals ---------- */
 function syncModalState(){
   openModalCount=document.querySelectorAll(".modal-mask.show").length;
@@ -880,7 +841,9 @@ async function saveAccountProxy(btn){
 
 /* ---------- init ---------- */
 getKey();
-// 先渲染一次零值概览：汇总卡常驻可见（对齐 workbuddy 的用量汇总卡），
+// 先上报一次面板自身 origin：授权链接能否落到真实域名全靠这一步。
+reportPanelOrigin();
+// 再渲染一次零值概览：汇总卡常驻可见（对齐 workbuddy 的用量汇总卡），
 // 避免首屏出现「卡片边框有、里面却没内容」的空壳。
 renderSummary(lastStatus);
 load();

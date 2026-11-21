@@ -27,7 +27,7 @@
   a { color: #0969da; }
 </style>
 </head>
-<body data-state="{{STATE}}" data-origin="{{ORIGIN}}" data-poll="{{POLL_URL}}">
+<body data-state="{{STATE}}" data-origin="{{ORIGIN}}" data-poll="{{POLL_URL}}" data-origin-url="{{ORIGIN_URL}}" data-pair-prefix="cpa">
 <main>
   <h1>Gemini Web2API 一键授权</h1>
   <p class="sub">用你自己已登录 Google 的浏览器，把 gemini.google.com 的会话 Cookie 推送到 CPA。整个过程不需要在服务器上安装浏览器。</p>
@@ -73,11 +73,36 @@
   var body = document.body;
   var state = body.getAttribute('data-state') || '';
   var pollPath = body.getAttribute('data-poll') || '';
+  var originUrl = body.getAttribute('data-origin-url') || '';
+  var pairPrefix = body.getAttribute('data-pair-prefix') || 'cpa';
 
   function setStatus(el, text, cls) {
     el.textContent = text;
     el.className = 'status' + (cls ? ' ' + cls : '');
   }
+
+  // 服务端拿不到真实域名（宿主转交的请求头里没有 Host，反代也没设
+  // X-Forwarded-Host），只能回落到 127.0.0.1:8317。本页一定跑在用户真实
+  // 域名下，所以由浏览器把自己的 location.origin 报给插件并改写配对码，
+  // 保证扩展推送时打到的是用户能访问的地址。
+  function syncOrigin() {
+    var origin = '';
+    try { origin = window.location.origin || ''; } catch (e) { origin = ''; }
+    if (!origin || origin === 'null') return;
+    var input = document.getElementById('pair');
+    if (input && state) input.value = pairPrefix + '|' + origin + '|' + state;
+    if (!originUrl) return;
+    fetch(originUrl + '?origin=' + encodeURIComponent(origin), { method: 'GET', cache: 'no-store' })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (data && data.origin) {
+          if (input && state) input.value = pairPrefix + '|' + data.origin + '|' + state;
+        }
+      })
+      .catch(function () { /* 上报失败不影响主流程，页面已用本地 origin 兜底 */ });
+  }
+
+  syncOrigin();
 
   var copyBtn = document.getElementById('copy');
   copyBtn.addEventListener('click', function () {

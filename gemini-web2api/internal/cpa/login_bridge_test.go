@@ -123,6 +123,11 @@ func TestLoginBridgeRendersPairCode(t *testing.T) {
 	if !strings.Contains(page, "/v0/resource/plugins/gemini-web2api/login/extension.zip") {
 		t.Fatalf("bridge page missing extension url")
 	}
+	// 桥接页必须带上 origin 上报地址：宿主转交的请求头里没有 Host，
+	// 只有浏览器把 location.origin 报上来，授权链接才能落在真实域名上。
+	if !strings.Contains(page, "/v0/resource/plugins/gemini-web2api/login/origin") {
+		t.Fatalf("bridge page missing origin report url")
+	}
 }
 
 // TestLoginBridgeEscapesInjectedOrigin 校验 Host 头注入不会逃出属性值。
@@ -267,7 +272,7 @@ func TestManagementRegistrationIncludesLoginResources(t *testing.T) {
 	}
 	// 历史面板路径也必须注册：宿主 ServeResourceHTTP 按完整路径精确匹配，
 	// 只留分发分支而不注册路由，线上访问旧收藏链接会直接 404。
-	for _, path := range []string{"/panel", "/accounts", "/webui", "/login", "/login/extension.zip", "/login/submit", "/login/poll"} {
+	for _, path := range []string{"/panel", "/accounts", "/webui", "/login", "/login/extension.zip", "/login/submit", "/login/poll", "/login/origin"} {
 		if _, ok := byPath[path]; !ok {
 			t.Fatalf("resource route %q not registered, got %v", path, keysOf(byPath))
 		}
@@ -289,10 +294,83 @@ func TestManagementRegistrationIncludesLoginResources(t *testing.T) {
 	if menuCount != 1 {
 		t.Fatalf("expected exactly one console menu, got %d", menuCount)
 	}
-	for _, path := range []string{"/accounts", "/webui", "/login", "/login/submit", "/login/poll", "/login/extension.zip"} {
+	for _, path := range []string{"/accounts", "/webui", "/login", "/login/submit", "/login/poll", "/login/extension.zip", "/login/origin"} {
 		if strings.TrimSpace(byPath[path].Menu) != "" {
 			t.Fatalf("%q should not declare a console menu", path)
 		}
+	}
+}
+
+// TestLoginOriginEndpointRecordsOrigin 校验 origin 上报端点把真实域名写进缓存。
+//
+// [参数] t 是测试上下文。
+// [返回] 无；断言失败即 Fatal。
+// 最近修改时间：2026-11-21；改动原因：新增，覆盖授权链接回落 127.0.0.1 的修复。
+func TestLoginOriginEndpointRecordsOrigin(t *testing.T) {
+	p := newLoginTestPlugin(t)
+
+	missing := callManagement(t, p, "/v0/resource/plugins/gemini-web2api/login/origin?origin=", "", "")
+	if missing.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing origin, got %d", missing.StatusCode)
+	}
+
+	invalid := callManagement(t, p, "/v0/resource/plugins/gemini-web2api/login/origin?origin=cpa.example.com", "", "")
+	if invalid.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for relative origin, got %d", invalid.StatusCode)
+	}
+
+	ok := callManagement(t, p, "/v0/resource/plugins/gemini-web2api/login/origin?origin=https%3A%2F%2Fcpa.example.com", "", "")
+	if ok.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for valid origin, got %d body=%s", ok.StatusCode, string(ok.Body))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(ok.Body, &payload); err != nil {
+		t.Fatalf("unmarshal origin payload: %v", err)
+	}
+	if payload["origin"] != "https://cpa.example.com" {
+		t.Fatalf("origin cache not updated, got %v", payload["origin"])
+	}
+
+	// 上报之后，宿主发起登录必须用真实域名而不是容器内的 127.0.0.1:8317。
+	t.Setenv("GEMINI_WEB2API_NO_AUTO_BROWSER", "1")
+	reqBody, err := json.Marshal(map[string]any{"BaseURL": "http://127.0.0.1:8317/v0/management/oauth-callback"})
+	if err != nil {
+		t.Fatalf("marshal login start request: %v", err)
+	}
+	raw, err := p.HandleMethod(pluginabi.MethodAuthLoginStart, reqBody)
+	if err != nil {
+		t.Fatalf("auth.login.start failed: %v", err)
+	}
+	startResp, okCast := raw.(pluginapi.AuthLoginStartResponse)
+	if !okCast {
+		t.Fatalf("unexpected login start response type: %T", raw)
+	}
+	want := "https://cpa.example.com/v0/resource/plugins/gemini-web2api/login"
+	if startResp.URL != want {
+		t.Fatalf("login url should use reported origin, got %q want %q", startResp.URL, want)
+	}
+}
+
+// TestPanelReportsOrigin 校验面板页带着 origin 上报调用。
+//
+// [参数] t 是测试上下文。
+// [返回] 无；断言失败即 Fatal。
+// 最近修改时间：2026-11-21；改动原因：新增。
+func TestPanelReportsOrigin(t *testing.T) {
+	p := newLoginTestPlugin(t)
+	resp := callManagement(t, p, "/v0/resource/plugins/gemini-web2api/panel", "", "")
+	page := string(resp.Body)
+	if !strings.Contains(page, "login/origin") {
+		t.Fatalf("panel should report its origin for the auth bridge")
+	}
+	// 用户反馈「这些功能没什么作用」的服务开关必须已经下线。
+	for _, gone := range []string{"toggleService", "relaunchGuest", "stopGuest", "loginWithChrome", "chromeBtn"} {
+		if strings.Contains(page, gone) {
+			t.Fatalf("panel still references removed control %q", gone)
+		}
+	}
+	if !strings.Contains(page, "账号汇总 · 全部账号") {
+		t.Fatalf("panel summary should follow the workbuddy wording")
 	}
 }
 

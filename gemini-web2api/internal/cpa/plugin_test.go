@@ -241,8 +241,14 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 	startResp := startRes.(pluginapi.AuthLoginStartResponse)
 	// 登录入口改为资源路由上的桥接页（一键授权：扩展推送 + 手工粘贴 Cookie），
 	// 不再直指账号面板，因此这里断言的是登录桥接页地址。
-	if startResp.URL != "http://127.0.0.1:8317/v0/resource/plugins/gemini-web2api/login" {
+	// 只断言「绝对 URL + 命中桥接页路径」而不写死域名：宿主给的 BaseURL 恒为
+	// 127.0.0.1:8317，插件会用浏览器上报的真实域名覆盖它，同进程内其它用例
+	// 可能已经把缓存填成真实域名，写死主机名会变成跨用例的顺序依赖。
+	if !strings.HasSuffix(startResp.URL, "/v0/resource/plugins/gemini-web2api/login") {
 		t.Fatalf("expected bridge login URL in AuthLoginStartResponse, got %q", startResp.URL)
+	}
+	if !strings.HasPrefix(startResp.URL, "http://") && !strings.HasPrefix(startResp.URL, "https://") {
+		t.Fatalf("login url should be absolute, got %q", startResp.URL)
 	}
 
 	// 7. executor.identifier & executor.count_tokens

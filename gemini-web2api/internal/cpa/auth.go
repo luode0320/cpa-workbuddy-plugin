@@ -491,7 +491,13 @@ func (p *Plugin) handleAuthLoginStart(raw []byte) (any, error) {
 		}
 	}
 
-	origin := resolveHostOrigin(req.BaseURL)
+	// origin 优先取浏览器上报缓存：宿主给的 BaseURL 恒为 127.0.0.1:8317
+	// （managementCallbackURL 硬编码 loopback），直接用它会让控制台弹出的
+	// 授权链接在用户浏览器里打不开。
+	origin := effectiveLoginOrigin(nil, req.BaseURL)
+	if origin == "" {
+		origin = resolveHostOrigin(req.BaseURL)
+	}
 	loginURL := origin + loginBridgePath
 	return pluginapi.AuthLoginStartResponse{
 		Provider:  ProviderID,
