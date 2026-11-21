@@ -53,7 +53,10 @@ func stubAlertEndpoint(t *testing.T, endpoint string) {
 	prevEndpoint := alertEndpointFn
 	prevNow := alertNowFn
 	alertEndpointFn = func() string { return endpoint }
-	alertNowFn = func() time.Time { return time.Date(2026, 11, 21, 12, 0, 0, 0, time.Local) }
+	// 假时钟刻意钉在 UTC 而不是 time.Local：断言里的时间戳字符串是写死的，
+	// 用 time.Local 会在 CI（UTC 容器）与开发机（东八区）产出两种时区后缀，
+	// 令同一条用例在两处得到相反结论（2026-11-21 CI 首跑实测 FAIL）。
+	alertNowFn = func() time.Time { return time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC) }
 	resetAlertState()
 	t.Cleanup(func() {
 		alertEndpointFn = prevEndpoint
@@ -111,7 +114,7 @@ func TestNotifyAuthStateChange_InvalidOnce(t *testing.T) {
 	if got.Mobile != "170****5678" {
 		t.Fatalf("手机号必须遮蔽，实际 %q", got.Mobile)
 	}
-	if got.At != "2026-11-21T12:00:00+08:00" {
+	if got.At != "2026-11-21T12:00:00Z" {
 		t.Fatalf("时间戳 = %q，期望固定假时钟值", got.At)
 	}
 }
