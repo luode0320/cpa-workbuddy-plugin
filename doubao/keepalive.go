@@ -45,7 +45,17 @@ const (
 	// 不能无限等：一次保活请求本身可能跑满 TimeoutSeconds，宿主 reconfigure
 	// 时若被它拖住，配置热更新就会长时间不返回。
 	keepaliveStopGrace = 5 * time.Second
+
+	// keepaliveConfigCheckInterval 是巡检宿主配置的周期默认值。
+	//
+	// 宿主 PUT /config 不回调 reconfigure（见 hostconfig.go 的实测记录），只能
+	// 自己按文件比对。30 秒是折中：远小于默认 30 分钟的保活周期，改小间隔最多
+	// 半分钟就生效；又不会让 69KB 的宿主配置解析变成负担（每天 2880 次）。
+	keepaliveConfigCheckInterval = 30 * time.Second
 )
+
+// keepaliveConfigCheckPeriod 是巡检周期的运行期值，用例可临时改小以免久等。
+var keepaliveConfigCheckPeriod = keepaliveConfigCheckInterval
 
 // 保活定时器的运行期句柄。
 //
@@ -62,7 +72,7 @@ var (
 // 配置关掉时只停不启，保证「关」是一次真实的状态迁移而不是留一个空转协程。
 // [参数] cfg: 刚生效的运行期配置。
 // [返回] 无。
-// 最近修改时间：2026-11-21 21:50:00；改动原因：新增，空闲保活定时器。
+// 最近修改时间：2026-11-22 02:15:00；改动原因：协程内巡检宿主配置文件，宿主改间隔后自行重建 ticker。
 func restartKeepalive(cfg Config) {
 	stopKeepalive()
 	if !cfg.KeepaliveEnabled {
@@ -85,6 +95,8 @@ func restartKeepalive(cfg Config) {
 		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		configTicker := time.NewTicker(keepaliveConfigCheckPeriod)
+		defer configTicker.Stop()
 		// 1. 首轮不立刻跑：热重载可能连着来几次，配置刚落地就对上游发请求没有收益。
 		for {
 			select {
@@ -92,6 +104,16 @@ func restartKeepalive(cfg Config) {
 				return
 			case <-ticker.C:
 				runKeepaliveOnce(ctx)
+			case <-configTicker.C:
+				// 2. 宿主改配置不回调插件，这里自己按文件巡检，换了间隔就地重建 ticker。
+				next, action := syncKeepaliveInterval(interval)
+				switch action {
+				case keepaliveStop:
+					return
+				case keepaliveReschedule:
+					interval = next
+					ticker.Reset(interval)
+				}
 			}
 		}
 	}()
@@ -121,6 +143,18 @@ func stopKeepalive() {
 	case <-time.After(keepaliveStopGrace):
 		log.Printf("[doubao] keepalive goroutine did not stop within %v", keepaliveStopGrace)
 	}
+}
+
+// syncKeepaliveInterval 巡检宿主配置文件，返回本次触发后应使用的间隔与动作。
+// [参数] current: 当前生效的保活间隔。
+// [返回] 下次应使用的间隔与动作；读不到配置时原样返回当前间隔。
+// 最近修改时间：2026-11-22 02:15:00；改动原因：新增，宿主改配置后自行对齐 ticker。
+func syncKeepaliveInterval(current time.Duration) (time.Duration, keepaliveTickAction) {
+	next, action := decideKeepaliveTick(current)
+	if action == keepaliveReschedule {
+		log.Printf("[doubao] keepalive interval changed %v -> %v, rescheduling", current, next)
+	}
+	return next, action
 }
 
 // runKeepaliveOnce 对所有启用中的账号各跑一次保活探测。

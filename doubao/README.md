@@ -239,10 +239,25 @@ print(media[0]["url"])
 - 选这个端点的原因：它不需要 `a_bogus` 签名、不消耗对话额度、不改账号状态，每次响应都带 token；
 - 默认开启，想完全静默的实例写 `keepalive_enabled: false` 关掉；
 - 首轮不立刻跑，等第一个 tick；热重载会重建定时器，但不会立刻对上游发请求；
-- 保活失败只记日志，不进 failover 冷却账本——它不属于任何一次请求的失败。
+- 保活失败只记日志，不进 failover 冷却账本——它不属于任何一次请求的失败；
+- 改配置立刻生效：保活协程每 30 秒自己读一次宿主的 `config.yaml`，发现
+  `keepalive_enabled` / `keepalive_interval_seconds` 变了就地重建定时器（宿主改配置不会回调插件，
+  见下方「配置生效时机」）。
 
 保活只覆盖「空闲期也能换 token」。如果 token 已经失效到连一次请求都发不出去，
 仍然需要用户重新点一次授权书签。
+
+## 配置生效时机
+
+宿主的 `PUT /v0/management/plugins/doubao-provider/config` **不会**让插件重新解析配置：写入后宿主
+走的是 `configReloadHook` 分支，而生产注入的那个 hook 只触发 watcher 重载，不会调
+`pluginHost.ApplyConfig`，插件收不到 `MethodPluginReconfigure`。因此：
+
+- `keepalive_enabled` / `keepalive_interval_seconds`：**立刻生效**。插件保活协程每 30 秒巡检一次
+  宿主配置文件并自行调整，不需要任何额外动作。
+- 其余五项（`timeout_seconds` / `stream_timeout_seconds` / `model_cache_seconds` /
+  `video_poll_timeout_seconds` / `video_creation_wait_seconds`）：改完要重装插件（
+  `plugin-store install`，会触发一次真实加载）才会生效。
 
 ## 认证方式
 

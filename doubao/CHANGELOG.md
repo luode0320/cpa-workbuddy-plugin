@@ -1,3 +1,37 @@
+## 0.1.37 (2026-11-22)
+
+### 新增
+
+- 保活定时器自巡检宿主配置文件：新增 `hostconfig.go`，保活协程每 30 秒读一次宿主的 `config.yaml`，
+  取出 `plugins.configs.doubao-provider.config_yaml` 里的 `keepalive_enabled` 与
+  `keepalive_interval_seconds`，与运行值比对，变了就地 `ticker.Reset`，开关关掉则协程自行退出。
+  这样改配置终于能立刻生效，不必重装插件。
+- `keepalive.go` 的协程从单 ticker 改为双 ticker（业务 ticker + 30 秒巡检 ticker），
+  只有间隔真的变了才打一行 `keepalive interval changed`。
+
+### 修复
+
+- **宿主改插件配置不会回调插件，导致七项配置改完必须重装才生效**。根因在宿主侧：
+  `PUT /v0/management/plugins/<id>/config` 之后，`reloadConfigAfterManagementSave` 优先走
+  `configReloadHook`，而生产注入的 hook（`sdk/cliproxy/builder.go`）丢弃了传进来的 cfg，只调
+  `service.reloadConfigFromWatcher()`；`internal/watcher` 整包没有任何 `pluginHost` / `ApplyConfig`
+  引用，于是 `host.ApplyConfig` 被短路，插件永远收不到 `MethodPluginReconfigure`。
+  生产实证：连续把间隔改成 120 / 90 / 60 秒，保活仍严格每 30 分 00 秒一次；把 `config_yaml`
+  写坏成非法 YAML 也没有任何 `plugin reconfigure failed` 警告——说明插件从未被调用。
+  插件侧无法让宿主回调自己（宿主没有「读插件配置」的 host 方法），只能自己按文件兜底。
+
+### 已知
+
+- 本次兜底只覆盖保活两项（`keepalive_enabled` / `keepalive_interval_seconds`）。其余五项
+  （`timeout_seconds` / `stream_timeout_seconds` / `model_cache_seconds` /
+  `video_poll_timeout_seconds` / `video_creation_wait_seconds`）仍然要重装插件或重启容器才生效，
+  面板目前不会提示这一点。
+- 巡检按 30 秒周期读一次 `config.yaml`（69KB），一秒内最多读一次；文件读不到或解析失败时沿用
+  当前值继续跑，不会因为一次 IO 抖动把保活停掉。
+- 宿主配置文件路径按「cwd 下 `config.yaml` → cwd 下 `config/config.yaml` →
+  `/CLIProxyAPI/config.yaml`」三级探测，都不存在时退化为不做调整（保持 0.1.35 的行为）。
+
+
 ## 0.1.36 (2026-11-22)
 
 ### 修复
