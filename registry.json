@@ -765,8 +765,9 @@
       "name": "Gemini Web2API",
       "description": "Google Gemini web provider for CLIProxyAPI: proxies gemini.google.com sessions through Chrome TLS/HTTP2 fingerprint emulation and converts Gemini 3.x Pro / Flash / Thinking, image, video, music, Deep Research and Canvas into OpenAI Chat Completions, OpenAI Responses, Claude Messages and Gemini Native protocols, with a multi-account pool, per-model cooldown, automatic Cookie rotation and keyless guest sessions.",
       "author": "luode0320 (Upstream: jianli9158 / Mag1cFall)",
-      "version": "1.0.12",
+      "version": "1.0.13",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
+      "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/GeminiWeb.png",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/gemini-web2api",
       "license": "MIT",
       "tags": [
@@ -782,37 +783,37 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.12/gemini-web2api_1.0.12_darwin_amd64.zip",
-            "sha256": "6dc1c608215466ed07d2bb80662a54850cc20dec1ee18fe1f35bab6cd5441b69",
-            "size": 18228128
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.13/gemini-web2api_1.0.13_darwin_amd64.zip",
+            "sha256": "",
+            "size": 0
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.12/gemini-web2api_1.0.12_linux_amd64.zip",
-            "sha256": "6517e4bda3a2f98ce43f930edf9fc1733d65af98e84c256f909e5f53836ea5a6",
-            "size": 18901306
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.13/gemini-web2api_1.0.13_linux_amd64.zip",
+            "sha256": "",
+            "size": 0
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.12/gemini-web2api_1.0.12_linux_arm64.zip",
-            "sha256": "4e04d782839d76732929a8dc2eba84cf9aeb3cc8ea0877724ae307fbcd6c7b20",
-            "size": 17485022
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.13/gemini-web2api_1.0.13_linux_arm64.zip",
+            "sha256": "",
+            "size": 0
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.12/gemini-web2api_1.0.12_windows_amd64.zip",
-            "sha256": "e414b1968e412ee582835ab61e5d7a46146e3d45d03753eeba8ea23762b16dcd",
-            "size": 18405245
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.13/gemini-web2api_1.0.13_windows_amd64.zip",
+            "sha256": "",
+            "size": 0
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.12/gemini-web2api_1.0.12_windows_arm64.zip",
-            "sha256": "0dcb901ff52d568f31b1aa4c4855cbdaef227151ffef383132f0bf56992c75fa",
-            "size": 16877332
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.13/gemini-web2api_1.0.13_windows_arm64.zip",
+            "sha256": "",
+            "size": 0
           }
         ]
       }

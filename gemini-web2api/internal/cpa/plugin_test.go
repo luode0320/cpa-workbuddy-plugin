@@ -52,6 +52,20 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 	if !strings.Contains(string(regJSON), `"executor":true`) || !strings.Contains(string(regJSON), `"auth_provider":true`) {
 		t.Fatalf("missing expected capabilities: %s", string(regJSON))
 	}
+	// 控制台左侧插件树按 Metadata.Logo 显示图标；漏填时宿主不报错，
+	// 只是静默不显示，所以这里必须锁死取值，避免回归成「没有图标」。
+	// 这里只校验图标文件名而不写死完整 URL：仓库域名或分支调整时不该连带改测试。
+	var regMeta struct {
+		Metadata struct {
+			Logo string `json:"Logo"`
+		} `json:"Metadata"`
+	}
+	if err := json.Unmarshal(regJSON, &regMeta); err != nil {
+		t.Fatalf("decode registration metadata: %v", err)
+	}
+	if !strings.HasSuffix(regMeta.Metadata.Logo, "/assets/icons/GeminiWeb.png") {
+		t.Fatalf("expected plugin logo ending with /assets/icons/GeminiWeb.png, got %q", regMeta.Metadata.Logo)
+	}
 
 	// 2. auth.identifier & auth.parse
 	authIDRes, err := p.HandleMethod(pluginabi.MethodAuthIdentifier, nil)

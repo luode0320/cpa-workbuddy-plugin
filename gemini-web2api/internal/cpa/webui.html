@@ -111,11 +111,6 @@ button.danger:hover{background:var(--err);color:#fff}
 .cool .m{color:var(--warn);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cool .t{color:var(--mut);flex:none;font-family:ui-monospace,monospace}
 .cool-reason{color:var(--mut);font-size:11px;line-height:1.45;word-break:break-word;margin-top:2px}
-.logs{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code-bg);color:var(--code-fg);border-radius:10px;padding:10px 12px;max-height:280px;overflow:auto}
-.log-line{display:flex;gap:8px;padding:1px 0;white-space:pre-wrap;word-break:break-word}
-.log-time{color:var(--mut);flex:none}.log-lvl{flex:none;font-weight:600;width:44px}
-.log-lvl.INFO{color:var(--acc)}.log-lvl.WARN{color:var(--warn)}.log-lvl.ERROR{color:var(--err)}
-.log-src{flex:none;color:var(--mut)}.log-msg{flex:1;min-width:0}
 .toasts{position:fixed;top:16px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:9999;max-width:360px}
 .toast{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--acc);border-radius:var(--radius-md);padding:14px 18px;font-size:13px;box-shadow:var(--toast-shadow);transform:translateX(120%);opacity:0;transition:transform .3s cubic-bezier(.2,.9,.3,1.1),opacity .25s;cursor:pointer;word-break:break-word}
 .toast.show{transform:translateX(0);opacity:1}
@@ -127,6 +122,9 @@ button.danger:hover{background:var(--err);color:#fff}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--on-acc);border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
 .loading{color:var(--mut);text-align:center;padding:40px;grid-column:1/-1}
+/* 空状态：运行概览卡已经给出账户统计，网格这里只做一句引导，不再占满一屏。 */
+.empty{grid-column:1/-1;color:var(--mut);text-align:center;padding:26px 16px;background:var(--card);border:1px dashed var(--border);border-radius:var(--radius-md);line-height:1.7}
+.empty strong{color:var(--fg);font-weight:600}
 .modal-mask{position:fixed;inset:0;background:var(--scrim);display:none;align-items:center;justify-content:center;z-index:9000;padding:16px;backdrop-filter:blur(2px)}
 .modal-mask.show{display:flex}
 .modal{background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-lg);width:min(560px,100%);max-height:min(90vh,660px);display:flex;flex-direction:column;box-shadow:var(--modal-shadow)}
@@ -222,16 +220,8 @@ button.danger:hover{background:var(--err);color:#fff}
     <button type="button" class="ftag" data-region="disabled" onclick="filterRegion('disabled',this)" title="已被手动停用，不参与路由">停用 <span class="cnt" id="cntDisabled">0</span></button>
   </div>
 
-  <div class="summary card" id="summaryBox" style="display:none"></div>
+  <div class="summary card" id="summaryBox"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
-
-  <div class="card" id="logsCard" style="margin-top:16px">
-    <div class="summary-hd" style="margin-bottom:10px">
-      <div class="summary-title">运行日志</div>
-      <div class="summary-meta">最近 80 条事件 · 每 10 秒刷新</div>
-    </div>
-    <div class="logs" id="logsBox">等待连接…</div>
-  </div>
 </div>
 
 <div class="modal-mask" id="importModal" onclick="onImportMaskClick(event)">
@@ -377,7 +367,7 @@ function saveKey(){
   if(!v)return;
   sessionStorage.setItem(SS_KEY,v);
   document.getElementById("authBox").style.display="none";
-  load();loadLogs();
+  load();
 }
 function showAuth(){document.getElementById("authBox").style.display="block";const i=document.getElementById("keyInput");i&&i.focus()}
 function authHeaders(k){return k?{"Authorization":"Bearer "+k}:{}}
@@ -403,20 +393,6 @@ function busy(btn, on, label){
   else{btn.disabled=false;if(btn.dataset.orig)btn.innerHTML=btn.dataset.orig}
 }
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
-// 统一北京时间展示：RFC3339/ISO 输入 → "YYYY-MM-DD HH:mm:ss"（Asia/Shanghai）。
-function fmtCST(s){
-  if(!s) return "";
-  const d=new Date(s);
-  if(isNaN(d.getTime())) return String(s);
-  return d.toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"}).replaceAll("/","-");
-}
-function fmtLogTime(s){
-  if(!s) return "";
-  const d=new Date(s);
-  if(isNaN(d.getTime())) return String(s);
-  const p=n=>String(n).padStart(2,"0");
-  return p(d.getHours())+":"+p(d.getMinutes())+":"+p(d.getSeconds())+"."+String(d.getMilliseconds()).padStart(3,"0");
-}
 // 冷却倒计时：与卡片同口径，按 until 计算剩余秒数。
 function fmtRemain(until){
   if(!until) return "";
@@ -584,7 +560,7 @@ function sortedAccounts(accounts){
 function renderGrid(){
   const g=document.getElementById("grid");
   if(!lastAccounts.length){
-    g.innerHTML='<div class="loading">暂无已导入账户。当前可用访客会话兜底；点上方「一键授权」或「导入 Cookie / StorageState」添加 Google 账号。</div>';
+    g.innerHTML='<div class="empty">还没有导入账户。当前用 <strong>访客会话</strong> 兜底（仅 gemini-auto 可用）；<br>点上方 <strong>「一键授权」</strong> 引入 Google 账号，或用 <strong>「导入 Cookie / StorageState」</strong> 粘贴会话。</div>';
     return;
   }
   g.innerHTML=sortedAccounts(lastAccounts).map(card).join("");
@@ -635,29 +611,40 @@ function onSearchChange(q){
 
 function renderSummary(d){
   const box=document.getElementById("summaryBox");
-  const st=d.status||{};
+  const src=d||{};
+  const st=src.status||{};
   const counts=st.accounts||{};
+  const total=Number(counts.total||0);
+  const ready=Number(counts.ready||0);
+  const cooldown=Number(counts.cooldown||0);
+  const authRequired=Number(counts.auth_required||0);
+  const disabled=Number(counts.disabled||0);
   const running=!!st.running&&String(st.state||"").toUpperCase()==="RUNNING";
   const guest=st.guest_state||"disabled";
-  const cooldown=Number(counts.cooldown||0);
-  const models=Number(d.models_count||0);
-  box.style.display="block";
+  const models=Number(src.models_count||0);
+  // 可路由占比与卡片里的账户健康度同口径：就绪账户 / 总账户。
+  // 没有账户时画灰条而不是空条，避免首屏出现「有进度条但无数据」的误解。
+  const pct=total?Math.round(ready*100/total):0;
+  const barColor=!total?"var(--mut)":(pct>=50?"var(--ok)":(pct>0?"var(--warn)":"var(--err)"));
   box.innerHTML=
-    '<div class="summary-hd"><div class="summary-title">运行概览</div>'+
-      '<div class="summary-meta">路由 '+esc(st.routing_strategy||"-")+' · 数据目录 '+esc(d.data_dir||"-")+'</div></div>'+
+    '<div class="summary-hd"><div class="summary-title">运行概览 · 全部账户</div>'+
+      '<div class="summary-meta">'+total+' 个账户 · 就绪 '+ready+' · 冷却 '+cooldown+' · 需重登 '+authRequired+' · 停用 '+disabled+'</div></div>'+
     '<div class="summary-grid">'+
       '<div class="summary-item"><div class="k">生成服务</div><div class="v '+(running?"ok":"err")+'">'+esc(String(st.state||"STOPPED").toUpperCase())+'</div></div>'+
-      '<div class="summary-item"><div class="k">账户 就绪 / 总</div><div class="v">'+Number(counts.ready||0)+" / "+Number(counts.total||0)+'</div></div>'+
+      '<div class="summary-item"><div class="k">账户 就绪 / 总</div><div class="v">'+ready+" / "+total+'</div></div>'+
       '<div class="summary-item"><div class="k">已发现模型</div><div class="v">'+models+'</div></div>'+
       '<div class="summary-item"><div class="k">冷却中</div><div class="v '+(cooldown?"warn":"ok")+'">'+cooldown+'</div></div>'+
       '<div class="summary-item"><div class="k">访客会话</div><div class="v '+(guest==="ready"?"ok":"muted")+'">'+esc(guest)+'</div></div>'+
-      '<div class="summary-item"><div class="k">并发请求</div><div class="v">'+Number(d.active_requests||0)+'</div></div>'+
+      '<div class="summary-item"><div class="k">并发请求</div><div class="v">'+Number(src.active_requests||0)+'</div></div>'+
     '</div>'+
+    '<div class="pb"><div class="pb-label"><span>可路由占比（就绪 / 总数）</span><span>'+pct+'%</span></div>'+
+      '<div class="pb-track"><div class="pb-bar" style="width:'+pct+'%;background:'+barColor+'"></div></div>'+
+      '<div class="pb-meta">路由 '+esc(st.routing_strategy||"-")+' · 数据目录 '+esc(src.data_dir||"-")+'</div></div>'+
     '<div class="bar" style="margin:12px 0 0">'+
       '<button class="'+(running?"danger":"")+'" onclick="toggleService(this)">'+(running?"停止生成服务":"启动生成服务")+'</button>'+
       '<button class="sec" onclick="relaunchGuest(this)">重启访客会话</button>'+
       '<button class="sec" onclick="stopGuest(this)">停止访客会话</button>'+
-      '<span class="badge stat" title="'+(d.chrome_available?"本机已检测到 Chrome，可用无痕窗口登录":"服务器镜像内没有 Chrome，Chrome 登录路径会被自动跳过")+'">'+(d.chrome_available?"本机 Chrome 可用":"无本机 Chrome")+'</span>'+
+      '<span class="badge stat" title="'+(src.chrome_available?"本机已检测到 Chrome，可用无痕窗口登录":"服务器镜像内没有 Chrome，Chrome 登录路径会被自动跳过")+'">'+(src.chrome_available?"本机 Chrome 可用":"无本机 Chrome")+'</span>'+
     '</div>';
 }
 
@@ -693,24 +680,6 @@ async function load(){
   }
 }
 
-async function loadLogs(){
-  if(!getKey()){document.getElementById("logsBox").textContent="请先填写 management key";return}
-  try{
-    const d=await api("/logs",{__silent:true});
-    const box=document.getElementById("logsBox");
-    const logs=Array.isArray(d.logs)?d.logs:[];
-    if(d.error){box.textContent=String(d.error);return}
-    if(!logs.length){box.textContent="暂无日志";return}
-    box.innerHTML=logs.slice(-80).reverse().map(l=>{
-      const lvl=String(l.level||"INFO").toUpperCase();
-      return '<div class="log-line"><span class="log-time">'+esc(fmtLogTime(l.time))+'</span>'+
-        '<span class="log-lvl '+esc(lvl)+'">'+esc(lvl)+'</span>'+
-        '<span class="log-src">['+esc(l.source||"service")+']</span>'+
-        '<span class="log-msg">'+esc(l.message||"")+'</span></div>';
-    }).join("");
-  }catch(_e){/* 日志轮询失败保持静默，下一次自动重试 */}
-}
-
 /* ---------- actions ---------- */
 // openLoginBridge 在新标签打开一键授权桥接页。
 //
@@ -725,7 +694,7 @@ async function loginWithChrome(btn){
     const d=await api("/accounts/login-browser",{method:"POST",body:JSON.stringify({})});
     if(d.error) throw new Error(d.error);
     toast("Chrome 登录成功，已导入账户 "+(d.account&&d.account.id?d.account.id:""),"ok");
-    await load();loadLogs();
+    await load();
   }catch(e){
     toast("Chrome 登录未完成","err",e.message);
   }finally{busy(btn,false)}
@@ -736,7 +705,7 @@ async function reloginAccount(id,btn){
     const d=await api("/accounts/relogin",{method:"POST",body:JSON.stringify({account_id:id})});
     if(d.error) throw new Error(d.error);
     toast("账户 "+id+" 已重新登录并更新","ok");
-    await load();loadLogs();
+    await load();
   }catch(e){
     toast("重新登录失败","err",e.message);
   }finally{busy(btn,false)}
@@ -750,7 +719,7 @@ async function refreshAccount(id,btn){
     if(d.error) throw new Error(d.error);
     if(cardEl)cardEl.dataset.refreshState="done";
     toast("账户 "+id+" 校验通过，模型 "+Number(d.models_count||0)+" 个","ok");
-    await load();loadLogs();
+    await load();
   }catch(e){
     if(cardEl)cardEl.dataset.refreshState="failed";
     toast("校验失败","err",e.message);
@@ -776,7 +745,7 @@ async function clearCooldowns(id,scope,btn){
     const d=await api("/cooldowns/clear",{method:"POST",body:JSON.stringify({account_id:id,scope:scope||""})});
     if(d.error) throw new Error(d.error);
     toast("已清除账户 "+id+" 的冷却","ok");
-    await load();loadLogs();
+    await load();
   }catch(e){
     toast("清除冷却失败","err",e.message);
   }finally{busy(btn,false)}
@@ -799,7 +768,7 @@ async function toggleService(btn){
     const d=await api(running?"/service/stop":"/service/start",{method:"POST",body:JSON.stringify({})});
     if(d.error) throw new Error(d.error);
     toast(running?"生成服务已停止":"生成服务已启动","ok");
-    await load();loadLogs();
+    await load();
   }catch(e){
     toast("切换服务状态失败","err",e.message);
   }finally{busy(btn,false)}
@@ -810,7 +779,7 @@ async function relaunchGuest(btn){
     const d=await api("/guest/relaunch",{method:"POST",body:JSON.stringify({})});
     if(d.error) throw new Error(d.error);
     toast("访客会话已重建","ok");
-    await load();loadLogs();
+    await load();
   }catch(e){
     toast("重启访客会话失败","err",e.message);
   }finally{busy(btn,false)}
@@ -821,7 +790,7 @@ async function stopGuest(btn){
     const d=await api("/guest/stop",{method:"POST",body:JSON.stringify({})});
     if(d.error) throw new Error(d.error);
     toast("访客会话已停止","ok");
-    await load();loadLogs();
+    await load();
   }catch(e){
     toast("停止访客会话失败","err",e.message);
   }finally{busy(btn,false)}
@@ -853,7 +822,7 @@ async function importCookies(btn){
     document.getElementById("accCookies").value="";
     closeImportModal();
     toast("成功导入账户 "+(d.account&&d.account.id?d.account.id:label),"ok");
-    await load();loadLogs();
+    await load();
   }catch(e){
     document.getElementById("importHint").textContent="导入失败："+e.message;
     toast("导入失败","err",e.message);
@@ -911,8 +880,10 @@ async function saveAccountProxy(btn){
 
 /* ---------- init ---------- */
 getKey();
+// 先渲染一次零值概览：汇总卡常驻可见（对齐 workbuddy 的用量汇总卡），
+// 避免首屏出现「卡片边框有、里面却没内容」的空壳。
+renderSummary(lastStatus);
 load();
-loadLogs();
 if(window.__gwThemeSync)window.__gwThemeSync();
 // 冷却倒计时按秒刷新，纯前端展示，不触发整卡重绘。
 setInterval(()=>{
@@ -925,7 +896,6 @@ setInterval(()=>{
 setInterval(()=>{
   if(openModalCount>0)return;
   load();
-  loadLogs();
 },10000);
 </script>
 </body>

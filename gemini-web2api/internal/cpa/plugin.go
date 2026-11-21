@@ -214,6 +214,7 @@ func (p *Plugin) handleRegister(raw []byte) (any, error) {
 			Version:          app.Version(),
 			Author:           "luode0320 (Upstream: jianli9158 / Mag1cFall)",
 			GitHubRepository: "https://github.com/luode0320/cpa-workbuddy-plugin",
+			Logo:             pluginLogoURL,
 			ConfigFields: []pluginapi.ConfigField{
 				{
 					Name:        "data_dir",

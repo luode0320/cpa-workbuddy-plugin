@@ -74,7 +74,7 @@ import (
 
 var (
 	// version 当前插件版本号，由 CI 的 -X main.version 注入，本地构建回落到 VERSION 文件同值。
-	version    = "1.0.12"
+	version    = "1.0.13"
 	hostAPI    atomic.Pointer[C.cliproxy_host_api]
 	pluginMu   sync.Mutex
 	pluginInst *cpa.Plugin

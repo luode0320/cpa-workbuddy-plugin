@@ -27,6 +27,11 @@ const (
 	// legacyPanelResourcePath 是历史面板路径，保留兼容：
 	// 已收藏或已派发的 /accounts 链接不能 404。
 	legacyPanelResourcePath = "/accounts"
+
+	// pluginLogoURL 是控制台插件树里显示的图标。
+	// 与 coze / doubao 一致托管在本仓库 assets/icons 下，走 raw 直链，
+	// 宿主只做 URL 透传，不做本地缓存，所以图标必须随仓库一起发布。
+	pluginLogoURL = "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/GeminiWeb.png"
 )
 
 // PluginConfig defines the YAML/JSON configuration under plugins.configs.gemini-web2api in CLIProxyAPI's config.yaml.

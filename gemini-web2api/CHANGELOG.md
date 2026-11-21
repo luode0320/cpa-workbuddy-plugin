@@ -3,6 +3,48 @@
 本文件记录 gemini-web2api 插件在本仓库（`luode0320/cpa-workbuddy-plugin`）内的自有变更。
 上游 `jianli9158/cpa-plugin-gemini-web2api` 与 `Mag1cFall/Gemini-Web2API` 的历史变更见各自仓库。
 
+## 1.0.13 (2026-11-21)
+
+### 调整 - 面板去掉运行日志，概览卡改为常驻
+
+控制台面板此前底部挂了一块「运行日志」，靠 `setInterval` 每 10 秒打一次 `/logs`。
+它有三个问题：① 与控制台其它插件的面板（workbuddy / coze / doubao）视觉不一致；
+② 与宿主自己的「日志查看」页面职责重叠；③ 空账号时面板只剩一行居中提示 + 日志块，
+大片留白，看起来像没加载出来。
+
+处置：删掉 `#logsCard` 整块与它带的所有派生代码 —— `.logs` / `.log-line` / `.log-time` /
+`.log-lvl` / `.log-src` / `.log-msg` 六组样式、`loadLogs()`、`fmtLogTime()`、
+全部 `loadLogs()` 调用点、以及 10 秒轮询里的那一行。`/logs` 管理路由**保留**，
+仍可通过管理 API 取日志，只是面板不再展示。
+
+顺带清掉 `fmtCST()` —— 它在本面板里从来没有调用点，属于更早遗留的死代码。
+
+### 调整 - 概览卡对齐 workbuddy 的用量汇总卡
+
+- 由「有数据才显示」改为**常驻显示**（去掉了 `style="display:none"` 与 `renderSummary` 里的
+  `display="block"`），并在初始化时先用零值渲染一次，避免首屏出现「卡片边框在、里面是空的」。
+- 标题改为「运行概览 · 全部账户」，meta 改为「N 个账户 · 就绪 X · 冷却 Y · 需重登 Z · 停用 W」，
+  与 workbuddy「用量汇总 · 全部账号 + N 个账号 · 可用 X · 不可用 Y」的口径对齐。
+- 新增一条**可路由占比进度条**（就绪 / 总数），配色三档：`>=50%` 绿、`>0` 黄、`==0` 红，
+  没有账户时画灰条 —— 与卡片内 `healthHTML` 的账户健康度同口径，不再出现「有进度条但没数据」的歧义。
+- 空网格文案由 `.loading`（40px 上下留白 + 纯文字）换成新的 `.empty` 卡片式空状态
+  （虚线边框 + 加粗引导词），明确写出「当前用访客会话兜底，仅 gemini-auto 可用」。
+
+### 新增 - 控制台插件图标
+
+`Metadata.Logo` 此前完全没填，宿主不报错、只是静默不显示图标，所以一直没人发现。
+
+- 新增 `assets/icons/GeminiWeb.png`（512x512 RGBA 透明底，60696 B），
+  源图为 Gemini 官方 favicon（`www.gstatic.com/lamda/images/gemini_favicon_*.png`，256x256），
+  LANCZOS 放大到 512 与兄弟插件的 512/1024 口径对齐。
+- `internal/cpa/config.go` 的常量块新增 `pluginLogoURL`，指向本仓库 raw 直链；
+  `internal/cpa/plugin.go` 的注册体补 `Logo: pluginLogoURL`。
+- `registry.json` 的 `gemini-web2api` 条目补 `logo`，键序按兄弟条目排在 `repository` 之后。
+- 测试加锁：`TestPluginLifecycleAndCapabilities` 断言注册体里的 `Metadata.Logo`
+  必须以 `/assets/icons/GeminiWeb.png` 结尾。这里只断言文件名不写死完整 URL ——
+  仓库域名或分支调整时不该连带改测试。哨兵验证：删掉 `Logo:` 那一行后报
+  `expected plugin logo ending with /assets/icons/GeminiWeb.png, got ""`。
+
 ## 1.0.12 (2026-11-21)
 
 ### 修复 - 历史面板路径必须显式注册，否则生产 404

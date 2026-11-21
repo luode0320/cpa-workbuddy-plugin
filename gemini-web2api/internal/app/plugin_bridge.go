@@ -26,7 +26,7 @@ import (
 const dataDir = "data"
 
 // defaultVersion 是编译期未注入版本号时的兜底值，与 VERSION 文件保持一致。
-const defaultVersion = "1.0.12"
+const defaultVersion = "1.0.13"
 
 // version 保存当前插件版本号，由 main 包在启动时用 SetVersion 注入，
 // 使 CI 的 -X main.version 与注册上报的版本号保持单一来源。
