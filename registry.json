@@ -784,36 +784,36 @@
             "goos": "darwin",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.13/gemini-web2api_1.0.13_darwin_amd64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "bbb88f21d803ea4a2ddd98a77e482fa993574ed9df80cb28097c82d890d91462",
+            "size": 18227774
           },
           {
             "goos": "linux",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.13/gemini-web2api_1.0.13_linux_amd64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "0566951dcb2107cf9f73bb7ad2957dc30ce582a11d4a78c7dbf809480b363085",
+            "size": 18900670
           },
           {
             "goos": "linux",
             "goarch": "arm64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.13/gemini-web2api_1.0.13_linux_arm64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "a65f5ebb4f4ee93a15bc12d3b4adb62ee986d127afde764c30a4ad2729083a97",
+            "size": 17485069
           },
           {
             "goos": "windows",
             "goarch": "amd64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.13/gemini-web2api_1.0.13_windows_amd64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "e9cb74d9fcaaf2e9c0451dd55bad2315f163d99130ae502c431ad8002450e171",
+            "size": 18405033
           },
           {
             "goos": "windows",
             "goarch": "arm64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/gemini-web2api-v1.0.13/gemini-web2api_1.0.13_windows_arm64.zip",
-            "sha256": "",
-            "size": 0
+            "sha256": "8ca7257a260bfa77ed71118dc843564777fef21686c3e3ee31a3d867b821d5bb",
+            "size": 16875580
           }
         ]
       }
