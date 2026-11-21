@@ -3,6 +3,31 @@
 本文件记录 gemini-web2api 插件在本仓库（`luode0320/cpa-workbuddy-plugin`）内的自有变更。
 上游 `jianli9158/cpa-plugin-gemini-web2api` 与 `Mag1cFall/Gemini-Web2API` 的历史变更见各自仓库。
 
+## 1.0.11 (2026-11-21)
+
+### 新增 - 控制台面板收口为单入口并重写为统一视觉风格
+
+- 控制台左侧插件树原本出现两个同名子项（`Gemini Web (Web...` ×2），
+  根因是 `/accounts` 与 `/login` 两条 `ResourceRoute` 都挂了 `Menu`。
+  现改为**只有一条**挂 Menu 的资源路由，路径统一成 `/panel`
+  （与 coze / doubao / workbuddy 等兄弟插件一致），
+  其余 `/login`、`/login/extension.zip`、`/login/submit`、`/login/poll`
+  照旧注册但 `Menu` 留空，不进控制台菜单。
+- 显示名从 `Gemini Web (Web2API)` 改成 **`Gemini Web`**
+  （`internal/cpa/config.go` 的 `consoleMenuName`）。
+- `/accounts` 与 `/webui` 作为历史面板路径保留兼容，避免已收藏的链接 404。
+- `internal/cpa/webui.html` 整体重写为 workbuddy 面板风格：
+  三套主题 token（`data-theme` 浅色 / white / dark）、`window.__gwThemeSync`
+  镜像父页主题、`.wrap` + `.bar` + `.filter-bar` + `.summary` + 卡片网格、
+  右上角 `toasts` 栈、`modal-mask` 弹窗；账户卡从表格行改成卡片，
+  带可路由百分比进度条、状态徽章、等级徽章、逐条冷却倒计时。
+- 管理密钥获取与 workbuddy 对齐：优先读宿主面板 `localStorage` 的
+  `cli-proxy-auth`（`enc::v1::` / `enc::v2::` 解混淆），其次 URL 上的 `?key=`，
+  再次 `sessionStorage` 缓存；401 连续三次才清 key 并弹出连接框，
+  403 会解析退避窗口，避免一次网络抖动就把面板锁死。
+- 原本常驻顶部的「management key 输入框 + 保存密钥」已改成隐藏的 `#authBox`：
+  只有在三级取值全部拿不到密钥时才自动弹出，嵌入宿主面板时不占用版面。
+- README / README_EN 的面板路径同步改成 `/panel`，并补上控制台显示名。
 ## 1.0.10 (2026-11-21)
 
 ### 修复 - 绕开 glibc 同路径 dlopen 复用旧镜像

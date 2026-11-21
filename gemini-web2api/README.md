@@ -37,7 +37,7 @@
   6. `request_lifecycle_plugin`：跟踪请求完成度与状态码。
   7. `quota_provider`：在 CPA 控制台实时展示账户订阅等级（Free / Plus / Pro / Ultra）、状态与按模型冷却恢复倒计时，支持一键重置冷却。
   8. `command_line_plugin`：扩展 `--gemini-web2api-status` 与 `--gemini-web2api-login` 命令行参数。
-  9. `management_api` + 内置控制台页面（`/v0/resource/plugins/gemini-web2api/accounts`）：提供服务启停、访客会话启停/重建、本机 Chrome 独立无痕窗口登录、Cookie/StorageState 账户导入、冷却清理与实时运行日志。
+  9. `management_api` + 内置控制台面板（`/v0/resource/plugins/gemini-web2api/panel`，控制台左侧显示名 **Gemini Web**）：提供服务启停、访客会话启停/重建、一键授权、Cookie/StorageState 账户导入、冷却清理与实时运行日志。
 
 ---
 
@@ -164,7 +164,7 @@ plugins:
 
 ### 方式二：本机 Chrome 独立无痕窗口登录（需运行插件的机器装有 Chrome）
 
-1. 在内置管理面板（`/v0/resource/plugins/gemini-web2api/accounts`）点击 **「🌐 启动本机 Chrome 无痕登录」**。
+1. 在内置管理面板（`/v0/resource/plugins/gemini-web2api/panel`）点击 **「启动本机 Chrome 无痕登录」**。
 2. 插件会在隔离临时目录拉起本机 Chrome / Edge / Brave 窗口，登录 `gemini.google.com` 后自动提取凭证并关闭窗口。
 
 服务器部署时镜像里没有浏览器，这条路径会被自动跳过（`FindLocalChromeBinary()` 返回空），请改用方式一或方式三。

@@ -14,6 +14,19 @@ import (
 const (
 	PluginID   = "gemini-web2api"
 	ProviderID = "gemini-web2api"
+
+	// consoleMenuName 是控制台左侧插件树里显示的名字。
+	// 兄弟插件都用简短产品名（Coze / Doubao / WorkBuddy），不带括号后缀。
+	consoleMenuName = "Gemini Web"
+
+	// panelResourcePath 是控制台面板的资源路由路径。
+	// 与 coze / doubao / workbuddy 等保持一致统一用 /panel，
+	// 便于宿主菜单与文档口径一致。
+	panelResourcePath = "/panel"
+
+	// legacyPanelResourcePath 是历史面板路径，保留兼容：
+	// 已收藏或已派发的 /accounts 链接不能 404。
+	legacyPanelResourcePath = "/accounts"
 )
 
 // PluginConfig defines the YAML/JSON configuration under plugins.configs.gemini-web2api in CLIProxyAPI's config.yaml.

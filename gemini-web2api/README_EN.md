@@ -37,7 +37,7 @@
   6. `request_lifecycle_plugin`: Tracks request completion and upstream status codes.
   7. `quota_provider`: Reports account subscription tiers (Free / Plus / Pro / Ultra), status, and per-model cooldown recovery timers in the CPA dashboard with one-click reset.
   8. `command_line_plugin`: Adds `--gemini-web2api-status` and `--gemini-web2api-login` CLI flags.
-  9. `management_api` + Embedded Web Console (`/v0/resource/plugins/gemini-web2api/accounts`): Service start/stop toggle, Guest session toggle/relaunch, local isolated Chrome login, Cookie/StorageState account import, cooldown management, and live logs.
+  9. `management_api` + Embedded Web Console (`/v0/resource/plugins/gemini-web2api/panel`, shown as **Gemini Web** in the console sidebar): Service start/stop toggle, Guest session toggle/relaunch, one-click authorization, Cookie/StorageState account import, cooldown management, and live logs.
 
 ---
 

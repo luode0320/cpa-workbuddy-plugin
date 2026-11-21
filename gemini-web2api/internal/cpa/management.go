@@ -99,6 +99,15 @@ func (p *Plugin) handleCLIRun(raw []byte) (any, error) {
 	return pluginapi.CommandLineExecutionResponse{ExitCode: 0}, nil
 }
 
+// handleManagementRegister 返回本插件在宿主控制台要注册的管理路由与资源路由。
+//
+// 资源路由里只有 /panel 挂 Menu（控制台左侧插件树的一个入口），
+// 其余 /login 系列照旧注册但不挂 Menu，仅供桥接页与浏览器扩展免密访问。
+//
+// [参数] 无。
+// [返回] rpcManagementRegistrationResponse，含 16 条管理路由与 5 条资源路由。
+// [返回] error，始终为 nil，保留签名以对齐宿主 management.register 分发。
+// 最近修改时间：2026-11-21；改动原因：面板收口为单入口 /panel，Menu 名改为 Gemini Web。
 func (p *Plugin) handleManagementRegister() (any, error) {
 	return rpcManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
@@ -120,22 +129,24 @@ func (p *Plugin) handleManagementRegister() (any, error) {
 			{Method: http.MethodGet, Path: "/v0/management/gemini-web2api/logs", Description: "List recent Gemini-Web2API logs"},
 		},
 		Resources: []pluginapi.ResourceRoute{
+			// 控制台只挂一条 Menu（路径统一 /panel，名称用简短产品名），
+			// 与 coze / doubao / workbuddy 等兄弟插件保持一致；
+			// 多挂一条会让左侧插件树出现两个同名子项。
 			{
-				Path:        "/accounts",
-				Menu:        "Gemini Web (Web2API)",
-				Description: "Gemini Web 账户、Chrome/Cookie 导入、访客会话与冷却管理",
+				Path:        panelResourcePath,
+				Menu:        consoleMenuName,
+				Description: "Gemini Web 账户池、登录授权、访客会话与冷却管理",
 			},
+			// 下面四条不挂 Menu：不进控制台菜单，但必须注册，否则宿主
+			// ServeResourceHTTP 查不到路由会直接 404，桥接页与扩展的回传会全部失效。
 			{
 				Path:        "/login",
-				Menu:        "Gemini Web (Web2API)",
-				Description: "一键授权：桥接页 + 浏览器扩展回传 Google 会话 Cookie",
+				Description: "一键授权桥接页：配对码 + 浏览器扩展回传 Google 会话 Cookie",
 			},
 			{
 				Path:        "/login/extension.zip",
 				Description: "下载浏览器授权助手扩展（解压后用开发者模式加载）",
 			},
-			// 下面两条不挂 Menu：不进控制台菜单，但必须注册，否则宿主
-			// ServeResourceHTTP 查不到路由会直接 404，扩展的回传与桥接页轮询都拿不到。
 			{
 				Path:        "/login/submit",
 				Description: "接收浏览器扩展或手工粘贴推送的 Google 会话 Cookie（GET + query）",
@@ -175,6 +186,14 @@ type adminCooldownItemView struct {
 	Reason       string    `json:"reason"`
 }
 
+// handleManagementHandle 分发宿主转来的管理 API 与资源路由请求。
+//
+// 分发顺序固定为：登录面（桥接页 / 扩展 / 回传 / 轮询）→ 静态面板 HTML →
+// 管理 API。登录面必须先判，否则资源前缀会把 /login 系列一起吞成面板 HTML。
+//
+// [参数] raw 是宿主透传的 rpcManagementRequest JSON，含 method / path / headers / query / body。
+// [返回] pluginapi.ManagementResponse 或业务 payload；分发失败时返回错误。
+// 最近修改时间：2026-11-21；改动原因：静态面板分发新增 /panel 入口并保留历史路径兼容。
 func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 	var req rpcManagementRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -198,7 +217,9 @@ func (p *Plugin) handleManagementHandle(raw []byte) (any, error) {
 	}
 
 	// Serve static Web Resource UI only
-	if path == "/accounts" || path == "/webui" || path == "/" || strings.HasPrefix(path, "/v0/resource/plugins/gemini-web2api") {
+	// /panel 是控制台入口（与兄弟插件统一），/accounts 与 /webui 作为历史路径
+	// 保留兼容，剩下的 /v0/resource/plugins/gemini-web2api 前缀兜底交给面板 HTML。
+	if path == panelResourcePath || path == legacyPanelResourcePath || path == "/webui" || path == "/" || strings.HasPrefix(path, loginResourcePrefix) {
 		return pluginapi.ManagementResponse{
 			StatusCode: http.StatusOK,
 			Headers: http.Header{

@@ -265,15 +265,29 @@ func TestManagementRegistrationIncludesLoginResources(t *testing.T) {
 	for _, item := range reg.Resources {
 		byPath[item.Path] = item
 	}
-	for _, path := range []string{"/accounts", "/login", "/login/extension.zip", "/login/submit", "/login/poll"} {
+	for _, path := range []string{"/panel", "/login", "/login/extension.zip", "/login/submit", "/login/poll"} {
 		if _, ok := byPath[path]; !ok {
 			t.Fatalf("resource route %q not registered, got %v", path, keysOf(byPath))
 		}
 	}
-	if strings.TrimSpace(byPath["/login"].Menu) == "" {
-		t.Fatalf("/login should keep a console menu")
+	// 控制台只能挂一条菜单：多挂会让左侧插件树出现两个同名子项。
+	menuCount := 0
+	for path, item := range byPath {
+		if strings.TrimSpace(item.Menu) == "" {
+			continue
+		}
+		menuCount++
+		if path != "/panel" {
+			t.Fatalf("only /panel should declare a console menu, got %q", path)
+		}
+		if item.Menu != "Gemini Web" {
+			t.Fatalf("unexpected console menu name: got %q want %q", item.Menu, "Gemini Web")
+		}
 	}
-	for _, path := range []string{"/login/submit", "/login/poll", "/login/extension.zip"} {
+	if menuCount != 1 {
+		t.Fatalf("expected exactly one console menu, got %d", menuCount)
+	}
+	for _, path := range []string{"/login", "/login/submit", "/login/poll", "/login/extension.zip"} {
 		if strings.TrimSpace(byPath[path].Menu) != "" {
 			t.Fatalf("%q should not declare a console menu", path)
 		}
@@ -317,21 +331,34 @@ func TestAuthLoginStartPointsAtBridge(t *testing.T) {
 	}
 }
 
-// TestManagementWebUIPrefixStillServed 校验面板前缀仍返回面板而不是登录页。
+// TestManagementWebUIPrefixStillServed 校验面板 HTML 在 /panel 与历史路径上都能取到。
+//
+// 控制台入口统一到 /panel；/accounts 与 /webui 作为历史收藏保留兼容，
+// 四条路径都必须返回面板，且都不能被登录桥接页的逻辑吞掉。
 //
 // [参数] t 是测试上下文。
-// [返回] 无；断言失败即 Fatal。
-// 最近修改时间：2026-11-21；改动原因：新增。
+// [返回] 无返回值，断言失败时终止当前用例。
+// 最近修改时间：2026-11-21；改动原因：面板入口统一到 /panel，补历史路径兼容断言。
 func TestManagementWebUIPrefixStillServed(t *testing.T) {
 	p := newLoginTestPlugin(t)
-	resp := callManagement(t, p, "/v0/resource/plugins/gemini-web2api/accounts", "", "")
 
-	page := string(resp.Body)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "<html") {
-		t.Fatalf("expected dashboard html, got %d %s", resp.StatusCode, firstBytes(page, 200))
-	}
-	if strings.Contains(page, "cpa|") {
-		t.Fatalf("dashboard should not embed a pair code")
+	for _, rawPath := range []string{
+		"/v0/resource/plugins/gemini-web2api/panel",
+		"/v0/resource/plugins/gemini-web2api/accounts",
+		"/v0/resource/plugins/gemini-web2api/webui",
+		"/v0/resource/plugins/gemini-web2api/",
+	} {
+		resp := callManagement(t, p, rawPath, "", "")
+		page := string(resp.Body)
+		if resp.StatusCode != http.StatusOK || !strings.Contains(page, "<html") {
+			t.Fatalf("%s: expected dashboard html, got %d %s", rawPath, resp.StatusCode, firstBytes(page, 200))
+		}
+		if strings.Contains(page, "cpa|") {
+			t.Fatalf("%s: dashboard should not embed a pair code", rawPath)
+		}
+		if !strings.Contains(page, "Gemini Web 面板") {
+			t.Fatalf("%s: dashboard title missing", rawPath)
+		}
 	}
 }
 

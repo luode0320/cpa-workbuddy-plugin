@@ -173,26 +173,28 @@ func TestPluginLifecycleAndCapabilities(t *testing.T) {
 		t.Fatalf("management.register failed: %v", err)
 	}
 	mgmtRegJSON, _ := json.Marshal(mgmtReg)
-	if !strings.Contains(string(mgmtRegJSON), `"/accounts"`) {
+	// 控制台面板统一挂在 /panel（与 coze / doubao / workbuddy 一致），
+	// 只保留一条带 Menu 的资源路由。
+	if !strings.Contains(string(mgmtRegJSON), `"/panel"`) {
 		t.Fatalf("missing resource route in management.register: %s", string(mgmtRegJSON))
 	}
 
 	uiReq, _ := json.Marshal(pluginapi.ManagementRequest{
 		Method: http.MethodGet,
-		Path:   "/v0/resource/plugins/gemini-web2api/accounts",
+		Path:   "/v0/resource/plugins/gemini-web2api/panel",
 	})
 	uiRes, err := p.HandleMethod(pluginabi.MethodManagementHandle, uiReq)
 	if err != nil {
 		t.Fatalf("management.handle UI failed: %v", err)
 	}
 	uiResp := uiRes.(pluginapi.ManagementResponse)
-	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiResp.Body), "启动本机 Chrome 无痕登录") {
+	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiResp.Body), "Gemini Web 面板") {
 		t.Fatalf("unexpected UI response: status=%d len=%d", uiResp.StatusCode, len(uiResp.Body))
 	}
 
 	resStatusReq, _ := json.Marshal(pluginapi.ManagementRequest{
 		Method: http.MethodGet,
-		Path:   "/v0/resource/plugins/gemini-web2api/accounts",
+		Path:   "/v0/resource/plugins/gemini-web2api/panel",
 		Query:  map[string][]string{"view": {"status"}},
 	})
 	resStatusRes, err := p.HandleMethod(pluginabi.MethodManagementHandle, resStatusReq)
