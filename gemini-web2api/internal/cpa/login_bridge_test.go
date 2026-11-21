@@ -265,7 +265,9 @@ func TestManagementRegistrationIncludesLoginResources(t *testing.T) {
 	for _, item := range reg.Resources {
 		byPath[item.Path] = item
 	}
-	for _, path := range []string{"/panel", "/login", "/login/extension.zip", "/login/submit", "/login/poll"} {
+	// 历史面板路径也必须注册：宿主 ServeResourceHTTP 按完整路径精确匹配，
+	// 只留分发分支而不注册路由，线上访问旧收藏链接会直接 404。
+	for _, path := range []string{"/panel", "/accounts", "/webui", "/login", "/login/extension.zip", "/login/submit", "/login/poll"} {
 		if _, ok := byPath[path]; !ok {
 			t.Fatalf("resource route %q not registered, got %v", path, keysOf(byPath))
 		}
@@ -287,7 +289,7 @@ func TestManagementRegistrationIncludesLoginResources(t *testing.T) {
 	if menuCount != 1 {
 		t.Fatalf("expected exactly one console menu, got %d", menuCount)
 	}
-	for _, path := range []string{"/login", "/login/submit", "/login/poll", "/login/extension.zip"} {
+	for _, path := range []string{"/accounts", "/webui", "/login", "/login/submit", "/login/poll", "/login/extension.zip"} {
 		if strings.TrimSpace(byPath[path].Menu) != "" {
 			t.Fatalf("%q should not declare a console menu", path)
 		}

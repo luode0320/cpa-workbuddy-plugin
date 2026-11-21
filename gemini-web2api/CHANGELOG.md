@@ -3,6 +3,45 @@
 本文件记录 gemini-web2api 插件在本仓库（`luode0320/cpa-workbuddy-plugin`）内的自有变更。
 上游 `jianli9158/cpa-plugin-gemini-web2api` 与 `Mag1cFall/Gemini-Web2API` 的历史变更见各自仓库。
 
+## 1.0.12 (2026-11-21)
+
+### 修复 - 历史面板路径必须显式注册，否则生产 404
+
+1.0.11 把控制台入口收口到 `/panel` 后，只在 `handleManagementHandle` 的静态分发分支里
+保留了 `/accounts` 与 `/webui` 的兼容判断，但**没有把它们登记进 `Resources`**。
+宿主 `internal/pluginhost/management.go` 的 `ServeResourceHTTP` 是**按完整路径精确匹配**
+`resourceRoutes` 的（`key := managementRouteKey(http.MethodGet, r.URL.Path)`，不做前缀匹配），
+未注册的路径直接落到宿主的 404 分支，根本到不了插件的分发函数。
+
+生产实测（1.0.11 install 后）：
+
+```
+/v0/resource/plugins/gemini-web2api/panel               -> 200  bytes=49997
+/v0/resource/plugins/gemini-web2api/accounts            -> 404  bytes=0     ← 本应 200
+/v0/resource/plugins/gemini-web2api/webui               -> 404  bytes=0     ← 本应 200
+/v0/resource/plugins/gemini-web2api/login               -> 200  bytes=7394
+/v0/resource/plugins/gemini-web2api/login/extension.zip -> 200  bytes=3905
+```
+
+处置：把 `legacyPanelResourcePath`（`/accounts`）与 `/webui` 补进 `Resources`，
+资源路由从 5 条扩到 7 条，两者都不挂 `Menu`（不进控制台菜单，只保旧链接可用）。
+
+### 修复 - 测试漏检「注册」与「分发」的区别
+
+原 `TestManagementRegistrationIncludesLoginResources` 只断言 `/panel` 与 `/login` 系列已注册，
+`TestManagementWebUIPrefixStillServed` 直接调 `management.handle` 绕过宿主路由表，
+所以两条历史路径漏注册时测试全绿、生产 404。
+
+现 `TestManagementRegistrationIncludesLoginResources` 的路径集合补上 `/accounts` 与 `/webui`，
+并用哨兵验证：删掉 `legacyPanelResourcePath` 那条 `Resources` 后测试立即报
+`resource route "/accounts" not registered`。
+
+### 说明
+
+本次仍是**同一次改造的收尾修复**，版本号继续升位到 `1.0.12` 而不是复用 `1.0.11`：
+宿主用 `dlopen` 加载插件，glibc 对同一路径会复用已存在的 handle，
+同版本覆盖安装（`overwritten=true`）不会重新映射文件，必须换新文件名才能让新镜像生效。
+
 ## 1.0.11 (2026-11-21)
 
 ### 新增 - 控制台面板收口为单入口并重写为统一视觉风格

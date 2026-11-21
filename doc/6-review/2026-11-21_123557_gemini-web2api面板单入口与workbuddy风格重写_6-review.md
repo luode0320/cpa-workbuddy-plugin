@@ -184,9 +184,9 @@ FMT_PREEXISTING: gemini-web2api/internal/cpa/management.go（switch 内多一个
                 gemini-web2api/internal/app/plugin_bridge.go（import 分组 + 字段对齐）
 REAL_RUN: go build ./...  exit 0
           go vet ./...    exit 0
-          go test -count=1 ./...  全绿（adapter 0.340s / balancer 0.952s / cpa 1.629s /
-                                   gemini 0.238s / mcp 0.296s / proxydial 0.762s /
-                                   requestdb 0.319s / tokencount 0.918s）
+          go test -count=1 ./...  全绿（adapter 0.376s / balancer 1.083s / cpa 1.817s /
+                                   gemini 0.289s / mcp 0.347s / proxydial 0.865s /
+                                   requestdb 0.380s / tokencount 0.961s）
           python scripts\cgo-shim-build.py gemini-web2api  → all green
           node --check（webui.html 两个 <script> 块，隔离目录 + {"type":"commonjs"}）exit 0
 COMMENT_CHAIN: internal/cpa 顶层 func 元信息 missing 0
@@ -215,3 +215,70 @@ TEST_ASSET: 未新增测试文件；既有测试与被测包同目录，未污�
 生产验证与发布放行属于发布链路，与本审查正交。
 
 本轮新增 1 条待用户裁定的口径：**面板路径从 `/accounts` 迁到 `/panel` 后，旧的 `/accounts` 是否需要长期保留**。当前实现保留为历史兼容（`legacyPanelResourcePath`），若确认无外部收藏可后续删除。
+
+## 13 补审：1.0.12 历史面板路径补注册
+
+### 13.1 事实
+
+1.0.11 install 到生产后实测发现历史路径返回 404：
+
+```
+/v0/resource/plugins/gemini-web2api/panel               -> 200  bytes=49997
+/v0/resource/plugins/gemini-web2api/accounts            -> 404  bytes=0
+/v0/resource/plugins/gemini-web2api/webui               -> 404  bytes=0
+/v0/resource/plugins/gemini-web2api/login               -> 200  bytes=7394
+/v0/resource/plugins/gemini-web2api/login/extension.zip -> 200  bytes=3905
+```
+
+原因：`internal/pluginhost/management.go` 的 `ServeResourceHTTP` 用
+`managementRouteKey(http.MethodGet, r.URL.Path)` **按完整路径精确匹配** `resourceRoutes`，
+未注册的路径直接落到宿主 404，压根进不到 `handleManagementHandle` 的静态分发分支。
+1.0.11 只改了分发条件却没把 `/accounts` 与 `/webui` 登记进 `Resources`。
+
+### 13.2 处置（STYLE-01 / STYLE-04 维度）
+
+- `management.go` 的 `Resources` 从 5 条扩到 7 条，补 `legacyPanelResourcePath` 与 `/webui`，两者 `Menu` 留空。
+  与既有 `/login` 系列同样处理，保持「只有 `/panel` 挂菜单」的口径不变。
+- `handleManagementRegister` 的 `[返回]` 注释同步从「5 条资源路由」改为「7 条资源路由」，并补一行改动原因。
+- `login_bridge_test.go` 的 `TestManagementRegistrationIncludesLoginResources` 路径集合补 `/accounts` 与 `/webui`，
+  Menu 断言集合同步扩充；并加注释说明「宿主精确匹配，只留分发分支而不注册必须 404」。
+
+### 13.3 哨兵验证（复现本次缺陷）
+
+删掉 `Resources` 里 `legacyPanelResourcePath` 那一条后重跑，测试立刻失败：
+
+```
+--- FAIL: TestManagementRegistrationIncludesLoginResources (0.09s)
+    login_bridge_test.go:272: resource route "/accounts" not registered,
+        got [/login/submit /login/poll /panel /webui /login /login/extension.zip]
+```
+
+恢复后 PASS。哨兵已撤销，工作树无残留。
+
+### 13.4 版本处置
+
+本次仍属同一次改造的收尾，但版本号升到 `1.0.12` 而不是复用 `1.0.11`：
+宿主 `dlopen` 对同一路径会复用已存在的 handle，同版本覆盖安装（`overwritten=true`）不重新映射文件，
+必须换新文件名才能让新镜像生效。这条约束已在 1.0.10 那次事故里实证过。
+
+### 13.5 门禁（1.0.12 复跑）
+
+```
+STYLE: PASS
+POLLUTION: PASS
+FMT_OK: gemini-web2api/internal/cpa/login_bridge_test.go
+FMT_PREEXISTING: gemini-web2api/internal/cpa/management.go（switch 内多一个空行，上游原样）
+REAL_RUN: go build ./...  exit 0
+          go vet ./...    exit 0
+          go test -count=1 ./...  全绿（adapter 0.376s / balancer 1.083s / cpa 1.817s /
+                                   gemini 0.289s / mcp 0.347s / proxydial 0.865s /
+                                   requestdb 0.380s / tokencount 0.961s）
+          python scripts\cgo-shim-build.py gemini-web2api  → all green
+SENTINEL: 删 legacyPanelResourcePath 的 Resources → FAIL；恢复 → PASS
+COMMENT_CHAIN: 改动位点（Resources 注释、handleManagementRegister 元信息）已同步
+```
+
+### 13.6 编码与行尾
+
+`management.go` 与 `login_bridge_test.go` 均 UTF-8 无 BOM、工作树 CRLF、gofmt 仅剩上游原样的 switch 空行。
+`VERSION` 6 字节 `1.0.12` 无换行；`CHANGELOG.md` CRLF 179 行。

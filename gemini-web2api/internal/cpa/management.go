@@ -105,9 +105,10 @@ func (p *Plugin) handleCLIRun(raw []byte) (any, error) {
 // 其余 /login 系列照旧注册但不挂 Menu，仅供桥接页与浏览器扩展免密访问。
 //
 // [参数] 无。
-// [返回] rpcManagementRegistrationResponse，含 16 条管理路由与 5 条资源路由。
+// [返回] rpcManagementRegistrationResponse，含 16 条管理路由与 7 条资源路由。
 // [返回] error，始终为 nil，保留签名以对齐宿主 management.register 分发。
-// 最近修改时间：2026-11-21；改动原因：面板收口为单入口 /panel，Menu 名改为 Gemini Web。
+// 最近修改时间：2026-11-21；改动原因：面板收口为单入口 /panel，Menu 名改为 Gemini Web；
+// 补注册历史面板路径 /accounts 与 /webui，避免宿主精确匹配下旧链接 404。
 func (p *Plugin) handleManagementRegister() (any, error) {
 	return rpcManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
@@ -137,8 +138,17 @@ func (p *Plugin) handleManagementRegister() (any, error) {
 				Menu:        consoleMenuName,
 				Description: "Gemini Web 账户池、登录授权、访客会话与冷却管理",
 			},
-			// 下面四条不挂 Menu：不进控制台菜单，但必须注册，否则宿主
-			// ServeResourceHTTP 查不到路由会直接 404，桥接页与扩展的回传会全部失效。
+			// 下面这些都不挂 Menu：不进控制台菜单，但必须注册，否则宿主
+			// ServeResourceHTTP 按完整路径精确匹配，查不到路由就直接 404。
+			// 历史路径 /accounts 与 /webui 同理，必须显式注册才能保住旧收藏链接。
+			{
+				Path:        legacyPanelResourcePath,
+				Description: "历史面板路径（等价 /panel），保留兼容已收藏的控制台链接",
+			},
+			{
+				Path:        "/webui",
+				Description: "历史面板路径（等价 /panel），保留兼容早期版本的控制台链接",
+			},
 			{
 				Path:        "/login",
 				Description: "一键授权桥接页：配对码 + 浏览器扩展回传 Google 会话 Cookie",
