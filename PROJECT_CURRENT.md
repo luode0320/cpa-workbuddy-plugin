@@ -48,7 +48,7 @@
   - **教训**：① 「pid/世代」锁必须能判持有者存活，只写不验会把偶发短命进程变成永久停摆；② 不可解析的锁内容不能当「已死」，只能当「未知且更新」；③ 常驻循环静默 `return` 是最高危形态，`doFetchOne` 全链路无成功日志导致停摆 14 小时无人发现，需补可观测性；④ 容器内跑 `./CLIProxyAPI <任意参数>` 都会重跑 `init()` 污染实例标记，属操作红线。
   - **未处理**：14 个账号 `points HTTP 401 code=1001` 凭证失效（1149465727862336 / 1149465727873756 / 1202242289669068 / 1307795405669504 / 1606862313644396 / 1958706035295120 / 1993890658255324 / 2785539030527172 / 2961460889140028 / 3084606194858448 / 3735516826058092 / 4316058963937724 / 480962660548490 / 920767058942916），需重新授权，属独立议题。
 
-- 会话（2026-11-21 10:40 - 14:18）：**coze 续期从「只滚动、不能复活」改造为「诚实的换发判据 + 阶梯退避 + 失效告警 + 浏览器保活」，计划 8 个最小任务全部落地（代码与测试完成，未提交未发布）**：
+- 会话（2026-11-21 10:40 - 15:05）：**coze 续期从「只滚动、不能复活」改造为「诚实的换发判据 + 阶梯退避 + 失效告警 + 浏览器保活」，8 个最小任务全部落地并发布 0.7.9（生产未上线，SSH/管理 API 均不可达）**：
   - **指令链**：m00003「有些号, 停止续期, 导致出现了问题, 这是bug吗?」→ m00173「是不是没有续期的逻辑?」→ m00202「coze必须人工重新授权吗? 这不是我们想要的」→ m00385「扣子没有refresh_token…」→ m00401「我就想知道我们现在的支持刷新续期吗?」→ m00404「总结一下要修复和改动的计划」→ **m00576「按照顺序全部修复。」**。
   - **定性**：现象不是 bug，徽标与时间戳是正确事实呈现；真缺陷是**判据不诚实**。扣子把 OAuth 的 access/refresh 两角色合并成 Cookie 本身（`/passport/token/beat/v2/` 带 Cookie 换 `x-tt-token`、带 token 换新 Set-Cookie），插件早已是完整双步换发，**支持续期且一直在工作**（12 号里 7 个 `last_renew_at` 推进到 2026-11-21T02:28:28）。
   - **三种「过期」**：① Cookie `Expires`（扣子不下发 ⇒ `hasLiveSession` 恒真、形同虚设）② 服务端 `session_expired`（**不可续，只能重建**）③ 本地无凭据。致命的是 ②：桌面端 `sid_guard` 名义有效到 2026-12-16，服务端 2026-10-19 后就不认，打 beat 返 200 + `x-tt-token` 但 body 是 `error_code:401 / session_expired` ⇒ **不是「过期」死的，是「被吊销」死的**（停用超容忍窗口≈一月）。
@@ -59,6 +59,8 @@
   - **踩坑**：① `node --check` 不能在工作区跑（根 `package.json` 0 字节报 `ERR_INVALID_PACKAGE_CONFIG`），须拆到 `%TEMP%`；② `cgo-shim-build.py` 不支持透传 `go test` 参数；③ 假 CDP 判「第二步」必须判 `"x-tt-token':"`；④ profile 目录名按白名单清洗非法字符。
   - **边界**：救不回已被吊销的 5 个号（11-13 03:50 / 11-14 02:28 / 11-17 01:45 / 11-18 03:49 与 06:21），只能重建；保活把活号寿命从「几天」拉到「数月」，非无限（桌面端闲置约一月被吊销）；每账号独立 profile；headless 遇滑动验证需转可见窗口。
   - **文档**：`doc/3-实施/2026-11-21_130138_coze续期修复与自动恢复_实施总览.md`（41,352 B）、`doc/6-review/2026-11-21_141832_coze续期换发判据修正与浏览器保活_6-review.md`。
+  - **发布与验收（0.7.9）**：提交 `487f16b`（代码 23 files）+ `c98d621`（实施总览与 6-review）→ CI `Test (coze)` 失败，根因 `coze/alert_test.go:56` 假时钟用 `time.Local` 而断言写死 `+08:00`，UTC 容器产出 `Z` ⇒ 修 `dab0d9b`（改 `time.UTC`）→ tag `coze-provider-v0.7.9` → darwin/arm64 job 三次 0 秒 cancelled（annotation `The configuration 'macos-14-arm64-us-default' is not supported`，labels=macos-14、steps=0）→ `workflow_dispatch` 带 `allow_partial=true`（run 44878109625）→ Release success 6 assets → `download-release-assets.py 0.7.9 coze-provider` **ALL CHECKSUMS OK** → `publish-assets.py coze-provider 0.7.9 --allow-missing`（WARN 缺 darwin_arm64）→ registry 提交 `46588ee` → raw URL 200 / version 0.7.9 / artifacts 5。
+  - **⚠️ 生产仍是 0.7.8**：SSH `root@45.207.222.65:18998` → `Permission denied (publickey,password)` exit=255；管理 API `:8317/v0/management/plugins` → **401**（本机无 management key）⇒ 0.7.9 未 install、未热重载，需恢复凭据后补 install 与 `hot reloaded active_version=0.7.9` 验收。
 
 - 会话（2026-11-20 22:18 - 2026-11-21 00:20）：**插件商店 store-auth 把 PAT 值填进 token-env（该字段要的是环境变量名），致官方源 186 个插件全部装不了（已修复 + 热重载，容器未重启）**：
   - **用户指令**（m00003）：「为什么我们配置了自己的git之后, 其他的插件无法安装了。」附管理台「插件 → 商店」安装 gemini-cli 的红色报错截图。
