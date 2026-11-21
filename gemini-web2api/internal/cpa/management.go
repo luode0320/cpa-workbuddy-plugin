@@ -105,11 +105,11 @@ func (p *Plugin) handleCLIRun(raw []byte) (any, error) {
 // 其余 /login 系列照旧注册但不挂 Menu，仅供桥接页与浏览器扩展免密访问。
 //
 // [参数] 无。
-// [返回] rpcManagementRegistrationResponse，含 16 条管理路由与 8 条资源路由。
+// [返回] rpcManagementRegistrationResponse，含 16 条管理路由与 9 条资源路由。
 // [返回] error，始终为 nil，保留签名以对齐宿主 management.register 分发。
 // 最近修改时间：2026-11-21；改动原因：面板收口为单入口 /panel，Menu 名改为 Gemini Web；
-// 补注册历史面板路径 /accounts、/webui 与桥接页真实 origin 上报接口 /login/origin，
-// 避免宿主精确匹配下旧链接与 origin 上报双双 404。
+// 补注册历史面板路径 /accounts、/webui、桥接页真实 origin 上报接口 /login/origin
+// 与扩展定时续期接口 /login/renew，避免宿主精确匹配下旧链接与新增资源路由双双 404。
 func (p *Plugin) handleManagementRegister() (any, error) {
 	return rpcManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
@@ -169,6 +169,10 @@ func (p *Plugin) handleManagementRegister() (any, error) {
 			{
 				Path:        "/login/origin",
 				Description: "接收桥接页上报的浏览器真实 origin，用于生成可访问的授权链接",
+			},
+			{
+				Path:        "/login/renew",
+				Description: "接收浏览器扩展定时回推的会话 Cookie，续期已失效的账号",
 			},
 		},
 	}, nil

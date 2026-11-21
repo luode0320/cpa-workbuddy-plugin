@@ -82,6 +82,8 @@ func (p *Plugin) handleLoginResource(req rpcManagementRequest, path string) logi
 		return loginAction{Handled: true, Response: p.handleLoginStatus(req)}
 	case loginOriginPath:
 		return loginAction{Handled: true, Response: handleLoginOrigin(req)}
+	case loginRenewPath:
+		return loginAction{Handled: true, Response: p.handleLoginRenew(req)}
 	default:
 		return loginAction{}
 	}

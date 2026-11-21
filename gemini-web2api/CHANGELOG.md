@@ -3,6 +3,86 @@
 本文件记录 gemini-web2api 插件在本仓库（`luode0320/cpa-workbuddy-plugin`）内的自有变更。
 上游 `jianli9158/cpa-plugin-gemini-web2api` 与 `Mag1cFall/Gemini-Web2API` 的历史变更见各自仓库。
 
+## 1.0.15 (2026-11-21)
+
+### 修复 - Cookie 导入不再强制要求账号 ID
+
+桥接页与扩展推上来的 Cookie 从来没有成功导入过。根因在
+`internal/chromeauth/auth.go` 的 `ImportCookies`：它开头就要求 `AccountID(options.ID)`
+非空，而 `login_bridge.go` 调 `ImportCookie(ctx, cookies, "", ...)` 传的是空 id，
+于是每一次推送都在校验第一步返回「id 必须包含英文字母或数字」，账号永远进不去。
+这是按「管理端手工导入、手里有邮箱」的口径写死的校验，套到了「只有 Cookie Header、
+没有邮箱」的浏览器推送上。
+
+处置是把账号目录从「导入前定死」改成「校验后现算」：
+
+- `pendingImport` 原来固定保存 `path`，现在保存父目录 `output`，由
+  `pendingImport.path()` 按当时的 `state.Metadata.ID` 现算 `<output>/<ID>/storage-state.json`。
+- `ImportCookies` 只在**显式传了非空 id 却净化后为空**时报错；显式留空表示
+  「账号 ID 交给会话自己解析」。
+- `importIdentity` 在 id 为空时跳过 `auth.Inherit`——没有既有状态可继承，
+  `Inherit` 的前提是路径已知。
+- `validateAndWriteImports` 在会话校验通过后用 `client.Email()` 反推 `AccountID`，
+  再在落盘前补一次 `auth.Inherit`（此时路径已确定，能正确沿用
+  `Disabled` / `Chrome` / `PairingRenewal` / `Proxy`）。反推不出 ID 时明确报
+  「无法从账号会话解析出账号标识，请改用「手动粘贴 Cookie」并填写标签」，
+  不再用一个空 id 拼出 `<output>//storage-state.json` 这种目录。
+
+### 新增 - 浏览器扩展按 30 分钟回推 Cookie，实现自动续期
+
+上游 `internal/gemini/rotate.go` 的 `RotateCookies` 只能滚 `__Secure-1PSIDTS`
+这类短期票据，滚不出新的 `__Secure-1PSID`；会话被 Google 判定失效后，
+`rotateSession` 里 `c.refresh == nil` 分支只能返回 `ErrSignedOut`，账号进
+`auth_required` 等人工救。用户浏览器里那份活会话是唯一的「新鲜来源」，
+所以续期必须由浏览器侧主动回推。
+
+- 新增资源路由 `GET /v0/resource/plugins/gemini-web2api/login/renew?cookies=<Cookie Header>`
+  （`internal/cpa/login_renew.go`）。它复用 `Accounts.ImportCookie`：
+  传空 id 时会先校验会话、再从会话解析邮箱，若账号已存在则走 `addFile` 的
+  「账号认证已更新」分支——替换客户端并重新初始化，这就是一次续期，
+  不需要另写一套账号生命周期逻辑。
+- 续期接口**不吃配对码**：登录 `state` 只有 15 分钟有效期，续期要跑几个月，
+  依赖它等于每 15 分钟让用户重新授权一次。
+- 节流 10 秒（`loginRenewMinInterval`）：扩展的 alarm 与手动点按可能撞车，
+  连续两次回推没有意义还会打断正在进行的导入。
+- 扩展升级到 v1.1.0（`internal/cpa/login_extension.go`），新增 `background.js`
+  作为 MV3 service worker：`chrome.alarms` 每 30 分钟触发一次，用
+  `chrome.cookies.getAll({domain:'google.com'})` 取会话 Cookie（HttpOnly 也读得到，
+  这是 `document.cookie` 做不到的关键），按白名单拼成 Cookie Header 后 GET 回推。
+  `permissions` 相应加了 `storage`（存绑定的插件地址与上次结果）和 `alarms`。
+- 弹窗在授权成功后调 `chrome.runtime.sendMessage({type:'bindOrigin', origin})`
+  把插件地址写进 `chrome.storage.local` 并建好 alarm。**绑定后不立刻回推**：
+  插件侧有 10 秒节流，紧跟着刚完成的 `submit` 再推一次只会拿到 429，
+  用户会看到一条毫无意义的失败提示；首个 alarm 在 1 分钟后触发，那时窗口已过。
+
+### 调整 - 桥接页主按钮改为一键授权，安装步骤折叠
+
+原来打开桥接页看到的是「第 1 步复制配对码 / 第 2 步装扩展 / 第 3 步等结果」，
+一次性授权也要走完三步。现在：
+
+- 主按钮是「一键授权（复制配对码）」，点一下就把配对码写进剪贴板；
+- 「首次使用：安装一次浏览器授权助手」折进 `<details>`，装过一次就不用再展开；
+- 点完按钮 8 秒内状态还停在「配对码已复制」就自动展开安装说明——
+  这正是「扩展还没装」的情形，帮用户把下一步露出来；
+- 「没有 Chrome？手动粘贴 Cookie」同样折进 `<details>`，作为兜底通道保留。
+
+复制逻辑同时走 `navigator.clipboard.writeText` 与 `document.execCommand('copy')`：
+桥接页常以 `http://` 或非安全上下文打开，前者可能不可用。
+
+### 测试
+
+- 新增 `internal/cpa/login_renew_test.go`：缺 `cookies` 必须 400、10 秒内第二次
+  必须 429 且错误文案固定、桥接页含「一键授权（复制配对码）」/`<details>`/
+  安装说明/自动续期文案、`/login/renew` 已注册且不挂控制台菜单。
+- `login_bridge_test.go` 的扩展包断言从三文件扩到四文件，并校验 manifest 含
+  `storage` / `alarms` / `"service_worker": "background.js"`、`background.js` 里
+  出现 `/login/renew`、`popup.js` 里出现 `bindOrigin`；`/login/renew` 进注册集合
+  与「Menu 必须为空」集合。
+- 哨兵验证：删掉 `handleLoginResource` 的 `case loginRenewPath` 两行后，
+  `TestLoginRenewRejectsMissingCookies` 如期失败并显示
+  `expected 400 for missing cookies, got 200 body=<!DOCTYPE html>…<title>Gemini Web 面板</title>`
+  ——证明未路由时请求会掉进静态面板分支，该用例确实在守着路由注册。
+
 ## 1.0.14 (2026-11-21)
 
 ### 修复 - 一键授权的链接不再回落 127.0.0.1

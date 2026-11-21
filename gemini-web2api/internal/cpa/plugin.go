@@ -32,6 +32,8 @@ type Plugin struct {
 	serviceStopped atomic.Bool
 	lastRegisterNs atomic.Int64
 	rrCursor       atomic.Uint64
+	// lastRenewNs 是最近一次浏览器扩展 Cookie 续期尝试的纳秒时间戳，用于节流。
+	lastRenewNs atomic.Int64
 }
 
 type loginSessionState struct {

@@ -10,6 +10,7 @@ doubao/assets/*.js text eol=lf
 # gemini-web2api 的桥接页与扩展脚本同样是 //go:embed 的运行时输入，
 # 索引里必须是 LF，否则 checkout 后嵌入字节与提交内容不一致。
 gemini-web2api/internal/cpa/login_popup.js text eol=lf
+gemini-web2api/internal/cpa/login_background.js text eol=lf
 gemini-web2api/internal/cpa/login_bridge.html text eol=lf
 
 *.png binary

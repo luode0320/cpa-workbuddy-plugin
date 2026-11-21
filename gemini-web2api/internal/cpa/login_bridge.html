@@ -10,17 +10,20 @@
   main { max-width: 720px; margin: 0 auto; }
   h1 { font-size: 20px; margin: 0 0 6px; }
   .sub { margin: 0 0 20px; color: #656d76; }
-  section { background: #fff; border: 1px solid #d0d7de; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
+  section, details { background: #fff; border: 1px solid #d0d7de; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
   h2 { font-size: 15px; margin: 0 0 10px; }
+  summary { font-size: 15px; font-weight: 600; cursor: pointer; }
+  details > *:not(summary) { margin-top: 12px; }
   code, input, textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .pair { display: flex; gap: 8px; }
   .pair input { flex: 1; padding: 8px 10px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; }
   button { padding: 8px 14px; border: 0; border-radius: 6px; background: #1f883d; color: #fff; font-weight: 600; cursor: pointer; }
   button.ghost { background: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; }
+  button.big { width: 100%; padding: 12px 14px; font-size: 15px; }
   textarea { width: 100%; min-height: 96px; padding: 8px 10px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; resize: vertical; }
   ol { margin: 0; padding-left: 20px; }
   li { margin-bottom: 6px; }
-  .status { margin-top: 10px; padding: 8px 10px; border-radius: 6px; background: #f6f8fa; white-space: pre-wrap; word-break: break-all; }
+  .status { margin-top: 12px; padding: 8px 10px; border-radius: 6px; background: #f6f8fa; white-space: pre-wrap; word-break: break-all; }
   .ok { background: #dafbe1; }
   .err { background: #ffebe9; }
   .hint { color: #656d76; font-size: 12px; }
@@ -33,38 +36,35 @@
   <p class="sub">用你自己已登录 Google 的浏览器，把 gemini.google.com 的会话 Cookie 推送到 CPA。整个过程不需要在服务器上安装浏览器。</p>
 
   <section>
-    <h2>第 1 步 · 复制配对码</h2>
-    <div class="pair">
-      <input id="pair" value="{{PAIR}}" readonly>
-      <button id="copy">复制</button>
-    </div>
-    <p class="hint">配对码同时已写入剪贴板；它只在本次登录会话内有效，不含管理密钥。</p>
-  </section>
-
-  <section>
-    <h2>第 2 步 · 安装浏览器授权助手</h2>
-    <ol>
-      <li>下载 <a href="{{EXT_URL}}">gemini-web2api-auth-helper.zip</a> 并解压到任意目录。</li>
-      <li>浏览器打开 <code>chrome://extensions</code>，开启右上角「开发者模式」。</li>
-      <li>点「加载已解压的扩展程序」，选择刚解压出来的目录。</li>
-      <li>确认该浏览器已登录 <a href="https://gemini.google.com/app" target="_blank" rel="noreferrer">gemini.google.com</a>。</li>
-      <li>点工具栏的扩展图标，配对码会自动从剪贴板填入，按「读取 Cookie 并推送」。</li>
-    </ol>
-    <p class="hint">扩展只申请 cookies 与剪贴板权限，只读取 google.com 域下的会话 Cookie，推送到本机配对码里的地址。</p>
-  </section>
-
-  <section>
-    <h2>第 3 步 · 等待结果</h2>
+    <h2>一键授权</h2>
+    <p class="hint">点下面的按钮把本次配对码复制到剪贴板，然后点浏览器工具栏的授权助手图标，它会自动填入配对码并推送 Cookie。</p>
+    <button id="oneClick" class="big">一键授权（复制配对码）</button>
     <div id="status" class="status">尚未开始。</div>
   </section>
 
-  <section>
-    <h2>备选 · 手动粘贴 Cookie</h2>
-    <p class="hint">没有 Chrome 时，可用 Cookie-Editor 一类扩展导出 Cookie 头，或直接从浏览器开发者工具复制，粘贴到下面。必须是 <code>SAPISID</code> 与 <code>__Secure-1PSID</code> 齐全的一整行。</p>
+  <details id="setupBox">
+    <summary>首次使用：安装一次浏览器授权助手</summary>
+    <ol>
+      <li>下载 <a href="{{EXT_URL}}">gemini-web2api-auth-helper.zip</a> 并解压到任意目录（只需装一次）。</li>
+      <li>浏览器打开 <code>chrome://extensions</code>，开启右上角「开发者模式」。</li>
+      <li>点「加载已解压的扩展程序」，选择刚解压出来的目录。</li>
+      <li>确认该浏览器已登录 <a href="https://gemini.google.com/app" target="_blank" rel="noreferrer">gemini.google.com</a>。</li>
+      <li>回到本页点上方「一键授权」，再点扩展图标即可完成推送并开启自动续期。</li>
+    </ol>
+    <div class="pair">
+      <input id="pair" value="{{PAIR}}" readonly>
+      <button id="copy" class="ghost">复制配对码</button>
+    </div>
+    <p class="hint">扩展申请 cookies / 剪贴板 / storage / alarms 权限，只读取 google.com 域下的会话 Cookie，推送到本机配对码里的地址，并在之后每 30 分钟自动续期一次。</p>
+  </details>
+
+  <details>
+    <summary>没有 Chrome？手动粘贴 Cookie</summary>
+    <p class="hint">可用 Cookie-Editor 一类扩展导出 Cookie 头，或直接从浏览器开发者工具复制，粘贴到下面。必须是 <code>SAPISID</code> 与 <code>__Secure-1PSID</code> 齐全的一整行。手动粘贴不会自动续期。</p>
     <textarea id="manual" placeholder="SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=..."></textarea>
     <button id="manualGo">导入</button>
     <div id="manualStatus" class="status">尚未提交。</div>
-  </section>
+  </details>
 </main>
 <script>
 (function () {
@@ -104,30 +104,69 @@
 
   syncOrigin();
 
-  var copyBtn = document.getElementById('copy');
-  copyBtn.addEventListener('click', function () {
+  // copyPair 把配对码写进剪贴板。
+  //
+  // 扩展弹窗打开时会从剪贴板读取配对码，所以「一键授权」本质上就是替用户
+  // 完成复制这一步；写剪贴板在非安全上下文或被拒绝时会回落到
+  // document.execCommand，两条路径都失败时提示用户手动复制。
+  function copyPair() {
     var input = document.getElementById('pair');
+    if (!input) return Promise.resolve(false);
+    var text = input.value;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(function () { return true; }, function () {
+        return legacyCopy(input);
+      });
+    }
+    return Promise.resolve(legacyCopy(input));
+  }
+
+  function legacyCopy(input) {
     input.select();
     var done = false;
     try { done = document.execCommand('copy'); } catch (e) { done = false; }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(input.value).then(function () {
-        copyBtn.textContent = '已复制';
-      }, function () {
-        copyBtn.textContent = done ? '已复制' : '请手动复制';
-      });
+    return done;
+  }
+
+  var statusEl = document.getElementById('status');
+  var setupBox = document.getElementById('setupBox');
+
+  document.getElementById('oneClick').addEventListener('click', function () {
+    if (!state) {
+      setStatus(statusEl, '本页缺少登录会话，请回到 CPA 控制台重新发起授权。', 'err');
       return;
     }
-    copyBtn.textContent = done ? '已复制' : '请手动复制';
+    copyPair().then(function (copied) {
+      if (copied) {
+        setStatus(statusEl, '配对码已复制。现在点浏览器工具栏的授权助手图标，它会自动填入配对码并推送 Cookie。');
+      } else {
+        setStatus(statusEl, '自动复制被浏览器拦截，请展开下面的「首次使用」，手动复制配对码。');
+        if (setupBox) setupBox.open = true;
+        return;
+      }
+      // 8 秒内没拿到任何推进，说明扩展大概率还没装，直接把首次使用区展开，
+      // 避免用户卡在「配对码已复制」却不知道该做什么。
+      setTimeout(function () {
+        if (statusEl.textContent.indexOf('配对码已复制') !== 0) return;
+        if (setupBox) setupBox.open = true;
+      }, 8000);
+    });
   });
 
-  function submit(cookies, statusEl) {
+  document.getElementById('copy').addEventListener('click', function () {
+    var btn = document.getElementById('copy');
+    copyPair().then(function (copied) {
+      btn.textContent = copied ? '已复制' : '请手动复制';
+    });
+  });
+
+  function submit(cookies, statusEl, endpoint) {
     if (!cookies) {
       setStatus(statusEl, 'Cookie 不能为空。', 'err');
       return;
     }
     setStatus(statusEl, '正在导入，插件会真实校验一次 Gemini 会话，通常 3~10 秒…');
-    var url = '{{SUBMIT_URL}}?state=' + encodeURIComponent(state)
+    var url = endpoint + '?state=' + encodeURIComponent(state)
       + '&cookies=' + encodeURIComponent(cookies);
     fetch(url, { method: 'GET', cache: 'no-store' })
       .then(function (res) {
@@ -179,11 +218,11 @@
 
   var manualStatus = document.getElementById('manualStatus');
   document.getElementById('manualGo').addEventListener('click', function () {
-    submit(document.getElementById('manual').value.trim(), manualStatus);
+    submit(document.getElementById('manual').value.trim(), manualStatus, '{{SUBMIT_URL}}');
   });
 
   if (state) {
-    poll(document.getElementById('status'), Date.now());
+    poll(statusEl, Date.now());
   }
 })();
 </script>

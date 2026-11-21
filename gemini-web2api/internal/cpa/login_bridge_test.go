@@ -194,11 +194,13 @@ func TestLoginPollReportsExpiredForUnknownState(t *testing.T) {
 	}
 }
 
-// TestLoginExtensionZipContainsThreeFiles 校验扩展下载返回可解压的三文件包。
+// TestLoginExtensionZipContainsThreeFiles 校验扩展下载返回可解压的四文件包。
 //
+// 后台脚本是自动续期的载体，缺了它扩展只能手动推一次 Cookie，
+// 用户侧表现为「跑几小时后账号掉线且不会自愈」，所以必须在包内。
 // [参数] t 是测试上下文。
 // [返回] 无；断言失败即 Fatal。
-// 最近修改时间：2026-11-21；改动原因：新增。
+// 最近修改时间：2026-11-21；改动原因：新增；追加 background.js 与续期权限断言。
 func TestLoginExtensionZipContainsThreeFiles(t *testing.T) {
 	p := newLoginTestPlugin(t)
 	resp := callManagement(t, p, "/v0/resource/plugins/gemini-web2api/login/extension.zip", "", "")
@@ -230,7 +232,7 @@ func TestLoginExtensionZipContainsThreeFiles(t *testing.T) {
 		}
 		got[file.Name] = string(content)
 	}
-	for _, name := range []string{"manifest.json", "popup.html", "popup.js"} {
+	for _, name := range []string{"manifest.json", "popup.html", "popup.js", "background.js"} {
 		if strings.TrimSpace(got[name]) == "" {
 			t.Fatalf("zip missing entry %q, entries=%v", name, keysOf(got))
 		}
@@ -240,6 +242,19 @@ func TestLoginExtensionZipContainsThreeFiles(t *testing.T) {
 	}
 	if !strings.Contains(got["popup.js"], "/v0/resource/plugins/gemini-web2api/login/submit") {
 		t.Fatalf("popup.js missing submit path")
+	}
+	// 续期链路三段必须齐全：定时器权限、后台脚本声明、后台脚本打向的续期端点。
+	for _, want := range []string{`"storage"`, `"alarms"`, `"service_worker": "background.js"`} {
+		if !strings.Contains(got["manifest.json"], want) {
+			t.Fatalf("manifest missing %s for auto renew: %s", want, firstBytes(got["manifest.json"], 400))
+		}
+	}
+	if !strings.Contains(got["background.js"], "/v0/resource/plugins/gemini-web2api/login/renew") {
+		t.Fatalf("background.js missing renew path")
+	}
+	// 授权成功即绑定续期：缺这一步后台永远拿不到插件地址。
+	if !strings.Contains(got["popup.js"], "bindOrigin") {
+		t.Fatalf("popup.js should bind renew origin after authorization")
 	}
 }
 
@@ -272,7 +287,8 @@ func TestManagementRegistrationIncludesLoginResources(t *testing.T) {
 	}
 	// 历史面板路径也必须注册：宿主 ServeResourceHTTP 按完整路径精确匹配，
 	// 只留分发分支而不注册路由，线上访问旧收藏链接会直接 404。
-	for _, path := range []string{"/panel", "/accounts", "/webui", "/login", "/login/extension.zip", "/login/submit", "/login/poll", "/login/origin"} {
+	// /login/renew 是扩展定时续期的入口，漏注册会让自动续期整体失效。
+	for _, path := range []string{"/panel", "/accounts", "/webui", "/login", "/login/extension.zip", "/login/submit", "/login/poll", "/login/origin", "/login/renew"} {
 		if _, ok := byPath[path]; !ok {
 			t.Fatalf("resource route %q not registered, got %v", path, keysOf(byPath))
 		}
@@ -294,7 +310,7 @@ func TestManagementRegistrationIncludesLoginResources(t *testing.T) {
 	if menuCount != 1 {
 		t.Fatalf("expected exactly one console menu, got %d", menuCount)
 	}
-	for _, path := range []string{"/accounts", "/webui", "/login", "/login/submit", "/login/poll", "/login/extension.zip", "/login/origin"} {
+	for _, path := range []string{"/accounts", "/webui", "/login", "/login/submit", "/login/poll", "/login/extension.zip", "/login/origin", "/login/renew"} {
 		if strings.TrimSpace(byPath[path].Menu) != "" {
 			t.Fatalf("%q should not declare a console menu", path)
 		}

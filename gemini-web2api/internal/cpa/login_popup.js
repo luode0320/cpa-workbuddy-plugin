@@ -102,6 +102,27 @@ function readClipboard() {
   });
 }
 
+// bindRenew 把插件地址交给后台脚本，并立刻续期一次。
+//
+// 为什么只传 origin 不传配对码：配对码里的 state 是登录会话标识，桥接页关闭
+// 后 15 分钟就过期，而续期是长期行为。后台脚本把 origin 存进
+// chrome.storage.local，之后由 alarms 每 30 分钟自己回推，不再需要用户参与。
+function bindRenew(origin) {
+  return new Promise(function (resolve) {
+    try {
+      chrome.runtime.sendMessage({ type: 'bindOrigin', origin: origin }, function (reply) {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, message: chrome.runtime.lastError.message });
+          return;
+        }
+        resolve(reply || { ok: false, message: '后台脚本没有返回结果' });
+      });
+    } catch (e) {
+      resolve({ ok: false, message: String(e && e.message ? e.message : e) });
+    }
+  });
+}
+
 async function push() {
   var btn = document.getElementById('go');
   btn.disabled = true;
@@ -125,6 +146,16 @@ async function push() {
     }
     setResult('授权成功：' + (data.account_id || data.email || '已导入')
       + '\n回到 CPA 弹窗，登录流程会自动完成。', 'ok');
+    // 授权成功后立刻绑定续期：这是「扩展一键化」的收口一环，用户不需要
+    // 再打开任何页面；绑定结果只影响这条提示文案，不改变授权已成功的事实。
+    var renew = await bindRenew(pair.origin);
+    if (renew && renew.ok) {
+      setResult('授权成功：' + (data.account_id || data.email || '已导入')
+        + '\n自动续期已开启，浏览器会每 30 分钟自动回推一次会话 Cookie。', 'ok');
+    } else {
+      setResult('授权成功：' + (data.account_id || data.email || '已导入')
+        + '\n自动续期未开启：' + (renew && renew.message ? renew.message : '未知原因'), 'ok');
+    }
   } catch (err) {
     setResult('失败：' + (err && err.message ? err.message : err), 'err');
   } finally {
