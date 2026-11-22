@@ -155,6 +155,8 @@ func watchdogFirstTickDelay() time.Duration {
 // tick covers both startup and any register-time trigger. Each iteration
 // selects between the fixed interval timer and an external trigger via
 // requestWatchdogTick — coalesced to a single tick per wake.
+//
+// 最近修改时间：2026-11-22 17:40:00；改动原因：补实例守卫闸门，热重载后旧实例不再继续探活。
 func watchdogLoop() {
 	// Startup: wait for host to wire up. init() runs before the host sets
 	// hostAPI, so an immediate tick races against hostAuthList() and returns
@@ -170,6 +172,10 @@ func watchdogLoop() {
 	select {
 	case <-watchdogTickCh:
 	default:
+	}
+	// 首轮前先判实例：热重载后旧实例在这里直接退出，不必先打一轮探活。
+	if retireIfSuperseded("watchdog loop") {
+		return
 	}
 	// Seed the in-memory success/failure counters from the persisted json so
 	// the panel reads restart-recovered values (memory-first; see counter.go).
@@ -192,6 +198,10 @@ func watchdogLoop() {
 				}
 			}
 		case <-timer.C:
+		}
+		// 每轮先判实例：被取代后立即停手，避免旧实例与新实例并行探活。
+		if retireIfSuperseded("watchdog loop") {
+			return
 		}
 		// Fold pending counter deltas into the auth files on the watchdog's
 		// cadence (default 10m). The counters are best-effort backup: the

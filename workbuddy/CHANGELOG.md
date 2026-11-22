@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.21.30 (2026-11-22)
+
+### Fix - 定时积分刷新偶发不生效：多实例并写覆盖 + 共用临时名互删 + 载入失败不再重试
+
+- 缺陷(用户反馈 2026-11-22): 积分快照的 `fetched_at` 有时集体停在某个较早时刻，而文件 `updated_at` 却是新的——看起来刷新跑了，账号数据却没更新。生产排查确认不是上游拉取失败，而是**同一份快照被多代实例轮流整文件覆盖**。
+- 实证: 进程内同时 mmap 着 0.21.27 / 0.21.28 / 0.21.29 三代 `.so`（`/proc/1/maps` 中前两代带 `(deleted)`）；每小时固定跑出 3 轮 `credits sweep done`（单实例 `creditsSweepInterval = time.Hour` 只应 1 轮，`grep -c` 累计 548 条）；快照 43 条账号里 42 条 `fetched_at` 停在 `09:05:52~09:06:17Z`，而文件 `updated_at` = `09:21:09Z`、`mtime` = `17:21:09.785`；`2026/11/20 02:07:36~37` 连出 7 条 `credits snapshot persist failed: rename ...workbuddy-credits.json.tmp ...: no such file or directory`。
+- 根因一（实例守卫缺「持有者存活」判据）: `pluginInstanceSuperseded()` 只比对标记内容与自身 ID，一旦标记被某个已退出的短命进程写下，后续实例会永远把自己判成「已被取代」而停摆；反向地，守卫此前只铺在 failover 三处，`creditSweepLoop` / `watchdogLoop` 完全没有闸门，旧实例的循环在热重载后继续跑。修复: `instance_guard.go` 新增 `orphanOwnerMarker()`，按标记尾部 pid 判「所有者进程是否还活着」（新增 `instance_pid_unix.go` / `instance_pid_windows.go` 的 `processAlive`），死进程留下的标记直接接管；新增 `retireIfSuperseded(loop)` 统一闸门，`creditSweepTickOnce()` 与 `watchdogLoop` 每轮先判实例再干活。
+- 根因二（落盘共用固定临时名）: `persistCreditSnapshot` 原来写死 `path + ".tmp"`，两个写者同时落盘时后到的会先删掉前一个的临时文件，导致对方的 `rename` 拿到 `ENOENT`。修复: 临时名带上 pid 与纳秒唯一化；写盘前先读磁盘做**键级合并**（磁盘有、内存没有的账号保留），把整文件覆盖降级为合并覆盖，多实例并存时不再互相抹账号；`rename` 失败清理临时文件并在 `ErrNotExist` 场景重试一次。
+- 根因三（载入失败后永不重试）: `ensureCreditSnapshotLoaded` 先置 `loaded = true` 再读盘，一次瞬时 IO 错误就让本进程此后永远拿到空镜像，落盘时把磁盘上真实数据整片覆盖掉。修复: 读完拿到确定结论才置位——文件不存在、内容为空、JSON 损坏、版本不认识都按「磁盘无可用数据」定稿；真实 IO 错误保持未载入并记录到新增的 `creditSnapshotLoadErr`，交给下一次调用重试；`persistCreditSnapshot` 见到未消解的载入错误时**拒绝落盘**，宁可少写一轮也不拿不完整镜像覆盖磁盘。
+- 附带修正: 载入时同键已有内存值则跳过，避免磁盘旧值倒灌覆盖本轮刚拉到的积分。
+- 影响范围: 仅 `workbuddy/` 的实例守卫、积分扫描/落盘与定时探活三个面；协议、路由、面板、failover 行为零改动。
+- 测试: 新增 `instance_guard_orphan_test.go`（未知标记不判孤儿、死 pid 标记被接管、活 pid 标记仍判取代）、`credits_snapshot_persist_test.go`（落盘无 `.tmp` 残留、键级合并保留磁盘条目、载入失败可重试且失败期拒绝落盘）、`credits_sweep_guard_test.go`（`creditSweepTickOnce` 被取代时不下发扫描、仍属主时照常扫描）。`python scripts/cgo-shim-build.py workbuddy` build / vet / test 全绿。
+- 涉及文件: `instance_guard.go` / `instance_pid_unix.go` / `instance_pid_windows.go` / `credits_snapshot.go` / `credits_sweep.go` / `watchdog.go` / `main.go` / `VERSION` / `CHANGELOG.md` 及上述三个新增测试。
+
 ## 0.21.27 (2026-11-14)
 
 ### Fix - 面板搜索框被浏览器表单历史自动填回上次搜索词

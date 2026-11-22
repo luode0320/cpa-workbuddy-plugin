@@ -8,11 +8,14 @@
 // 快照缺失一律按「未知」处理，绝不按 0 解释——0 分会触发禁用，把「没数据」
 // 当成「没钱」会把整池账号写死。
 //
-// 最近修改时间：2026-10-23；改动原因：新增，积分快照从纯内存改为磁盘落盘。
+// 最近修改时间：2026-11-22 17:45:00；改动原因：落盘临时文件名唯一化 + 写前键级
+// 合并 + 载入失败可重试，消除多实例共用临时名互删与「一次读失败永久不再重试」。
 package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -80,9 +83,14 @@ var (
 	creditSnapshotMu sync.RWMutex
 	// creditSnapshotData 是内存镜像，键为宿主 auth.ID。
 	creditSnapshotData = map[string]creditSnapshotEntry{}
-	// creditSnapshotLoaded 标记是否已从磁盘载入过，避免每次读取都读盘。
+	// creditSnapshotLoaded 标记磁盘快照是否已完成载入（成功或确认无可用数据），
+	// 避免每次读取都读盘。它表达的是「已完成」，不是「已开始」：读盘遇到真实
+	// IO 错误时保持 false，让下一次调用重新尝试。
 	// 进程重启后由首个读者触发一次载入；热重载不重置它，磁盘是唯一真相源。
 	creditSnapshotLoaded bool
+	// creditSnapshotLoadErr 记录最近一次载入的真实 IO 错误（文件不存在、内容损坏、
+	// 版本不认识都不算）。落盘前据此拒绝用不完整的内存镜像覆盖磁盘。
+	creditSnapshotLoadErr error
 )
 
 // creditTierFor 按阈值把积分余量判成一档。纯函数，边界语义由测试锁定。
@@ -147,7 +155,7 @@ func creditSnapshotPath() string {
 // 若在这里 panic 或阻塞，等于让一个可自愈的数据缺失拖垮整个插件。
 // [参数] 无。
 // [返回] 无。
-// 最近修改时间：2026-10-23；改动原因：新增。
+// 最近修改时间：2026-11-22 17:45:00；改动原因：读盘成功后才置位，真实 IO 失败可被下次调用重试。
 func ensureCreditSnapshotLoaded() {
 	// 1. 快路径：已载入过就直接返回，避免每次读取都加写锁。
 	creditSnapshotMu.RLock()
@@ -162,27 +170,52 @@ func ensureCreditSnapshotLoaded() {
 	if creditSnapshotLoaded {
 		return
 	}
-	// 3. 先置位再读盘：读盘期间的并发读者不应该各读一次。
-	creditSnapshotLoaded = true
+	// 3. 读盘。只有拿到确定结论才置位：文件不存在、内容为空、JSON 损坏、
+	// 版本不认识都属于「磁盘没有可用数据」，按空快照定稿；真实 IO 错误则
+	// 保持未载入并记录错误，交给下一次调用重试。
 	raw, err := os.ReadFile(creditSnapshotPath())
-	if err != nil || len(raw) == 0 {
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			creditSnapshotLoaded = true
+			creditSnapshotLoadErr = nil
+			return
+		}
+		// deferral: 未加最小重试间隔，失败时每次调用都会重读一次磁盘；
+		// 频次受面板刷新与扫描周期约束，出现高频 IO 失败时再补窗口。
+		creditSnapshotLoadErr = err
+		return
+	}
+	if len(raw) == 0 {
+		creditSnapshotLoaded = true
+		creditSnapshotLoadErr = nil
 		return
 	}
 	var file creditSnapshotFile
 	if err := json.Unmarshal(raw, &file); err != nil {
+		// 损坏文件按空快照定稿：覆盖式落盘会把它替换成正确内容。
+		creditSnapshotLoaded = true
+		creditSnapshotLoadErr = nil
 		return
 	}
 	if file.Version != creditsSnapshotVersion {
+		creditSnapshotLoaded = true
+		creditSnapshotLoadErr = nil
 		return
 	}
-	// 4. 逐条归一化键后装入内存镜像，坏键直接跳过。
+	// 4. 逐条归一化键后装入内存镜像，坏键直接跳过。内存里已有同键时保留内存值：
+	// 磁盘是上一轮落盘的结果，本轮刚拉到的积分比它新，载入不能倒灌覆盖。
 	for id, entry := range file.Accounts {
 		key := normalizeFailoverKey(id)
 		if key == "" {
 			continue
 		}
+		if _, exists := creditSnapshotData[key]; exists {
+			continue
+		}
 		creditSnapshotData[key] = entry
 	}
+	creditSnapshotLoaded = true
+	creditSnapshotLoadErr = nil
 }
 
 // creditSnapshotGet 读取单个账号的积分快照。
@@ -267,52 +300,108 @@ func forgetCreditSnapshot(authID string) {
 	creditSnapshotMu.Unlock()
 }
 
-// persistCreditSnapshot 把内存镜像整体写盘（临时文件 + 原子重命名）。
+// persistCreditSnapshot 把内存镜像合并写盘（唯一临时文件 + 原子重命名）。
 //
 // 整轮扫描只在轮末调用一次：中途崩溃时磁盘保留上一轮的完整快照，
 // 而不是一份写了一半、被读成「部分账号 0 分」的残缺文件。
+// 写盘前先与磁盘做键级合并：多实例并存时，别的实例刚写进去的账号不会因为
+// 本实例的内存镜像里没有它们而被抹掉。
 // [参数] 无。
 // [返回] 写盘错误；无错误时返回 nil。
-// 最近修改时间：2026-10-23；改动原因：新增。
+// 最近修改时间：2026-11-22 17:50:00；改动原因：临时文件名带 pid 与纳秒唯一化、
+// 写前键级合并兜底、重命名失败重试一次，消除多实例共用临时名互删导致的 ENOENT。
 func persistCreditSnapshot() error {
-	// 1. 确保已有磁盘快照载入，避免写盘时丢掉未载入的旧条目。
+	// 1. 确保磁盘快照已载入。载入遇到真实 IO 错误时重试一次，仍失败就放弃本次
+	// 落盘：拿不完整的内存镜像覆盖磁盘，比不写更糟。
 	ensureCreditSnapshotLoaded()
-	// 2. 在读锁内复制整表，缩短持锁时间。
-	creditSnapshotMu.RLock()
+	if err := currentCreditSnapshotLoadErr(); err != nil {
+		ensureCreditSnapshotLoaded()
+		if err := currentCreditSnapshotLoadErr(); err != nil {
+			return fmt.Errorf("load existing snapshot: %w", err)
+		}
+	}
+	path := creditSnapshotPath()
+	// 2. 先读磁盘做键级合并：磁盘有、内存没有的条目保留下来，把整文件覆盖
+	// 降级为合并覆盖。读不到或解析失败时按空处理，走覆盖式写入自愈。
 	file := creditSnapshotFile{
 		Version:   creditsSnapshotVersion,
 		UpdatedAt: time.Now().UTC(),
-		Accounts:  make(map[string]creditSnapshotEntry, len(creditSnapshotData)),
+		Accounts:  make(map[string]creditSnapshotEntry),
 	}
+	if raw, err := os.ReadFile(path); err == nil && len(raw) > 0 {
+		var disk creditSnapshotFile
+		if err := json.Unmarshal(raw, &disk); err == nil && disk.Version == creditsSnapshotVersion {
+			for id, entry := range disk.Accounts {
+				key := normalizeFailoverKey(id)
+				if key == "" {
+					continue
+				}
+				file.Accounts[key] = entry
+			}
+		}
+	}
+	// 3. 在读锁内把内存镜像叠加到合并结果上，缩短持锁时间。
+	// deferral: 合并以「磁盘条目一律保留」为准，删除只能靠覆盖式重写；
+	// forgetCreditSnapshot 目前没有任何调用点，等真出现删号清理需求时
+	// 再补内存墓碑键，避免现在引入无调用方的墓碑机制。
+	creditSnapshotMu.RLock()
 	for k, v := range creditSnapshotData {
 		file.Accounts[k] = v
 	}
 	creditSnapshotMu.RUnlock()
-
-	// 3. 序列化并确保目录存在。
+	// 4. 序列化并确保目录存在。
 	raw, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
 		return err
 	}
-	path := creditSnapshotPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	// 4. 先写临时文件再原子重命名，避免读者看到半截文件。
-	tmp := path + ".tmp"
+	// 5. 临时文件名必须唯一：固定 path+".tmp" 会让并发的第二个写者先删掉
+	// 第一个写者的临时文件，导致对方的 rename 拿到 ENOENT（2026-11-20 生产实证）。
+	tmp := fmt.Sprintf("%s.%d.%d.tmp", path, os.Getpid(), time.Now().UnixNano())
 	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	// 6. 原子重命名；失败时清理临时文件，并在 ErrNotExist 场景重试一次。
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		// 目标目录被并发替换时重试一次即可，仍失败则如实上抛。
+		tmp2 := fmt.Sprintf("%s.%d.%d.tmp", path, os.Getpid(), time.Now().UnixNano())
+		if werr := os.WriteFile(tmp2, raw, 0o644); werr != nil {
+			return werr
+		}
+		if rerr := os.Rename(tmp2, path); rerr != nil {
+			_ = os.Remove(tmp2)
+			return rerr
+		}
+		return nil
+	}
+	return nil
+}
+
+// currentCreditSnapshotLoadErr 读取最近一次载入的真实 IO 错误。
+// [参数] 无。
+// [返回] 内存镜像是否处于「载入失败」状态；无错误时返回 nil。
+// 最近修改时间：2026-11-22 17:50:00；改动原因：新增，供落盘前判断能否安全覆盖磁盘。
+func currentCreditSnapshotLoadErr() error {
+	// 1. 加读锁取值，避免与载入路径的写锁竞争。
+	creditSnapshotMu.RLock()
+	defer creditSnapshotMu.RUnlock()
+	return creditSnapshotLoadErr
 }
 
 // resetCreditSnapshotForTest 清空内存镜像并允许重新从磁盘载入，仅供测试使用。
 // [参数] 无。
 // [返回] 无。
-// 最近修改时间：2026-10-23；改动原因：新增。
+// 最近修改时间：2026-11-22 17:50:00；改动原因：一并清空载入错误，避免上一条用例的失败态串到下一条。
 func resetCreditSnapshotForTest() {
 	creditSnapshotMu.Lock()
 	creditSnapshotData = map[string]creditSnapshotEntry{}
 	creditSnapshotLoaded = false
+	creditSnapshotLoadErr = nil
 	creditSnapshotMu.Unlock()
 }

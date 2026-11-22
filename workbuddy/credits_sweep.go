@@ -178,17 +178,41 @@ func runCreditSweepNonOverlap() bool {
 // 期间后续 tick 会被 runCreditSweepNonOverlap 逐个跳过。
 // [参数] 无。
 // [返回] 无。
-// 最近修改时间：2026-10-23；改动原因：新增。
+// 最近修改时间：2026-11-22 17:40:00；改动原因：补实例守卫闸门，热重载后旧实例不再继续扫描。
 func creditSweepLoop() {
 	// 1. 等宿主就绪后再开始，避免插件加载期就刷上游。
 	waitHostReadyForWatchdog(creditsSweepStartupWait, hostReadyForWatchdog)
 	// 2. 首轮抖动用 watchdog 的同一套机制，避免新增一套随机源。
 	creditsSweepSleepFn(watchdogFirstTickDelay())
-	// 3. 首轮立即扫一次，之后按 1 小时周期推进。
-	runCreditSweepNonOverlap()
+	// 3. 首轮立即扫一次。被更新实例取代时在这里直接退出，不必先打一轮上游。
+	if creditSweepTickOnce() {
+		return
+	}
 	ticker := time.NewTicker(creditsSweepInterval)
 	defer ticker.Stop()
+	// 4. 之后按 1 小时周期推进，每轮先判实例再扫描。
 	for range ticker.C {
-		runCreditSweepNonOverlap()
+		if creditSweepTickOnce() {
+			return
+		}
 	}
+}
+
+// creditSweepTickOnce 执行一轮「先判实例、再启动扫描」的 tick，是循环唯一的
+// 执行入口：首轮与后续 ticker 共用同一段逻辑，避免两处守卫写法漂移。
+//
+// 为什么每轮都要判：宿主热重载不调用 plugin_shutdown，旧实例的循环在
+// 0.21.27 → 0.21.29 三代并存期间仍在每小时扫一遍全部账号（2026-11-22 生产
+// 实证：每小时固定 3 轮），多代写者互相覆盖同一份快照。
+// [参数] 无。
+// [返回] true 表示本实例已被取代，调用方必须立即退出循环。
+// 最近修改时间：2026-11-22 17:52:00；改动原因：新增，把实例守卫收敛成可测的统一入口。
+func creditSweepTickOnce() bool {
+	// 1. 先判实例：被取代后连扫描都不启动，避免旧实例争同一份快照。
+	if retireIfSuperseded("credits sweep loop") {
+		return true
+	}
+	// 2. 启动一轮扫描；上一轮未结束时由 TryLock 丢弃本轮。
+	runCreditSweepNonOverlap()
+	return false
 }
