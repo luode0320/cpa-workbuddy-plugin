@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -343,9 +344,9 @@ func swapVideoPollTiming(interval, creationWait, pollTimeout time.Duration) func
 // [返回] 无。
 // 最近修改时间：2026-11-17 01:42:00；改动原因：新增，锁定可取消性。
 func TestWaitingForVideoStopsWhenContextDone(t *testing.T) {
-	var hits int
+	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		atomic.AddInt32(&hits, 1)
 		// 一直回「还没有产物」，逼出第二轮轮询。
 		_, _ = w.Write([]byte(chainTestResponse(false)))
 	}))
@@ -357,7 +358,7 @@ func TestWaitingForVideoStopsWhenContextDone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		// 等到第一次拉取发生后再取消，避免在循环入口就退出。
-		for hits == 0 {
+		for atomic.LoadInt32(&hits) == 0 {
 		}
 		cancel()
 	}()
@@ -366,7 +367,7 @@ func TestWaitingForVideoStopsWhenContextDone(t *testing.T) {
 	if _, errWait := waitVideoAsset(ctx, sa, "38454121040780034"); errWait == nil {
 		t.Fatal("上下文取消时应返回错误")
 	}
-	if hits == 0 {
+	if atomic.LoadInt32(&hits) == 0 {
 		t.Fatal("应至少拉取过一次消息链")
 	}
 }

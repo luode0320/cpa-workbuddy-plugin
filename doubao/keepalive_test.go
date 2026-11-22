@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -133,9 +134,9 @@ func TestRunKeepaliveOnceSkipsDisabled(t *testing.T) {
 		t.Fatalf("预置停用账号失败：%v", errWrite)
 	}
 
-	hits := 0
+	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		atomic.AddInt32(&hits, 1)
 		w.Header().Set(msTokenHeader, "ShouldNotBeUsedTokenABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 		_, _ = w.Write([]byte(`{}`))
 	}))
@@ -145,8 +146,8 @@ func TestRunKeepaliveOnceSkipsDisabled(t *testing.T) {
 
 	runKeepaliveOnce(context.Background())
 
-	if hits != 0 {
-		t.Fatalf("停用账号不应被保活，实际请求 %d 次", hits)
+	if atomic.LoadInt32(&hits) != 0 {
+		t.Fatalf("停用账号不应被保活，实际请求 %d 次", atomic.LoadInt32(&hits))
 	}
 }
 

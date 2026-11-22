@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -153,9 +154,9 @@ func TestCachedUpstreamModelsReusesPerAccount(t *testing.T) {
 	resetModelCache()
 	t.Cleanup(resetModelCache)
 
-	hits := 0
+	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		atomic.AddInt32(&hits, 1)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"code": 0,
@@ -173,8 +174,8 @@ func TestCachedUpstreamModelsReusesPerAccount(t *testing.T) {
 	if _, errModels := cachedUpstreamModels(first, false); errModels != nil {
 		t.Fatalf("二次读取不应报错：%v", errModels)
 	}
-	if hits != 1 {
-		t.Fatalf("同账号应命中缓存只打一次上游，实际 %d 次", hits)
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Fatalf("同账号应命中缓存只打一次上游，实际 %d 次", atomic.LoadInt32(&hits))
 	}
 
 	second := completionTestAccount()
@@ -182,16 +183,16 @@ func TestCachedUpstreamModelsReusesPerAccount(t *testing.T) {
 	if _, errModels := cachedUpstreamModels(second, false); errModels != nil {
 		t.Fatalf("换账号读取不应报错：%v", errModels)
 	}
-	if hits != 2 {
-		t.Fatalf("换账号必须重新拉取，实际只打了 %d 次上游", hits)
+	if atomic.LoadInt32(&hits) != 2 {
+		t.Fatalf("换账号必须重新拉取，实际只打了 %d 次上游", atomic.LoadInt32(&hits))
 	}
 
 	// force 必须绕过缓存，供面板「刷新」使用。
 	if _, errModels := cachedUpstreamModels(second, true); errModels != nil {
 		t.Fatalf("强制刷新不应报错：%v", errModels)
 	}
-	if hits != 3 {
-		t.Fatalf("force 应绕过缓存，实际 %d 次", hits)
+	if atomic.LoadInt32(&hits) != 3 {
+		t.Fatalf("force 应绕过缓存，实际 %d 次", atomic.LoadInt32(&hits))
 	}
 }
 
