@@ -80,6 +80,7 @@ func TestIsAccountFailureClassification(t *testing.T) {
 		{"流内登录失效", 200, 710012001, true},
 		{"流内限流", 200, 710022004, true},
 		{"工作模式未投放不冷却", 200, -1, false},
+		{"访问频繁不冷却", 200, rateLimitFrequentCode, false},
 		{"业务 400 不计入", 400, 0, false},
 		{"业务 404 不计入", 404, 0, false},
 	}
@@ -107,6 +108,7 @@ func TestShouldRotateClassification(t *testing.T) {
 		{"403 换号", 403, 0, true},
 		{"流内限流换号", 200, 710022004, true},
 		{"工作模式未投放换号", 200, -1, true},
+		{"访问频繁换号", 200, rateLimitFrequentCode, true},
 		{"500 不烧预算", 500, 0, false},
 		{"传输错误不烧预算", 0, 0, false},
 		{"业务 400 不换号", 400, 0, false},

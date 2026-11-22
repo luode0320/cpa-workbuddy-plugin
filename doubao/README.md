@@ -188,6 +188,30 @@ print(media[0]["url"])
 插件热重载会清空这张表。热重载后仍拿旧 `conversation_id` 续接时，请求退回「沿用
 当前账号」的行为（不报错），但多数情况下拿不到成品，重新发起首轮更省时间。
 
+## 上游频率闸门
+
+豆包对「同一账号 + 同一设备」的调用频率有硬限制，超了回 `710022002`（当前服务访问频繁）。
+实测这个码跟账号额度无关，纯粹看频率：新导入的账号**第一次**测试就可能被拒，而换一个新 token、
+改一个字符都能放行——说明上游数的是请求密度，不是凭据真伪。
+
+插件为此给每个账号加了三道约束，全部在 `throttle.go` 里，四条真实出上游的路径
+（对话、消息链回灌、保活探测、模型发现）都走同一个入口，没有旁路：
+
+- **在途闸**：同一账号同时只允许 `account_max_inflight`（默认 1）个请求在飞；
+- **速率闸**：同一账号两次发起之间至少隔 `account_min_interval_ms`（默认 2000）；
+- **软退避**：收到 `710022002` 后，该账号在 `rate_limit_backoff_seconds`（默认 60 秒）内不再发起新请求。
+
+软退避和阶梯冷却（`failover.go` 里 60 秒×次数、封顶 10 分钟那套）是两回事，故意分开：
+`710022002` **只换号、不记账**。频率限制是可自愈的短时现象，叠一层阶梯冷却会把同一次风控
+罚两次，而且阶梯会一路涨到 10 分钟，一个健康账号会被一次抖动踢下线很久。
+
+另外两处配套：
+
+- 换号重试不再零间隔连打，按 1s / 2s 翻倍并叠加 ±10% 抖动（`executor_failover.go`）；
+  之前一次失败会瞬间放大成三次紧挨着的上游请求，是触发风控的直接放大器。
+- 面板「测试」按钮同一账号 30 秒内只允许点一次，连点直接返回等待提示，不会把一次误点
+  放大成多个上游请求。
+
 ## 已知限制
 
 - 上游不返回 token 用量，响应里的 `usage` 是按字符估算（`estimated: true`）
@@ -210,10 +234,13 @@ print(media[0]["url"])
   要带续接点再发确认轮才知道。上游还会先建会话再回一段拒答文本，这两种态在流里无法
   区分，所以成功文案写的是「首轮通路正常」而不是「活跃成功」
 - `msToken` 靠业务请求的响应头自动续期（见下方「风控令牌续期」）。它**没有固定有效期**：
-  上游只做形态/长度粗判。真正的失效表现是 `710022002`，此时需要用户重新点一次授权书签
+  上游只做形态/长度粗判。真正需要人工介入的表现是 token 已经失效到一次请求都发不出去，
+  此时需要用户重新点一次授权书签
 - 续期发生在业务请求之后，因此「token 已经失效到发不出任何请求」这一态仍需人工介入；
   插件无法凭空生成一个上游认可的 token（`mssdk.bytedance.com` 的换 token 端点要设备侧
   加密串 `strData`，算不出来）
+- 频率闸门是进程内的：多个宿主实例各算各的，跨实例限流不在这套机制里
+- 软退避只认 `710022002`。上游若用别的业务码表达频率限制，需要另外补
 
 ## 风控令牌续期
 
@@ -241,27 +268,32 @@ print(media[0]["url"])
 - 首轮不立刻跑，等第一个 tick；热重载会重建定时器，但不会立刻对上游发请求；
 - 保活失败只记日志，不进 failover 冷却账本——它不属于任何一次请求的失败；
 - 改配置立刻生效：保活协程每 30 秒自己读一次宿主的 `config.yaml`，发现
-  `keepalive_enabled` / `keepalive_interval_seconds` 变了就地重建定时器（宿主改配置不会回调插件，
-  见下方「配置生效时机」）。
+  `keepalive_enabled` / `keepalive_interval_seconds` 变了就地重建定时器（见下方「配置生效时机」）。
 
 保活只覆盖「空闲期也能换 token」。如果 token 已经失效到连一次请求都发不出去，
 仍然需要用户重新点一次授权书签。
 
 ## 配置生效时机
 
-宿主的 `PUT /v0/management/plugins/doubao-provider/config` **不会**让插件重新解析配置：写入后宿主
-走的是 `configReloadHook` 分支，而生产注入的那个 hook 只触发 watcher 重载，不会调
-`pluginHost.ApplyConfig`，插件收不到 `MethodPluginReconfigure`。因此：
+宿主的 `PUT /v0/management/plugins/doubao-provider/config` 会触发一次插件 reconfigure，但**下发的
+是宿主合成的默认运行期配置（只有 `enabled` 与 `priority`），不含用户写的 `config_yaml`**
+（对应宿主 `normalizedConfigNode` 里 `item.Raw.Kind == 0` 的分支）。所以插件不能指望 reconfigure
+拿到用户配置，`configurePlugin` 收到的 `config_yaml` 通常是空的，值会回落到默认。
 
-- `keepalive_enabled` / `keepalive_interval_seconds`：**立刻生效**。插件保活协程每 30 秒巡检一次
-  宿主配置文件并自行调整，不需要任何额外动作。
+插件对此的应对是自巡检：`hostconfig.go` 直接读宿主的 `config.yaml`，取出
+`plugins.configs.doubao-provider.config_yaml` 自行解析。因此：
+
+- `keepalive_enabled` / `keepalive_interval_seconds` / `account_max_inflight` /
+  `account_min_interval_ms` / `rate_limit_backoff_seconds`：**立刻生效**。保活协程每 30 秒巡检一次
+  并自行调整；闸门参数走 30 秒 TTL 缓存，下一次取值就是新值。不需要任何额外动作。
 - 其余五项（`timeout_seconds` / `stream_timeout_seconds` / `model_cache_seconds` /
   `video_poll_timeout_seconds` / `video_creation_wait_seconds`）：改完要重装插件（
   `plugin-store install`，会触发一次真实加载）才会生效。
 
-**注意一条单向性**：把 `keepalive_enabled` 改成 `false` 之后，保活协程会自行退出，而退出是终态——
-再改回 `true` **不会**让它重新起来（协程只在插件被重新加载时创建）。只想临时停一会儿的话，
-把 `keepalive_interval_seconds` 改大（比如 86400）比关掉更安全；确实关过又想恢复，重装一次插件即可。
+关于关掉保活：`keepalive_enabled` 改成 `false` 后协程会退出，但**下次改配置时会重新起来**
+（宿主那次 reconfigure 虽然只给默认 YAML，却会重新调用 `restartKeepalive`，按巡检到的配置
+重建协程）。2026-11-22 实测 `false` → 改回间隔 60 秒，30 秒内保活就恢复了。只想临时停一会儿的话，
+把 `keepalive_interval_seconds` 改大（比如 86400）更省事。
 
 ## 认证方式
 
@@ -311,8 +343,11 @@ print(media[0]["url"])
 | `video_creation_wait_seconds` | 整数 | 等上游落下第一个创作块的上限（秒），默认 120；只作用于视频回灌 |
 | `keepalive_enabled` | 布尔 | 是否在空闲期定时刷新 `msToken`，默认 `true` |
 | `keepalive_interval_seconds` | 整数 | 保活间隔（秒），默认 1800；只在 `keepalive_enabled` 为真时生效 |
+| `account_max_inflight` | 整数 | 同一账号的最大在途上游请求数，默认 1 |
+| `account_min_interval_ms` | 整数 | 同一账号两次上游发起的最小间隔（毫秒），默认 2000 |
+| `rate_limit_backoff_seconds` | 整数 | 被判访问频繁后该账号的软退避时长（秒），默认 60 |
 
-七项都在插件注册元数据里声明过（`ConfigFields`），所以管理端能列出名称、类型与描述。
+十项都在插件注册元数据里声明过（`ConfigFields`），所以管理端能列出名称、类型与描述。
 **但当前没有可视化编辑表单**：改值仍需 `PUT /v0/management/plugins/doubao-provider/config`
 的 `config_yaml`，例如：
 
@@ -322,7 +357,7 @@ curl -X PUT https://cpa.luode.vip/v0/management/plugins/doubao-provider/config \
   -d '{"enabled":true,"priority":20,"config_yaml":"keepalive_interval_seconds: 900\\n"}'
 ```
 
-`config_yaml` 写空串表示全部回到默认值（保活开启、间隔 1800 秒）。
+`config_yaml` 写空串表示全部回到默认值（保活开启、间隔 1800 秒、单账号 1 个在途、间隔 2 秒、软退避 60 秒）。
 
 早期版本的 `work_*` 七项配置已删除；存量 `config.yaml` 里留着这批键不会报错，
 yaml 会宽松忽略。

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"time"
 )
 
@@ -70,6 +71,8 @@ func runWithFailover(sa *StoredAuth, timeout time.Duration, mode generationMode,
 			break
 		}
 		current = next
+		// 3. 换号后先退避再打：零间隔连续重试是触发上游频率风控的主要原因。
+		retrySleep(retryBackoff(attempt))
 	}
 
 	if lastErr == nil {
@@ -88,4 +91,35 @@ func classifyUpstreamError(err error) (int, int) {
 		return up.StatusCode, up.Code
 	}
 	return 0, 0
+}
+
+// retryBackoffBase 是换号重试的基础退避时长，按尝试次数翻倍。
+const retryBackoffBase = time.Second
+
+// retryBackoff 计算第 attempt 次尝试失败后到下一次尝试之间的等待时长。
+//
+// 阶梯是 1s、2s、4s……，并叠加 ±10% 抖动：固定间隔会让多个并发请求在同一时刻
+// 一起回到上游，抖动把它们错开，避免自造尖峰。
+// [参数] attempt: 当前尝试序号，从 0 开始。
+// [返回] 等待时长，落在基准值的 0.9~1.1 倍之间。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：新增，换号重试不再零间隔连打。
+func retryBackoff(attempt int) time.Duration {
+	wait := retryBackoffBase
+	for i := 0; i < attempt; i++ {
+		wait *= 2
+	}
+	// 抖动幅度取基准的 1/10，整体落在 0.9~1.1 倍之间。
+	span := int64(wait) / 10
+	if span <= 0 {
+		return wait
+	}
+	return wait - time.Duration(span) + time.Duration(rand.Int63n(2*span))
+}
+
+// retrySleep 是换号退避的等待入口，测试可替换以免久等。
+var retrySleep = func(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	time.Sleep(d)
 }

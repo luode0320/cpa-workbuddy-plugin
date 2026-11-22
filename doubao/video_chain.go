@@ -286,8 +286,18 @@ func postChainJSON(ctx context.Context, sa *StoredAuth, path string, raw []byte)
 	applyUpstreamHeaders(req)
 
 	client, jar := newUpstreamClient(sa, time.Duration(currentConfig().TimeoutSeconds)*time.Second)
+	ticket, errTicket := acquireUpstream(ctx, sa.AuthID, upstreamKindChain)
+	if errTicket != nil {
+		return nil, errTicket
+	}
+	var gateErr error
+	defer func() {
+		releaseUpstream(ticket, gateErr)
+	}()
+
 	resp, errDo := client.Do(req)
 	if errDo != nil {
+		gateErr = errDo
 		return nil, fmt.Errorf("请求消息链接口失败：%w", errDo)
 	}
 	defer resp.Body.Close()
@@ -297,10 +307,15 @@ func postChainJSON(ctx context.Context, sa *StoredAuth, path string, raw []byte)
 
 	body, errRead := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if errRead != nil {
+		gateErr = errRead
 		return nil, fmt.Errorf("读取消息链响应失败：%w", errRead)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("消息链接口返回 HTTP %d：%s", resp.StatusCode, truncateText(string(body), 200))
+		gateErr = &upstreamError{
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("消息链接口返回 HTTP %d：%s", resp.StatusCode, truncateText(string(body), 200)),
+		}
+		return nil, gateErr
 	}
 	return body, nil
 }

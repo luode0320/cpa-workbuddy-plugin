@@ -94,9 +94,11 @@ func isAccountFailure(status, code int) bool {
 // 不在同请求内烧预算——它们往往是上游整体抖动，换号也大概率失败。
 // -1（工作模式未投放）属于账号维度事实：换到已投放的账号立刻可用，值得当次换号，
 // 但只换号、不冷却（见 isAccountFailure 的说明）。
+// 710022002（访问频繁）同样只换号、不冷却：它的惩罚由 throttle.go 的软退避承担，
+// 再叠一层阶梯冷却会让同一次风控被罚两次，且阶梯会一路涨到 10 分钟。
 // [参数] status: HTTP 状态码；code: 上游业务码。
 // [返回] 应换号时返回 true。
-// 最近修改时间：2026-11-16 21:32:00；改动原因：-1 纳入同请求换号，使工作模式请求能自动落到已投放账号。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：访问频繁纳入同请求换号，惩罚统一交给闸门软退避。
 func shouldRotate(status, code int) bool {
 	if status == http.StatusTooManyRequests || status == http.StatusPaymentRequired {
 		return true
@@ -104,7 +106,7 @@ func shouldRotate(status, code int) bool {
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return true
 	}
-	return code == 710012001 || code == 710022004 || code == 710022005 || code == -1
+	return code == 710012001 || code == 710022004 || code == 710022005 || code == -1 || code == rateLimitFrequentCode
 }
 
 // noteAccountFailure 递增连续失败计数并施加阶梯冷却。

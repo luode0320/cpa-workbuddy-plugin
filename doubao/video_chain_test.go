@@ -317,17 +317,21 @@ func chainTestRenderingResponse() string {
 //
 // 为什么需要它：默认间隔 10 秒、总超时 6 分钟，任何「本该跳过却进了等待」的
 // 缺陷都不会失败、只会挂起，用例跑满 6 分钟才暴露，验证成本高到没人愿意做。
+// 闸门的最小间隔必须一起放开：轮询压到毫秒级后，闸门会成为新的瓶颈，用例本该
+// 几百毫秒结束却要等满默认的 2000ms 一轮。
 // [参数] interval: 轮询间隔；creationWait: 首块等待上限；pollTimeout: 总时长。
 // [返回] 恢复原值的函数。
-// 最近修改时间：2026-11-21 02:13:00；改动原因：总时长与首块等待改为覆盖变量，用例可分别压缩。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：同时放开账号闸门，否则压缩后的轮询会被闸门拖住。
 func swapVideoPollTiming(interval, creationWait, pollTimeout time.Duration) func() {
 	prevInterval := videoPollInterval
 	prevCreationWait, prevPoll := videoCreationWaitOverride, videoPollTimeoutOverride
 	videoPollInterval = interval
 	videoCreationWaitOverride, videoPollTimeoutOverride = creationWait, pollTimeout
+	restoreGate := swapThrottleSetting(throttleSetting{maxInflight: 4, minInterval: 0, backoff: time.Millisecond})
 	return func() {
 		videoPollInterval = prevInterval
 		videoCreationWaitOverride, videoPollTimeoutOverride = prevCreationWait, prevPoll
+		restoreGate()
 	}
 }
 

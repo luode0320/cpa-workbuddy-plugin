@@ -936,8 +936,19 @@ func streamCompletion(ctx context.Context, sa *StoredAuth, body *completionReque
 
 	// 2. 流式请求不设客户端超时，回复可能持续数分钟，由 ctx 约束。
 	client, jar := newUpstreamClient(sa, 0)
+	ticket, errTicket := acquireUpstream(ctx, sa.AuthID, upstreamKindChat)
+	if errTicket != nil {
+		return errTicket
+	}
+	// gateErr 承载本次调用中闸门需要看见的错误，归还时据此判断要不要写软退避。
+	var gateErr error
+	defer func() {
+		releaseUpstream(ticket, gateErr)
+	}()
+
 	resp, errDo := client.Do(req)
 	if errDo != nil {
+		gateErr = errDo
 		return fmt.Errorf("请求上游失败：%w", errDo)
 	}
 	defer resp.Body.Close()
@@ -956,13 +967,31 @@ func streamCompletion(ctx context.Context, sa *StoredAuth, body *completionReque
 	// 4. 非 200 一律转结构化上游错误，供换号与冷却判定使用。
 	if resp.StatusCode != http.StatusOK {
 		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return &upstreamError{
+		gateErr = &upstreamError{
 			StatusCode: resp.StatusCode,
 			Message:    fmt.Sprintf("上游返回 HTTP %d：%s", resp.StatusCode, truncateText(string(payload), 200)),
 		}
+		return gateErr
 	}
 
-	return scanSSE(resp.Body, onEvent)
+	// 5. 流内错误不体现在 scanSSE 的返回值上，另行截取一次业务码供闸门判定。
+	errStream := scanSSE(resp.Body, wrapStreamErrorProbe(onEvent, &gateErr))
+	return errStream
+}
+
+// wrapStreamErrorProbe 包装事件回调，把流内业务码顺带记进 cause 供闸门判定。
+// [参数] onEvent: 调用方的事件回调；cause: 承接流内错误的指针。
+// [返回] 包装后的事件回调。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：新增，让闸门能看到 HTTP 200 下的流内限流码。
+func wrapStreamErrorProbe(onEvent func(completionEvent) bool, cause *error) func(completionEvent) bool {
+	return func(ev completionEvent) bool {
+		if ev.Name == "STREAM_ERROR" || ev.Name == "ERROR" {
+			if e, ok := parseStreamError(ev.Data); ok && *cause == nil {
+				*cause = &upstreamError{Code: e.ErrorCode, Message: streamErrorHint(e)}
+			}
+		}
+		return onEvent(ev)
+	}
 }
 
 // msTokenHeader 是上游下发新 msToken 的响应头名。

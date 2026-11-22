@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -207,20 +208,37 @@ func refreshMsTokenByProbe(ctx context.Context, sa *StoredAuth) {
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	applyUpstreamHeaders(req)
 
-	resp, errDo := client.Do(req)
-	if errDo != nil {
-		log.Printf("[doubao] keepalive probe failed for %s: %v", sa.AuthID, errDo)
-		return
-	}
-	defer resp.Body.Close()
-	// 2. 响应体只是偏好数据，读掉并丢弃即可；限读防止异常上游拖长连接。
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("[doubao] keepalive probe returned HTTP %d for %s", resp.StatusCode, sa.AuthID)
+	ticket, errTicket := acquireUpstream(ctx, sa.AuthID, upstreamKindProbe)
+	if errTicket != nil {
+		log.Printf("[doubao] keepalive skipped for %s: %v", sa.AuthID, errTicket)
 		return
 	}
 
-	// 3. 只有形态合法且确实变过才落盘：同值重复写只会制造无意义的文件抖动。
+	resp, errDo := client.Do(req)
+	if errDo != nil {
+		log.Printf("[doubao] keepalive probe failed for %s: %v", sa.AuthID, errDo)
+		releaseUpstream(ticket, errDo)
+		return
+	}
+	defer resp.Body.Close()
+	// 2. 响应体只用来取业务码，读完丢弃即可；限读防止异常上游拖长连接。
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[doubao] keepalive probe returned HTTP %d for %s", resp.StatusCode, sa.AuthID)
+		releaseUpstream(ticket, &upstreamError{StatusCode: resp.StatusCode})
+		return
+	}
+	// 3. 业务码非 0 也交给闸门：该端点被判访问频繁时仍回 HTTP 200。
+	var probe struct {
+		Code int `json:"code"`
+	}
+	if errCode := json.Unmarshal(body, &probe); errCode == nil && probe.Code != 0 {
+		releaseUpstream(ticket, &upstreamError{Code: probe.Code})
+		return
+	}
+	releaseUpstream(ticket, nil)
+
+	// 4. 只有形态合法且确实变过才落盘：同值重复写只会制造无意义的文件抖动。
 	token := strings.TrimSpace(resp.Header.Get(msTokenHeader))
 	if !isMsTokenShaped(token) {
 		return

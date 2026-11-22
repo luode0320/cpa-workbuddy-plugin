@@ -132,7 +132,7 @@ func handleModelsQuery(req pluginapi.ManagementRequest) map[string]any {
 // 请求体：{auth_index, model?}。model 为空时使用 defaultModelID。
 // [参数] req: 管理请求。
 // [返回] 测试结果；失败时带 error 字段。
-// 最近修改时间：2026-11-17 00:48:00；改动原因：工作模式默认模型删除，默认值改为 defaultModelID。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：加同账号防重入与测试冷却，避免连点放大频率风控。
 func handleTestActive(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
@@ -148,12 +148,83 @@ func handleTestActive(req pluginapi.ManagementRequest) map[string]any {
 	if errFind != nil {
 		return map[string]any{"error": errFind.Error()}
 	}
+	// 1. 同一账号在冷却窗口内只允许测试一次：连点会把同一个上游请求放大成多个。
+	if wait, okBusy := claimActiveTest(sa.AuthID); !okBusy {
+		return map[string]any{"error": fmt.Sprintf("该账号刚刚测试过，请等待 %d 秒后再试", int(wait.Seconds()+0.5))}
+	}
+	defer releaseActiveTest(sa.AuthID)
 
 	model := strings.TrimSpace(body.Model)
 	if model == "" {
 		model = modelIDPrefix + defaultModelID
 	}
 	return runActiveTest(sa, model)
+}
+
+// activeTestCooldown 是同一账号两次手动测试之间的最小间隔。
+const activeTestCooldown = 30 * time.Second
+
+// activeTestState 记录某账号的手动测试占位情况。
+type activeTestState struct {
+	busy     bool
+	lastAt   time.Time
+	inflight int
+}
+
+var (
+	activeTestMu     sync.Mutex
+	activeTestStates = make(map[string]*activeTestState)
+)
+
+// claimActiveTest 尝试为某账号占住一次测试名额。
+// [参数] authID: 账号标识。
+// [返回] 需要等待的剩余时长；true 表示占位成功。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：新增，同账号手动测试去重。
+func claimActiveTest(authID string) (time.Duration, bool) {
+	activeTestMu.Lock()
+	defer activeTestMu.Unlock()
+
+	state := activeTestStates[authID]
+	if state == nil {
+		state = &activeTestState{}
+		activeTestStates[authID] = state
+	}
+	if state.busy {
+		return activeTestCooldown, false
+	}
+	if wait := activeTestCooldown - time.Since(state.lastAt); wait > 0 && !state.lastAt.IsZero() {
+		return wait, false
+	}
+	state.busy = true
+	state.inflight++
+	return 0, true
+}
+
+// releaseActiveTest 释放某账号的测试占位并记下本次完成时间。
+// [参数] authID: 账号标识。
+// [返回] 无。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：新增，配合 claimActiveTest 收尾。
+func releaseActiveTest(authID string) {
+	activeTestMu.Lock()
+	defer activeTestMu.Unlock()
+
+	state := activeTestStates[authID]
+	if state == nil {
+		return
+	}
+	state.busy = false
+	state.inflight--
+	state.lastAt = time.Now()
+}
+
+// resetActiveTestStates 清空手动测试占位，仅测试使用。
+// [参数] 无。
+// [返回] 无。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：新增，用例间隔离。
+func resetActiveTestStates() {
+	activeTestMu.Lock()
+	defer activeTestMu.Unlock()
+	activeTestStates = make(map[string]*activeTestState)
 }
 
 // findAccountForTest 按账号标识定位账号。

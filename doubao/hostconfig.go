@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -158,4 +159,157 @@ func decideKeepaliveTick(current time.Duration) (time.Duration, keepaliveTickAct
 		return setting.interval, keepaliveReschedule
 	}
 	return current, keepaliveProceed
+}
+
+// throttleSettingTTL 是账号闸门配置的缓存有效期。
+//
+// 闸门每次取许可都要读这三项，逐个请求去解析 69KB 的宿主配置不可接受；而配置变更
+// 本身是低频人工动作，30 秒内延迟对齐足够。
+const throttleSettingTTL = 30 * time.Second
+
+var (
+	// throttleSettingMu 保护下面三个缓存字段。
+	throttleSettingMu sync.Mutex
+	// throttleSettingCached 是上次从宿主配置读到的闸门设置。
+	throttleSettingCached throttleSetting
+	// throttleSettingExpiry 是缓存到期时刻。
+	throttleSettingExpiry time.Time
+)
+
+// throttleSetting 是从宿主配置文件里读出的账号闸门设置。
+type throttleSetting struct {
+	// maxInflight 是同一账号最大在途请求数。
+	maxInflight int
+	// minInterval 是同一账号两次发起的最小间隔。
+	minInterval time.Duration
+	// backoff 是被判访问频繁后的软退避时长。
+	backoff time.Duration
+}
+
+// effectiveThrottleSetting 返回当前生效的账号闸门设置。
+//
+// 优先级：宿主配置文件里的显式配置 > currentConfig() 的运行期值 > 内置默认值。
+// 读不到宿主配置时直接用运行期值，不让兜底失败影响节流本身。
+// [参数] 无。
+// [返回] 账号闸门设置。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：新增，让闸门三项配置也能绕过宿主不回调的缺陷。
+func effectiveThrottleSetting() throttleSetting {
+	now := time.Now()
+
+	throttleSettingMu.Lock()
+	if override := throttleSettingOverride; override != nil {
+		cached := normalizeThrottleSetting(*override)
+		throttleSettingMu.Unlock()
+		return cached
+	}
+	if now.Before(throttleSettingExpiry) {
+		cached := throttleSettingCached
+		throttleSettingMu.Unlock()
+		return cached
+	}
+	throttleSettingMu.Unlock()
+
+	cfg := currentConfig()
+	setting := throttleSetting{
+		maxInflight: cfg.AccountMaxInflight,
+		minInterval: time.Duration(cfg.AccountMinIntervalMs) * time.Millisecond,
+		backoff:     time.Duration(cfg.RateLimitBackoffSeconds) * time.Second,
+	}
+	// 1. 宿主配置能读到就用它覆盖，读不到保留运行期值。
+	if parsed, okParsed := loadThrottleSetting(); okParsed {
+		setting = parsed
+	}
+
+	// 2. 非法值统一回落默认，闸门不接受 0 并发这种会让请求永久排队的值。
+	setting = normalizeThrottleSetting(setting)
+
+	throttleSettingMu.Lock()
+	throttleSettingCached = setting
+	throttleSettingExpiry = now.Add(throttleSettingTTL)
+	throttleSettingMu.Unlock()
+	return setting
+}
+
+// normalizeThrottleSetting 把非法值统一换成安全默认值。
+//
+// maxInflight <= 0 会让请求永久排队，backoff <= 0 会让软退避形同虚设，
+// 两者都必须挡住。
+// [参数] setting: 待校验的设置。
+// [返回] 校验后的设置。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：新增，抽出非法值回落供覆盖路径复用。
+func normalizeThrottleSetting(setting throttleSetting) throttleSetting {
+	if setting.maxInflight <= 0 {
+		setting.maxInflight = defaultAccountMaxInflight
+	}
+	if setting.minInterval < 0 {
+		setting.minInterval = 0
+	}
+	if setting.backoff <= 0 {
+		setting.backoff = defaultRateLimitBackoffSeconds * time.Second
+	}
+	return setting
+}
+
+// loadThrottleSetting 从宿主配置文件里读出本插件的账号闸门设置。
+//
+// 三项都缺省时返回 okThrottle=false，让调用方沿用运行期值与默认值。
+// [参数] 无。
+// [返回] 账号闸门设置与是否读到至少一项。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：新增，解析宿主配置里的闸门三项。
+func loadThrottleSetting() (throttleSetting, bool) {
+	path := hostConfigPath()
+	if path == "" {
+		return throttleSetting{}, false
+	}
+	raw, errRead := os.ReadFile(path)
+	if errRead != nil {
+		return throttleSetting{}, false
+	}
+
+	var doc hostPluginDocument
+	if errUnmarshal := yaml.Unmarshal(raw, &doc); errUnmarshal != nil {
+		return throttleSetting{}, false
+	}
+	item, okItem := doc.Plugins.Configs[providerName]
+	if !okItem {
+		return throttleSetting{}, false
+	}
+	text := strings.TrimSpace(item.ConfigYAML)
+	if text == "" {
+		return throttleSetting{}, false
+	}
+
+	var decoded configOverride
+	if errUnmarshal := yaml.Unmarshal([]byte(text), &decoded); errUnmarshal != nil {
+		return throttleSetting{}, false
+	}
+
+	// 1. 缺省项从运行期配置起步，只有显式写了才替换。
+	cfg := currentConfig()
+	setting := throttleSetting{
+		maxInflight: cfg.AccountMaxInflight,
+		minInterval: time.Duration(cfg.AccountMinIntervalMs) * time.Millisecond,
+		backoff:     time.Duration(cfg.RateLimitBackoffSeconds) * time.Second,
+	}
+	if decoded.AccountMaxInflight > 0 {
+		setting.maxInflight = decoded.AccountMaxInflight
+	}
+	if decoded.AccountMinIntervalMs > 0 {
+		setting.minInterval = time.Duration(decoded.AccountMinIntervalMs) * time.Millisecond
+	}
+	if decoded.RateLimitBackoffSeconds > 0 {
+		setting.backoff = time.Duration(decoded.RateLimitBackoffSeconds) * time.Second
+	}
+	return setting, true
+}
+
+// resetThrottleSettingCache 清空闸门配置缓存（仅测试使用）。
+// [参数] 无。
+// [返回] 无。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：新增，避免测试间缓存串扰。
+func resetThrottleSettingCache() {
+	throttleSettingMu.Lock()
+	defer throttleSettingMu.Unlock()
+	throttleSettingCached = throttleSetting{}
+	throttleSettingExpiry = time.Time{}
 }

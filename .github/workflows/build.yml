@@ -110,6 +110,10 @@ jobs:
         run: python3 scripts/validate-registry.py registry.json
       - name: Test
         run: go test ./...
+      - name: Test (race)
+        # 闸门与保活都是并发原语，普通 go test 看不出竞态；doubao 需要 -race 兜住。
+        if: matrix.dir == 'doubao'
+        run: go test -race -count=1 ./...
       - name: Vet
         run: go vet ./...
 

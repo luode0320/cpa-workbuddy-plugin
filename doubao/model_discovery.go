@@ -118,8 +118,18 @@ func discoverUpstreamModels(sa *StoredAuth, timeout time.Duration) ([]upstreamMo
 	applyUpstreamHeaders(req)
 
 	client, jar := newUpstreamClient(sa, timeout)
+	ticket, errTicket := acquireUpstream(ctx, sa.AuthID, upstreamKindProbe)
+	if errTicket != nil {
+		return nil, errTicket
+	}
+	var gateErr error
+	defer func() {
+		releaseUpstream(ticket, gateErr)
+	}()
+
 	resp, errDo := client.Do(req)
 	if errDo != nil {
+		gateErr = errDo
 		return nil, fmt.Errorf("请求模型清单失败：%w", errDo)
 	}
 	defer resp.Body.Close()
@@ -129,13 +139,15 @@ func discoverUpstreamModels(sa *StoredAuth, timeout time.Duration) ([]upstreamMo
 
 	body, errRead := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if errRead != nil {
+		gateErr = errRead
 		return nil, fmt.Errorf("读取模型清单失败：%w", errRead)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &upstreamError{
+		gateErr = &upstreamError{
 			StatusCode: resp.StatusCode,
 			Message:    fmt.Sprintf("模型清单端点返回 HTTP %d", resp.StatusCode),
 		}
+		return nil, gateErr
 	}
 
 	var out launchResponse
@@ -143,10 +155,11 @@ func discoverUpstreamModels(sa *StoredAuth, timeout time.Duration) ([]upstreamMo
 		return nil, fmt.Errorf("模型清单解析失败：%w", errUnmarshal)
 	}
 	if out.Code != 0 {
-		return nil, &upstreamError{
+		gateErr = &upstreamError{
 			Code:    out.Code,
 			Message: fmt.Sprintf("模型清单端点返回业务错误 %d", out.Code),
 		}
+		return nil, gateErr
 	}
 	if len(out.Data.ModelList) == 0 {
 		return nil, fmt.Errorf("上游没有返回任何模型")

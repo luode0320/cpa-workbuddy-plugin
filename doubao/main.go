@@ -64,7 +64,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.1.37"
+	version      = "0.1.38"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -104,12 +104,27 @@ type Config struct {
 	//
 	// 只在 KeepaliveEnabled 为真时生效；<=0 时回落到默认 30 分钟。
 	KeepaliveIntervalSeconds int `yaml:"keepalive_interval_seconds" json:"keepalive_interval_seconds"`
+	// AccountMaxInflight 同一账号的最大在途上游请求数。
+	//
+	// 上游按「同一账号 + 同一设备」判访问频率，并发 2 以上会互相干扰。
+	// <=0 时回落到默认 1。
+	AccountMaxInflight int `yaml:"account_max_inflight" json:"account_max_inflight"`
+	// AccountMinIntervalMs 同一账号两次上游发起的最小间隔（毫秒）。
+	//
+	// 与在途上限配合：上限管「同时几个」，本项管「串行时也不能挨太近」。
+	// <0 时按 0 处理（不限制间隔），未配置时回落默认 2000。
+	AccountMinIntervalMs int `yaml:"account_min_interval_ms" json:"account_min_interval_ms"`
+	// RateLimitBackoffSeconds 收到「当前服务访问频繁」后该账号的软退避时长（秒）。
+	//
+	// 独立于 failover 的阶梯冷却：频率判定是可自愈的短时现象，用固定窗口比
+	// 60s×次数封顶 10 分钟的阶梯更准。<=0 时回落到默认 60。
+	RateLimitBackoffSeconds int `yaml:"rate_limit_backoff_seconds" json:"rate_limit_backoff_seconds"`
 }
 
 // defaultConfig 返回插件默认配置。
 // [参数] 无。
 // [返回] 带默认值的配置结构。
-// 最近修改时间：2026-11-21 21:50:00；改动原因：新增保活开关与间隔，默认关闭。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：新增账号闸门三项，默认 1 / 2000ms / 60s。
 func defaultConfig() Config {
 	return Config{
 		TimeoutSeconds:           120,
@@ -119,6 +134,9 @@ func defaultConfig() Config {
 		VideoCreationWaitSeconds: 120,
 		KeepaliveEnabled:         true,
 		KeepaliveIntervalSeconds: defaultKeepaliveIntervalSeconds,
+		AccountMaxInflight:       defaultAccountMaxInflight,
+		AccountMinIntervalMs:     defaultAccountMinIntervalMs,
+		RateLimitBackoffSeconds:  defaultRateLimitBackoffSeconds,
 	}
 }
 
@@ -286,6 +304,9 @@ func doubaoRegistration() registration {
 				{Name: "video_creation_wait_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "等待上游落下第一个创作块的上限（秒），超时即判定未开始渲染。"},
 				{Name: "keepalive_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "是否在空闲期定时刷新 msToken。"},
 				{Name: "keepalive_interval_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "空闲保活间隔（秒），默认 1800。"},
+				{Name: "account_max_inflight", Type: pluginapi.ConfigFieldTypeInteger, Description: "同一账号的最大在途上游请求数，默认 1。"},
+				{Name: "account_min_interval_ms", Type: pluginapi.ConfigFieldTypeInteger, Description: "同一账号两次上游发起的最小间隔（毫秒），默认 2000。"},
+				{Name: "rate_limit_backoff_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "被判访问频繁后该账号的软退避时长（秒），默认 60。"},
 			},
 		},
 		Capabilities: registrationCapability{
@@ -376,6 +397,9 @@ type configOverride struct {
 	VideoCreationWaitSeconds int   `yaml:"video_creation_wait_seconds"`
 	KeepaliveEnabled         *bool `yaml:"keepalive_enabled"`
 	KeepaliveIntervalSeconds int   `yaml:"keepalive_interval_seconds"`
+	AccountMaxInflight       int   `yaml:"account_max_inflight"`
+	AccountMinIntervalMs     int   `yaml:"account_min_interval_ms"`
+	RateLimitBackoffSeconds  int   `yaml:"rate_limit_backoff_seconds"`
 }
 
 // configurePlugin 解析宿主下发的 YAML 配置并更新运行期配置。
@@ -385,7 +409,7 @@ type configOverride struct {
 // 布尔项走指针判空：只有配置里真的写了这个键才覆盖默认值。
 // [参数] raw: 宿主 reconfigure 载荷，config_yaml 为 base64 解码后的 YAML 字节。
 // [返回] 解析错误。
-// 最近修改时间：2026-11-21 21:50:00；改动原因：新增保活开关与间隔，并按新配置重建定时器。
+// 最近修改时间：2026-11-22 15:10:00；改动原因：新增账号闸门三项的覆盖逻辑。
 func configurePlugin(raw []byte) error {
 	var req struct {
 		ConfigYAML []byte `json:"config_yaml"`
@@ -421,6 +445,15 @@ func configurePlugin(raw []byte) error {
 		}
 		if decoded.KeepaliveEnabled != nil {
 			cfg.KeepaliveEnabled = *decoded.KeepaliveEnabled
+		}
+		if decoded.AccountMaxInflight > 0 {
+			cfg.AccountMaxInflight = decoded.AccountMaxInflight
+		}
+		if decoded.AccountMinIntervalMs > 0 {
+			cfg.AccountMinIntervalMs = decoded.AccountMinIntervalMs
+		}
+		if decoded.RateLimitBackoffSeconds > 0 {
+			cfg.RateLimitBackoffSeconds = decoded.RateLimitBackoffSeconds
 		}
 	}
 
