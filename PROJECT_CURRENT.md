@@ -31,10 +31,20 @@
 - **2026-11-08 14:51 traework 升级 0.5.18 → 0.5.19**（下行 usage 帧缺失修复，`hot reloaded active_version=0.5.19 retired 0.5.18`，落盘 sha256 `27d74d19…` 与 release zip 逐字节一致；容器未重启）。同刻 workbuddy 0.21.15 / qoderwork 0.13.12 由并行会话上线。
 - 2026-10-25 历史发布批（已过期，仅存档）：zcode 0.3.1 / qoderwork 0.12.1 / traework 0.5.1 / workbuddy 0.21.2 / cursor 0.1.6 / qoder-ai 0.1.31 / coze 0.6.2 / qwenwork 0.2.9 / copilot 0.1.11 / workbuddy-ai 0.1.30 / token-usage 0.2.8（细节见 git log 与 CHANGELOG）。
 - 活动工作区：F:\cpa-plugin
-- 当前时间：2026-11-21 (GMT+8)
+- 当前时间：2026-11-22 (GMT+8)
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-22 17:26 - 19:20）：**workbuddy-provider 0.21.30：积分定时持久化刷新偶发不生效 —— 热重载旧实例常驻叠加固定临时名互相覆盖，四项修复 + 生产验收 1 轮/小时**：
+  - **指令链**：m00001「WorkBuddy的定时积分持久化刷新好像有时候不生效, 检查一下」→ m00241「选项 A」（A = 4.1~4.4 全做，一次消除多实例与写盘竞争）。
+  - **现象证据**：每小时固定 3 轮 `credits sweep done`（相位 HH:06 / HH:21 / HH:43），而 `creditsSweepInterval = time.Hour` 下单实例只该 1 轮，累计 548 条；快照 43 账号里 42 条 `fetched_at` 停在 `2026-11-22T09:05:52~09:06:17Z`，文件 `updated_at` 却已是 `09:21:09Z`（内容滞后 15 分钟）；`2026/11/20 02:07:36~37` 连打 7 条 `credits snapshot persist failed: rename ...workbuddy-credits.json.tmp ...: no such file or directory`；`/proc/1/maps` 同时 mmap `workbuddy-provider-v0.21.27.so (deleted)` / `v0.21.28.so (deleted)` / `v0.21.29.so`。
+  - **四项根因**：D1 积分扫描与探活循环无实例守卫，热重载后旧实例 goroutine 继续跑（`credits_sweep.go:182`、`watchdog.go:158`，此前守卫只铺 failover 三处）；D2 实例守卫缺「持有者存活」判据，孤儿标记 `/tmp/cpa-workbuddy-provider-instance=dn0mlpa0gx1h-1930`（`/proc/1930` 不存在）让守卫恒真、新实例不敢接管（`instance_guard.go:50`）；D3 落盘固定临时名 `path + ".tmp"` + 整文件覆盖，多实例并发 rename 互删临时文件（`credits_snapshot.go:302`、`:277`）；D4 `ensureCreditSnapshotLoaded` 先置 `loaded=true` 再读盘，一次失败永不重试（`credits_snapshot.go:166`）。
+  - **修复（提交 `ed04d57`）**：D2 守卫补持有者存活判据并打孤儿接管日志；D1 给 sweep 与 watchdog 补同一道实例闸门；D3 改纳秒级唯一临时名 + 磁盘键级合并（不再整文件覆盖）；D4 改为读盘成功才置 `loaded`。顺序硬依赖：先 D2 再 D1，否则孤儿标记会让新闸门立刻复现 2026-11-21 常驻循环全停摆事故。
+  - **测试**：本地无 CGO 走 `python scripts/cgo-shim-build.py workbuddy` 全绿（build+vet+test）；新增用例覆盖孤儿接管、并发落盘不互删、读盘失败可重试。
+  - **发布链**：bump VERSION 0.21.30 → CI → 下载 6 平台资产 → `git add` → `publish-assets.py` → registry 提交 `5ad421a` → `plugin-store install` 热重载。
+  - **生产验收**：`18:08:23 plugin hot reloaded plugin_id=workbuddy-provider active_version=0.21.30 retired_version=0.21.29`；出现一次 `taking over orphan instance marker (previous dn0mlpa0gx1h-1930 no longer alive)`；新实例 sweep 18:12:22 → 19:12:22 恰好 3600 秒 ⇒ 1 轮/小时成立；`credits snapshot persist failed` 近 2 小时 0 条；`/CLIProxyAPI/data` 无 `.tmp` 残留；快照 471,012 B 且 mtime 随每轮 sweep 前进。
+  - **遗留（非缺陷）**：旧 .so 仍被 mmap（v0.21.27/28/29/30 四代并存），旧二进制不含 `retireIfSuperseded`、热重载也不卸载旧 .so，故 18:21:08 / 18:43:57 / 19:06:17 的冗余 sweep 只能靠重启容器消除；数据正确性已由 D3/D4 独立保证，不需为此重启。
+  - **教训**：① 热重载只加载新 .so、不卸载旧 .so，任何常驻循环都必须自带实例守卫，且守卫要能判持有者存活，否则一次孤儿标记就能永久压死闸门；② 固定临时名「写临时文件 + rename」在多实例下是互删陷阱，唯一名 + 键级合并才行；③ 读盘失败必须保持可重试，先置 `loaded` 再读等于把瞬时 IO 错误永久化。
 - 会话（2026-11-21 12:11 - 14:40）：**traework 0.5.58：孤儿实例标记压死全部常驻循环（积分定时刷新停摆 14 小时）—— 改代码 + 发版 + 热重载，生产已恢复并做孤儿接管验收**：
   - **指令链**：m00005（两张生产面板截图）「TraeWork的定时刷新好像没有生效, 有些号没有刷新积分, 我们记得是1小时一次的是吗?」→ m00388「怎么做? 重启容器还是改代码?」。
   - **周期口径纠正**：真实周期 **10 分钟**（`traework/watchdog.go:39 watchdogIntervalDefault = 10 * time.Minute`），不存在 1 小时积分周期；1 小时量级只在 workbuddy/coze，用户把 4 小时签到/保活槽位（`checkin.go:484 autoCheckinTimes = []int{0,4,8,12,16,20}`）记混。
@@ -149,12 +159,3 @@
   - **生产安装**：`POST /v0/management/plugin-store/doubao-provider/install?version=0.1.7&source=source-636fa01121af` → `restart_required:false`、`plugin loaded` + `plugin registered`（02:28:32），**容器未重启**（`StartedAt=2026-11-11T22:52:32Z`、`RestartCount=2`）。落盘 `/CLIProxyAPI/plugins/linux/amd64/doubao-provider-v0.1.7.so` sha256 `fe3e42038d62d6cf62f7468829666dcdc4d7a2e8f96df0c229fd2286aecd1f88`（8,038,208 B）**与本地 zip 内 .so 逐字节一致**。
   - **生产验收**：`/v0/management/plugins` 里 `registered/enabled/effective_enabled` 全 true，10 个 `config_fields` 全部下发，`menus` 有 `/v0/resource/plugins/doubao-provider/panel`（菜单名 Doubao）；面板 200；`/accounts` = `{"accounts":[],"count":0}`（未导账号）；`/import {}` → 400 `{"error":"cookie 不能为空"}`；`/models?auth_index=doubao-nonexistent` → `{"error":"账号不存在"}`；`/test-active {}` → `{"error":"auth_index 不能为空"}`；容器内 `/root/.antigravity_cockpit/doubao_accounts` 已自动创建（空）。
   - **当前缺口（真实存在，需真实 Cookie 才能推进）**：`/v1/models` 里没有 `doubao/*` 条目（33 个模型全来自其它 provider），`POST /v1/chat/completions model=doubao/deepseek-v4-flash` → 400 `unknown provider for model`。根因：宿主只在**有账号**时才注册该 provider 的模型（`ModelForAuth` 路径），空账号池 ⇒ 零模型注册。**导入真实豆包 Cookie 后才会出现 `doubao/*` 并打通端到端。**
-
-- 会话（2026-11-14 00:00-00:25）：**Safeguard Killer 0.1.11：面板不再索要管理密钥，状态改走免鉴权 resource 路由**：
-  - **用户指令**：「这个不应该让用户填写」（截图红框标出面板右上角管理密钥输入框 + `HTTP 401 ... {"error":"invalid management key"}` 横幅）。
-  - **根因**：面板把「读状态」也放在需密钥的 `/v0/management` 下，而密钥唯一来源是 CPA 主面板 `localStorage['cli-proxy-auth']`，主面板 `partialize` 只在勾「记住密码」时才持久化它 ⇒ 没持久化就弹输入框让人手填；空 key 还会累计宿主的 5 次封禁（`maxFailures=5` / `banDuration=30m`，本轮实测被封 `16m11s`）。
-  - **依据**：宿主只对 `/v0/management` 校验密钥，`/v0/resource/plugins/<id>/` 走 `pluginResourceNoRoute`（`ServeResourceHTTP` 注释原文 "unauthenticated browser-navigable"）。实测 resource `/ui` 200 / 管理 `/state` 403。
-  - **改动**（提交 `082c0dc`，5 文件 +105/−27）：`Resources` 新增 `/state`（Menu 留空不占侧边栏）；`handleManagement` 两支合并（管理路由与 resource 路由同以 `/plugins/safeguard-killer/state` 结尾）；`STATE_API_URL` 改 resource 路径、`doRefresh` 去掉鉴权头与 401/403 分支；删 `#mgmtKey` 输入框与全部回退显示逻辑；`authHeaders()` → `mgmtAuthHeaders()`；保存前判断拿不到密钥就提示去主面板「插件管理 → 编辑配置」。
-  - **首版缺陷**：把 `/state` 写成独立 case 与既有 `HasSuffix(mgmtStateRoutePath)` 重叠成**死代码**（变异 1 存活，测试照样全绿）⇒ 已收敛为单支。
-  - **验证**：`ui_test.go` 断言 Resources 两条、`/state` 的 Menu 为空、HTML 不含 `mgmtKey`；新增 `TestHandleManagementStateResourcePath`。三组变异全 KILLED（删 resource 声明 / 塞回输入框 / 状态 URL 退回管理路由）。
-  - **发布与验收**：registry 提交 `bbb2fef`；CI run 1640 `Release: success`（`darwin/arm64` 仍 cancelled）；`.so` 26,767,392 B sha256 `5102b31c…ac32e1b` 与本地 zip 一致，`hot reloaded active_version=0.1.11 retired_version=0.1.10`（00:19:07）；真机 resource `/state` **200**、`version=0.1.11`、groups 保留、`/ui` 200 且 `mgmtKey=0` 命中、管理 `/state` 无 key 仍 401；`normal max=64` 与 `reasoning max=24` 均 200 且 `decisions` 记 `served by deepseek-v4-pro`、零失败。
