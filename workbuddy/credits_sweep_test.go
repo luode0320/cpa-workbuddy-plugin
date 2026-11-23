@@ -42,21 +42,21 @@ func withTempSnapshotDir(t *testing.T) string {
 	return base
 }
 
-// TestCreditTierForBoundaries 锁定三档分级的四个边界：99/100/399/400。
+// TestCreditTierForBoundaries 锁定三档分级的四个边界：19/20/49/50。
 // 边界值是这套机制最容易写反的部分（严格小于 vs 小于等于），必须逐点钉死。
 func TestCreditTierForBoundaries(t *testing.T) {
-	const disableBelow = 100
-	const preserveBelow = 400
+	const disableBelow = 20
+	const preserveBelow = 50
 
 	cases := []struct {
 		remain int64
 		want   creditTier
 		desc   string
 	}{
-		{99, creditTierDisabled, "低于禁用线"},
-		{100, creditTierPreserve, "恰好等于禁用线不算低于，落入保活档"},
-		{399, creditTierPreserve, "低于保活线"},
-		{400, creditTierNormal, "恰好等于保活线属正常档"},
+		{19, creditTierDisabled, "低于禁用线"},
+		{20, creditTierPreserve, "恰好等于禁用线不算低于，落入保活档"},
+		{49, creditTierPreserve, "低于保活线"},
+		{50, creditTierNormal, "恰好等于保活线属正常档"},
 		{0, creditTierDisabled, "零积分"},
 		{-1, creditTierNormal, "未知积分不降级"},
 	}
@@ -70,11 +70,11 @@ func TestCreditTierForBoundaries(t *testing.T) {
 // TestCreditTierForDisabledWhenPreserveOff 锁定显式 0 关闭保活降级后，
 // 高于禁用线的号全部回到正常档，不再被打保活标。
 func TestCreditTierForDisabledWhenPreserveOff(t *testing.T) {
-	if got := creditTierFor(200, 100, 0); got != creditTierNormal {
+	if got := creditTierFor(200, 20, 0); got != creditTierNormal {
 		t.Fatalf("保活线为 0 时 tier(200) = %v, want normal", got)
 	}
-	if got := creditTierFor(50, 100, 0); got != creditTierDisabled {
-		t.Fatalf("保活线为 0 不应影响禁用线，tier(50) = %v, want disabled", got)
+	if got := creditTierFor(10, 20, 0); got != creditTierDisabled {
+		t.Fatalf("保活线为 0 不应影响禁用线，tier(10) = %v, want disabled", got)
 	}
 }
 
@@ -82,12 +82,12 @@ func TestCreditTierForDisabledWhenPreserveOff(t *testing.T) {
 // 清空内存 → 重新载入，必须拿到与写入时一致的积分与档位。
 func TestCreditSnapshotPersistAndReload(t *testing.T) {
 	base := withTempSnapshotDir(t)
-	restoreMin := setMinRoutableCredits(400)
+	restoreMin := setMinRoutableCredits(50)
 	defer restoreMin()
-	restoreDisable := setLowCreditDisableBelow(100)
+	restoreDisable := setLowCreditDisableBelow(20)
 	defer restoreDisable()
 
-	recordCreditSnapshot("wb-persist", &creditsSummary{TotalRemain: 250, TotalUsed: 50, TotalSize: 300}, "nick", "cn")
+	recordCreditSnapshot("wb-persist", &creditsSummary{TotalRemain: 30, TotalUsed: 270, TotalSize: 300}, "nick", "cn")
 	if err := persistCreditSnapshot(); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
@@ -103,13 +103,13 @@ func TestCreditSnapshotPersistAndReload(t *testing.T) {
 	if !ok {
 		t.Fatal("重启后未能从 sidecar 读回快照")
 	}
-	if entry.Remain != 250 {
-		t.Fatalf("reload remain = %d, want 250", entry.Remain)
+	if entry.Remain != 30 {
+		t.Fatalf("reload remain = %d, want 30", entry.Remain)
 	}
 	if entry.Tier != creditTierPreserve {
 		t.Fatalf("reload tier = %v, want preserve", entry.Tier)
 	}
-	if entry.Credits == nil || entry.Credits.TotalUsed != 50 {
+	if entry.Credits == nil || entry.Credits.TotalUsed != 270 {
 		t.Fatalf("reload 完整积分明细丢失: %+v", entry.Credits)
 	}
 }
@@ -137,9 +137,9 @@ func TestCreditSnapshotCorruptFileDegrades(t *testing.T) {
 // 单号失败不影响其余、轮末落盘一次。
 func TestRunCreditSweepSerialAndPersists(t *testing.T) {
 	withTempSnapshotDir(t)
-	restoreMin := setMinRoutableCredits(400)
+	restoreMin := setMinRoutableCredits(50)
 	defer restoreMin()
-	restoreDisable := setLowCreditDisableBelow(100)
+	restoreDisable := setLowCreditDisableBelow(20)
 	defer restoreDisable()
 
 	origList := creditsSweepListFn
@@ -207,9 +207,9 @@ func TestRunCreditSweepSerialAndPersists(t *testing.T) {
 // 这里让三个账号全部成功，一旦实现改为每号落盘，次数会变成 3 而被抓住。
 func TestRunCreditSweepPersistsOnceForMultipleAccounts(t *testing.T) {
 	withTempSnapshotDir(t)
-	restoreMin := setMinRoutableCredits(400)
+	restoreMin := setMinRoutableCredits(50)
 	defer restoreMin()
-	restoreDisable := setLowCreditDisableBelow(100)
+	restoreDisable := setLowCreditDisableBelow(20)
 	defer restoreDisable()
 
 	origList := creditsSweepListFn
@@ -266,11 +266,11 @@ func TestGradeCreditsDisablesBelowLine(t *testing.T) {
 	resetCreditProbeForTest()
 	h := newFailoverFakeHost(t)
 	h.addAccount("wb-low", "idx-low", nil)
-	restoreDisable := setLowCreditDisableBelow(100)
+	restoreDisable := setLowCreditDisableBelow(20)
 	defer restoreDisable()
 
 	sa := &storedAuth{}
-	cr := &creditsSummary{TotalRemain: 99, TotalUsed: 1, TotalSize: 100}
+	cr := &creditsSummary{TotalRemain: 19, TotalUsed: 81, TotalSize: 100}
 	tier := gradeCreditsForAuth("idx-low", "wb-low", sa, cr)
 	if tier != creditTierDisabled {
 		t.Fatalf("tier = %v, want disabled", tier)
@@ -290,16 +290,18 @@ func TestGradeCreditsDisablesBelowLine(t *testing.T) {
 	}
 }
 
-// TestGradeCreditsPreserveDoesNotDisable 锁定 100~400 只打保活标、绝不写 disabled。
+// TestGradeCreditsPreserveDoesNotDisable 锁定 20~50 只打保活标、绝不写 disabled。
 func TestGradeCreditsPreserveDoesNotDisable(t *testing.T) {
 	resetFailover(t)
 	h := newFailoverFakeHost(t)
 	h.addAccount("wb-mid", "idx-mid", nil)
-	restoreDisable := setLowCreditDisableBelow(100)
+	restoreDisable := setLowCreditDisableBelow(20)
 	defer restoreDisable()
+	restoreMin := setMinRoutableCredits(50)
+	defer restoreMin()
 
 	before := h.writeCount()
-	tier := gradeCreditsForAuth("idx-mid", "wb-mid", &storedAuth{}, &creditsSummary{TotalRemain: 250})
+	tier := gradeCreditsForAuth("idx-mid", "wb-mid", &storedAuth{}, &creditsSummary{TotalRemain: 30})
 	if tier != creditTierPreserve {
 		t.Fatalf("tier = %v, want preserve", tier)
 	}
@@ -318,11 +320,11 @@ func TestGradeCreditsRequiresProbeBeforeReenable(t *testing.T) {
 	resetCreditProbeForTest()
 	h := newFailoverFakeHost(t)
 	h.addAccount("wb-back", "idx-back", nil)
-	restoreDisable := setLowCreditDisableBelow(100)
+	restoreDisable := setLowCreditDisableBelow(20)
 	defer restoreDisable()
 
 	// 先禁用。
-	gradeCreditsForAuth("idx-back", "wb-back", &storedAuth{}, &creditsSummary{TotalRemain: 50})
+	gradeCreditsForAuth("idx-back", "wb-back", &storedAuth{}, &creditsSummary{TotalRemain: 10})
 	if h.docOf("idx-back")["disabled"] != true {
 		t.Fatal("前置条件不成立：应先被禁用")
 	}
@@ -367,12 +369,12 @@ func TestGradeCreditsYieldsToOthers(t *testing.T) {
 			resetFailover(t)
 			resetCreditProbeForTest()
 			h := newFailoverFakeHost(t)
-			extra := map[string]any{"disabled": true, creditDisableKey: true, creditDisableBelowKey: 100}
+			extra := map[string]any{"disabled": true, creditDisableKey: true, creditDisableBelowKey: 20}
 			for k, v := range c.extra {
 				extra[k] = v
 			}
 			h.addAccount("wb-other", "idx-other", extra)
-			restoreDisable := setLowCreditDisableBelow(100)
+			restoreDisable := setLowCreditDisableBelow(20)
 			defer restoreDisable()
 
 			origPing := creditDisablePingFn
@@ -477,20 +479,20 @@ func TestDoFetchOneRecordsSnapshotAndGrades(t *testing.T) {
 	resetCreditProbeForTest()
 	h := newFailoverFakeHost(t)
 	h.addAccount("wb-manual", "idx-manual", nil)
-	restoreDisable := setLowCreditDisableBelow(100)
+	restoreDisable := setLowCreditDisableBelow(20)
 	defer restoreDisable()
-	restoreMin := setMinRoutableCredits(400)
+	restoreMin := setMinRoutableCredits(50)
 	defer restoreMin()
 
 	origGet := hostAuthGetFn
 	t.Cleanup(func() { hostAuthGetFn = origGet })
 	hostAuthGetFn = func(string) (*storedAuth, error) { return &storedAuth{}, nil }
 
-	// 积分 50 < 禁用线 100：刷新本身成功，但必须顺手把号停用。
+	// 积分 10 < 禁用线 20：刷新本身成功，但必须顺手把号停用。
 	newBillingStub(t, func(path string) (int, string) {
 		switch path {
 		case "/v2/billing/meter/get-user-resource":
-			return 200, creditsEnvelope(50, 100)
+			return 200, creditsEnvelope(10, 100)
 		default:
 			return 200, `{"code":0,"msg":"OK","data":{}}`
 		}
@@ -502,7 +504,7 @@ func TestDoFetchOneRecordsSnapshotAndGrades(t *testing.T) {
 	if err := doFetchOne("idx-manual", "wb-manual"); err != nil {
 		t.Fatalf("doFetchOne: %v", err)
 	}
-	if entry, ok := creditSnapshotGet("wb-manual"); !ok || entry.Remain != 50 {
+	if entry, ok := creditSnapshotGet("wb-manual"); !ok || entry.Remain != 10 {
 		t.Fatalf("手动刷新必须写入快照, got %+v ok=%v", entry, ok)
 	}
 	if h.docOf("idx-manual")["disabled"] != true {
@@ -522,9 +524,9 @@ func TestDoFetchOneHealthyCreditsKeepsAccount(t *testing.T) {
 	resetCreditProbeForTest()
 	h := newFailoverFakeHost(t)
 	h.addAccount("wb-ok", "idx-ok", nil)
-	restoreDisable := setLowCreditDisableBelow(100)
+	restoreDisable := setLowCreditDisableBelow(20)
 	defer restoreDisable()
-	restoreMin := setMinRoutableCredits(400)
+	restoreMin := setMinRoutableCredits(50)
 	defer restoreMin()
 
 	origGet := hostAuthGetFn
@@ -564,9 +566,9 @@ func TestProcessAutoCheckinGradesAfterCheckin(t *testing.T) {
 	resetCreditProbeForTest()
 	h := newFailoverFakeHost(t)
 	h.addAccount("wb-ci", "idx-ci", nil)
-	restoreDisable := setLowCreditDisableBelow(100)
+	restoreDisable := setLowCreditDisableBelow(20)
 	defer restoreDisable()
-	restoreMin := setMinRoutableCredits(400)
+	restoreMin := setMinRoutableCredits(50)
 	defer restoreMin()
 
 	origGet := hostAuthGetFn
@@ -588,7 +590,7 @@ func TestProcessAutoCheckinGradesAfterCheckin(t *testing.T) {
 			return 200, `{"code":0,"msg":"OK","data":{"success":true}}`
 		case "/v2/billing/meter/get-user-resource":
 			// 签到后余额仍低于禁用线：必须被分级检查抓住。
-			return 200, creditsEnvelope(60, 100)
+			return 200, creditsEnvelope(10, 100)
 		default:
 			return 200, `{"code":0,"msg":"OK","data":{}}`
 		}
@@ -600,7 +602,7 @@ func TestProcessAutoCheckinGradesAfterCheckin(t *testing.T) {
 		t.Fatal("前置条件不成立：签到请求未被发出")
 	}
 	entry, ok := creditSnapshotGet("wb-ci")
-	if !ok || entry.Remain != 60 {
+	if !ok || entry.Remain != 10 {
 		t.Fatalf("签到后必须刷新快照, got %+v ok=%v", entry, ok)
 	}
 	if h.docOf("idx-ci")["disabled"] != true {
@@ -623,9 +625,9 @@ func TestHandleCreditsQuerySingleAccountWritesSnapshot(t *testing.T) {
 	resetCreditProbeForTest()
 	h := newFailoverFakeHost(t)
 	h.addAccount("wb-single", "idx-single", nil)
-	restoreDisable := setLowCreditDisableBelow(100)
+	restoreDisable := setLowCreditDisableBelow(20)
 	defer restoreDisable()
-	restoreMin := setMinRoutableCredits(400)
+	restoreMin := setMinRoutableCredits(50)
 	defer restoreMin()
 
 	// 宿主枚举与凭据读取走既有接缝，单卡路径必须同样可注入。

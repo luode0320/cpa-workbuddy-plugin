@@ -34,8 +34,8 @@ func TestMinRoutableCredits_DefaultRedlineBoundary(t *testing.T) {
 	restoreDisable := setLowCreditDisableBelow(defaultLowCreditDisableBelow)
 	defer restoreDisable()
 
-	const redline = 400
-	const disableBelow = 100
+	const redline = 50
+	const disableBelow = 20
 	if got := loadedMinRoutableCredits(); got != redline {
 		t.Fatalf("default minRoutableCredits = %d, want %d", got, redline)
 	}
@@ -80,7 +80,7 @@ func TestMinRoutableCredits_DefaultRedlineBoundary(t *testing.T) {
 }
 
 // TestMinRoutableCredits_Configurable400Boundary 验证保活线与禁用线均可被配置覆盖，
-// 且覆盖后判据立即跟随新值（不是把 400/100 写死在调用点）。
+// 且覆盖后判据立即跟随新值（不是把默认阈值写死在调用点）。
 func TestMinRoutableCredits_Configurable400Boundary(t *testing.T) {
 	restoreMin := setMinRoutableCredits(defaultMinRoutableCredits)
 	defer restoreMin()
@@ -97,7 +97,7 @@ func TestMinRoutableCredits_Configurable400Boundary(t *testing.T) {
 		t.Fatalf("configured minRoutableCredits = %d, want 800", got)
 	}
 
-	// 700 低于 800 保活线但高于 100 禁用线：现在属保活档，仍可路由。
+	// 700 低于 800 保活线但高于默认禁用线：现在属保活档，仍可路由。
 	storeCredits(t, "wb-700", 700, 0, 700)
 	if !accountRoutable("wb-700") {
 		t.Fatal("remain=700 在禁用线之上，必须仍可路由（保活档）")
@@ -159,7 +159,7 @@ func TestNoAutomaticAccountDeletion(t *testing.T) {
 	}
 }
 
-// TestMinRoutableCredits_ConfigAndExclusion 验证安全缓冲额度红线默认 400、可配置、
+// TestMinRoutableCredits_ConfigAndExclusion 验证安全缓冲额度红线默认 50、可配置、
 // 调度排除 remain < 红线、平摊轮询以及 14018 换号判据。
 func TestMinRoutableCredits_ConfigAndExclusion(t *testing.T) {
 	resetActiveAuth(t)
@@ -168,18 +168,18 @@ func TestMinRoutableCredits_ConfigAndExclusion(t *testing.T) {
 	restoreMin := setMinRoutableCredits(defaultMinRoutableCredits)
 	defer restoreMin()
 
-	// 1. 默认阈值为 400
-	if got := loadedMinRoutableCredits(); got != 400 {
-		t.Fatalf("default minRoutableCredits = %d, want 400", got)
+	// 1. 默认阈值为 50
+	if got := loadedMinRoutableCredits(); got != 50 {
+		t.Fatalf("default minRoutableCredits = %d, want 50", got)
 	}
 
-	// 2. 通过 configure() 动态修改阈值为 50
+	// 2. 通过 configure() 动态修改阈值为 120（与默认 50 区分，证明取值来自配置）
 	cfgBytes, _ := json.Marshal(map[string]any{
-		"config_yaml": []byte("min_routable_credits: 50\nscheduler_mode: credits\n"),
+		"config_yaml": []byte("min_routable_credits: 120\nscheduler_mode: credits\n"),
 	})
 	configure(cfgBytes)
-	if got := loadedMinRoutableCredits(); got != 50 {
-		t.Fatalf("configured minRoutableCredits = %d, want 50", got)
+	if got := loadedMinRoutableCredits(); got != 120 {
+		t.Fatalf("configured minRoutableCredits = %d, want 120", got)
 	}
 	setMinRoutableCredits(defaultMinRoutableCredits)
 

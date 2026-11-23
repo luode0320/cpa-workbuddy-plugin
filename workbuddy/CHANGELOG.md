@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.21.31 (2026-11-24)
+
+### Change - 保活线由 400 下调到 50、硬禁用线由 100 下调到 20
+
+- 需求(用户 2026-11-24): 保活线 400 太高，生产 42 个账号里大量 200~400 分的可用号被整批打「保活」标让位，实际可用余额被压在 1251 / 8467（消耗占比 85%），池子闲着。用户裁定「禁用 20、保活 50」。
+- 改动: `policy.go` 的 `defaultMinRoutableCredits` 400 → 50、`defaultLowCreditDisableBelow` 100 → 20；`main.go` 两条 ConfigField 描述与 `panel.go` 的 `low_credits` 字段注释同步为新区间 20~50。
+- 为什么必须同时下调禁用线: `creditTierFor` 先判禁用线再判保活线，若只改保活线为 50 而禁用线仍是 100，配置归一（`usage_config.go` 把禁用线夹到保活线）后两线相等 ⇒ 保活档成为空集，「保活」标在任何积分下都不会出现，症状表现为「保活标集体消失」而不是「保活线变低」。新配比 20 < 50 使三档完整可达。
+- 未配置即生效: 生产 `config.yaml` 从未显式配置这两个键（`grep` 无命中），默认值改动直接落到运行时；已显式配置的环境不受影响（配置值仍优先）。
+- 文档: `workbuddy/README.md` 配置示例与说明、`workbuddy/README_CN.md` 三档分级两条、仓库根 `README.md` 积分生命周期条目同步为新默认值。
+- 测试: `credits_sweep_test.go` 边界用例改为 19/20/49/50 四点，保活档用例余量改 30、低于线用例改 19、手动刷新与签到后用例改 10；`min_routable_credits_test.go` 默认阈值断言改 50/20，配置覆盖用例改 120 以与默认值区分。`python scripts/cgo-shim-build.py workbuddy` build / vet / test 全绿。
+- 涉及文件: `policy.go` / `main.go` / `panel.go` / `README.md` / `README_CN.md` / `CHANGELOG.md` / `VERSION` 及上述两个测试文件。
+
 ## 0.21.30 (2026-11-22)
 
 ### Fix - 定时积分刷新偶发不生效：多实例并写覆盖 + 共用临时名互删 + 载入失败不再重试

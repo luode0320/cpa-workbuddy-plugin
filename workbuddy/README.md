@@ -129,13 +129,13 @@ plugins:
       lifecycle_auto: false
 
       # Keep-alive line: accounts below this are tagged "preserve" and still
-      # routable, but yield to normal-tier accounts (default 400, 0 disables).
-      min_routable_credits: 400
+      # routable, but yield to normal-tier accounts (default 50, 0 disables).
+      min_routable_credits: 50
 
       # Hard disable line: an hourly sweep writes disabled:true once credits
       # fall below this; re-enabled only after credits recover AND a probe
-      # succeeds (default 100, 0 disables the mechanism).
-      low_credit_disable_below: 100
+      # succeeds (default 20, 0 disables the mechanism).
+      low_credit_disable_below: 20
 
       # Scheduler behavior (default "session"):
       #   session → per-conversation round-robin: same conversation stays on

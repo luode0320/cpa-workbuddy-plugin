@@ -25,7 +25,7 @@ type wbAccount struct {
 	CreatedAt    string          `json:"created_at,omitempty"` // account creation time (RFC3339), from JWT auth_time
 	Disabled     bool            `json:"disabled"`
 	Exhausted    bool            `json:"exhausted"`
-	LowCredits   bool            `json:"low_credits"`           // 保活档：100~400，可路由但排最后
+	LowCredits   bool            `json:"low_credits"`           // 保活档：20~50，可路由但排最后
 	CreditTier   string          `json:"credit_tier,omitempty"` // normal / preserve / disabled
 	CreditsAt    string          `json:"credits_at,omitempty"`  // 积分快照时刻(RFC3339)，供面板显示新鲜度
 	Selected     bool            `json:"selected"`              // panel active routing card

@@ -76,18 +76,18 @@ var hardCreditMarkers = []string{
 	"not enough credit",
 }
 
-// defaultMinRoutableCredits 是保活线默认值（400 点）。
+// defaultMinRoutableCredits 是保活线默认值（50 点）。
 // 剩余额度低于该阈值的账号仍可承载请求，但排在健康号之后——它是软降级，
 // 不再是硬排除（2026-10-23 按用户裁定改造）：低于禁用线的号才写盘停用，
 // 禁用线与保活线之间的号属于「保活」档，保留路由能力但优先级最低。
-// 最近修改时间：2026-10-23；改动原因：硬排除改为保活降级，与三档分级对齐。
-const defaultMinRoutableCredits int64 = 400
+// 最近修改时间：2026-11-24；改动原因：按用户裁定保活线由 400 下调到 50。
+const defaultMinRoutableCredits int64 = 50
 
-// defaultLowCreditDisableBelow 是硬禁用线默认值（100 点）。
+// defaultLowCreditDisableBelow 是硬禁用线默认值（20 点）。
 // 剩余额度低于该值的账号写盘 disabled:true，由宿主路由判据直接停用；
 // 恢复要求积分回到该值以上且探活成功（见 credit_disable.go）。
-// 最近修改时间：2026-10-23；改动原因：新增三档分级中的硬禁用线。
-const defaultLowCreditDisableBelow int64 = 100
+// 最近修改时间：2026-11-24；改动原因：按用户裁定禁用线由 100 下调到 20（须低于保活线，否则保活档不可达）。
+const defaultLowCreditDisableBelow int64 = 20
 
 var (
 	minRoutableCredits   int64 = defaultMinRoutableCredits

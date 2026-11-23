@@ -198,10 +198,10 @@ plugins:
 
 1. **每小时串行扫描** — 全部账号（含禁用号）逐个拉取积分，结果落 sidecar
    `data/workbuddy-credits.json`，整轮只在末尾原子写盘一次。
-2. **低于硬禁用线**（`low_credit_disable_below`，默认 100）— 写盘
+2. **低于硬禁用线**（`low_credit_disable_below`，默认 20）— 写盘
    `disabled: true` 并打 `low_credit_disable` 标记；积分回到线上**且探活成功**
    才自动解禁。人工/故障禁用的号不归本机制管，各走各的恢复路径。
-3. **介于禁用线与保活线之间**（`min_routable_credits`，默认 400）— 打
+3. **介于禁用线与保活线之间**（`min_routable_credits`，默认 50）— 打
    「保活」标，仍可路由，但在正常档账号存在时整体让位。
 4. **面板进入不刷新积分** — 直接读 sidecar 落盘值；手动刷新与每日签到会
    即时重跑第 2、3 步的分级检查。
