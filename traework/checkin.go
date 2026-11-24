@@ -30,12 +30,14 @@ const (
 	checkinNormalCooldown = 55 * time.Minute
 )
 
-// checkinResult is the outcome of one check-in attempt.
+// checkinResult 是单次签到的结果。
 type checkinResult struct {
 	OK      bool   `json:"ok"`
 	Message string `json:"message"`
 	Points  int64  `json:"points,omitempty"`
 	Already bool   `json:"already,omitempty"`
+	// Cooldown 大于 0 表示本次因账号级冷却跳过、未请求上游，值为剩余冷却时长。
+	Cooldown time.Duration `json:"-"`
 }
 
 // checkinCooldownUntil 保存账号级 9074 冷却到期时间（Unix 秒）。
@@ -274,7 +276,7 @@ const checkinMaxAttempts = 4
 // checkinAccount 执行单个账号的每日签到领取并在设备冲突或限流时轮换设备号重试。
 // [参数] a: 已解析的 Trae 账号凭据。
 // [返回] checkinResult: 签到执行结果。
-// 最近修改时间：2026-10-10 22:00:00；改动原因：遇到 9074 限流或设备拦截时自动切换新 16 位数字设备号重试。
+// 最近修改时间：2026-11-24 21:35:00；改动原因：冷却跳过时在结果中带回剩余冷却时长，供重试队列顺延而不消耗预算。
 func checkinAccount(a *traeAuth) checkinResult {
 	// 1. 校验账号凭据有效性
 	if a == nil || !a.hasToken() {
@@ -282,7 +284,7 @@ func checkinAccount(a *traeAuth) checkinResult {
 	}
 	// 2. 账号级 9074 冷却期内直接跳过：持续请求只会把惩罚窗口越拉越长
 	if remaining := checkinCooldownRemaining(a); remaining > 0 {
-		return checkinResult{OK: false, Message: fmt.Sprintf("限流冷却中，约 %d 分钟后重试", int(remaining.Minutes())+1)}
+		return checkinResult{OK: false, Cooldown: remaining, Message: fmt.Sprintf("限流冷却中，约 %d 分钟后重试", int(remaining.Minutes())+1)}
 	}
 	host := a.checkinHost()
 	deviceID := deviceIDFor(a.DeviceID, a.UserID)
@@ -571,12 +573,10 @@ func init() {
 	go autoCheckinLoop()
 }
 
-// runFleetCheckin iterates every traework account and claims check-in.
-// Returns the success count plus per-account results so the panel can show
-// WHY an account failed (throttle / device block / credential problems)
-// instead of a bare "成功 0 个". Retryable failures are pushed into the
-// persistent retry queue (1-minute cadence, up to checkinRetryMax attempts);
-// the third return value counts accounts newly added to that queue.
+// runFleetCheckin 遍历全部 traework 账号执行签到，返回成功数、逐账号结果与本次新入队数。
+// [参数] source: 触发来源（auto 定时 / manual 手动），仅用于语义标注。
+// [返回] 成功账号数、逐账号结果、本次新加入重试队列的账号数。
+// 最近修改时间：2026-11-24 21:35:00；改动原因：每轮开始清掉遗留重试条目，给每个槽位完整重试预算。
 func runFleetCheckin(source string) (int, []map[string]any, int) {
 	files, err := hostAuthList()
 	if err != nil {
@@ -594,6 +594,8 @@ func runFleetCheckin(source string) (int, []map[string]any, int) {
 			results = append(results, map[string]any{"auth_id": f.ID, "uid": a2UID(a), "ok": false, "message": "凭据加载失败"})
 			continue
 		}
+		// 新一轮签到给每个账号完整重试预算，清掉上一槽位遗留的条目。
+		cancelCheckinRetry(f.AuthIndex)
 		res := checkinAccount(a)
 		if res.OK {
 			okCount++

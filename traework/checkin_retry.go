@@ -16,6 +16,7 @@
 //     never queued — retrying cannot succeed.
 //   - Due entries are popped from the map before processing so concurrent
 //     fleet runs cannot double-fire; a failing attempt re-queues itself.
+//   - 账号级冷却跳过时只顺延下次执行时间，不消耗重试预算。
 package main
 
 import (
@@ -207,16 +208,20 @@ func popDueCheckinRetries() []*checkinRetryEntry {
 	return due
 }
 
-// processCheckinRetry re-runs the claim for one queued account.
+// processCheckinRetry 对单个排队账号重跑签到。
+// [参数] e: 当前到期条目。
+// [返回] 无。
+// 最近修改时间：2026-11-24 21:35:00；改动原因：冷却跳过时顺延重试而不消耗预算。
 func processCheckinRetry(e *checkinRetryEntry) {
+	// 1. 加载凭据，加载失败按既有永久失败路径重排。
 	a, err := hostAuthGet(e.AuthIndex)
 	if err != nil || a == nil {
 		requeueCheckinRetry(e, "凭据加载失败")
 		return
 	}
+	// 2. 执行签到，成功则刷新积分缓存后结束。
 	res := checkinAccount(a)
 	if res.OK {
-		// Refresh the credits cache so the panel reflects the late win.
 		remain := res.Points
 		if r, qerr := accountPoints(a); qerr == nil {
 			remain = r
@@ -226,6 +231,12 @@ func processCheckinRetry(e *checkinRetryEntry) {
 		}
 		return
 	}
+	// 3. 账号级冷却跳过时顺延到冷却结束，不消耗重试预算。
+	if res.Cooldown > 0 {
+		requeueCheckinRetryWaiting(e, res.Message, res.Cooldown)
+		return
+	}
+	// 4. 普通失败按既有路径重排并递增预算。
 	requeueCheckinRetry(e, res.Message)
 }
 
@@ -248,6 +259,29 @@ func requeueCheckinRetry(e *checkinRetryEntry, message string) {
 	// Re-add only if neither a fleet run re-scheduled it nor a success
 	// cancelled it in the meantime (it was popped, so the key is absent —
 	// but a concurrent scheduleCheckinRetry may have re-created it).
+	if _, exists := checkinRetryQueue[e.AuthIndex]; !exists {
+		checkinRetryQueue[e.AuthIndex] = e
+	}
+	checkinRetryMu.Unlock()
+}
+
+// requeueCheckinRetryWaiting 在账号级冷却期间顺延重试，不消耗 attempt 预算。
+// [参数] e: 当前到期条目；message: 冷却提示；wait: 剩余冷却时长。
+// [返回] 无。
+// 最近修改时间：2026-11-24 21:35:00；改动原因：冷却空转不再吃掉 60 次重试预算。
+func requeueCheckinRetryWaiting(e *checkinRetryEntry, message string, wait time.Duration) {
+	// 1. 永久失败直接丢弃，不重排。
+	if !checkinRetryable(message) {
+		return
+	}
+	// 2. 刷新消息并把下次执行顺延到冷却结束再加一个重试间隔。
+	e.LastMessage = message
+	if wait < checkinRetryInterval {
+		wait = checkinRetryInterval
+	}
+	e.NextAt = time.Now().Add(wait + checkinRetryInterval)
+	// 3. 仅当全量签到未重建同名条目时写回。
+	checkinRetryMu.Lock()
 	if _, exists := checkinRetryQueue[e.AuthIndex]; !exists {
 		checkinRetryQueue[e.AuthIndex] = e
 	}

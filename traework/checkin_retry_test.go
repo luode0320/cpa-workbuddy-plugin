@@ -1,7 +1,5 @@
-// checkin_retry_test.go guards the check-in retry queue semantics:
-// idempotent upsert (no attempt-count reset on re-schedule), permanent
-// failure exclusion, success cancellation, attempt-cap drop, and the
-// next-attempt ordering of the snapshot.
+// checkin_retry_test.go 守护签到重试队列语义：幂等入队、永久失败排除、
+// 成功取消、预算上限丢弃、快照排序，以及冷却顺延不消耗预算。
 package main
 
 import (
@@ -149,5 +147,87 @@ func TestCheckinRetrySnapshot_Order(t *testing.T) {
 	}
 	if !strings.Contains(snap[0]["next_at"].(string), "T") {
 		t.Errorf("next_at should be RFC3339, got %v", snap[0]["next_at"])
+	}
+}
+
+// TestCheckinAccount_CooldownResult 锁定冷却跳过路径会在结果中带回剩余冷却时长，
+// 供重试队列识别为「未打上游」并顺延，而不是消耗一次 attempt。
+func TestCheckinAccount_CooldownResult(t *testing.T) {
+	a := &traeAuth{Token: "cooldown-token", UserID: "uid-cooldown-result"}
+	markCheckinCooldown(a)
+	t.Cleanup(func() { checkinCooldownUntil.Delete(checkinCooldownKey(a)) })
+
+	res := checkinAccount(a)
+	if res.OK {
+		t.Fatal("cooldown attempt must not report success")
+	}
+	if res.Cooldown <= 0 {
+		t.Fatalf("cooldown = %v, want > 0", res.Cooldown)
+	}
+}
+
+// TestRequeueCheckinRetryWaiting_KeepsBudget 验证冷却顺延不递增 attempt，
+// 并把下次执行推迟到冷却结束之后，让重试预算留给真实打上游的尝试。
+func TestRequeueCheckinRetryWaiting_KeepsBudget(t *testing.T) {
+	clearCheckinRetryQueue(t)
+	const idx = "wait-budget-1"
+	e := &checkinRetryEntry{
+		AuthIndex: idx,
+		AuthID:    "f.json",
+		Attempts:  5,
+		NextAt:    time.Now(),
+	}
+	wait := 55 * time.Minute
+	requeueCheckinRetryWaiting(e, "限流冷却中，约 55 分钟后重试", wait)
+
+	got := checkinRetryQueue[idx]
+	if got == nil {
+		t.Fatal("waiting entry not re-queued")
+	}
+	if got.Attempts != 5 {
+		t.Errorf("attempts = %d, want 5 (cooldown must not consume budget)", got.Attempts)
+	}
+	if !got.NextAt.After(time.Now().Add(wait)) {
+		t.Errorf("next_at = %v, want after now+%v", got.NextAt, wait)
+	}
+	if !strings.Contains(got.LastMessage, "冷却") {
+		t.Errorf("last_message = %q, want cooldown message", got.LastMessage)
+	}
+}
+
+// TestRequeueCheckinRetryWaiting_AtCapStillQueued 验证即使 attempt 已达上限，
+// 冷却顺延仍保留条目（预算未消耗），避免满预算账号当天彻底失去补签机会。
+func TestRequeueCheckinRetryWaiting_AtCapStillQueued(t *testing.T) {
+	clearCheckinRetryQueue(t)
+	const idx = "wait-cap-1"
+	e := &checkinRetryEntry{
+		AuthIndex: idx,
+		Attempts:  checkinRetryMax,
+		NextAt:    time.Now(),
+	}
+	requeueCheckinRetryWaiting(e, "限流冷却中，约 12 分钟后重试", 12*time.Minute)
+	if got := checkinRetryQueue[idx]; got == nil {
+		t.Fatal("cooling entry at attempt cap should still be queued")
+	}
+}
+
+// TestNewSlotResetsRetryBudget 验证每轮定时取消遗留条目后重新入队会得到完整预算，
+// 这是 runFleetCheckin 在新一轮调用 cancelCheckinRetry 后的可观测契约。
+func TestNewSlotResetsRetryBudget(t *testing.T) {
+	clearCheckinRetryQueue(t)
+	const idx = "slot-reset-1"
+	if !scheduleCheckinRetry(idx, "f.json", "uid-1", "稍后再试") {
+		t.Fatal("first schedule should add a new entry")
+	}
+	checkinRetryQueue[idx].Attempts = checkinRetryMax - 1 // 模拟上一槽位遗留的高预算条目
+	cancelCheckinRetry(idx)
+	if len(checkinRetrySnapshot()) != 0 {
+		t.Fatal("stale entry should be cancelled at new slot")
+	}
+	if !scheduleCheckinRetry(idx, "f.json", "uid-1", "稍后再试") {
+		t.Fatal("re-schedule after cancel should add a new entry")
+	}
+	if got := checkinRetryQueue[idx].Attempts; got != 1 {
+		t.Errorf("attempts after slot reset = %d, want 1", got)
 	}
 }

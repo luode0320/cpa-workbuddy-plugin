@@ -1,5 +1,15 @@
 # TraeWork Plugin Changelog
 
+## 0.5.59 (2026-11-24)
+
+### Fix - 冷却空转吃掉重试预算导致部分账号一次失败后当天不再补签
+
+- 现象(用户反馈 2026-11-24): 部分账号一次签到失败后，下一轮定时不再继续尝试，当天实际没签成功。
+- 根因: 9074 限流后账号进入 12/55 分钟冷却，重试队列仍按 1 分钟一拍照跑；冷却期 checkinAccount 直接返回「限流冷却中」且不打上游，但该消息仍被判 retryable，每拍 Attempts++ 白耗约 55 次，等冷却结束只剩约 5 次真实机会，60 次耗尽后条目被丢弃且当天无补签路径。此外 scheduleCheckinRetry 对在队账号不重置 Attempts/NextAt，跨 4 小时槽位粘滞，下轮很快 drop。
+- 修复(F1+F2): F1 checkinResult 新增 Cooldown 字段，冷却跳过时带回剩余时长，重试队列识别后把 NextAt 顺延到冷却结束+一个间隔且不递增 Attempts（满预算条目也保留）；F2 每轮全量签到对每个账号先 cancelCheckinRetry 再签到，给每个 4 小时槽位完整 60 次重试预算。
+- 影响范围: 仅签到重试队列与冷却返回路径，签到主流程、冷却时长与判定、换号与积分逻辑不变。
+- 验证: python scripts/cgo-shim-build.py traework build/vet/test 全绿；新增 TestCheckinAccount_CooldownResult、TestRequeueCheckinRetryWaiting_KeepsBudget、TestRequeueCheckinRetryWaiting_AtCapStillQueued、TestNewSlotResetsRetryBudget 四个回归用例；6-review STYLE: PASS。
+
 ## 0.5.58 (2026-11-21)
 
 ### Fix - 短命进程留下的孤儿实例标记让全部常驻循环永久停摆（积分快照停更 12 小时）
