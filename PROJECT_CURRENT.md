@@ -35,6 +35,17 @@
 
 ## 活动会话进展摘要
 
+- 会话（2026-11-24 21:00 - 22:10）：**traework 0.5.59：签到失败后下次定时不再重试 —— 重试队列冷却空转吃光重试预算，部分账号当天漏签**：
+  - **指令链**：m00001「trea插件有些账号尝试一次签到失败后下次定时的时候就么有继续尝试了, 导致我们有些号其实没有签到成功」→ m00034「执行」（批准 F1+F2 方案）。
+  - **根因三点**：① 命中 9074 限流后 checkinAccount（checkin.go:283-286）进入 normalCooldown=55min 直接返回「限流冷却中」且不打上游，但重试队列 checkinRetryable（checkin_retry.go:68-74）仍判该消息可重试，队列 1min 一拍在冷却期空转 Attempts++ 约 55 次，等冷却结束只剩约 5 次真实机会；② Attempts>=60 直接 drop 该账号，drop 后当天无补签路径；③ scheduleCheckinRetry（:80-105）对在队账号只刷 LastMessage/UID 不重置 Attempts/NextAt，跨 4h 槽位粘滞，下一轮很快耗尽。若 20:00 槽位 drop 则当天彻底没机会。
+  - **修复（提交 7aff4cc）**：F1 checkinResult 加 Cooldown time.Duration 标志，冷却返回带剩余时长；processCheckinRetry 遇到冷却调 requeueCheckinRetryWaiting，把 NextAt 顺延到「冷却结束 + 1min」且 Attempts 不自增；F2 runFleetCheckin 每账号签到前 cancelCheckinRetry，每个 4h 槽位给完整 60 次预算。新增 4 个回归测试（冷却标志透传、等待重排不扣预算、满额仍留队、新一轮重置预算）。F3（动态截止/队列持久化）未纳入。
+  - **测试**：python scripts/cgo-shim-build.py traework build+vet+test 全绿（首轮 exit=1 属编译/环境抖动，同输入连续 13 次复验全绿，10+3+完整日志 EXIT=0）。
+  - **文档**：Bug 主文档 doc/4-bugs/2026-11-24_213000_traework签到失败后重试队列冷却空转耗尽预算根因与修复.md；6-review doc/6-review/2026-11-24_215000_Bug-Trae签到重试冷却空转预算修复_6-review.md（STYLE: PASS，命中 STYLE-01/02/03/04/08/09，OCR go.md 无 Critical）。三改动文件 UTF-8 无 BOM/LF/零尾随空白。
+  - **发布链**：VERSION + main.go:284 var version bump 0.5.58→0.5.59、CHANGELOG 加 ## 0.5.59 (2026-11-24)；精确 add 8 本轮文件（245+/17−，工作树数百 untracked 临时脚本未混入）→ 提交 7aff4cc push → dispatch plugin=traework-provider version=0.5.59 allow_partial=true → run 45408012110（head 7aff4cc，darwin/arm64 cancelled 属常态、Release: success，release id=456841491 六资产）→ download-release-assets.py 0.5.59 traework-provider 5 zip ALL CHECKSUMS OK → publish-assets.py traework-provider 0.5.59 --allow-missing（5 artifacts，缺 darwin_arm64）→ registry 提交 1d944a1 push → 远端 raw FINAL: ALL PASS。一次发布 2 次推送。
+  - **生产热重载**：install?version=0.5.59&source=source-636fa01121af → restart_required:false；22:07:55 plugin hot reloaded plugin_id=traework-provider active_version=0.5.59 retired_version=0.5.58；落盘 traework-provider-v0.5.59.so 8,630,816 B sha256 4a06119a…014180 与本地 zip 内 .so 逐字节一致（SHA_MATCH=TRUE）；容器 Up About an hour 未重启。
+  - **生产验收**：/accounts 200（70 账号）、/panel 200（77,888 B）；13 插件启用态快照 install 前后逐字段一致（STATE_UNCHANGED，traework 属启用组）；管理密钥取自插件配置 cpa_management_key（仅临时 shell 变量，未回显原值）。
+  - **教训**：① 冷却态和失败态必须分开——把「限流冷却中」当普通失败重试，等于在冷却期空转扣光重试预算，正确做法是把 NextAt 顺延到冷却结束而非每拍重投；② 定时槽位之间要重置重试预算，否则前一槽位的 Attempts 粘滞后一槽位，越到当天晚间越没机会；③ dispatch CI 后必须按 head_sha 精确查 run，actions/runs?per_page=1 首条常是历史 run；run conclusion 因单 job cancelled 显示 cancelled 时，发布成败只看 Release job 与 release 实体；④ SSH 远程复杂 shell 命令用「本地写 bash → base64 → echo <b64>|base64 -d|bash」投递，避免 PowerShell 引号解析 ParserError。
+
 - 会话（2026-11-24 00:28 - 01:05）：**workbuddy-provider 0.21.31：保活线 400→50、硬禁用线 100→20，面板「保活」标区间收窄到 20~50**：
   - **指令链**：m00861（生产面板截图：42 账号里大批挂「保活(<400)」标、可用只剩 3 个、消耗占比 85%）→ m00863「WorkBuddy 的保活改成积分小于20才保活。」→ m00948「那就改成20禁用, 50保活」（最终数值裁定）。
   - **为什么必须同时下调禁用线**：`creditTierFor` 先判禁用线再判保活线（`credits_snapshot.go:104`），`usage_config.go:340-352` 又会把高于保活线的禁用线夹到保活线。若只把保活线降到 20 而禁用线留 100，夹完两线相等 ⇒ 保活档成空集、「保活」标集体消失。最终配比 20 < 50 使三档全部可达。
