@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -45,14 +46,20 @@ const (
 	chainPullScenario = "BatchSend|flow.agent.creation"
 )
 
-// videoPollInterval 是轮询消息链的间隔。
+// videoPollInterval 是轮询消息链的间隔（首 60 秒之后）。
 //
 // 真实网页在 150 秒左右拿到成品，这里取 10 秒一轮：既不会把上游打出高频，
-// 也能在成品就绪后一个间隔内返回。
+// 也能在成品就绪后一个间隔内返回。前 60 秒用更短的 videoFastPollInterval 抢首帧。
 //
 // 是变量不是常量，只为让用例把等待压到毫秒级（见 swapVideoPollTiming）：
 // 默认值下任何「不该等待却等待」的缺陷都要跑满 6 分钟才暴露，验证成本过高。
 var videoPollInterval = 10 * time.Second
+
+// videoFastPollWindow 是开跑后的抢首帧窗口，窗口内用更短的轮询间隔。
+const videoFastPollWindow = 60 * time.Second
+
+// videoFastPollInterval 是抢首帧窗口内的轮询间隔。
+const videoFastPollInterval = 5 * time.Second
 
 // videoPollTimeoutDefault 是等待视频产物的兜底总时长。
 //
@@ -102,6 +109,24 @@ func videoCreationWaitValue() time.Duration {
 		return time.Duration(secs) * time.Second
 	}
 	return videoCreationWaitDefault
+}
+
+// nextPollInterval 返回当前应该用的轮询间隔。
+//
+// 开跑后的前 60 秒用 5s 抢首帧，让成品就绪后更快返回；之后回到 10s，
+// 避免长时间渲染把上游打出高频。
+// [参数] elapsed: 从开始等待起已经过去的时间。
+// [返回] 本轮应等待的时长。
+// 最近修改时间：2026-11-25 00:13:00；改动原因：新增，首帧抢快、后续降频。
+func nextPollInterval(elapsed time.Duration) time.Duration {
+	if elapsed < videoFastPollWindow {
+		// 快轮询不应比常规间隔更慢。
+		if videoFastPollInterval < videoPollInterval {
+			return videoFastPollInterval
+		}
+		return videoPollInterval
+	}
+	return videoPollInterval
 }
 
 // chainPullRequest 是 /im/chain/single 的请求体。
@@ -216,7 +241,7 @@ func buildChainPullRequest(conversationID string, limit int) chainPullRequest {
 // 丢掉，所以「在渲染」与「根本没开始」两种情况的资产列表都是空，只看资产无法区分。
 // [参数] raw: 响应原文。
 // [返回] 产物列表、是否出现过创作块、错误。
-// 最近修改时间：2026-11-21 02:07:00；改动原因：新增 sawCreation，用于区分在渲染与没开跑。
+// 最近修改时间：2026-11-25 00:08:00；改动原因：status_code 业务失败改为返回 upstreamError 供早退分类。
 func assetsFromChainResponse(raw []byte) ([]creationAsset, bool, error) {
 	if len(raw) == 0 {
 		return nil, false, fmt.Errorf("消息链接口返回空响应")
@@ -226,8 +251,12 @@ func assetsFromChainResponse(raw []byte) ([]creationAsset, bool, error) {
 		return nil, false, fmt.Errorf("消息链响应不是合法 JSON：%w", errUnmarshal)
 	}
 	// 上游用 status_code 而非 HTTP 状态码表达业务失败。
+	// 转成 upstreamError，让上层能按 Auth/Rate 分类早退换号，而不是空等到超时。
 	if resp.StatusCode != 0 {
-		return nil, false, fmt.Errorf("消息链接口返回 %d：%s", resp.StatusCode, resp.StatusDesc)
+		return nil, false, &upstreamError{
+			Code:    resp.StatusCode,
+			Message: statusCodeHint(resp.StatusCode, resp.StatusDesc),
+		}
 	}
 
 	var (
@@ -386,7 +415,7 @@ var chainPollAccountHook func(*StoredAuth)
 // 早于成品出现，用它当判据可以把「没开跑」的失败提前到 video_creation_wait_seconds。
 // [参数] ctx: 上下文（取消即返回）；sa: 账号；conversationID: 会话 id。
 // [返回] 视频产物与错误。
-// 最近修改时间：2026-11-21 02:10:00；改动原因：新增首块等待，拒答态不再白等满总时长。
+// 最近修改时间：2026-11-25 00:14:00；改动原因：账号级故障早退换号，首 60s 用 5s 抢首帧。
 func waitVideoAsset(ctx context.Context, sa *StoredAuth, conversationID string) (creationAsset, error) {
 	if chainPollAccountHook != nil {
 		chainPollAccountHook(sa)
@@ -403,7 +432,14 @@ func waitVideoAsset(ctx context.Context, sa *StoredAuth, conversationID string) 
 	// 第一轮立刻拉一次：短时长视频常在确认轮结束前就已入库。
 	for {
 		assets, saw, errFetch := fetchChainAssets(ctx, sa, conversationID)
-		if errFetch == nil {
+		if errFetch != nil {
+			// 账号级故障（登录态失效 / 人机验证 / 过频）换号即可恢复，
+			// 继续等只会耗满 6 分钟再超时，命中就立刻返回让上层换号。
+			var up *upstreamError
+			if errors.As(errFetch, &up) && (up.isAuthFailure() || up.isRateLimit()) {
+				return creationAsset{}, fmt.Errorf("视频链路账号故障，提前换号：%w", errFetch)
+			}
+		} else {
 			sawCreation = sawCreation || saw
 			if asset, ok := videoAssetAmong(assets); ok {
 				return asset, nil
@@ -427,7 +463,7 @@ func waitVideoAsset(ctx context.Context, sa *StoredAuth, conversationID string) 
 		select {
 		case <-ctx.Done():
 			return creationAsset{}, ctx.Err()
-		case <-time.After(videoPollInterval):
+		case <-time.After(nextPollInterval(time.Since(started))):
 		}
 	}
 }

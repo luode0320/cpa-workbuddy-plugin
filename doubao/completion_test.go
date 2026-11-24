@@ -446,13 +446,16 @@ func TestStreamErrorHintReadsVerifyDecision(t *testing.T) {
 // TestUpstreamErrorClassification 校验账号级故障分类。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，为 CYCLE-03 换号冷却预留判定口径。
+// 最近修改时间：2026-11-25 00:09:00；改动原因：新增 710022002 过频码断言。
 func TestUpstreamErrorClassification(t *testing.T) {
 	if !(&upstreamError{StatusCode: 429}).isRateLimit() {
 		t.Error("HTTP 429 应判定为限流")
 	}
 	if !(&upstreamError{Code: 710022005}).isRateLimit() {
 		t.Error("710022005 应判定为限流")
+	}
+	if !(&upstreamError{Code: 710022002}).isRateLimit() {
+		t.Error("710022002（请求过频）应判定为可换号故障")
 	}
 	if (&upstreamError{StatusCode: 400}).isRateLimit() {
 		t.Error("业务 400 不应判定为限流（否则会误换号）")

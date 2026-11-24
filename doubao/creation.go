@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"sort"
 	"strings"
+	"time"
 )
 
 // 本文件定义生成结果的数据模型。
@@ -22,7 +24,7 @@ import (
 //	content.creation_block.creations[i].video.cover              只有 key 与两个变体，没有 url（不是成品，不参与取值）
 //
 // 解析见 creation_parse.go，OpenAI 多模态转换见 creation_render.go。
-// 最近修改时间：2026-11-21 13:32:00；改动原因：bestStream 同分时按 key 定序，结果可复现。
+// 最近修改时间：2026-11-25 00:29:00；改动原因：playable 吸收 ChinaCPA status==3 双判据。
 
 // creationAsset 是一份生成结果，已解析到可访问 URL。
 type creationAsset struct {
@@ -48,6 +50,9 @@ type creationAsset struct {
 	Duration float64
 }
 
+// creationStatusFinished 是上游标记生成已定稿的状态值。
+const creationStatusFinished = 3
+
 // isVideo 判断该资源是否为视频。
 //
 // 只留视频一条能力后它恒为 true，但仍然保留：渲染层与回灌层用它区分「成品直链」
@@ -57,16 +62,15 @@ type creationAsset struct {
 // 最近修改时间：2026-11-18 22:40:00；改动原因：图片能力删除，注释说明保留理由。
 func (a creationAsset) isVideo() bool { return a.Type == 2 }
 
-// playable 判断该资源是否已经有可播放的成品直链。
+// playable 判断该资源是否已经有定稿的可播放直链。
 //
-// 为什么不能只看 len(assets) > 0：上游会把「生成中」的占位块也推进来，那种块有
-// id、有状态、甚至可能带封面，但 URL 是空的。用它当「已经有产物」的判据会让回灌
-// 被整个跳过，客户端最后拿到一个没有直链的空结局。
+// 不能只看 URL 非空：上游会推「生成中」的块，可能带预览直链但状态未定稿（status≠3），
+// 用它当成品会让回灌拿到还没稳定的片子。status==3 且 URL 非空才算真成品。
 // [参数] 无。
-// [返回] 有直链返回 true。
-// 最近修改时间：2026-11-21 13:30:00；改动原因：新增，区分占位块与真成品。
+// [返回] 定稿且有直链返回 true。
+// 最近修改时间：2026-11-25 00:29:00；改动原因：吸收 ChinaCPA status==3 双判据。
 func (a creationAsset) playable() bool {
-	return a.isVideo() && strings.TrimSpace(a.URL) != ""
+	return a.isVideo() && a.Status == creationStatusFinished && strings.TrimSpace(a.URL) != ""
 }
 
 // hasPlayableAsset 判断一批生成结果里是否已经有可播放的成品。
@@ -206,28 +210,64 @@ func (v *creationVideo) videoModelOf() *videoModelDetail {
 	return &detail
 }
 
-// bestStream 挑一条最清晰的直链。
+// 流地址的水印等级，数值越小越优先。
+const (
+	streamRankClean       = 0
+	streamRankPlain       = 1
+	streamRankWatermarked = 2
+)
+
+// videoStreamRank 判定一条流地址的水印等级。
 //
-// 优先 main_url，其次 backup_url_1；两者都是 base64，解码失败即跳过。按像素
-// 面积与文件体积取最大，避免依赖 video_1 / video_2 的键名顺序（同一份响应里
-// video_2 是 720p h265、video_1 是 720p h264，键名不表达清晰度）。
+// 素材地址用 query 参数 lr 携带水印标识：含 unwatermark 是原片，带 lr 但不含
+// unwatermark 是水印片，没有 lr 是普通片。抓包来源为 ChinaCPA pickCleanestVideoUrl。
+// [参数] rawURL: 解码后的流地址。
+// [返回] 水印等级，见 streamRank* 常量；解析失败按普通片处理。
+// 最近修改时间：2026-11-24 23:56:00；改动原因：吸收 ChinaCPA 无水印选优判据。
+func videoStreamRank(rawURL string) int {
+	parsed, errParse := url.Parse(rawURL)
+	if errParse != nil {
+		return streamRankPlain
+	}
+	lr := parsed.Query().Get("lr")
+	if lr == "" {
+		return streamRankPlain
+	}
+	if strings.Contains(strings.ToLower(lr), "unwatermark") {
+		return streamRankClean
+	}
+	return streamRankWatermarked
+}
+
+// bestStream 挑一条最清晰且无水印的直链。
+//
+// 优先 main_url，其次 backup_url_1；两者都是 base64，解码失败即跳过。先按水印
+// 等级（videoStreamRank）再按像素面积与文件体积取最优，避免依赖 video_1 / video_2
+// 的键名顺序（同一份响应里 video_2 是 720p h265、video_1 是 720p h264，键名不表达清晰度）。
+// detail 级 url_expire 已过期的清晰度整组跳过。
 // [返回] 解码后的地址与尺寸；没有可用条目时返回空。
-// 最近修改时间：2026-11-21 13:32:00；改动原因：同分时按 key 定序，消除 map 遍历的随机性。
+// 最近修改时间：2026-11-24 23:56:00；改动原因：吸收 ChinaCPA 无水印选优与过期排除判据。
 func (v *creationVideo) bestStream() (string, int, int) {
 	detail := v.videoModelOf()
 	if detail == nil {
 		return "", 0, 0
 	}
+	// url_expire 是整组清晰度的过期时间戳（秒），过期后这组地址全部不可用。
+	nowUnix := time.Now().Unix()
+	if detail.URLExpire > 0 && detail.URLExpire <= nowUnix {
+		return "", 0, 0
+	}
 	// video_list 是 map，遍历顺序随机；同分辨率多码率时 score 相同，只按 score
-	// 比较会让每次请求挑到不同的直链，排障时不可复现。因此同分时再按 key 定序，
-	// 把「随机」压成「固定」。
+	// 比较会让每次请求挑到不同的直链，排障时不可复现。因此同分（同水印等级同 score）
+	// 时再按 key 定序，把「随机」压成「固定」。
 	keys := make([]string, 0, len(detail.VideoList))
 	for key := range detail.VideoList {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 
-	bestURL, bestW, bestH, bestScore := "", 0, 0, int64(-1)
+	bestURL, bestW, bestH := "", 0, 0
+	bestRank, bestScore := streamRankWatermarked+1, int64(-1)
 	for _, key := range keys {
 		entry := detail.VideoList[key]
 		raw := entry.MainURL
@@ -245,12 +285,14 @@ func (v *creationVideo) bestStream() (string, int, int) {
 		if addr == "" {
 			continue
 		}
+		rank := videoStreamRank(addr)
 		score := int64(entry.VWidth) * int64(entry.VHeight)
 		if score == 0 {
 			score = entry.Size
 		}
-		if score > bestScore {
-			bestURL, bestW, bestH, bestScore = addr, entry.VWidth, entry.VHeight, score
+		if rank < bestRank || (rank == bestRank && score > bestScore) {
+			bestURL, bestW, bestH = addr, entry.VWidth, entry.VHeight
+			bestRank, bestScore = rank, score
 		}
 	}
 	return bestURL, bestW, bestH

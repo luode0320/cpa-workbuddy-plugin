@@ -253,11 +253,14 @@ func TestAssetsFromChainResponseWithoutVideo(t *testing.T) {
 // 当成「还没生成好」，白白轮询到超时。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-17 01:42:00；改动原因：新增，锁定业务错误识别。
+// 最近修改时间：2026-11-25 00:10:00；改动原因：断言业务失败返回 *upstreamError 供早退分类。
 func TestAssetsFromChainResponseRejectsBusinessError(t *testing.T) {
 	raw := `{"cmd":3100,"status_code":10001,"status_desc":"chain not found","downlink_body":{}}`
-	if _, _, errParse := assetsFromChainResponse([]byte(raw)); errParse == nil {
-		t.Fatal("status_code 非 0 时应返回错误")
+	var up *upstreamError
+	if _, _, errParse := assetsFromChainResponse([]byte(raw)); !asUpstreamError(errParse, &up) {
+		t.Fatal("status_code 非 0 时应返回 *upstreamError")
+	} else if up.Code != 10001 {
+		t.Errorf("upstreamError.Code 应为 10001，实际 %d", up.Code)
 	}
 	if _, _, errEmpty := assetsFromChainResponse(nil); errEmpty == nil {
 		t.Fatal("空响应应返回错误")
@@ -533,7 +536,7 @@ func TestEnsureVideoAssetSkipsOtherModes(t *testing.T) {
 	}
 
 	// 视频确认轮但已经拿到产物（短时长视频会在 SSE 里直接带出来）。
-	withAsset := &completionResult{ConversationID: "38454121040780034", Assets: []creationAsset{{Type: 2, URL: "https://example.com/already.mp4"}}}
+	withAsset := &completionResult{ConversationID: "38454121040780034", Assets: []creationAsset{{Type: 2, Status: 3, URL: "https://example.com/already.mp4"}}}
 	if errVideo := ensureVideoAsset(sa, generationMode{Skill: skillVideoGen, Kind: "video"}, resume, withAsset); errVideo != nil {
 		t.Fatalf("已有产物时不该回灌：%v", errVideo)
 	}
@@ -731,5 +734,70 @@ func TestVideoTimeoutValuesPreferOverride(t *testing.T) {
 	}
 	if got := videoCreationWaitValue(); got != 3*time.Millisecond {
 		t.Errorf("覆盖应优先于配置项，实际 %v", got)
+	}
+}
+
+// TestNextPollInterval 校验轮询间隔自适应。
+//
+// 开跑前 60 秒要抢首帧，之后降频避免把上游打出高频。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-25 00:16:00；改动原因：新增，锁定自适应节奏。
+func TestNextPollInterval(t *testing.T) {
+	restore := swapVideoPollTiming(10*time.Second, videoCreationWaitDefault, videoPollTimeoutDefault)
+	defer restore()
+	if got := nextPollInterval(0); got != videoFastPollInterval {
+		t.Errorf("0s 应用快轮询 %v，实际 %v", videoFastPollInterval, got)
+	}
+	if got := nextPollInterval(59 * time.Second); got != videoFastPollInterval {
+		t.Errorf("59s 应用快轮询 %v，实际 %v", videoFastPollInterval, got)
+	}
+	if got := nextPollInterval(videoFastPollWindow); got != 10*time.Second {
+		t.Errorf("到窗口边界应回落常规 10s，实际 %v", got)
+	}
+	if got := nextPollInterval(61 * time.Second); got != 10*time.Second {
+		t.Errorf("61s 应用常规 10s，实际 %v", got)
+	}
+}
+
+// TestWaitVideoAssetEarlyExitOnRateLimit 校验账号级过频立即早退换号。
+//
+// 遇到 710022002 还继续按 10s 轮询到超时，等于把这个账号白钉 6 分钟。
+// 命中 Auth/Rate 就应第一次拉取后立刻返回，让上层换号。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-25 00:16:00；改动原因：新增，锁定错误分类早退。
+func TestWaitVideoAssetEarlyExitOnRateLimit(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_, _ = w.Write([]byte(`{"cmd":3100,"status_code":710022002,"status_desc":"too frequent","downlink_body":{}}`))
+	}))
+	defer srv.Close()
+
+	restore := swapBusinessEndpoint(srv.URL)
+	defer restore()
+
+	// 加超时保护：早退若失效，用例最多挂 4s 就失败，而不是等满 6 分钟总超时。
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	start := time.Now()
+	sa := completionTestAccount()
+	_, errWait := waitVideoAsset(ctx, sa, "38454121040780034")
+	if errWait == nil {
+		t.Fatal("账号级过频应返回错误")
+	}
+	var up *upstreamError
+	if !asUpstreamError(errWait, &up) {
+		t.Fatalf("错误链应含 upstreamError，实际 %v", errWait)
+	}
+	if up.Code != 710022002 {
+		t.Errorf("upstreamError.Code 应为 710022002，实际 %d", up.Code)
+	}
+	if elapsed := time.Since(start); elapsed >= videoFastPollInterval {
+		t.Errorf("账号故障应立即早退，实际耗时 %v", elapsed)
+	}
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Errorf("早退应只拉取一次，实际 %d 次", got)
 	}
 }

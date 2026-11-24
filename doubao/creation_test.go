@@ -138,7 +138,7 @@ func TestMergeAssetsKeepsDistinctIDs(t *testing.T) {
 // 最近修改时间：2026-10-17；改动原因：新增，OpenAI 无视频内容类型。
 func TestAttachAssetsVideoUsesTextPart(t *testing.T) {
 	resp := buildChatCompletion("doubao/video", "", "", "conv-1", "生成视频")
-	attachAssets(resp, []creationAsset{{ID: "v", Type: 2, URL: "https://example.com/v.mp4"}})
+	attachAssets(resp, []creationAsset{{ID: "v", Type: 2, Status: 3, URL: "https://example.com/v.mp4"}})
 
 	message := resp["choices"].([]map[string]any)[0]["message"].(map[string]any)
 	parts := message["content"].([]map[string]any)
@@ -213,7 +213,7 @@ func TestCollectCompletionExtractsAssets(t *testing.T) {
 // 最近修改时间：2026-11-18 23:20:00；改动原因：图片能力删除，夹具只剩视频条目。
 func TestMediaExtensionCarriesVideoDuration(t *testing.T) {
 	media := mediaExtension([]creationAsset{
-		{ID: "v", Type: 2, URL: "https://example.com/v.mp4", Duration: 5.04},
+		{ID: "v", Type: 2, Status: 3, URL: "https://example.com/v.mp4", Duration: 5.04},
 	})
 	if len(media) != 1 {
 		t.Fatalf("应输出 1 条媒体，实际 %d", len(media))
@@ -233,7 +233,7 @@ func TestMediaExtensionCarriesVideoDuration(t *testing.T) {
 // [返回] 无。
 // 最近修改时间：2026-11-17 22:16:00；改动原因：新增，缺值不得写成 0。
 func TestMediaExtensionOmitsUnknownDuration(t *testing.T) {
-	media := mediaExtension([]creationAsset{{ID: "v", Type: 2, URL: "https://example.com/v.mp4"}})
+	media := mediaExtension([]creationAsset{{ID: "v", Type: 2, Status: 3, URL: "https://example.com/v.mp4"}})
 	if _, ok := media[0]["duration"]; ok {
 		t.Errorf("时长未知时不应出现 duration，实际 %v", media[0]["duration"])
 	}
@@ -264,7 +264,7 @@ func TestMergeAssetsKeepsDuration(t *testing.T) {
 // [返回] 无。
 // 最近修改时间：2026-11-21 13:30:00；改动原因：摘要只统计有直链的成品，与 media 对齐。
 func TestDescribeAssets(t *testing.T) {
-	got := describeAssets([]creationAsset{{Type: 2, URL: "https://example.com/v.mp4", Model: "Seedance", Width: 384, Height: 216}})
+	got := describeAssets([]creationAsset{{Type: 2, Status: 3, URL: "https://example.com/v.mp4", Model: "Seedance", Width: 384, Height: 216}})
 	if !strings.Contains(got, "已生成视频") || !strings.Contains(got, "Seedance") || !strings.Contains(got, "384×216") {
 		t.Errorf("摘要应包含类型、生成器与尺寸，实际 %q", got)
 	}
@@ -311,17 +311,18 @@ func extractCreationBlock(t *testing.T, frame string) json.RawMessage {
 // 一旦被判成「已出片」，客户端会拿到一条打不开的链接，正文却写着「已生成」。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-21 13:30:00；改动原因：新增，锁定 playable / hasPlayableAsset。
+// 最近修改时间：2026-11-25 00:29:00；改动原因：补 status==3 双判据用例。
 func TestCreationAssetPlayable(t *testing.T) {
 	cases := []struct {
 		name  string
 		asset creationAsset
 		want  bool
 	}{
-		{"成品", creationAsset{Type: 2, URL: "https://example.com/v.mp4"}, true},
-		{"只有空白直链", creationAsset{Type: 2, URL: "   "}, false},
-		{"占位块只有 key", creationAsset{Type: 2, Key: "tos-cn-p-bucket/v"}, false},
-		{"非视频类型", creationAsset{Type: 1, URL: "https://example.com/v.mp4"}, false},
+		{"成品", creationAsset{Type: 2, Status: 3, URL: "https://example.com/v.mp4"}, true},
+		{"状态未定稿", creationAsset{Type: 2, Status: 0, URL: "https://example.com/v.mp4"}, false},
+		{"只有空白直链", creationAsset{Type: 2, Status: 3, URL: "   "}, false},
+		{"占位块只有 key", creationAsset{Type: 2, Status: 3, Key: "tos-cn-p-bucket/v"}, false},
+		{"非视频类型", creationAsset{Type: 1, Status: 3, URL: "https://example.com/v.mp4"}, false},
 	}
 	for _, c := range cases {
 		if got := c.asset.playable(); got != c.want {
@@ -329,10 +330,10 @@ func TestCreationAssetPlayable(t *testing.T) {
 		}
 	}
 
-	if !hasPlayableAsset([]creationAsset{{Type: 2, Key: "k"}, {Type: 2, URL: "https://example.com/v.mp4"}}) {
+	if !hasPlayableAsset([]creationAsset{{Type: 2, Status: 3, Key: "k"}, {Type: 2, Status: 3, URL: "https://example.com/v.mp4"}}) {
 		t.Error("混合列表里只要有一条可播放就应判 true")
 	}
-	if hasPlayableAsset([]creationAsset{{Type: 2, Key: "k"}, {Type: 2}}) {
+	if hasPlayableAsset([]creationAsset{{Type: 2, Status: 3, Key: "k"}, {Type: 2, Status: 3}}) {
 		t.Error("全是没有直链的占位块时应判 false")
 	}
 }
@@ -364,7 +365,7 @@ func TestAttachAssetsSkipsPlaceholder(t *testing.T) {
 // 最近修改时间：2026-11-21 13:30:00；改动原因：新增，覆盖 firstChoiceMessage 的泛型分支。
 func TestAttachAssetsAcceptsGenericChoices(t *testing.T) {
 	resp := map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "生成好了"}}}}
-	attachAssets(resp, []creationAsset{{ID: "v", Type: 2, URL: "https://example.com/v.mp4"}})
+	attachAssets(resp, []creationAsset{{ID: "v", Type: 2, Status: 3, URL: "https://example.com/v.mp4"}})
 
 	message := resp["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
 	parts, ok := message["content"].([]map[string]any)
@@ -405,5 +406,71 @@ func TestBestStreamStableOnTie(t *testing.T) {
 	}
 	if width != 1280 || height != 720 {
 		t.Errorf("尺寸应跟随所选清晰度 1280×720，实际 %d×%d", width, height)
+	}
+}
+
+// TestVideoStreamRank 校验流地址水印等级判据。
+//
+// 素材地址用 query 参数 lr 携带水印标识；判据来自 ChinaCPA pickCleanestVideoUrl，
+// 后续 bestStream 依此排序，判错会把水印片当原片返回。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-24 23:56:00；改动原因：新增，锁定水印等级判据。
+func TestVideoStreamRank(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{"无 query", "https://example.com/v.mp4", streamRankPlain},
+		{"无水印", "https://example.com/v.mp4?lr=unwatermark_1080p", streamRankClean},
+		{"带水印", "https://example.com/v.mp4?lr=watermark", streamRankWatermarked},
+		{"其他 query", "https://example.com/v.mp4?foo=bar", streamRankPlain},
+		{"解析失败", "://bad url", streamRankPlain},
+	}
+	for _, c := range cases {
+		if got := videoStreamRank(c.raw); got != c.want {
+			t.Errorf("%s：水印等级应为 %d，实际 %d", c.name, c.want, got)
+		}
+	}
+}
+
+// TestBestStreamPrefersUnwatermark 校验无水印优先于清晰度。
+//
+// 水印流是 1080p、无水印流是 720p；按新判据先比水印等级再比清晰度，
+// 应取无水印的 720p，否则用户拿到的是带平台水印的片子。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-24 23:56:00；改动原因：新增，锁定无水印选优。
+func TestBestStreamPrefersUnwatermark(t *testing.T) {
+	wmURL := base64.StdEncoding.EncodeToString([]byte("https://example.com/wm.mp4?lr=watermark_hd"))
+	cleanURL := base64.StdEncoding.EncodeToString([]byte("https://example.com/clean.mp4?lr=unwatermark_sd"))
+	model := fmt.Sprintf(`{"status":10,"video_list":{"video_hd":{"vwidth":1920,"vheight":1080,"main_url":"%s"},"video_sd":{"vwidth":1280,"vheight":720,"main_url":"%s"}}}`,
+		wmURL, cleanURL)
+	video := &creationVideo{VideoModel: model}
+
+	got, width, height := video.bestStream()
+	if got != "https://example.com/clean.mp4?lr=unwatermark_sd" {
+		t.Errorf("无水印优先：应取无水印流，实际 %q", got)
+	}
+	if width != 1280 || height != 720 {
+		t.Errorf("尺寸应跟随无水印流 1280×720，实际 %d×%d", width, height)
+	}
+}
+
+// TestBestStreamSkipsExpiredURL 校验整组地址过期时不返回任何直链。
+//
+// url_expire 是秒级时间戳，过期后 video_model 内所有清晰度地址都失效；
+// 仍返回旧地址会让客户端拿到 403。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-24 23:56:00；改动原因：新增，锁定过期排除。
+func TestBestStreamSkipsExpiredURL(t *testing.T) {
+	addr := base64.StdEncoding.EncodeToString([]byte("https://example.com/v.mp4"))
+	model := fmt.Sprintf(`{"status":10,"url_expire":1,"video_list":{"video_a":{"vwidth":1280,"vheight":720,"main_url":"%s"}}}`,
+		addr)
+	video := &creationVideo{VideoModel: model}
+	if got, _, _ := video.bestStream(); got != "" {
+		t.Errorf("url_expire 已过期时应返回空地址，实际 %q", got)
 	}
 }

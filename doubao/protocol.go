@@ -103,13 +103,10 @@ const (
 	defaultVideoResolution = "720p"
 	defaultVideoDuration   = 10
 
-	// videoDurationMin / videoDurationMax 界定合法的目标时长（秒）。
-	//
-	// 越界值按缺省处理而不报错：这三个字段是可选增强，一个非法值不该打断
-	// 整条链路。上界取 60 秒，因为实测网页最长档为 15 秒，留足协商余量后
-	// 仍不该允许分钟级请求。
+	// videoDurationMin / videoDurationMax 界定合法的目标时长（秒），越界按缺省处理。
+	// deferral: 上界取实测最长档 15 秒；待 v2.5 多模型时再建规格矩阵（FEAS-004）。
 	videoDurationMin = 1
-	videoDurationMax = 60
+	videoDurationMax = 15
 )
 
 // videoParams 是一次视频请求归一后的参数集合。
@@ -328,15 +325,16 @@ func (e *upstreamError) isAuthFailure() bool {
 // 名字沿用历史叫法，实际语义是「账号级、可换号绕过」。710022004 既不是限流
 // 也不是设备指纹问题，而是上游对该账号弹的人机验证（语义选图）：账号进入验证态后
 // 该账号的每个请求都会被拦，直到有人在浏览器里手动过掉一次。归到同一类的理由是
-// 处理动作一致 —— 冷却该账号、切到其他账号，验证由人另行完成。
+// 处理动作一致 —— 冷却该账号、切到其他账号，验证由人另行完成。710022002 是真正的
+// 请求过频，同样靠换号与等待恢复，归入同一类。
 // [参数] 无。
 // [返回] 属于账号级可绕过故障时返回 true。
-// 最近修改时间：2026-11-16 06:05:00；改动原因：710022004 的真因改为上游人机验证，注释同步。
+// 最近修改时间：2026-11-25 00:08:00；改动原因：710022002（请求过频）并入冷却换号判据。
 func (e *upstreamError) isRateLimit() bool {
 	if e.StatusCode == 429 {
 		return true
 	}
-	return e.Code == 710022004 || e.Code == 710022005
+	return e.Code == 710022004 || e.Code == 710022005 || e.Code == 710022002
 }
 
 // statusCodeHint 把上游业务码翻译成可操作的中文提示。
