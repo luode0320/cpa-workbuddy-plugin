@@ -111,6 +111,14 @@ var hostHTTPDoFn = hostHTTPDo
 // and reusing sa.Host (a chat/account host) is what caused the 2026-09-05
 // keepalive mass-disable incident. The refresh token is sent as-is (no extra
 // headers — the endpoint authenticates via the body).
+//
+// The response is a two-layer envelope {ResponseMetadata, Result}: token fields
+// live under Result with PascalCase keys and expiry fields arrive as millisecond
+// timestamps (TokenExpireAt/RefreshExpireAt). Decoding into a flat lowercase
+// struct (the 2026-11-25 bug) yields an empty token on every HTTP 200, so
+// keepalive reported "returned no token" and never persisted a fresh access
+// token — expired accounts then failed chat calls with 401. Parsing mirrors
+// browserLoginExchange (browserlogin.go:794-822).
 func keepaliveExchange(sa *traeAuth) (*traeCredential, error) {
 	host := defaultAPIHost
 	body, _ := json.Marshal(map[string]string{
@@ -132,26 +140,80 @@ func keepaliveExchange(sa *traeAuth) (*traeCredential, error) {
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("ExchangeToken: HTTP %d %s", resp.StatusCode, truncateRedacted(string(raw), 160))
 	}
-	var out struct {
-		Token            string `json:"token"`
-		RefreshToken     string `json:"refreshToken"`
-		ExpiredAt        string `json:"expiredAt"`
-		RefreshExpiredAt string `json:"refreshExpiredAt"`
-		TokenReleaseAt   string `json:"tokenReleaseAt"`
+	var env struct {
+		ResponseMetadata *struct {
+			Error *struct {
+				Code    string `json:"Code"`
+				Message string `json:"Message"`
+			} `json:"Error"`
+		} `json:"ResponseMetadata"`
+		Result map[string]any `json:"Result"`
 	}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := json.Unmarshal(raw, &env); err != nil {
 		return nil, fmt.Errorf("ExchangeToken decode: %w", err)
 	}
-	if out.Token == "" {
+	if env.ResponseMetadata != nil && env.ResponseMetadata.Error != nil && trimSpace(env.ResponseMetadata.Error.Code) != "" {
+		return nil, fmt.Errorf("ExchangeToken upstream %s: %s", trimSpace(env.ResponseMetadata.Error.Code), truncateRedacted(env.ResponseMetadata.Error.Message, 120))
+	}
+	if env.Result == nil {
+		var envLower struct {
+			Result map[string]any `json:"result"`
+		}
+		if json.Unmarshal(raw, &envLower) == nil {
+			env.Result = envLower.Result
+		}
+	}
+	if env.Result == nil {
+		return nil, fmt.Errorf("ExchangeToken returned no Result")
+	}
+	token := pickString(env.Result, "Token", "token")
+	if token == "" {
 		return nil, fmt.Errorf("ExchangeToken returned no token")
 	}
+	expiredAt := pickString(env.Result, "ExpiredAt", "expiredAt")
+	if expiredAt == "" {
+		expiredAt = unixMillisRFC3339(env.Result["TokenExpireAt"])
+	}
+	refreshExpiredAt := pickString(env.Result, "RefreshExpiredAt", "refreshExpiredAt")
+	if refreshExpiredAt == "" {
+		refreshExpiredAt = unixMillisRFC3339(env.Result["RefreshExpireAt"])
+	}
 	return &traeCredential{
-		Token:            out.Token,
-		RefreshToken:     out.RefreshToken,
-		ExpiredAt:        out.ExpiredAt,
-		RefreshExpiredAt: out.RefreshExpiredAt,
-		TokenReleaseAt:   out.TokenReleaseAt,
+		Token:            token,
+		RefreshToken:     pickString(env.Result, "RefreshToken", "refreshToken"),
+		ExpiredAt:        expiredAt,
+		RefreshExpiredAt: refreshExpiredAt,
+		TokenReleaseAt:   pickString(env.Result, "TokenReleaseAt", "tokenReleaseAt"),
 	}, nil
+}
+
+// unixMillisRFC3339 converts a JSON-decoded millisecond timestamp to RFC3339
+// so it can fill traeCredential.ExpiredAt. JSON numbers decode to float64;
+// int64/int are accepted for direct map construction in tests. A missing,
+// non-numeric or non-positive value returns "" so the caller keeps its old
+// expiry instead of writing a bogus one.
+func unixMillisRFC3339(v any) string {
+	var ms int64
+	switch n := v.(type) {
+	case float64:
+		ms = int64(n)
+	case json.Number:
+		parsed, err := n.Int64()
+		if err != nil {
+			return ""
+		}
+		ms = parsed
+	case int64:
+		ms = n
+	case int:
+		ms = int64(n)
+	default:
+		return ""
+	}
+	if ms <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ms).UTC().Format(time.RFC3339)
 }
 
 // refreshOneAuth refreshes the access token for a single traework auth and

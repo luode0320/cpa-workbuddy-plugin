@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -258,5 +259,106 @@ func TestPerAuthRefreshMutex(t *testing.T) {
 	refreshRetryMu.Unlock()
 	if e == nil || e.attempts != 1 {
 		t.Fatalf("expected exactly 1 recorded attempt (9 concurrent calls must be rejected, not queued), got %+v", e)
+	}
+}
+
+// TestKeepaliveExchangeParsesEnvelope reproduces the 2026-11-25 mass-401 root
+// cause: a real ExchangeToken HTTP 200 response is a two-layer envelope with
+// PascalCase Result keys and millisecond expiry timestamps. The old flat
+// lowercase decoder saw an empty token every time, so no fresh access token
+// was ever persisted and expired accounts failed chat calls with 401.
+func TestKeepaliveExchangeParsesEnvelope(t *testing.T) {
+	orig := hostHTTPDoFn
+	const tokenExpireMS = 1893456000000
+	const refreshExpireMS = 1924992000000
+	envJSON := fmt.Sprintf(`{
+		"ResponseMetadata":{"RequestId":"req-1"},
+		"Result":{
+			"Token":"new-access-token",
+			"RefreshToken":"new-refresh-token",
+			"ExpiredAt":"",
+			"TokenExpireAt":%d,
+			"RefreshExpireAt":%d,
+			"TokenReleaseAt":"2026-11-25T00:00:00Z",
+			"UserJwt":"x"
+		}
+	}`, tokenExpireMS, refreshExpireMS)
+	hostHTTPDoFn = func(req *http.Request) (*hostHTTPResponse, error) {
+		return &hostHTTPResponse{StatusCode: http.StatusOK, Body: []byte(envJSON)}, nil
+	}
+	t.Cleanup(func() { hostHTTPDoFn = orig })
+
+	cred, err := keepaliveExchange(&traeAuth{RefreshToken: "rt", UserID: "u1"})
+	if err != nil {
+		t.Fatalf("keepaliveExchange returned error: %v", err)
+	}
+	if cred.Token != "new-access-token" {
+		t.Fatalf("Token = %q, want new-access-token", cred.Token)
+	}
+	if cred.RefreshToken != "new-refresh-token" {
+		t.Fatalf("RefreshToken = %q, want new-refresh-token", cred.RefreshToken)
+	}
+	if want := time.UnixMilli(tokenExpireMS).UTC().Format(time.RFC3339); cred.ExpiredAt != want {
+		t.Fatalf("ExpiredAt = %q, want %q", cred.ExpiredAt, want)
+	}
+	if want := time.UnixMilli(refreshExpireMS).UTC().Format(time.RFC3339); cred.RefreshExpiredAt != want {
+		t.Fatalf("RefreshExpiredAt = %q, want %q", cred.RefreshExpiredAt, want)
+	}
+	if cred.TokenReleaseAt != "2026-11-25T00:00:00Z" {
+		t.Fatalf("TokenReleaseAt = %q", cred.TokenReleaseAt)
+	}
+}
+
+// TestKeepaliveExchangeCamelCaseResult covers the lowercase result envelope
+// variant so parsing stays symmetric with browserLoginExchange.
+func TestKeepaliveExchangeCamelCaseResult(t *testing.T) {
+	orig := hostHTTPDoFn
+	envJSON := `{"result":{"token":"lower-token","refreshToken":"lower-rt"}}`
+	hostHTTPDoFn = func(req *http.Request) (*hostHTTPResponse, error) {
+		return &hostHTTPResponse{StatusCode: http.StatusOK, Body: []byte(envJSON)}, nil
+	}
+	t.Cleanup(func() { hostHTTPDoFn = orig })
+	cred, err := keepaliveExchange(&traeAuth{RefreshToken: "rt"})
+	if err != nil {
+		t.Fatalf("keepaliveExchange: %v", err)
+	}
+	if cred.Token != "lower-token" {
+		t.Fatalf("Token = %q, want lower-token", cred.Token)
+	}
+}
+
+// TestKeepaliveExchangeUpstreamError ensures a business error inside
+// ResponseMetadata is surfaced instead of being misread as "no token".
+func TestKeepaliveExchangeUpstreamError(t *testing.T) {
+	orig := hostHTTPDoFn
+	envJSON := `{"ResponseMetadata":{"Error":{"Code":"10101","Message":"invalid refresh token"}},"Result":null}`
+	hostHTTPDoFn = func(req *http.Request) (*hostHTTPResponse, error) {
+		return &hostHTTPResponse{StatusCode: http.StatusOK, Body: []byte(envJSON)}, nil
+	}
+	t.Cleanup(func() { hostHTTPDoFn = orig })
+	_, err := keepaliveExchange(&traeAuth{RefreshToken: "rt"})
+	if err == nil || !strings.Contains(err.Error(), "10101") {
+		t.Fatalf("want upstream error carrying code 10101, got %v", err)
+	}
+}
+
+// TestUnixMillisRFC3339 verifies the JSON number → RFC3339 conversion used for
+// the millisecond expiry fields, including the "absent/invalid" empty result.
+func TestUnixMillisRFC3339(t *testing.T) {
+	const ms = 1893456000000
+	want := time.UnixMilli(ms).UTC().Format(time.RFC3339)
+	if got := unixMillisRFC3339(float64(ms)); got != want {
+		t.Fatalf("float64: got %q want %q", got, want)
+	}
+	if got := unixMillisRFC3339(json.Number(fmt.Sprint(ms))); got != want {
+		t.Fatalf("json.Number: got %q want %q", got, want)
+	}
+	if got := unixMillisRFC3339(int64(ms)); got != want {
+		t.Fatalf("int64: got %q want %q", got, want)
+	}
+	for _, bad := range []any{nil, "", "x", float64(0), float64(-1)} {
+		if got := unixMillisRFC3339(bad); got != "" {
+			t.Fatalf("bad input %v: got %q want empty", bad, got)
+		}
 	}
 }
