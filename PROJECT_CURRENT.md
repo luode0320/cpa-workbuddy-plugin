@@ -21,7 +21,14 @@
 
 ## 项目概况
 
-- **当前会话（2026-11-24 23:20 - 2026-11-25 01:15）：doubao-provider 0.1.39 吸收 ChinaCPA 视频生成逻辑并上线**（用户 m00035 诉求，裁定链 m00118「只接视频、其他不要接」→ m00129「吸收他们怎么处理视频生成的，优化我们的插件」）：
+- **当前会话（2026-11-25 22:56 - 2026-11-26 01:11）：traework-provider 0.5.60：keepalive ExchangeToken 两层 envelope 解析修复 401 根因并上线**（用户 m01076「很多账号 401 是不是没刷新 token 导致的」→ 诊断确认不是"没刷新"而是刷新成功但 token 解析层级错没落盘 → m01182「按这个方案修，修完测试通过才算」→ m01249 追加「检查 workbuddy 是否同 bug、一起提交」→ m01404「发版 traework 0.5.60 并热重载到生产」）：
+  - **根因**：`traework/keepalive.go` `keepaliveExchange` 把 ExchangeToken 响应解成平铺小写 struct，实际是两层 envelope `{ResponseMetadata, Result}` + PascalCase → token 恒空 → 生产每日 `refreshed=0 failed=61`、大量 `ExchangeToken returned no token`，token 从不更新、过期后 401。对禁用账号直接 POST ExchangeToken 实测 HTTP200 + `Result.Token` len1004 为铁证；正确解 envelope 参考同仓库 `browserlogin.go:794-822`。workbuddy 经生产真实 refreshToken 探针确认解析 `{code,msg,data}` 完全匹配、无此 bug，其 21:45 那批 401 是 APISIX 临时鉴权、1h 内归零。
+  - **修复**：`keepaliveExchange` 改解两层 envelope + `pickString` 取 PascalCase/camelCase 的 token/refresh/expiredAt，新增 `unixMillisRFC3339` 解析毫秒时间戳，识别 `ResponseMetadata.Error` 上游错误码；4 个新测试 + 门禁全绿 + 有效哨兵反证；6-review STYLE: PASS、污染扫描 PASS。
+  - **提交**：`d1cb17b fix(traework): keepalive 修正 ExchangeToken 两层 envelope 解析(401 根因)`（3 文件 +223/−13，含 6-review 文档）。
+  - **发布链**：bump commit `030ab2b` → run 45654603296（Release/Test(traework) success、14 Test 全绿、5 平台、darwin/arm64 cancelled）→ release `traework-provider-v0.5.60`（id 458366972）→ publish `--allow-missing`（5 artifacts）→ registry commit `d515314`，远端 raw 逐 asset sha256 全 PASS。
+  - **生产热重载已生效**：`install?version=0.5.60&source=source-636fa01121af` → `restart_required:false`；`[2026-11-26 01:08:40] plugin hot reloaded active_version=0.5.60 retired_version=0.5.59`；落盘 `traework-provider-v0.5.60.so` sha256 `92de343dd576d1de0b1e3eb3a47afec91654cd99ffaa3d2938b8a4f5f315565b` 与本地 linux_amd64 release zip 内 `.so` 逐字节一致；13 插件启用态 `STATE_UNCHANGED`、容器未重启、accounts/panel 200。明文 management key 从容器 config.yaml `cpa_management_key` 取、离线 bcrypt 验明，经 docker0 网关 `172.17.0.1:8317` 打管理 API，用后即删。
+  - **教训**：① SSH 到 65 必须带用户名 `root@` + `-o BatchMode=yes`（漏写则用 Windows 用户名 luode 连、公钥被拒后回退密码交互挂死约 20 分钟）；② `docker logs --since` 可能读到 stale 缓冲，热重载取证要直接 `tail` 容器 json.log（`docker inspect --format='{{.LogPath}}'`）。
+- **会话（2026-11-24 23:20 - 2026-11-25 01:15）：doubao-provider 0.1.39 吸收 ChinaCPA 视频生成逻辑并上线**（用户 m00035 诉求，裁定链 m00118「只接视频、其他不要接」→ m00129「吸收他们怎么处理视频生成的，优化我们的插件」）：
   - **范围**：仅视频生成链路，不碰文本/图片/签到/额度。裁决表 6 项——合并 4（无水印选优、status==3 双判据、错误码分类早退、参数规格 clamp+轮询自适应），拒绝 2（确认轮自动化与用户看参数/额度确认冲突；标准媒体端点/Ark task 属宿主职责边界）。
   - **三 CYCLE 9 TASK**：CYCLE01 `creation.go` `videoStreamRank`（URL query `lr` 含 `unwatermark`→rank0）+ `bestStream` 改 (rank,score) 双键 + `url_expire` 过期排除；CYCLE02 `isRateLimit` 并入 `710022002`、消息链业务码结构化 `*upstreamError`、`nextPollInterval` 前 60s 快轮询（取 `min(fast,normal)` 保测试压缩）、账号故障早退换号；CYCLE03 `videoDurationMax` 60→15、`playable()` 加 `Status==3` 双判据（所有成品测试夹具补 `Status:3`）。
   - **验证**：三 CYCLE 各 `cgo-shim-build.py doubao` 全绿 + 有效哨兵反证 + 6-review（STYLE: PASS），OCR 0 Critical/High/Medium、污染扫描 PASS；实施文档 `doc/3-实施/2026-11-24_ChinaCPA视频生成逻辑吸收_实施总览.md`、测试文档 `doc/5-tests/2026-11-25_004500_ChinaCPA视频生成逻辑吸收代码级验证.md`、3 份 6-review。
@@ -37,7 +44,7 @@
 - **2026-11-08 14:51 traework 升级 0.5.18 → 0.5.19**（下行 usage 帧缺失修复，`hot reloaded active_version=0.5.19 retired 0.5.18`，落盘 sha256 `27d74d19…` 与 release zip 逐字节一致；容器未重启）。同刻 workbuddy 0.21.15 / qoderwork 0.13.12 由并行会话上线。
 - 2026-10-25 历史发布批（已过期，仅存档）：zcode 0.3.1 / qoderwork 0.12.1 / traework 0.5.1 / workbuddy 0.21.2 / cursor 0.1.6 / qoder-ai 0.1.31 / coze 0.6.2 / qwenwork 0.2.9 / copilot 0.1.11 / workbuddy-ai 0.1.30 / token-usage 0.2.8（细节见 git log 与 CHANGELOG）。
 - 活动工作区：F:\cpa-plugin
-- 当前时间：2026-11-24 (GMT+8)
+- 当前时间：2026-11-26 (GMT+8)
 
 ## 活动会话进展摘要
 
