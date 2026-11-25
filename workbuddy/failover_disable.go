@@ -556,10 +556,16 @@ func failoverDisableWouldEmptyPool(authIndex string) bool {
 //
 // [参数] authID：失败账号标识；model：已归一化的失败模型名，可为空。
 // [返回] true 表示该账号当前处于本机制的禁用管辖之下。
-// 最近修改时间：2026-10-22；改动原因：按物理文档加锁，消除同一次失败的多入口重复写盘。
+// 最近修改时间：2026-11-25；改动原因：新增 failover_disable_enabled 总开关，默认关闭写盘禁用。
 func disableAccountForFailover(authID, model string) bool {
 	authID = strings.TrimSpace(authID)
 	if authID == "" || !failoverActive() {
+		return false
+	}
+	// 总开关关闭时一次失败都不写盘：失败只留在内存阶梯冷却里，数分钟自愈。
+	// 放在最前面，连同 rememberFailoverProbeModel 一起跳过——没有写盘禁用就
+	// 没有探活对象，内存里的失败模型集合也没有意义。
+	if !failoverDisableActive() {
 		return false
 	}
 	rememberFailoverProbeModel(authID, model)

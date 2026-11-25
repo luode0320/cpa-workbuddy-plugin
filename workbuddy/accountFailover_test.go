@@ -8,15 +8,22 @@ import (
 
 // resetFailover clears all failover state and restores the enabled flag so
 // each test starts from a clean slate.
+//
+// 写盘禁用总开关（failover_disable_enabled）在测试里固定为 true：绝大多数
+// 既有用例断言的是「失败→写盘禁用→探活恢复」这条链路的细节，而生产默认已
+// 改为关闭。需要验证默认关闭语义的用例自行 setFailoverDisableEnabled(false)。
 func resetFailover(t *testing.T) {
 	t.Helper()
 	clearFailoverStates()
 	oldEnabled := failoverActive()
+	oldDisableEnabled := failoverDisableActive()
 	t.Cleanup(func() {
 		clearFailoverStates()
 		setFailoverEnabled(oldEnabled)
+		setFailoverDisableEnabled(oldDisableEnabled)
 	})
 	setFailoverEnabled(true)
+	setFailoverDisableEnabled(true)
 }
 
 // assertCooldownNear verifies the account's cooldown deadline is roughly the

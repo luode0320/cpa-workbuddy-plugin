@@ -78,6 +78,9 @@ func configure(raw []byte) {
 	// failover_disable_min_count: 写盘禁用的连续失败门限，默认 3。
 	// 填 1 等价于恢复「首次失败即禁用」的历史行为。
 	nextFailoverDisableMinCount := defaultFailoverDisableMinCount
+	// failover_disable_enabled: 失败即写盘禁用（含配套的禁用探活）总开关。
+	// 默认 false：失败只走内存阶梯冷却，不把账号摘出宿主路由。
+	nextFailoverDisableEnabled := false
 	nextMinRoutableCredits := defaultMinRoutableCredits
 	nextLowCreditDisableBelow := defaultLowCreditDisableBelow
 	// client_version: 人工钉死上报给上游的客户端版本号。留空表示交给每日
@@ -151,6 +154,11 @@ func configure(raw []byte) {
 					if n, err := strconv.Atoi(v); err == nil && n >= 1 {
 						nextFailoverDisableMinCount = n
 					}
+				}
+				if strings.HasPrefix(line, "failover_disable_enabled:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "failover_disable_enabled:"))
+					v = strings.Trim(v, "\"'")
+					nextFailoverDisableEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
 				}
 				if strings.HasPrefix(line, "scheduler_mode:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "scheduler_mode:"))
@@ -328,6 +336,8 @@ func configure(raw []byte) {
 	setFailoverEnabled(nextFailoverEnabled)
 
 	setFailoverDisableMinCount(nextFailoverDisableMinCount)
+
+	setFailoverDisableEnabled(nextFailoverDisableEnabled)
 
 	schedulerModeMu.Lock()
 	schedulerMode = nextSchedulerMode

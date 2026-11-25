@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.21.32 (2026-11-25)
+
+### Change - 「失败即写盘禁用」链路默认关闭，改由 failover_disable_enabled 显式开启
+
+- 需求(用户 2026-11-25): 关闭 workbuddy 插件「一次失败就禁用 + 禁用探活」这条链路，默认关闭，允许通过更新配置重新开启。
+- 改动: 新增总开关 `failover_disable_enabled`（布尔，默认 `false`）。关闭时 `disableAccountForFailover` 在入口直接返回，既不写 `disabled: true`，也不记探活模型、不产生任何探活对象；失败只走内存阶梯冷却（10m 起、60m 封顶），数分钟内自愈，账号始终留在宿主路由里。
+- 为什么默认关闭: 写盘禁用会把账号从宿主路由彻底摘掉，恢复只能靠每 10 分钟一轮的禁用探活，禁用期间账号零流量、探活本身还烧上游额度。2026-10-29 事故即为单次 429 被禁 8 小时零探活；本次把「坏了就摘掉」降级为可选策略。
+- 开关正交性: 与既有 `account_failover`（控制整个冷却机制）正交——后者管内存阶梯 + 写盘禁用两半，本键只控写盘禁用这一半。两个键都开启时才恢复旧行为。
+- 门限仍有效: `failover_disable_min_count` 语义不变（默认 3、填 1 即首次失败禁用），但**仅在 `failover_disable_enabled: true` 时生效**，面板描述已同步标注。
+- 确定性失败一并收口: 401/403/404/405/402 与 11128 模型拦截此前完全绕过门限、一次即写盘禁用；关闭总开关后这类失败同样不再摘号，只保留内存冷却与模型级隔离。
+- 测试: 新增 `failover_disable_switch_test.go` 7 个用例——默认值锁定、关闭后连 5 次 500 写盘数为 0 且内存冷却照常记账、关闭后 11128 确定性路径也不写盘、开启后仍按门限禁用、`configure` 七种取值（true/1/yes/on/"true"/false/键缺失回落默认）、ConfigField 已登记且类型为布尔。`accountFailover_test.go` 的 `resetFailover(t)` 同步接管该开关的备份与恢复，既有约 180 处依赖写盘禁用的用例在测试内固定开启，语义不变。`python scripts/cgo-shim-build.py workbuddy` build / vet / test 全绿，哨兵法确认新测试真实进入编译链路。
+- 涉及文件: `accountFailover.go` / `failover_disable.go` / `usage_config.go` / `main.go` / `accountFailover_test.go` / 新增 `failover_disable_switch_test.go` / `CHANGELOG.md` / `VERSION`。
+
 ## 0.21.31 (2026-11-24)
 
 ### Change - 保活线由 400 下调到 50、硬禁用线由 100 下调到 20

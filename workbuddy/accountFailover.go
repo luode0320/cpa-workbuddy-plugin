@@ -58,11 +58,25 @@ const failoverPruneInterval = 5 * time.Minute
 // 连续第 3 次才认定这个号真的坏了。
 const defaultFailoverDisableMinCount = 3
 
+// defaultFailoverDisableEnabled 是「失败即写盘禁用」链路的默认开关值。
+//
+// 默认关闭：写盘禁用会把账号从宿主路由里彻底摘掉，恢复只能靠 10 分钟一轮的
+// 禁用探活，代价是账号在禁用期间完全不出流量、探活本身还要烧上游额度。
+// 关闭后失败只走内存阶梯冷却，数分钟内自愈，账号始终留在池子里。
+// 需要「坏了就摘掉」的部署可显式配置 failover_disable_enabled: true 打开。
+const defaultFailoverDisableEnabled = false
+
 var (
 	// failoverEnabled gates the whole mechanism. Default true; set false via
 	// plugin config account_failover: false to restore pre-failover behavior.
 	failoverEnabled   = true
 	failoverEnabledMu sync.RWMutex
+
+	// failoverDisableEnabled 是「失败即写盘禁用」这条链路的总开关。
+	// 默认 false：失败只走内存阶梯冷却，绝不把账号从宿主路由里摘掉。
+	// 显式配置 failover_disable_enabled: true 才恢复写盘禁用（及配套禁用探活）。
+	failoverDisableEnabled   = defaultFailoverDisableEnabled
+	failoverDisableEnabledMu sync.RWMutex
 
 	// failoverDisableMinCount 是写盘禁用前置的连续失败次数门限。
 	// 填 1 等价于恢复修复前行为（首次失败即禁用）。
@@ -117,6 +131,29 @@ func setFailoverEnabled(on bool) {
 	failoverEnabledMu.Lock()
 	failoverEnabled = on
 	failoverEnabledMu.Unlock()
+}
+
+// failoverDisableActive 报告「失败即写盘禁用」链路是否开启。
+//
+// 与 failoverActive 正交：后者控整个冷却机制（内存阶梯 + 写盘禁用），本函数
+// 只控写盘禁用这一半。默认关闭意味着失败仅记内存冷却、数分钟内自愈，账号
+// 不会被摘出宿主路由，也就不需要禁用探活把它捞回来。
+//
+// [返回] true 表示允许写盘禁用。
+// 最近修改时间：2026-11-25；改动原因：新增，按用户要求默认关闭「一次失败就禁用」。
+func failoverDisableActive() bool {
+	failoverDisableEnabledMu.RLock()
+	defer failoverDisableEnabledMu.RUnlock()
+	return failoverDisableEnabled
+}
+
+// setFailoverDisableEnabled 开关「失败即写盘禁用」链路（配置 / 测试）。
+// [参数] on：true 允许写盘禁用，false 只走内存冷却。
+// 最近修改时间：2026-11-25；改动原因：新增。
+func setFailoverDisableEnabled(on bool) {
+	failoverDisableEnabledMu.Lock()
+	failoverDisableEnabled = on
+	failoverDisableEnabledMu.Unlock()
 }
 
 // failoverDisableThreshold 返回当前生效的写盘禁用门限。
