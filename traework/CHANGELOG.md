@@ -1,5 +1,15 @@
 # TraeWork Plugin Changelog
 
+## 0.5.60 (2026-11-26)
+
+### Fix - keepalive 刷新解析层级错误导致 token 从不更新、账号大面积 401
+
+- 现象(用户反馈 2026-11-25): 导出的 80 个账号里 52 个 token 已过期，failed_count 最高那批 exp 停在 11-21 前后且仍启用，生产 daily run 长期 `refreshed=0 failed=61 session_dead=9 total=70`。
+- 根因: `keepaliveExchange` 把 ExchangeToken 响应按平铺小写 struct `{token,refreshToken,expiredAt}` 解析，实际响应是两层 envelope `{ResponseMetadata,Result}` + PascalCase（`Result.Token` / `Result.RefreshToken` / `TokenExpireAt`），`out.Token` 恒空 → 每次报 `ExchangeToken returned no token` → 归普通 failed 每天空转 50 次，token 从不落盘，过期后 401。不是「没刷新」，是「刷新成功但解析错没落盘」。
+- 修复: 解析改为两层 envelope，复用同仓库 `browserlogin.go` 的 `pickString`/`truncateRedacted`；`Result` 缺失时兜小写 `result`；过期时间 `ExpiredAt` 缺省时用新增 `unixMillisRFC3339` 把 `TokenExpireAt`/`RefreshExpireAt` 毫秒时间戳转 RFC3339；`ResponseMetadata.Error.Code` 非空时识别为上游错误。
+- 影响范围: 仅 keepalive 刷新响应解析与过期时间取值，刷新请求构造、换号、签到、积分、面板链路零改动。
+- 验证: `python scripts/cgo-shim-build.py traework` build/vet/test 全绿；新增 TestKeepaliveExchangeParsesEnvelope、TestKeepaliveExchangeCamelCaseResult、TestKeepaliveExchangeUpstreamError、TestUnixMillisRFC3339 四个用例并做哨兵反证；6-review STYLE: PASS。
+
 ## 0.5.59 (2026-11-24)
 
 ### Fix - 冷却空转吃掉重试预算导致部分账号一次失败后当天不再补签
