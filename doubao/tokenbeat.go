@@ -116,22 +116,28 @@ type tokenExchange struct {
 	SetCookieCount int
 }
 
-// doTokenBeat 用一次性令牌换取会话 Cookie。
+// doTokenBeat 调用令牌端点，支持带令牌换 Cookie 与带 Cookie 换令牌两种形态。
 //
 // 令牌只能兑换一次且立即消费，插件内存里不保留。
-// [参数] token: 浏览器同源脚本取到的一次性令牌。
-// [返回] 响应体、Set-Cookie 列表与错误。
-// 最近修改时间：2026-11-14；改动原因：新增，令牌端点唯一调用点。
-func doTokenBeat(token string) (*tokenBeatResponse, []*http.Cookie, error) {
+// [参数] token: 一次性令牌，非空时写入 x-tt-token 请求头。
+// [参数] cookieHeader: 会话 Cookie 头，非空时写入 Cookie 请求头用于换新令牌。
+// [返回] 响应体、Set-Cookie 列表、响应头 x-tt-token 与错误。
+// 最近修改时间：2026-11-27；改动原因：新增带 Cookie 换令牌方向，支撑会话续期。
+func doTokenBeat(token, cookieHeader string) (*tokenBeatResponse, []*http.Cookie, string, error) {
 	req, errReq := http.NewRequest(http.MethodPost, tokenBeatURL(), bytes.NewReader([]byte("{}")))
 	if errReq != nil {
-		return nil, nil, fmt.Errorf("构造令牌请求失败：%w", errReq)
+		return nil, nil, "", fmt.Errorf("构造令牌请求失败：%w", errReq)
 	}
 	req.Header.Set("Content-Type", tokenBeatContentType)
 	req.Header.Set("sdk-version", tokenBeatSDKVersion)
 	req.Header.Set("User-Agent", webUserAgent)
 	req.Header.Set("Referer", doubaoSiteHost+"/")
-	req.Header.Set("x-tt-token", strings.TrimSpace(token))
+	if strings.TrimSpace(token) != "" {
+		req.Header.Set("x-tt-token", strings.TrimSpace(token))
+	}
+	if strings.TrimSpace(cookieHeader) != "" {
+		req.Header.Set("Cookie", strings.TrimSpace(cookieHeader))
+	}
 
 	timeout := time.Duration(currentConfig().TimeoutSeconds) * time.Second
 	if timeout <= 0 {
@@ -142,23 +148,23 @@ func doTokenBeat(token string) (*tokenBeatResponse, []*http.Cookie, error) {
 	client := newUpstreamHTTPClient(timeout)
 	resp, errDo := doUnsentSafe(req, client)
 	if errDo != nil {
-		return nil, nil, fmt.Errorf("令牌请求失败：%w", errDo)
+		return nil, nil, "", fmt.Errorf("令牌请求失败：%w", errDo)
 	}
 	defer resp.Body.Close()
 
 	body, errRead := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if errRead != nil {
-		return nil, nil, fmt.Errorf("读取令牌响应失败：%w", errRead)
+		return nil, nil, "", fmt.Errorf("读取令牌响应失败：%w", errRead)
 	}
 
 	var parsed tokenBeatResponse
 	if errUnmarshal := json.Unmarshal(body, &parsed); errUnmarshal != nil {
-		return nil, nil, fmt.Errorf("令牌响应解析失败（HTTP %d）：%w", resp.StatusCode, errUnmarshal)
+		return nil, nil, "", fmt.Errorf("令牌响应解析失败（HTTP %d）：%w", resp.StatusCode, errUnmarshal)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &parsed, nil, fmt.Errorf("令牌端点返回 HTTP %d：%s", resp.StatusCode, parsed.describe())
+		return &parsed, nil, "", fmt.Errorf("令牌端点返回 HTTP %d：%s", resp.StatusCode, parsed.describe())
 	}
-	return &parsed, resp.Cookies(), nil
+	return &parsed, resp.Cookies(), strings.TrimSpace(resp.Header.Get("x-tt-token")), nil
 }
 
 // exchangeTokenForCookies 用一次性令牌换回会话 Cookie。
@@ -174,7 +180,7 @@ func exchangeTokenForCookies(token string) (*tokenExchange, error) {
 		return nil, fmt.Errorf("令牌为空")
 	}
 
-	parsed, setCookies, errDo := doTokenBeat(token)
+	parsed, setCookies, _, errDo := doTokenBeat(token, "")
 	if errDo != nil {
 		return nil, errDo
 	}

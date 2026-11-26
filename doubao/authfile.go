@@ -56,12 +56,16 @@ type StoredAuth struct {
 	// Cookies 是上游滚动下发的 Cookie 快照（见 cookiejar.go）。
 	// 首次导入时为空，第一次请求后由 durableJar 写回；与 CookieHeader 并存：
 	// 前者是随上游续期的滚动值，后者是用户导入时的原始登录态快照。
-	Cookies      []savedCookie `json:"cookies,omitempty"`
-	Label        string        `json:"label"`
-	Disabled     bool          `json:"disabled"`
-	CreatedAt    string        `json:"created_at"`
-	UpdatedAt    string        `json:"updated_at"`
-	PhysicalPath string        `json:"-"`
+	Cookies []savedCookie `json:"cookies,omitempty"`
+	// LastRenewAt 是会话最近一次成功换发的时间，仅用于观测。
+	LastRenewAt string `json:"last_renew_at,omitempty"`
+	// AuthInvalid 标记上游明确判定会话失效，面板据此提示重新授权。
+	AuthInvalid  bool   `json:"auth_invalid,omitempty"`
+	Label        string `json:"label"`
+	Disabled     bool   `json:"disabled"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+	PhysicalPath string `json:"-"`
 }
 
 type rpcHostAuthListResponse struct {

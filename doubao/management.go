@@ -295,12 +295,15 @@ func signStateOf(sa *StoredAuth) string {
 
 // authStateOf 判定账号的登录态状态。
 //
-// 依据账号文件中的会话主 Cookie 快照：无快照时回退用 CookieHeader 判断
-// （首次导入尚未滚动写回的账号），任一会话 Cookie 存在且未过期即为 ok。
+// 上游明确判定会话失效（AuthInvalid）时直接返回 expired，让面板提示重新授权；
+// 否则依据本地会话主 Cookie 快照判断（无快照时回退用 CookieHeader）。
 // [参数] sa: 账号结构。
 // [返回] "ok" 或 "expired"。
-// 最近修改时间：2026-10-17；改动原因：新增，登录态失效状态上报（AC-002 标准③）。
+// 最近修改时间：2026-11-27；改动原因：续期判失效后面板如实反映需重新授权。
 func authStateOf(sa *StoredAuth) string {
+	if sa.AuthInvalid {
+		return "expired"
+	}
 	jar := newDurableJar()
 	if len(sa.Cookies) > 0 {
 		jar.restore(sa.Cookies)

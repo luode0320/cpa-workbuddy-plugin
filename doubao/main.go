@@ -50,6 +50,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -64,7 +65,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.1.39"
+	version      = "0.1.40"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -104,6 +105,9 @@ type Config struct {
 	//
 	// 只在 KeepaliveEnabled 为真时生效；<=0 时回落到默认 30 分钟。
 	KeepaliveIntervalSeconds int `yaml:"keepalive_interval_seconds" json:"keepalive_interval_seconds"`
+	// RenewIntervalSeconds 会话续期间隔（秒）。
+	// 默认 4 小时；<=0 时回落到默认值。
+	RenewIntervalSeconds int `yaml:"renew_interval_seconds" json:"renew_interval_seconds"`
 	// AccountMaxInflight 同一账号的最大在途上游请求数。
 	//
 	// 上游按「同一账号 + 同一设备」判访问频率，并发 2 以上会互相干扰。
@@ -124,7 +128,7 @@ type Config struct {
 // defaultConfig 返回插件默认配置。
 // [参数] 无。
 // [返回] 带默认值的配置结构。
-// 最近修改时间：2026-11-22 15:10:00；改动原因：新增账号闸门三项，默认 1 / 2000ms / 60s。
+// 最近修改时间：2026-11-27；改动原因：新增会话续期间隔默认 4 小时。
 func defaultConfig() Config {
 	return Config{
 		TimeoutSeconds:           120,
@@ -134,6 +138,7 @@ func defaultConfig() Config {
 		VideoCreationWaitSeconds: 120,
 		KeepaliveEnabled:         true,
 		KeepaliveIntervalSeconds: defaultKeepaliveIntervalSeconds,
+		RenewIntervalSeconds:     14400,
 		AccountMaxInflight:       defaultAccountMaxInflight,
 		AccountMinIntervalMs:     defaultAccountMinIntervalMs,
 		RateLimitBackoffSeconds:  defaultRateLimitBackoffSeconds,
@@ -205,6 +210,7 @@ func cliproxyPluginShutdown() {
 	// 1. 先停保活协程：它每轮都会读宿主 API 与账号目录，宿主已经在卸载插件，
 	//    让它在释放后继续跑只会拿到「宿主 API 不可用」并刷日志。
 	stopKeepalive()
+	stopRenewLoop()
 
 	hostAPIMu.Lock()
 	hostAPI = nil
@@ -304,6 +310,7 @@ func doubaoRegistration() registration {
 				{Name: "video_creation_wait_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "等待上游落下第一个创作块的上限（秒），超时即判定未开始渲染。"},
 				{Name: "keepalive_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "是否在空闲期定时刷新 msToken。"},
 				{Name: "keepalive_interval_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "空闲保活间隔（秒），默认 1800。"},
+				{Name: "renew_interval_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "会话续期间隔（秒），默认 14400。"},
 				{Name: "account_max_inflight", Type: pluginapi.ConfigFieldTypeInteger, Description: "同一账号的最大在途上游请求数，默认 1。"},
 				{Name: "account_min_interval_ms", Type: pluginapi.ConfigFieldTypeInteger, Description: "同一账号两次上游发起的最小间隔（毫秒），默认 2000。"},
 				{Name: "rate_limit_backoff_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "被判访问频繁后该账号的软退避时长（秒），默认 60。"},
@@ -397,6 +404,7 @@ type configOverride struct {
 	VideoCreationWaitSeconds int   `yaml:"video_creation_wait_seconds"`
 	KeepaliveEnabled         *bool `yaml:"keepalive_enabled"`
 	KeepaliveIntervalSeconds int   `yaml:"keepalive_interval_seconds"`
+	RenewIntervalSeconds     int   `yaml:"renew_interval_seconds"`
 	AccountMaxInflight       int   `yaml:"account_max_inflight"`
 	AccountMinIntervalMs     int   `yaml:"account_min_interval_ms"`
 	RateLimitBackoffSeconds  int   `yaml:"rate_limit_backoff_seconds"`
@@ -446,6 +454,9 @@ func configurePlugin(raw []byte) error {
 		if decoded.KeepaliveEnabled != nil {
 			cfg.KeepaliveEnabled = *decoded.KeepaliveEnabled
 		}
+		if decoded.RenewIntervalSeconds > 0 {
+			cfg.RenewIntervalSeconds = decoded.RenewIntervalSeconds
+		}
 		if decoded.AccountMaxInflight > 0 {
 			cfg.AccountMaxInflight = decoded.AccountMaxInflight
 		}
@@ -462,6 +473,7 @@ func configurePlugin(raw []byte) error {
 
 	// 3. 配置落地之后再重建定时器：先启后配会让新协程读到旧间隔。
 	restartKeepalive(cfg)
+	startRenewLoop(time.Duration(cfg.RenewIntervalSeconds) * time.Second)
 	return nil
 }
 

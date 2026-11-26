@@ -369,7 +369,7 @@ func TestDurableJarConcurrentSetCookies(t *testing.T) {
 // TestAuthStateOf 校验登录态状态上报。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-10-17；改动原因：新增，状态上报（通过标准③）。
+// 最近修改时间：2026-11-27；改动原因：补上游判失效账号的状态断言。
 func TestAuthStateOf(t *testing.T) {
 	live := &StoredAuth{CookieHeader: validCookieHeader}
 	if got := authStateOf(live); got != "ok" {
@@ -396,6 +396,12 @@ func TestAuthStateOf(t *testing.T) {
 	}
 	if got := authStateOf(expiredSnapshot); got != "expired" {
 		t.Errorf("快照会话过期时应上报 expired，实际 %q", got)
+	}
+
+	// 续期判失效的账号即使本地 Cookie 看似有效也要如实上报 expired。
+	invalid := &StoredAuth{CookieHeader: validCookieHeader, AuthInvalid: true}
+	if got := authStateOf(invalid); got != "expired" {
+		t.Errorf("上游判失效的账号应上报 expired，实际 %q", got)
 	}
 }
 
