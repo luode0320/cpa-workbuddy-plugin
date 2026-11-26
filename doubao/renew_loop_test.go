@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -88,6 +90,40 @@ func TestRunRenewOnceBackoffOnFailure(t *testing.T) {
 	runRenewOnce(context.Background(), deps)
 	if renewNextAt(&StoredAuth{AuthID: "fail"}).IsZero() {
 		t.Fatal("失败账号应设置退避时间")
+	}
+}
+
+// TestRenewOneAccountMarksInvalidOnSessionExpired 校验会话失效错误落到账号标记。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-27；改动原因：新增，报错分支也要标失效，面板才如实显示。
+func TestRenewOneAccountMarksInvalidOnSessionExpired(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/doubao-invalid.json"
+	sa := &StoredAuth{AuthID: "doubao-invalid", CookieHeader: "sessionid=x", PhysicalPath: path}
+	if errWrite := writeAuthFileDirect(path, sa); errWrite != nil {
+		t.Fatalf("准备账号文件失败：%v", errWrite)
+	}
+	deps := renewDeps{
+		renew: func(sa *StoredAuth) (*renewResult, error) {
+			return nil, errors.New("续期失败（第一步）：会话过期，请重新登录")
+		},
+		apply: func(sa *StoredAuth, res *renewResult, digest string) error { return nil },
+	}
+	renewOneAccount(context.Background(), sa, deps)
+	if !sa.AuthInvalid {
+		t.Fatal("会话失效错误应标记 AuthInvalid")
+	}
+	back, errRead := os.ReadFile(path)
+	if errRead != nil {
+		t.Fatalf("读回账号文件失败：%v", errRead)
+	}
+	var stored StoredAuth
+	if errParse := json.Unmarshal(back, &stored); errParse != nil {
+		t.Fatalf("解析账号文件失败：%v", errParse)
+	}
+	if !stored.AuthInvalid {
+		t.Fatalf("失效标记应落盘，实际 %s", string(back))
 	}
 }
 

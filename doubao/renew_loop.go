@@ -196,6 +196,9 @@ func renewOneAccount(ctx context.Context, sa *StoredAuth, deps renewDeps) {
 	if errRenew != nil {
 		renewBackoffHit(sa.AuthID, errRenew.Error())
 		log.Printf("[doubao] renew failed for %s: %v", sa.AuthID, errRenew)
+		if isSessionExpiredError(errRenew.Error()) {
+			markSessionInvalid(sa, errRenew.Error())
+		}
 		return
 	}
 	if !res.Renewed {
