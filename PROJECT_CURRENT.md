@@ -21,6 +21,15 @@
 
 ## 项目概况
 
+- **当前会话（2026-11-26 23:14 - 2026-11-27 03:05）：doubao-provider 0.1.42：重新开放工作模式文本模型（路径 D 史实恢复）并上线**（用户 m01077「我们想把豆包工作模式的模型也开放出来使用」→ m02199「探活并进入实施规划」→「开始实现, 实现完成发布上线」）：
+  - **决策链**：m02109「通过接口自动获取模型」→ m02154「我们之前的提交有做过的吧? 后来删除了」触发史实核查，推翻 A/B/C 三选项定路径 D（复用 `/alice/basic/launch` 动态发现 + 从 `5707b5d^` 逐符号恢复 + 零新增依赖，不接 Node CLI）。
+  - **探活**：生产出口 IP + 真实 Cookie + 0.1.25 历史代码与 goja 真签名，3 账号 × 3 模型均无 `-1`（历史最大障碍在正确网页协议口径下非必然），但出口 IP 持续风控（710022002×2 / 710022004×1），出字铁证待干净网络补取，不阻断实施。
+  - **实现（4 生产 + 3 测试文件）**：`protocol.go` 恢复 7 常量 + `generationMode` 七字段 + `atoiSafe`；`completion.go` 恢复 `buildWorkOption`/`workModeExt` + confirm/WorkMode/skill 三分支分流，`GeneralTaskParam` 改 `any` 多态（视频确认轮填 `*generalTaskParamPayload` 逐字节不变，禁 typed-nil）；`models.go` 恢复 10 别名 + 三层解析 + `allAliases` 合并目录；`main.go` 追加 7 项 `work_*` + ConfigFields + **配置解码链**。恢复 `workmode_test.go` 8 个契约测试、修正 7 处目录旧断言、面板测试断言由拒绝改为接受（`default`/`pro` 仍拒绝）。
+  - **验证**：门禁 `cgo-shim-build.py doubao` 全绿（85s）+ 三哨兵反证有效（`atoiSafe` 改坏 → `TestAtoiSafe` FAIL；`model_item_key` 改错 → 契约测试 FAIL；去掉工作模式分支 → `TestModeForModel` FAIL）+ 污染扫描 PASS + 6-review STYLE: PASS + gofmt 无差异。
+  - **发布链**：commit `060af8e`（12 文件 +1587/−84）→ CI run 45879125483（Test(doubao) success、darwin/arm64 cancelled 常态、Release success、5 平台）→ `download-release-assets.py 0.1.42 doubao-provider` ALL CHECKSUMS OK → `publish-assets.py --allow-missing`（5 artifacts）→ registry `d0a1146` → 远端 raw 200 / 5 artifacts / 逐 asset HEAD 200。
+  - **生产热重载已生效**：`POST /v0/management/plugin-store/doubao-provider/install?version=0.1.42&source=source-636fa01121af` → `hot reloaded active_version=0.1.42 retired_version=0.1.41`；落盘 `.so` sha256 `a18f0c477e7b44d3e4b8ee8bc1d1fa6ba1bfcd2e1737174784e2cf036e0246bb` 与本地 zip 逐字节一致；13 插件启用态 `STATE_UNCHANGED`、容器未重启；生产模型目录已见 `doubao/video` + 10 条工作模式模型（`default` 仍 video）。
+  - **教训**：① 管理 API 正确路径 `/v0/management/plugin-store/{id}/install`，`/plugin-store/install?id=` 无响应；② `models` 端点需 `auth_index`；③ 版本号先核 registry 与 `main.go`（0.1.40/0.1.41 已被占用，本轮实为 0.1.42）；④ 宿主内存紧张时 Go `link` 进程残留会导致后续 OOM，需先清理；⑤ 远端是 SSH，用 `git push origin main`。
+
 - **当前会话（2026-11-25 22:56 - 2026-11-26 01:11）：traework-provider 0.5.60：keepalive ExchangeToken 两层 envelope 解析修复 401 根因并上线**（用户 m01076「很多账号 401 是不是没刷新 token 导致的」→ 诊断确认不是"没刷新"而是刷新成功但 token 解析层级错没落盘 → m01182「按这个方案修，修完测试通过才算」→ m01249 追加「检查 workbuddy 是否同 bug、一起提交」→ m01404「发版 traework 0.5.60 并热重载到生产」）：
   - **根因**：`traework/keepalive.go` `keepaliveExchange` 把 ExchangeToken 响应解成平铺小写 struct，实际是两层 envelope `{ResponseMetadata, Result}` + PascalCase → token 恒空 → 生产每日 `refreshed=0 failed=61`、大量 `ExchangeToken returned no token`，token 从不更新、过期后 401。对禁用账号直接 POST ExchangeToken 实测 HTTP200 + `Result.Token` len1004 为铁证；正确解 envelope 参考同仓库 `browserlogin.go:794-822`。workbuddy 经生产真实 refreshToken 探针确认解析 `{code,msg,data}` 完全匹配、无此 bug，其 21:45 那批 401 是 APISIX 临时鉴权、1h 内归零。
   - **修复**：`keepaliveExchange` 改解两层 envelope + `pickString` 取 PascalCase/camelCase 的 token/refresh/expiredAt，新增 `unixMillisRFC3339` 解析毫秒时间戳，识别 `ResponseMetadata.Error` 上游错误码；4 个新测试 + 门禁全绿 + 有效哨兵反证；6-review STYLE: PASS、污染扫描 PASS。
