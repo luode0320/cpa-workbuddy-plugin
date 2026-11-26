@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -179,16 +180,58 @@ type completionOption struct {
 	// RecoveryOption 是恢复/重试参数，网页端每次都带（且 req_create_time_sec 为当前秒）。
 	RecoveryOption recoveryOption `json:"recovery_option"`
 
-	// GeneralTaskParam 只在视频确认轮出现，值是对象（首轮是 nil，因而不序列化）。
-	//
-	// 首轮的同名数据放在顶层 Ext["general_task_param"]（字符串），两处层级与类型
-	// 都不同；确认轮把它搬进 option 且改成对象，同时 ext 里也留一份字符串副本。
-	GeneralTaskParam *generalTaskParamPayload `json:"general_task_param,omitempty"`
+	// GeneralTaskParam 承载 agent 任务参数，两种形态互斥：视频确认轮填
+	// *generalTaskParamPayload 对象，工作模式填 *generalTaskParam 对象。
+	// 禁止赋 typed-nil 指针，否则首轮的 nil 判据会失效。
+	GeneralTaskParam any `json:"general_task_param,omitempty"`
+
+	// ConversationMode 是会话类型，工作模式填整数 2；技能管线不出现。
+	ConversationMode int `json:"conversation_mode,omitempty"`
+
+	// ConversationInitOption 是会话初始化确认项，工作模式必带。
+	ConversationInitOption *conversationInitOption `json:"conversation_init_option,omitempty"`
+
+	// ConversationInitExt 承载模型主键与 agent 任务参数，工作模式必带。
+	ConversationInitExt *conversationInitExt `json:"conversation_init_ext,omitempty"`
 
 	// IsOldUser / MessageStorageType 仅确认轮出现：真实确认轮 option 里这两个键
 	// 有值（true / 0），首轮没有。用指针区分「未设置」与「显式零值」。
 	IsOldUser          *bool `json:"is_old_user,omitempty"`
 	MessageStorageType *int  `json:"message_storage_type,omitempty"`
+}
+
+// conversationInitOption 是会话初始化确认项。
+type conversationInitOption struct {
+	ProjectID           string `json:"project_id"`
+	NeedAckConversation bool   `json:"need_ack_conversation"`
+}
+
+// conversationInitExt 是会话初始化扩展参数。
+type conversationInitExt struct {
+	ModelItemKey    string `json:"model_item_key"`
+	ReasoningEffort string `json:"reasoning_effort"`
+	ModeID          string `json:"mode_id"`
+	AgentTaskParam  string `json:"agent_task_param"`
+}
+
+// agentTaskParam 描述 agent 运行环境，initExt 与 general_task_param 两处复用。
+type agentTaskParam struct {
+	RuntimeType   int    `json:"runtime_type"`
+	FolderName    string `json:"folder_name"`
+	DeviceName    string `json:"device_name"`
+	Workspace     string `json:"workspace"`
+	LocalAppID    string `json:"local_app_id"`
+	LocalDeviceID string `json:"local_device_id"`
+}
+
+// generalTaskParam 是工作模式的任务参数总成。
+type generalTaskParam struct {
+	Action               int            `json:"action"`
+	ThreadLocalMessageID []string       `json:"thread_local_message_id"`
+	ProjectID            string         `json:"project_id"`
+	RuntimeType          int            `json:"runtime_type"`
+	AgentTaskParam       agentTaskParam `json:"agent_task_param"`
+	ServerDoCompare      bool           `json:"server_do_compare"`
 }
 
 // generalTaskParamPayload 是确认轮 option.general_task_param 的对象形态。
@@ -317,7 +360,7 @@ func buildCompletionRequestWith(sa *StoredAuth, text string, mode generationMode
 		UserContext: []any{},
 	}
 
-	// 2. 组装 option 与顶层 ext：两条形态不可混用。
+	// 2. 组装 option 与顶层 ext：三条形态不可混用。
 	if confirm {
 		body.Option = buildConfirmOption(mode, needCreate)
 		body.Ext = confirmExt()
@@ -328,9 +371,129 @@ func buildCompletionRequestWith(sa *StoredAuth, text string, mode generationMode
 		body.ChatAbility = buildVideoConfirmAbility(text, videoParamsOf(params), videoConfirmModel)
 		return body
 	}
+	if mode.WorkMode {
+		body.Option = buildWorkOption(currentConfig(), sa, mode, localMessageID, needCreate)
+		generalTaskJSON, errMarshal := json.Marshal(body.Option.GeneralTaskParam)
+		if errMarshal != nil {
+			// 序列化失败只可能是内部结构不可编码；此时退回技能管线会静默降级，因此仍按工作模式下发空串由上游报错暴露。
+			generalTaskJSON = nil
+		}
+		body.Ext = workModeExt(string(generalTaskJSON))
+		return body
+	}
 	body.Option = buildSkillOption(mode, needCreate)
 	body.Ext = skillExt()
 	return body
+}
+
+// buildWorkOption 构造工作模式（agent_mode=1）的 option 段。
+//
+// model_item_key 必须同时出现在 conversation_init_ext、model_config、
+// aggregate_params 三处，任一处不一致都会让上游回落到账号默认模型。
+// [参数] cfg: 运行期配置；sa: 账号；mode: 生成模式；localMessageID: 本轮消息 id；
+// needCreate: 是否新建会话。
+// [返回] option 段。
+// 最近修改时间：2026-11-27 00:50:00；改动原因：恢复工作模式请求协议。
+func buildWorkOption(cfg Config, sa *StoredAuth, mode generationMode, localMessageID string, needCreate bool) completionOption {
+	modeID := strings.TrimSpace(cfg.WorkModeID)
+	if modeID == "" {
+		modeID = defaultWorkModeID
+	}
+	effort := strings.TrimSpace(mode.ReasoningEffort)
+	if effort == "" {
+		effort = defaultWorkReasoningEffort
+	}
+	memoryProfile := strings.TrimSpace(mode.MemoryProfile)
+	if memoryProfile == "" {
+		memoryProfile = cfg.WorkMemoryProfile
+	}
+	totalWindow := strings.TrimSpace(mode.TotalWindow)
+	if totalWindow == "" {
+		totalWindow = cfg.WorkTotalWindow
+	}
+
+	// 1. 组装 agent 任务参数：网页来源六字段全空，runtime_type 固定 1。
+	taskParam := agentTaskParam{RuntimeType: 1}
+	taskParamJSON, errTask := json.Marshal(taskParam)
+	if errTask != nil {
+		taskParamJSON = nil
+	}
+
+	// 2. 组装 option 主体：三处 model_item_key 取同一个值。
+	option := completionOption{
+		CreateTimeMS:           nowMillis(),
+		AgentMode:              1,
+		NeedDeepThink:          needDeepThinkOn,
+		UniqueKey:              randomUUID(),
+		NeedCreateConversation: needCreate,
+		ConversationMode:       workConversationMode,
+		ConversationInitOption: &conversationInitOption{NeedAckConversation: true},
+		ConversationInitExt: &conversationInitExt{
+			ModelItemKey:    mode.ModelItemKey,
+			ReasoningEffort: effort,
+			ModeID:          modeID,
+			AgentTaskParam:  string(taskParamJSON),
+		},
+		ModelConfig: modelConfig{
+			ModelItemKey: mode.ModelItemKey,
+			ModelExtraParams: map[string]any{
+				"memory_profile":    memoryProfile,
+				"total_window_size": totalWindow,
+			},
+			ReasoningEffort: atoiSafe(effort),
+		},
+		AggregateParams: aggregateParams{
+			MentionSkillList:  "[]",
+			MentionPluginList: "[]",
+			MentionExt:        "[{}]",
+			ConversationMode:  strconv.Itoa(workConversationMode),
+			ModeID:            modeID,
+			ModelItemKey:      mode.ModelItemKey,
+			AgentMode:         "1",
+			ReasoningEffort:   effort,
+		},
+	}
+	option.SSERecvEventOptions.SupportChunkDelta = true
+	option.SupportLazyFetchStream = true
+
+	// 3. 补齐网页端每次都会显式发送的默认值段。
+	option.ConnectorInfoList = []any{}
+	option.EditQueryID = []any{}
+	option.RegenQueryID = []any{}
+	option.RelatedDeletedMessage = map[string]any{}
+	option.RecoveryOption = recoveryOption{ReqCreateTimeSec: time.Now().Unix()}
+
+	// 4. 工作模式固定声明老用户与消息存储类型。
+	var isOldUser = true
+	var storageType = 0
+	option.IsOldUser = &isOldUser
+	option.MessageStorageType = &storageType
+
+	// 4. 组装 general_task_param；网页来源不带任何客户端沙箱字段。
+	option.GeneralTaskParam = &generalTaskParam{
+		ThreadLocalMessageID: []string{localMessageID},
+		RuntimeType:          1,
+		AgentTaskParam:       taskParam,
+		ServerDoCompare:      true,
+	}
+	return option
+}
+
+// workModeExt 返回工作模式的顶层 ext 段（8 键）。
+// [参数] generalTaskJSON: 已序列化的 general_task_param 串。
+// [返回] 顶层 ext 字典。
+// 最近修改时间：2026-11-27 00:50:00；改动原因：恢复工作模式顶层扩展。
+func workModeExt(generalTaskJSON string) map[string]string {
+	return map[string]string{
+		"general_task_param":            generalTaskJSON,
+		"use_deep_think":                strconv.Itoa(needDeepThinkOn),
+		"agent_mode":                    "1",
+		"conversation_init_option":      "{\"project_id\":\"\",\"need_ack_conversation\":true}",
+		"sub_conv_firstmet_type":        "1",
+		"collection_id":                 "",
+		"is_finish":                     "1",
+		"commerce_credit_config_enable": "0",
+	}
 }
 
 // localPermissionsFor 返回本地权限声明列表。

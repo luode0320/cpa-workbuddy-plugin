@@ -56,6 +56,97 @@ var capabilityAliases = []modelAlias{
 // 只在 test-active 未指定模型时使用。目录只剩视频一条，因此只能指向它。
 const defaultModelID = "video"
 
+// workModelAliases 是工作模式（agent_mode=1）模型目录。
+//
+// 每条别名锁定一套上游 model_item_key + 记忆档位 + 上下文窗口：上游按
+// model_item_key 选模型，按 memory_profile / total_window_size 配额，三者
+// 不匹配会被拒或提前截断。窗口为 256000 的档位配 256k，300000 的配 300k_230。
+var workModelAliases = []modelAlias{
+	{
+		ID:            "auto",
+		DisplayName:   "自动选择",
+		Description:   "由上游按问题自动挑模型，免费额度可用。",
+		ModelItemKey:  "9",
+		MemoryProfile: "256k",
+		TotalWindow:   "256000",
+	},
+	{
+		ID:            "doubao-2.1-lite",
+		DisplayName:   "豆包 2.1 Lite",
+		Description:   "轻量对话模型，适合闲聊与短问答。",
+		ModelItemKey:  "seed-lite-7b",
+		MemoryProfile: "256k",
+		TotalWindow:   "256000",
+	},
+	{
+		ID:            "doubao-2.1-pro",
+		DisplayName:   "豆包 2.1 Pro",
+		Description:   "豆包旗舰对话模型，通用能力较强。",
+		ModelItemKey:  "5",
+		MemoryProfile: "256k",
+		TotalWindow:   "256000",
+	},
+	{
+		ID:            "deepseek-v4-flash",
+		DisplayName:   "DeepSeek V4 Flash",
+		Description:   "工作模式默认模型，速度快、额度消耗低。",
+		ModelItemKey:  "person-deepseek-v4-1-flash-261017",
+		MemoryProfile: "300k_230",
+		TotalWindow:   "300000",
+	},
+	{
+		ID:            "deepseek-v4-pro",
+		DisplayName:   "DeepSeek V4 Pro",
+		Description:   "DeepSeek 高配档，复杂推理与长文更稳。",
+		ModelItemKey:  "person-deepseek-v4-pro-ga-260813",
+		MemoryProfile: "300k_230",
+		TotalWindow:   "300000",
+	},
+	{
+		ID:            "kimi-k3",
+		DisplayName:   "Kimi K3",
+		Description:   "长上下文写作与资料整理见长。",
+		ModelItemKey:  "person-kimi-k3-261111",
+		MemoryProfile: "300k_230",
+		TotalWindow:   "300000",
+	},
+	{
+		ID:            "kimi-k3.1-pro",
+		DisplayName:   "Kimi K3.1 Pro",
+		Description:   "Kimi 新版旗舰，指令跟随更稳。",
+		ModelItemKey:  "person-kimi-k3-1-pro-261111",
+		MemoryProfile: "300k_230",
+		TotalWindow:   "300000",
+	},
+	{
+		ID:            "kimi-k3.1-pro-fast",
+		DisplayName:   "Kimi K3.1 Pro 高速版",
+		Description:   "Kimi 新版高速档，延迟更低。",
+		ModelItemKey:  "person-kimi-k3-1-pro-highspeed-261111",
+		MemoryProfile: "300k_230",
+		TotalWindow:   "300000",
+	},
+	{
+		ID:            "glm-5.3",
+		DisplayName:   "GLM 5.3",
+		Description:   "智谱 GLM 旗舰档；额度不足时上游会回显错误话术。",
+		ModelItemKey:  "person-glm-5-3-261111",
+		MemoryProfile: "300k_230",
+		TotalWindow:   "300000",
+	},
+	{
+		ID:            "glm-5.3-flash",
+		DisplayName:   "GLM 5.3 Flash",
+		Description:   "智谱 GLM 轻量档；额度不足时上游会回显错误话术。",
+		ModelItemKey:  "person-glm-5-3-flash-261111",
+		MemoryProfile: "300k_230",
+		TotalWindow:   "300000",
+	},
+}
+
+// defaultWorkModelID 是工作模式的默认模型别名。
+const defaultWorkModelID = "deepseek-v4-flash"
+
 // modelIDPrefix 是对外模型名的前缀。
 const modelIDPrefix = "doubao/"
 
@@ -82,31 +173,85 @@ func normalizeModelName(requested string) string {
 
 // modeForModel 把客户端模型名解析为生成模式。
 //
-// 只认目录里的能力别名（video）：插件只做生视频，目录外的名字一律判失败。
-// 返回 false 由调用方转成明确错误，绝不静默替换成别的模型——静默回落会把
+// 技能别名优先（video 靠 Skill 激活上游 skill 管线），其次是工作模式模型名。
+// 目录外的名字一律判失败，绝不静默替换成别的模型——静默回落会把
 // 「测生视频」变成「测别的东西」。
 // [参数] requested: 客户端模型名。
 // [返回] 生成模式；ok 表示是否命中目录。
-// 最近修改时间：2026-11-17 00:42:00；改动原因：工作模式模型目录删除，未知名由回落改为失败。
+// 最近修改时间：2026-11-27 00:55:00；改动原因：恢复工作模式模型目录与解析。
 func modeForModel(requested string) (generationMode, bool) {
 	name := normalizeModelName(requested)
+
+	// 1. 技能别名优先：只有它能激活网页端 skill 管线。
 	for _, alias := range capabilityAliases {
 		if strings.EqualFold(name, alias.ID) {
 			return modeForAlias(alias), true
 		}
 	}
+
+	// 2. 工作模式模型名直连 agent 管线。
+	if alias, ok := aliasForWorkModel(name); ok {
+		return workModeForAlias(alias), true
+	}
 	return generationMode{}, false
 }
 
-// modeForAlias 把别名展开成一次请求的生成模式。
+// modeForAlias 把技能别名展开成一次请求的生成模式。
 //
-// Skill 必须保留：生视频只能靠它激活上游 skill 管线；ModelItemKey 在视频管线
-// 恒为空，由 buildCompletionRequest 统一写成 "0"。
+// Skill 必须保留：生视频只能靠它激活上游 skill 管线。
 // [参数] alias: 命中的别名。
 // [返回] 生成模式。
-// 最近修改时间：2026-11-17 00:42:00；改动原因：工作模式管线删除，去掉 allowWorkMode 分支。
+// 最近修改时间：2026-11-27 00:55:00；改动原因：注释口径同步，函数体不变。
 func modeForAlias(alias modelAlias) generationMode {
 	return generationMode{Skill: alias.Skill, Kind: kindForAlias(alias)}
+}
+
+// aliasForWorkModel 在工作模式目录中查找模型别名。
+// [参数] name: 已归一化的模型名。
+// [返回] 命中的别名；found 表示是否存在同名条目。
+// 最近修改时间：2026-11-27 00:55:00；改动原因：恢复工作模式模型名解析。
+func aliasForWorkModel(name string) (modelAlias, bool) {
+	for _, alias := range workModelAliases {
+		if strings.EqualFold(name, alias.ID) {
+			return alias, true
+		}
+	}
+	return modelAlias{}, false
+}
+
+// workModeForAlias 把工作模式别名展开成一次请求的生成模式。
+//
+// 空字段用运行期配置兜底：model_item_key 为空会把上游模型名打成空串。
+// [参数] alias: 命中的工作模式别名。
+// [返回] 生成模式。
+// 最近修改时间：2026-11-27 00:55:00；改动原因：恢复工作模式别名展开。
+func workModeForAlias(alias modelAlias) generationMode {
+	cfg := currentConfig()
+	mode := generationMode{
+		Kind:            "text",
+		ModelItemKey:    alias.ModelItemKey,
+		MemoryProfile:   alias.MemoryProfile,
+		TotalWindow:     alias.TotalWindow,
+		ReasoningEffort: alias.ReasoningEffort,
+		WorkMode:        true,
+	}
+	if mode.ModelItemKey == "" {
+		if fallback, ok := aliasForWorkModel(defaultWorkModelID); ok {
+			mode.ModelItemKey = fallback.ModelItemKey
+			mode.MemoryProfile = fallback.MemoryProfile
+			mode.TotalWindow = fallback.TotalWindow
+		}
+	}
+	if mode.MemoryProfile == "" {
+		mode.MemoryProfile = cfg.WorkMemoryProfile
+	}
+	if mode.TotalWindow == "" {
+		mode.TotalWindow = cfg.WorkTotalWindow
+	}
+	if mode.ReasoningEffort == "" {
+		mode.ReasoningEffort = cfg.WorkReasoningEffort
+	}
+	return mode
 }
 
 // kindForAlias 返回别名对应的回复类型。
@@ -123,15 +268,16 @@ func kindForAlias(alias modelAlias) string {
 
 // catalogueModels 构造完整的模型目录。
 //
-// 目录即能力别名本身（video）。同名去重保留：将来新增别名时重复登记
+// 能力别名在前（稳定语义），工作模式模型在后。同名去重保留：重复登记
 // 同一个 ID 会让宿主看到两条冲突条目。
 // [参数] 无。
 // [返回] 宿主模型结构列表。
-// 最近修改时间：2026-11-17 00:42:00；改动原因：工作模式模型目录删除，只保留能力别名。
+// 最近修改时间：2026-11-27 00:55:00；改动原因：恢复工作模式模型目录。
 func catalogueModels() []pluginapi.ModelInfo {
-	out := make([]pluginapi.ModelInfo, 0, len(capabilityAliases))
-	seen := make(map[string]struct{}, len(capabilityAliases))
-	for _, alias := range capabilityAliases {
+	aliases := allAliases()
+	out := make([]pluginapi.ModelInfo, 0, len(aliases))
+	seen := make(map[string]struct{}, len(aliases))
+	for _, alias := range aliases {
 		if _, dup := seen[strings.ToLower(alias.ID)]; dup {
 			continue
 		}
@@ -141,16 +287,25 @@ func catalogueModels() []pluginapi.ModelInfo {
 	return out
 }
 
+// allAliases 返回能力别名与工作模式别名的合并视图（能力别名在前）。
+// [参数] 无。
+// [返回] 别名列表（新副本，调用方改动不会污染目录）。
+// 最近修改时间：2026-11-27 00:55:00；改动原因：新增，供目录与测试列表共用。
+func allAliases() []modelAlias {
+	out := make([]modelAlias, 0, len(capabilityAliases)+len(workModelAliases))
+	out = append(out, capabilityAliases...)
+	out = append(out, workModelAliases...)
+	return out
+}
+
 // testableAliases 返回活跃测试可选的模型别名。
 //
-// 目录里只剩生视频，它必须可测：这是插件唯一的能力，排除掉就
-// 没有可测对象了。代价是测试会真正触发一次上游生成（耗额度、等数十秒），这是
-// 「只做视频」下无法回避的代价。
+// 面板测试必须能覆盖工作模式模型，因此目录里的别名全部可测。
 // [参数] 无。
 // [返回] 别名列表（返回副本，调用方改动不会污染目录）。
-// 最近修改时间：2026-11-17 00:42:00；改动原因：工作模式模型目录删除，测试列表改为全部能力别名。
+// 最近修改时间：2026-11-27 00:55:00；改动原因：恢复工作模式模型可测。
 func testableAliases() []modelAlias {
-	return append([]modelAlias(nil), capabilityAliases...)
+	return allAliases()
 }
 
 // testableModelIDs 返回活跃测试可选的模型 id（含 doubao/ 前缀）。

@@ -1,3 +1,13 @@
+## 0.1.42 (2026-11-27)
+
+### 新增
+- **重新开放豆包工作模式（agent_mode=1）文本模型**，与现有视频生成并存：
+  - 恢复 10 条工作模式模型别名：`doubao/auto`、`doubao/doubao-2.1-lite`、`doubao/doubao-2.1-pro`、`doubao/deepseek-v4-flash`（默认）、`doubao/deepseek-v4-pro`、`doubao/kimi-k3`、`doubao/kimi-k3.1-pro`、`doubao/kimi-k3.1-pro-fast`、`doubao/glm-5.3`、`doubao/glm-5.3-flash`，各带上游 `model_item_key` 与记忆档位。
+  - 恢复工作模式请求构造：`agent_mode=1`、`conversation_mode` 整数 2、`need_deep_think=10001`、三处 `model_item_key` 一致、顶层 `ext` 八键、网页端默认值段齐全。
+  - 新增 7 项配置：`work_bot_id`、`work_mode_id`、`work_reasoning_effort`、`work_memory_profile`、`work_total_window`、`work_enable_sandbox`、`work_workspace`，并接入配置解码链。
+  - 模型目录继续复用上游 `/alice/basic/launch` 动态发现，工作别名与动态代号并存。
+- 视频生成链路、`-1` 换号不清冷却语义、未知模型严格拒绝均保持不变。
+
 ## 0.1.41 (2026-11-27)
 
 ### 修复

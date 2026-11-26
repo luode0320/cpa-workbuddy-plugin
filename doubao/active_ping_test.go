@@ -254,27 +254,45 @@ func TestRunActiveTestRejectsUnknownModel(t *testing.T) {
 	}
 }
 
-// TestRunActiveTestRejectsRemovedWorkModels 校验已删的工作模式模型名被拒。
+// TestRunActiveTestAcceptsWorkModels 校验工作模式模型名被面板测试接受。
 //
-// 0.1.26 起插件只做图片与视频，deepseek / kimi / glm 这些工作模式模型已从目录
-// 移除。它们必须直接报「不支持的测试模型」，不能因为名字眼熟就被静默接受——
+// 工作模式模型恢复后必须能进到上游请求那一层（而不是在解析阶段就被判不支持）；
+// 上游用不可达地址模拟，只验证「没有报不支持的测试模型」。
+// [参数] t: 测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-27 02:32:00；改动原因：恢复工作模式模型，断言由拒绝改为接受。
+func TestRunActiveTestAcceptsWorkModels(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+	defer swapCompletionEndpoint(deadURL)()
+
+	for _, alias := range workModelAliases {
+		model := modelIDPrefix + alias.ID
+		res := runActiveTest(completionTestAccount(), model)
+		if msg, _ := res["error"].(string); strings.Contains(msg, "不支持的测试模型") {
+			t.Errorf("%s 属工作模式目录，不应报「不支持的测试模型」，实际 %q", model, msg)
+		}
+	}
+}
+
+// TestRunActiveTestRejectsNonCatalogModels 校验目录外模型名被拒。
+//
+// 目录外的名字必须直接报「不支持的测试模型」，不能因为名字眼熟就被静默接受——
 // 否则面板点下去会真的发一次上游请求，白白消耗账号额度。
 // [参数] t: 测试上下文。
 // [返回] 无。
-// 最近修改时间：2026-11-17 01:08:00；改动原因：新增，锁定工作模式模型已不可测。
-func TestRunActiveTestRejectsRemovedWorkModels(t *testing.T) {
+// 最近修改时间：2026-11-27 02:32:00；改动原因：工作模式模型移入接受测试，本测试只留目录外模型。
+func TestRunActiveTestRejectsNonCatalogModels(t *testing.T) {
 	removed := []string{
-		modelIDPrefix + "deepseek-v4-flash",
-		modelIDPrefix + "deepseek-v4-pro",
-		modelIDPrefix + "kimi-k3",
-		modelIDPrefix + "glm-5.3",
 		modelIDPrefix + "default",
 		modelIDPrefix + "pro",
+		modelIDPrefix + "not-exist",
 	}
 	for _, model := range removed {
 		res := runActiveTest(completionTestAccount(), model)
 		if res["ok"] == true {
-			t.Errorf("%s 已从目录删除，不应判成功，实际 %+v", model, res)
+			t.Errorf("%s 不在目录内，不应判成功，实际 %+v", model, res)
 			continue
 		}
 		if msg, _ := res["error"].(string); !strings.Contains(msg, "不支持的测试模型") {

@@ -65,7 +65,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.1.41"
+	version      = "0.1.42"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -123,6 +123,20 @@ type Config struct {
 	// 独立于 failover 的阶梯冷却：频率判定是可自愈的短时现象，用固定窗口比
 	// 60s×次数封顶 10 分钟的阶梯更准。<=0 时回落到默认 60。
 	RateLimitBackoffSeconds int `yaml:"rate_limit_backoff_seconds" json:"rate_limit_backoff_seconds"`
+	// WorkBotID 工作模式会话机器人标识；空表示用内置默认值。
+	WorkBotID string `yaml:"work_bot_id" json:"work_bot_id"`
+	// WorkModeID 工作模式编号；3 是上游「工作任务」模式。
+	WorkModeID string `yaml:"work_mode_id" json:"work_mode_id"`
+	// WorkReasoningEffort 工作模式推理档位（0-4，4 最高）。
+	WorkReasoningEffort string `yaml:"work_reasoning_effort" json:"work_reasoning_effort"`
+	// WorkMemoryProfile 工作模式记忆档位，必须与 WorkTotalWindow 配套。
+	WorkMemoryProfile string `yaml:"work_memory_profile" json:"work_memory_profile"`
+	// WorkTotalWindow 工作模式上下文窗口大小。
+	WorkTotalWindow string `yaml:"work_total_window" json:"work_total_window"`
+	// WorkEnableSandbox 是否启用上游沙箱；headless 环境必须关闭。
+	WorkEnableSandbox bool `yaml:"work_enable_sandbox" json:"work_enable_sandbox"`
+	// WorkWorkspace 工作模式工作目录；空表示不启用本地目录映射。
+	WorkWorkspace string `yaml:"work_workspace" json:"work_workspace"`
 }
 
 // defaultConfig 返回插件默认配置。
@@ -142,6 +156,11 @@ func defaultConfig() Config {
 		AccountMaxInflight:       defaultAccountMaxInflight,
 		AccountMinIntervalMs:     defaultAccountMinIntervalMs,
 		RateLimitBackoffSeconds:  defaultRateLimitBackoffSeconds,
+		WorkBotID:                defaultBotID,
+		WorkModeID:               defaultWorkModeID,
+		WorkReasoningEffort:      defaultWorkReasoningEffort,
+		WorkMemoryProfile:        defaultWorkMemoryProfile,
+		WorkTotalWindow:          defaultWorkTotalWindow,
 	}
 }
 
@@ -314,6 +333,13 @@ func doubaoRegistration() registration {
 				{Name: "account_max_inflight", Type: pluginapi.ConfigFieldTypeInteger, Description: "同一账号的最大在途上游请求数，默认 1。"},
 				{Name: "account_min_interval_ms", Type: pluginapi.ConfigFieldTypeInteger, Description: "同一账号两次上游发起的最小间隔（毫秒），默认 2000。"},
 				{Name: "rate_limit_backoff_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "被判访问频繁后该账号的软退避时长（秒），默认 60。"},
+				{Name: "work_bot_id", Type: pluginapi.ConfigFieldTypeString, Description: "工作模式 bot_id；为空时用账号上的 bot_id。"},
+				{Name: "work_mode_id", Type: pluginapi.ConfigFieldTypeString, Description: "工作模式 mode_id（工作任务为 3）。"},
+				{Name: "work_reasoning_effort", Type: pluginapi.ConfigFieldTypeString, Description: "工作模式默认推理档位（0-4，4 最高）。"},
+				{Name: "work_memory_profile", Type: pluginapi.ConfigFieldTypeString, Description: "工作模式默认记忆档位（如 300k_230）。"},
+				{Name: "work_total_window", Type: pluginapi.ConfigFieldTypeString, Description: "工作模式默认上下文窗口（如 300000）。"},
+				{Name: "work_enable_sandbox", Type: pluginapi.ConfigFieldTypeBoolean, Description: "是否声明本地沙箱；无人值守部署必须为 false，否则请求会挂到超时。"},
+				{Name: "work_workspace", Type: pluginapi.ConfigFieldTypeString, Description: "工作模式工作目录；留空表示不声明本地目录。"},
 			},
 		},
 		Capabilities: registrationCapability{
@@ -397,24 +423,31 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 // 关掉」，一 reconfigure 就把默认值冲掉。指针才能区分「没写」与「写了 false」。
 // 数值项仍用值类型：它们的零值本来就代表「没写」，由默认值兜底。
 type configOverride struct {
-	TimeoutSeconds           int   `yaml:"timeout_seconds"`
-	StreamTimeoutSeconds     int   `yaml:"stream_timeout_seconds"`
-	ModelCacheSecs           int   `yaml:"model_cache_seconds"`
-	VideoPollTimeoutSeconds  int   `yaml:"video_poll_timeout_seconds"`
-	VideoCreationWaitSeconds int   `yaml:"video_creation_wait_seconds"`
-	KeepaliveEnabled         *bool `yaml:"keepalive_enabled"`
-	KeepaliveIntervalSeconds int   `yaml:"keepalive_interval_seconds"`
-	RenewIntervalSeconds     int   `yaml:"renew_interval_seconds"`
-	AccountMaxInflight       int   `yaml:"account_max_inflight"`
-	AccountMinIntervalMs     int   `yaml:"account_min_interval_ms"`
-	RateLimitBackoffSeconds  int   `yaml:"rate_limit_backoff_seconds"`
+	TimeoutSeconds           int    `yaml:"timeout_seconds"`
+	StreamTimeoutSeconds     int    `yaml:"stream_timeout_seconds"`
+	ModelCacheSecs           int    `yaml:"model_cache_seconds"`
+	VideoPollTimeoutSeconds  int    `yaml:"video_poll_timeout_seconds"`
+	VideoCreationWaitSeconds int    `yaml:"video_creation_wait_seconds"`
+	KeepaliveEnabled         *bool  `yaml:"keepalive_enabled"`
+	KeepaliveIntervalSeconds int    `yaml:"keepalive_interval_seconds"`
+	RenewIntervalSeconds     int    `yaml:"renew_interval_seconds"`
+	AccountMaxInflight       int    `yaml:"account_max_inflight"`
+	AccountMinIntervalMs     int    `yaml:"account_min_interval_ms"`
+	RateLimitBackoffSeconds  int    `yaml:"rate_limit_backoff_seconds"`
+	WorkBotID                string `yaml:"work_bot_id"`
+	WorkModeID               string `yaml:"work_mode_id"`
+	WorkReasoningEffort      string `yaml:"work_reasoning_effort"`
+	WorkMemoryProfile        string `yaml:"work_memory_profile"`
+	WorkTotalWindow          string `yaml:"work_total_window"`
+	WorkEnableSandbox        bool   `yaml:"work_enable_sandbox"`
+	WorkWorkspace            string `yaml:"work_workspace"`
 }
 
 // configurePlugin 解析宿主下发的 YAML 配置并更新运行期配置。
 //
 // 数值项按「>0 才覆盖」处理，保证缺省键保留默认值，无关项热更新不会把超时
-// 与缓存窗口冲成 0。未知键（如早期版本的 work_* 系列）由 yaml 宽松忽略。
-// 布尔项走指针判空：只有配置里真的写了这个键才覆盖默认值。
+// 与缓存窗口冲成 0。字符串项按「非空才覆盖」处理。布尔项走指针或直接赋值：
+// 布尔项只有 work_enable_sandbox 一项，直接赋值以支持显式 false。
 // [参数] raw: 宿主 reconfigure 载荷，config_yaml 为 base64 解码后的 YAML 字节。
 // [返回] 解析错误。
 // 最近修改时间：2026-11-22 15:10:00；改动原因：新增账号闸门三项的覆盖逻辑。
@@ -466,6 +499,25 @@ func configurePlugin(raw []byte) error {
 		if decoded.RateLimitBackoffSeconds > 0 {
 			cfg.RateLimitBackoffSeconds = decoded.RateLimitBackoffSeconds
 		}
+		if decoded.WorkBotID != "" {
+			cfg.WorkBotID = decoded.WorkBotID
+		}
+		if decoded.WorkModeID != "" {
+			cfg.WorkModeID = decoded.WorkModeID
+		}
+		if decoded.WorkReasoningEffort != "" {
+			cfg.WorkReasoningEffort = decoded.WorkReasoningEffort
+		}
+		if decoded.WorkMemoryProfile != "" {
+			cfg.WorkMemoryProfile = decoded.WorkMemoryProfile
+		}
+		if decoded.WorkTotalWindow != "" {
+			cfg.WorkTotalWindow = decoded.WorkTotalWindow
+		}
+		if decoded.WorkWorkspace != "" {
+			cfg.WorkWorkspace = decoded.WorkWorkspace
+		}
+		cfg.WorkEnableSandbox = decoded.WorkEnableSandbox
 	}
 
 	// 2. 整体替换运行期配置，热更新立即对后续请求生效。

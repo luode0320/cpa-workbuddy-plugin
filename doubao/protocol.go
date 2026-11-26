@@ -28,13 +28,10 @@ import (
 //     影响尚未分离。采集链路见 login.go 的 callbackSVWebIDHeader，读取入口见
 //     fingerprintOf。
 //
-//   - 工作模式（agent_mode=1）整条协议已随「只做视频」删除（2026-11-17）：
-//     该管线依赖账号被投放 pc_incentive_task_mvp_v3 活动，且必须做会话续接与
-//     异步产物回灌，与视频的产物模型无关。删掉的常量与 atoiSafe
-//     只服务那条管线，任何一处都不再被引用。
+//   - 工作模式（agent_mode=1）管线与视频技能管线（agent_mode=2）共用本文件的
+//     query 构造与签名，两条管线由 generationMode.WorkMode 隔离。
 //
-// 最近修改时间：2026-11-17 21:40:00；改动原因：视频四个参数降为缺省值，
-// 新增 videoParams 与归一函数，供首轮提示词与确认轮共用同一套取值。
+// 最近修改时间：2026-11-27 00:40:00；改动原因：恢复工作模式常量、generationMode 字段与 atoiSafe。
 
 const (
 	// webUserAgent 是模拟网页端请求的 User-Agent。
@@ -107,6 +104,27 @@ const (
 	// deferral: 上界取实测最长档 15 秒；待 v2.5 多模型时再建规格矩阵（FEAS-004）。
 	videoDurationMin = 1
 	videoDurationMax = 15
+
+	// workConversationMode 是工作模式会话的 conversation_mode 取值。
+	workConversationMode = 2
+
+	// defaultWorkModeID 是工作模式的 mode_id（工作任务）。
+	defaultWorkModeID = "3"
+
+	// defaultWorkReasoningEffort 是工作模式默认推理档位（0-4，4 最高）。
+	defaultWorkReasoningEffort = "4"
+
+	// defaultWorkMemoryProfile 是工作模式默认记忆档位。
+	defaultWorkMemoryProfile = "300k_230"
+
+	// defaultWorkTotalWindow 是工作模式默认上下文窗口（与 memory_profile 配套）。
+	defaultWorkTotalWindow = "300000"
+
+	// needDeepThinkOn 是开启深度思考时 need_deep_think 的取值。
+	needDeepThinkOn = 10001
+
+	// workWorkspaceMarker 是客户端工作目录标记。
+	workWorkspaceMarker = "\\Doubao"
 )
 
 // videoParams 是一次视频请求归一后的参数集合。
@@ -164,16 +182,26 @@ func (p videoParams) isDefault() bool {
 		p.Ratio == defaultVideoRatio
 }
 
-// generationMode 描述一次请求期望的回复形态。
+// generationMode 描述一次请求期望的回复形态与模型参数。
 //
-// 只剩一条上游管线（网页端技能管线，agent_mode=2）：靠 Skill 激活
-// 生视频。缺 Skill 时「画一只猫」只会被模型描述而不会真正绘制——这是静默
-// 降级，不报错，因此调用方必须从目录别名取值，不能自己拼。
+// 两条上游管线共用本结构：工作模式（WorkMode=true，agent_mode=1）按
+// ModelItemKey 选模型；技能模式（WorkMode=false，agent_mode=2）靠 Skill
+// 激活生视频。
 type generationMode struct {
-	// Skill 是上游 skill id，0 表示未声明能力。
+	// Skill 是上游 skill id，0 表示纯文本对话。
 	Skill int
-	// Kind 是回复解析类型：video。
+	// Kind 是回复解析类型：text / video。
 	Kind string
+	// ModelItemKey 是上游模型主键（工作模式按它选模型）。
+	ModelItemKey string
+	// MemoryProfile 是上游记忆档位（如 300k_230），需与 TotalWindow 配套。
+	MemoryProfile string
+	// TotalWindow 是上下文窗口大小（十进制字符串，如 300000）。
+	TotalWindow string
+	// ReasoningEffort 是推理档位（0-4，4 最高）。
+	ReasoningEffort string
+	// WorkMode 表示走工作模式管线。
+	WorkMode bool
 }
 
 // textMode 返回不带任何 skill 的空模式。
@@ -439,4 +467,19 @@ func buildAccountInfoQuery() string {
 	q.Set("sdk_version", accountInfoSDKVersion)
 	q.Set("doubao_from", "inject_html")
 	return q.Encode()
+}
+
+// atoiSafe 按数字前缀解析档位，遇非数字停止；无数字前缀返回 0。
+// [参数] s: 待转换字符串。
+// [返回] 解析结果。
+// 最近修改时间：2026-11-27 00:40:00；改动原因：恢复工作模式推理档位解析。
+func atoiSafe(s string) int {
+	value := 0
+	for _, r := range strings.TrimSpace(s) {
+		if r < '0' || r > '9' {
+			break
+		}
+		value = value*10 + int(r-'0')
+	}
+	return value
 }
