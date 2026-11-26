@@ -203,33 +203,11 @@ func TestPickSessionAuth_TTLExpiryReassigns(t *testing.T) {
 	}
 }
 
-// TestPickSessionAuth_LowCreditAccountReassigns 验证会话绑定的账号落入残血保护后
-// 会被重新分配；判据是正积分低于安全红线。
-func TestPickSessionAuth_LowCreditAccountReassigns(t *testing.T) {
-	resetSessionRouting(t)
-	resetFailover(t)
-	restoreMin := setMinRoutableCredits(defaultMinRoutableCredits)
-	t.Cleanup(restoreMin)
-	storeCredits(t, "wb-a", 500, 0, 500)
-	storeCredits(t, "wb-b", 500, 0, 500)
-	cands := []activeAuthCandidate{
-		{ID: "wb-a"}, {ID: "wb-b"},
-	}
-	first := pickSessionAuth("conv-1", cands)
-	// 把已绑定账号压到安全红线以下，下一次选取必须换号
-	storeCredits(t, first, 5, 495, 500)
-	if got := pickSessionAuth("conv-1", cands); got == first {
-		t.Fatalf("low-credit pinned account should be re-assigned, stuck at %q", got)
-	}
-}
-
-// TestPickSessionAuth_ExhaustedAccountReassigns 验证耗尽账号被重新分配：
-// QwenWork 无免费模型，0 积分账号无法服务任何请求，会话必须换到有额度的账号。
+// TestPickSessionAuth_ExhaustedAccountReassigns 验证被标记耗尽的账号会被重新分配。
+// 积分/免费模型判定由调度入口完成，picker 只消费 candidate 的 Exhausted 标记。
 func TestPickSessionAuth_ExhaustedAccountReassigns(t *testing.T) {
 	resetSessionRouting(t)
 	resetFailover(t)
-	storeCredits(t, "wb-a", 500, 0, 500)
-	storeCredits(t, "wb-b", 500, 0, 500)
 	cands := []activeAuthCandidate{
 		{ID: "wb-a"}, {ID: "wb-b"},
 	}
@@ -237,9 +215,14 @@ func TestPickSessionAuth_ExhaustedAccountReassigns(t *testing.T) {
 	if first == "" {
 		t.Fatal("healthy pool should assign an account")
 	}
-	// 把已绑定账号压到 0 积分，下一次选取必须换号
-	storeCredits(t, first, 0, 500, 500)
-	if got := pickSessionAuth("conv-1", cands); got == first {
+	exhausted := make([]activeAuthCandidate, len(cands))
+	for i, c := range cands {
+		exhausted[i] = c
+		if c.ID == first {
+			exhausted[i].Exhausted = true
+		}
+	}
+	if got := pickSessionAuth("conv-1", exhausted); got == first {
 		t.Fatalf("exhausted pinned account should be re-assigned, stuck at %q", got)
 	}
 }

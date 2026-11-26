@@ -42,7 +42,7 @@ const failoverBackoff = 50 * time.Millisecond
 //
 // ok=false means no alternate account was usable; the caller should stop
 // retrying and propagate the last upstream error.
-func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *storedAuth, ok bool) {
+func pickNextAuth(currentAuthID string, model ...string) (nextAuthID string, nextSA *storedAuth, ok bool) {
 	currentAuthID = strings.TrimSpace(currentAuthID)
 	files, err := hostAuthList()
 	if err != nil || len(files) == 0 {
@@ -68,8 +68,8 @@ func pickNextAuth(currentAuthID string) (nextAuthID string, nextSA *storedAuth, 
 		if isAccountCoolingDown(id) {
 			continue
 		}
-		// 跳过耗尽与残血账号：QwenWork 无免费模型，换过去只会再吃一次 429
-		if _, lowOrExhausted := cachedCreditsScore(id); lowOrExhausted {
+		// 积分准入按请求模型判定：免费模型放行 0 积分账号，付费模型跳过耗尽与残血号。
+		if !accountUsableForModel(id, firstModelArg(model)) {
 			continue
 		}
 		// Skip candidates with no usable auth index — we can't load

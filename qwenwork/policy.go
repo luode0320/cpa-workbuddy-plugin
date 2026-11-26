@@ -144,7 +144,7 @@ func isCreditsLowOrExhausted(cr *creditsSummary) bool {
 // isCreditsLowForRouting 判定账号是否因额度不足暂停路由。
 // [参数] cr：积分快照。
 // [返回] 耗尽（含上游 exceeded）或正积分低于安全红线时返回 true。
-// 最近修改时间 2026-10-18 17:10:00（QwenWork 无免费模型，0 积分不可路由）
+// 最近修改时间 2026-11-27（付费模型判据保留；免费模型在调度层按模型放行）
 func isCreditsLowForRouting(cr *creditsSummary) bool {
 	return isCreditsLowOrExhausted(cr)
 }

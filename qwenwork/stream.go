@@ -217,7 +217,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 
 	// 前置冷却拦截：若初始账号在冷却中，直接切换到健康账号，不发送自杀式请求
 	if encodedBody != "" && (isAccountCoolingDown(curAuthID) || isAccountCoolingDown(curAuthUID)) {
-		if nextID, nextSA, hasNext := pickNextAuth(curAuthID); hasNext && nextSA != nil {
+		if nextID, nextSA, hasNext := pickNextAuth(curAuthID, requestedModel); hasNext && nextSA != nil {
 			if nextReq, rebErr := rebuildRequestWithQwenAuth(nextSA, []byte(encodedBody), sessionKey, curReq.Context()); rebErr == nil {
 				curReq = nextReq
 				curAuthID = nextID
@@ -267,7 +267,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			// COSY signature. If nothing else is usable, surface the
 			// original error.
 			evictSessionBindingsForAuth(curAuthID)
-			nextID, nextSA, hasNext := pickNextAuth(curAuthID)
+			nextID, nextSA, hasNext := pickNextAuth(curAuthID, requestedModel)
 			if !hasNext || nextSA == nil {
 				streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(errPayload, 200)))
 				return
@@ -352,7 +352,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			// 2. 正文零泄漏且预算允许时换号重建请求
 			if !contentEmitted && attempt < budget && encodedBody != "" {
 				evictSessionBindingsForAuth(curAuthID)
-				nextID, nextSA, hasNext := pickNextAuth(curAuthID)
+				nextID, nextSA, hasNext := pickNextAuth(curAuthID, requestedModel)
 				if shouldRotateOnStreamReadError(emitted, contentEmitted, attempt, budget, true, hasNext && nextSA != nil) {
 					nextReq, rebErr := rebuildRequestWithQwenAuth(nextSA, []byte(encodedBody), sessionKey, curReq.Context())
 					if rebErr != nil {
@@ -402,7 +402,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 				return
 			}
 			evictSessionBindingsForAuth(curAuthID)
-			nextID, nextSA, hasNext := pickNextAuth(curAuthID)
+			nextID, nextSA, hasNext := pickNextAuth(curAuthID, requestedModel)
 			if !hasNext || nextSA == nil {
 				streamEmitError(streamID, sseErr)
 				return
@@ -455,7 +455,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 // initialAuthID 初始账号的宿主 auth.ID（调度/冷却/会话绑定共用的唯一 key）。
 // [返回] 分片列表、最后一次上游状态码、错误。
 // 最近修改时间：2026-10-18 01:45:00；改动原因：账号身份改用宿主 auth.ID，不再用 accessToken。
-func collectUpstreamStreamOpenAI(encodedBody []byte, sa *storedAuth, sessionKey string, sseFramed bool, collector *sseUsageCollector, initialAuthID string) ([]pluginapi.ExecutorStreamChunk, int, error) {
+func collectUpstreamStreamOpenAI(encodedBody []byte, sa *storedAuth, sessionKey string, sseFramed bool, collector *sseUsageCollector, initialAuthID, requestedModel string) ([]pluginapi.ExecutorStreamChunk, int, error) {
 	// Per-request account-failover budget. 0 means no retry (kill switch
 	// via `retry_on_4xx: 0` in plugin.yaml). The request body is
 	// account-independent; each retry re-issues a MaaS ticket for the next
@@ -472,7 +472,7 @@ func collectUpstreamStreamOpenAI(encodedBody []byte, sa *storedAuth, sessionKey 
 
 	// 前置冷却拦截：若初始账号在冷却中，直接换号到健康候选
 	if curSA != nil && curID != "" && isAccountCoolingDown(curID) {
-		if nextID, nextSA, hasNext := pickNextAuth(curID); hasNext && nextSA != nil {
+		if nextID, nextSA, hasNext := pickNextAuth(curID, requestedModel); hasNext && nextSA != nil {
 			curSA = nextSA
 			curID = nextID
 		}
@@ -513,7 +513,7 @@ func collectUpstreamStreamOpenAI(encodedBody []byte, sa *storedAuth, sessionKey 
 				logDailyCooldownPersistFailure(currentID, triggerDailyCooldown("", currentID))
 			}
 			evictSessionBindingsForAuth(currentID)
-			nextID, nextSA, hasNext := pickNextAuth(currentID)
+			nextID, nextSA, hasNext := pickNextAuth(currentID, requestedModel)
 			if !hasNext || nextSA == nil {
 				return nil, statusCode, errResp
 			}
@@ -569,7 +569,7 @@ func collectUpstreamStreamOpenAI(encodedBody []byte, sa *storedAuth, sessionKey 
 			}
 			currentID := curID
 			evictSessionBindingsForAuth(currentID)
-			nextID, nextSA, hasNext := pickNextAuth(currentID)
+			nextID, nextSA, hasNext := pickNextAuth(currentID, requestedModel)
 			if !hasNext || nextSA == nil {
 				return chunks, http.StatusOK, errResp
 			}
@@ -584,7 +584,7 @@ func collectUpstreamStreamOpenAI(encodedBody []byte, sa *storedAuth, sessionKey 
 			if !contentEmitted && attempt < budget && curSA != nil {
 				currentID := curID
 				evictSessionBindingsForAuth(currentID)
-				nextID, nextSA, hasNext := pickNextAuth(currentID)
+				nextID, nextSA, hasNext := pickNextAuth(currentID, requestedModel)
 				if shouldRotateOnStreamReadError(emitted, contentEmitted, attempt, budget, len(encodedBody) > 0, hasNext && nextSA != nil) {
 					curSA = nextSA
 					curID = nextID

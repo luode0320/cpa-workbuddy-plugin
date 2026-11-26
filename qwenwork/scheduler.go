@@ -113,8 +113,8 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		if slowCoolingDownForRequest(c.ID, req.Model) {
 			continue
 		}
-		_, lowOrExhausted := cachedCreditsScore(c.ID)
-		if lowOrExhausted {
+		// 0 积分账号仍可用免费模型：按请求模型判定积分准入，而非账号级一刀切。
+		if !accountUsableForModel(c.ID, req.Model) {
 			continue
 		}
 		available = append(available, c)
@@ -135,12 +135,15 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		return left > right
 	})
 
-	// Build thin view for active-auth picker. 耗尽账号已在上面被过滤。
+	// Build thin view for active-auth picker. 积分准入已在上面按请求模型判定：
+	// 通过判定的账号（含免费模型下的 0 积分账号）标记 Exhausted=false，
+	// picker 不再重复查积分，避免把免费模型账号二次挡掉。
 	cands := make([]activeAuthCandidate, 0, len(wbCandidates))
 	for _, c := range wbCandidates {
 		cands = append(cands, activeAuthCandidate{
-			ID:       c.ID,
-			Disabled: false, // already filtered
+			ID:        c.ID,
+			Disabled:  false, // already filtered
+			Exhausted: false, // already filtered by accountUsableForModel(req.Model)
 		})
 	}
 	picked := ""
@@ -180,7 +183,7 @@ func candidateDisabled(c pluginapi.SchedulerAuthCandidate) bool {
 // cachedCreditsScore 返回账号积分快照的剩余值与不可路由标记。
 // [参数] authID：账号标识（auth.ID，与调度候选 ID 一致）。
 // [返回] remain 为未知时 -1；lowOrExhausted 表示已耗尽或正积分低于安全红线。
-// 最近修改时间 2026-10-18 17:10:00（QwenWork 无免费模型，耗尽账号不可路由）
+// 最近修改时间 2026-11-27（付费模型判据保留；免费模型在调度层按模型放行）
 func cachedCreditsScore(authID string) (int64, bool) {
 	authID = strings.TrimSpace(authID)
 	if authID == "" {

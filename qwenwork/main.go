@@ -329,7 +329,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.2.16"
+var version = "0.2.17"
 
 func wbRegistration() registration {
 	return registration{
@@ -344,7 +344,7 @@ func wbRegistration() registration {
 				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "额度生命周期自动化（默认关闭）。开启后：额度耗尽（含上游 quota.exceeded）的账号自动停用并打 exhausted_disable 标记，充值恢复后自动重新启用；手动禁用的账号永不被自动改动。"},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每4小时 access-token 自动刷新，防止 Keycloak 离线会话过期（默认开启）。"},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "可选模型列表。每个条目可包含 id、name、alias、context、max_tokens、enabled、reasoning 字段；配置后优先于自动获取的模型列表。"},
-				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeSession, schedulerModeCredits, schedulerModeOff}, Description: "多账号选择策略：session（按会话轮询，同一会话 1 小时内固定同一账号；默认）／credits（面板指定的固定账号）／off（交给内置逻辑）。额度耗尽的账号始终被排除（QwenWork 无免费模型），冷却中或低于安全红线的账号同样排除。"},
+				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeSession, schedulerModeCredits, schedulerModeOff}, Description: "多账号选择策略：session（按会话轮询，同一会话 1 小时内固定同一账号；默认）／credits（面板指定的固定账号）／off（交给内置逻辑）。付费模型对耗尽或低于安全红线的账号排除；免费模型（如 minimax-m3.1-flash）放行 0 积分账号。"},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 用量上报地址（默认 http://cpa-manager-plus:18317/v0/management/usage/import；也可用环境变量 USAGE_REPORT_URL）。"},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "可选：覆盖 CPAMP 管理密钥。优先从环境变量 CPAMP_ADMIN_KEY / USAGE_REPORT_KEY 或密钥文件 /run/secrets/cpamp_admin_key 自动探测。"},
 				{Name: "cpa_management_url", Type: pluginapi.ConfigFieldTypeString, Description: "可选：CPA 宿主管理 API 地址，默认 http://127.0.0.1:8317。仅当宿主管理端口非默认时才需要填。"},
@@ -721,7 +721,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		initID = accountIdentity(curSA)
 	}
 	if initID != "" && isAccountCoolingDown(initID) {
-		if nextID, nextSA, hasNext := pickNextAuth(initID); hasNext && nextSA != nil {
+		if nextID, nextSA, hasNext := pickNextAuth(initID, req.Model); hasNext && nextSA != nil {
 			curSA = nextSA
 			usedAuthID = nextID
 			authUID = curSA.Account.UID
@@ -771,7 +771,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			break
 		}
 		evictSessionBindingsForAuth(currentID)
-		nextID, nextSA, hasNext := pickNextAuth(currentID)
+		nextID, nextSA, hasNext := pickNextAuth(currentID, req.Model)
 		if !hasNext || nextSA == nil {
 			break
 		}
@@ -971,7 +971,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// No async stream id → fall back to synchronous chunk collection.
 	if req.StreamID == "" {
 		collector := &sseUsageCollector{}
-		chunks, statusCode, errCollect := collectUpstreamStreamOpenAI(body, sa, sessionKey, sseFramed, collector, req.AuthID)
+		chunks, statusCode, errCollect := collectUpstreamStreamOpenAI(body, sa, sessionKey, sseFramed, collector, req.AuthID, req.Model)
 		if errCollect != nil {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error(), reasoningEffort, collector.ttftNS(started), accountLabel, sessionKey)
 			// Unlike the workbuddy plugin, collectUpstreamStreamQoder does not

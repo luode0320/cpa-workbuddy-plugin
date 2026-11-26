@@ -8,9 +8,8 @@
 //   - 上游硬额度错误 → 复查积分后按策略处理
 //   - 软限流 → 不删除 CN 账号
 //
-// QwenWork 没有免费模型：2026-10-18 生产实测 0 积分账号对
-// qwen3.8-max-preview / qwen3.8-flash / qwen3.8-plus / glm-5.2 一律返回
-// 429 balance_insufficient，故耗尽账号必须停止参与路由。
+// QwenWork 存在免费模型（实测 minimax-m3.1-flash price_factor=0），
+// 0 积分账号仍可路由免费模型：耗尽不再一律物理禁用，改由调度层按请求模型准入。
 package main
 
 import (
@@ -415,8 +414,9 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 			_ = syncAuthNote(authIndex, authID, sa, cr, true)
 			return lifecycleNone, nil
 		}
-		// 积分仍耗尽则保持禁用，只刷新备注（避免无谓落盘）。
-		if isCreditsExhausted(cr) {
+		// 积分仍耗尽但存在免费模型时，恢复账号以放行免费模型路由；
+		// 无免费模型则保持禁用，只刷新备注（避免无谓落盘）。
+		if isCreditsExhausted(cr) && !hasFreeModels() {
 			_ = syncAuthNote(authIndex, authID, sa, cr, true)
 			return lifecycleNone, nil
 		}
@@ -426,8 +426,13 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 		return lifecycleReenable, nil
 	}
 
-	// 账号启用中：额度耗尽则自动禁用（可自动恢复），否则仅刷新备注。
+	// 账号启用中：额度耗尽时，若仍有免费模型可用则不物理禁用（0 积分账号
+	// 仍可路由免费模型），只刷新备注；无免费模型才走原自动禁用流程。
 	if isCreditsExhausted(cr) {
+		if hasFreeModels() {
+			_ = syncAuthNote(authIndex, authID, sa, cr, true)
+			return lifecycleNone, nil
+		}
 		if err := disableAuth(authIndex, authID, sa, cr, "耗尽"); err != nil {
 			return lifecycleDisable, err
 		}

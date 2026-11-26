@@ -161,7 +161,7 @@ func TestMaasCacheKey(t *testing.T) {
 	}
 }
 
-// TestParseChatModesCatalog 验证模型目录解析：过滤禁用与非 openai 协议，
+// TestParseChatModesCatalog 验证模型目录解析：仅过滤禁用与空 key，保留全部格式，
 // 显示名按 zh→en→key 回退，context 取 max_input_tokens。
 func TestParseChatModesCatalog(t *testing.T) {
 	raw := []byte(`{"schema_version":2,"catalog":[` +
@@ -169,22 +169,26 @@ func TestParseChatModesCatalog(t *testing.T) {
 		`"i18n":{"display_name":{"zh":"标准","en":"Standard"}}},` +
 		`{"key":"pro","enable":true,"format":"openai/chat-completions","max_input_tokens":1000000,` +
 		`"i18n":{"display_name":{"en":"Pro"}}},` +
+		`{"key":"qwen4-max","enable":true,"format":"anthropic/messages",` +
+		`"i18n":{"display_name":{"en":"Qwen4-Max"}}},` +
 		`{"key":"disabled-model","enable":false,"format":"openai/chat-completions"},` +
-		`{"key":"anthropic-model","enable":true,"format":"anthropic/messages"},` +
 		`{"key":"","enable":true,"format":"openai/chat-completions"}` +
 		`]}`)
 	models, err := parseChatModesCatalog(raw)
 	if err != nil {
 		t.Fatalf("parseChatModesCatalog: %v", err)
 	}
-	if len(models) != 2 {
-		t.Fatalf("model count = %d, want 2 (disabled/anthropic/empty filtered)", len(models))
+	if len(models) != 3 {
+		t.Fatalf("model count = %d, want 3 (anthropic 格式也收录，仅 disabled/empty 过滤)", len(models))
 	}
 	if models[0].ID != "flash" || models[0].Name != "标准" {
 		t.Fatalf("models[0] = %+v, want flash/标准", models[0])
 	}
 	if models[1].ID != "pro" || models[1].Name != "Pro" {
 		t.Fatalf("models[1] = %+v, want pro/Pro (en fallback)", models[1])
+	}
+	if models[2].ID != "qwen4-max" || models[2].Name != "Qwen4-Max" {
+		t.Fatalf("models[2] = %+v, want qwen4-max/Qwen4-Max (anthropic 格式)", models[2])
 	}
 	if models[0].ContextLength != 1000000 {
 		t.Fatalf("context = %d, want 1000000", models[0].ContextLength)
@@ -201,7 +205,7 @@ func TestParseChatModesCatalog(t *testing.T) {
 func TestParseChatModesCatalog_NoUsableModels(t *testing.T) {
 	raw := []byte(`{"schema_version":2,"catalog":[{"key":"x","enable":false}]}`)
 	if _, err := parseChatModesCatalog(raw); err == nil {
-		t.Fatal("expected error when no enabled openai models")
+		t.Fatal("expected error when no enabled models")
 	}
 	if _, err := parseChatModesCatalog([]byte(`not-json`)); err == nil {
 		t.Fatal("expected error on malformed JSON")

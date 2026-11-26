@@ -219,8 +219,6 @@ func TestNoConfiguredModels_FallsBackToStatic(t *testing.T) {
 }
 
 // TestWBModels_AlignmentWithClient 验证静态兜底模型列表与 QwenWork 真实目录一致。
-// 上游 /api/desktop/chat-modes 实测只下发三档（flash / pro / qwen3.8-max-preview），
-// 其余条目为插件侧补充的常用别名。
 func TestWBModels_AlignmentWithClient(t *testing.T) {
 	models := wbModels()
 	if len(models) == 0 {
@@ -234,7 +232,9 @@ func TestWBModels_AlignmentWithClient(t *testing.T) {
 		}
 	}
 	expectedCore := []string{
-		"flash", "pro", "qwen3.8-max-preview", "qwen3.8-max", "glm-5.2",
+		"flash", "pro", "qwen4-max", "qwen3.8-max-preview", "qwen3.8-flash",
+		"minimax-m3.1-flash", "glm-5.4", "ling-3.1-flash", "deepseek-flash",
+		"deepseek-v4-pro", "glm-5.3", "glm-5.3-flash", "kimi-k3.1-pro", "step-5-preview",
 	}
 	for _, id := range expectedCore {
 		if _, ok := modelMap[id]; !ok {

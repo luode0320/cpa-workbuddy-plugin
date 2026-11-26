@@ -1,5 +1,13 @@
 # QwenWork Plugin Changelog
 
+## 0.2.17 (2026-11-27)
+
+### Fix - 对齐客户端全量模型 + 0 积分账号可用免费模型
+
+- 模型目录：实测 chat-modes 已扩展到 14 个模型，`parseChatModesCatalog` 原先按 `format` 前缀只保留 openai*，把 `qwen4-max` / `minimax-m3.1-flash`（anthropic/messages）等模型全砍掉。MaaS 网关实测把这些模型统一按 chat-completions 转发（qwen4-max / minimax-m3.1-flash 均 HTTP 200 正常推理），故移除 format 过滤，收录全部 enable 模型；静态兜底表同步补齐 14 个。
+- 免费模型路由：实测免费判据是 `price_factor=0`（唯一命中 `minimax-m3.1-flash`，`show_zero_price_factor` 对全模型均为 true 不是判据）。原代码写死「QwenWork 无免费模型」，0 积分账号在 scheduler.pick / active_auth / failover 被账号级硬摘除，lifecycle 还会物理写 disabled。改为模型级准入：免费模型放行 0 积分账号，付费模型沿用原积分红线；耗尽账号有免费模型时不再物理禁用。
+- 验证：`cgo-shim-build.py qwenwork` build/vet/test 全绿 + 哨兵反证；新增 free_models 单测覆盖兜底/动态判据、price_factor 解析、0 积分路由准入。
+
 ## 0.2.16 (2026-11-14)
 
 ### Fix - 面板搜索框被浏览器表单历史自动填回上次搜索词

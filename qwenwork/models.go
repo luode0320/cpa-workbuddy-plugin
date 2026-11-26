@@ -17,22 +17,27 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// wbModels 是 QwenWork 的静态兜底模型表。
-//
-// 实测 /api/desktop/chat-modes 返回 3 个逻辑档位（flash / pro /
-// qwen3.8-max-preview），全部 openai/chat-completions。这里同时保留几个
-// 可直接推理的物理模型名作为兜底，便于用户手动指定。
+// wbModels 是 QwenWork 动态模型发现失败时的静态兜底模型表。
 //
 // [参数] 无。
-// [返回] 静态模型列表，每项已按官方规格填充 MaxCompletionTokens。
-// 最近修改时间：2026-10-17 23:55:00；改动原因：替换为 QwenWork 真实档位。
+// [返回] 静态模型列表。
+// 最近修改时间：2026-11-27；改动原因：对齐 chat-modes 全量目录（含 anthropic 格式模型）。
 func wbModels() []pluginapi.ModelInfo {
 	list := []pluginapi.ModelInfo{
 		{ID: "flash", Name: "标准", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "pro", Name: "专业", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "qwen3.8-max-preview", Name: "Qwen3.8-Max Preview", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "qwen3.8-max", Name: "Qwen3.8-Max", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
-		{ID: "glm-5.2", Name: "GLM-5.2", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "qwen4-max", Name: "Qwen4-Max", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "qwen3.8-max-preview", Name: "Qwen3.8-Max", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "qwen3.8-flash", Name: "Qwen3.8-Flash", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "minimax-m3.1-flash", Name: "MiniMax-M3.1-Flash", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "glm-5.4", Name: "GLM-5.4", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "ling-3.1-flash", Name: "Ling-3.1-Flash", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "deepseek-flash", Name: "DeepSeek-V4.1-Flash", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "deepseek-v4-pro", Name: "Deepseek-V4-Pro", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "glm-5.3", Name: "GLM-5.3", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "glm-5.3-flash", Name: "GLM-5.3-Flash", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "kimi-k3.1-pro", Name: "Kimi-K3.1-Pro", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
+		{ID: "step-5-preview", Name: "Step-5-Preview", ContextLength: 1000000, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 	}
 	// 2026-11-07 按社区共识改造：上游未提供输出上限时不再用统一 128000
 	// 虚构 MaxCompletionTokens，如实留空（0 表示未知）。
@@ -338,11 +343,11 @@ func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 // callModelsAPI 调 GET /api/desktop/chat-modes 拉取模型目录。
 //
 // 该端点需要宿主 access token（不是 MaaS key），返回 schema_version=2 的
-// catalog 数组。实测只有 3 个逻辑档位，全部 openai/chat-completions。
+// catalog 数组（实测 14 个模型，含 openai 与 anthropic 两种格式）。
 //
 // [参数] sa 账号凭据，用于取宿主 token；为 nil 时返回错误。
 // [返回] 启用的模型列表；请求失败或解析失败时返回错误。
-// 最近修改时间：2026-10-17 23:55:00；改动原因：替换 /algo/api/v2/model/list。
+// 最近修改时间：2026-11-27；改动原因：同步注册免费模型（price_factor=0）。
 func callModelsAPI(sa *storedAuth) ([]pluginapi.ModelInfo, error) {
 	if sa == nil {
 		return nil, fmt.Errorf("models: nil stored auth")
@@ -371,25 +376,50 @@ func callModelsAPI(sa *storedAuth) ([]pluginapi.ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	setFreeModels(parseFreeModelIDs(resp.Body))
 	log.Printf("[qwenwork] callModelsAPI: dynamic discovery ok: %d models", len(out))
 	return out, nil
 }
 
+// parseFreeModelIDs 从 chat-modes 原始响应提取免费模型 key（price_factor==0 且 enable）。
+// [参数] raw 上游响应体。
+// [返回] 免费模型 key 列表。
+// 最近修改时间：2026-11-27；改动原因：0 积分账号需按模型放行免费模型。
+func parseFreeModelIDs(raw []byte) []string {
+	var apiResp struct {
+		Catalog []struct {
+			Key         string  `json:"key"`
+			Enable      bool    `json:"enable"`
+			PriceFactor float64 `json:"price_factor"`
+		} `json:"catalog"`
+	}
+	if err := json.Unmarshal(raw, &apiResp); err != nil {
+		return nil
+	}
+	ids := make([]string, 0, 2)
+	for _, m := range apiResp.Catalog {
+		if m.Enable && strings.TrimSpace(m.Key) != "" && m.PriceFactor == 0 {
+			ids = append(ids, m.Key)
+		}
+	}
+	return ids
+}
+
 // parseChatModesCatalog 解析 GET /api/desktop/chat-modes 的目录响应。
 //
-// 只保留 enable=true 且 format 为 openai* 的条目：上游对 OpenAI 与 Anthropic
-// 两种协议都接受，但 CPA 侧统一按 chat-completions 转发。
+// 保留全部 enable=true 的模型，不按 format 过滤：MaaS 网关把 openai 与
+// anthropic 两种格式的模型统一按 chat-completions 转发，实测 qwen4-max /
+// minimax-m3.1-flash（anthropic/messages）均可正常推理。
 //
 // [参数] raw 上游响应体。
 // [返回] 可用模型列表；解析失败或没有可用模型时返回错误。
-// 最近修改时间：2026-10-18 00:42:00；改动原因：抽成纯函数以便单测。
+// 最近修改时间：2026-11-27；改动原因：不再按 format 过滤，收录全量模型。
 func parseChatModesCatalog(raw []byte) ([]pluginapi.ModelInfo, error) {
 	var apiResp struct {
 		SchemaVersion int `json:"schema_version"`
 		Catalog       []struct {
 			Key            string `json:"key"`
 			Enable         bool   `json:"enable"`
-			Format         string `json:"format"`
 			IsReasoning    bool   `json:"is_reasoning"`
 			MaxInputTokens int64  `json:"max_input_tokens"`
 			I18N           struct {
@@ -403,9 +433,6 @@ func parseChatModesCatalog(raw []byte) ([]pluginapi.ModelInfo, error) {
 	var out []pluginapi.ModelInfo
 	for _, m := range apiResp.Catalog {
 		if !m.Enable || strings.TrimSpace(m.Key) == "" {
-			continue
-		}
-		if f := strings.TrimSpace(m.Format); f != "" && !strings.HasPrefix(f, "openai") {
 			continue
 		}
 		ctxLen := int64(1000000)

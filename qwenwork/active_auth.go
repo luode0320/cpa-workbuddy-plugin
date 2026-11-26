@@ -48,10 +48,12 @@ func clearActiveAuthIfMatch(id string) {
 }
 
 // activeAuthCandidate is a thin view used by pickActiveAuth.
-// 耗尽账号在调度入口已被过滤，这里只承载禁用状态。
+// Exhausted 由调度入口按请求模型预先判定（免费模型下 0 积分账号不计耗尽），
+// picker 只消费该标记，不再重复查积分，避免二次判定把免费模型账号挡掉。
 type activeAuthCandidate struct {
-	ID       string
-	Disabled bool
+	ID        string
+	Disabled  bool
+	Exhausted bool
 }
 
 // pickActiveAuth chooses which qwenwork auth to use from host candidates.
@@ -74,7 +76,7 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 	cur := getActiveAuthID()
 	// Keep current selection if it's still a live candidate AND routable.
 	if cur != "" {
-		if c, ok := byID[cur]; ok && !c.Disabled && accountRoutable(cur) {
+		if c, ok := byID[cur]; ok && !c.Disabled && !c.Exhausted && !isAccountCoolingDown(cur) {
 			return cur
 		}
 	}
@@ -83,7 +85,7 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 	// slice is pre-ordered high-credit-first), else report no routable account.
 	var ready []string
 	for _, c := range candidates {
-		if !c.Disabled && accountRoutable(c.ID) {
+		if !c.Disabled && !c.Exhausted && !isAccountCoolingDown(c.ID) {
 			ready = append(ready, c.ID)
 		}
 	}
@@ -111,11 +113,9 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 //  3. If current selection is gone (disabled/deleted) → same as rule 2.
 //  4. If none is routable → keep current if alive, else first.
 //
-// 耗尽账号不保留选中资格：QwenWork 无免费模型，0 积分只会 429。
-//
 // [参数] accounts：面板全量账号行（含本轮排除项）。
 // [返回] 面板应选中的 auth_id；无可用账号时退化为存活/首个账号。
-// 最近修改时间 2026-10-18 17:10:00（耗尽账号不再保留选中资格）
+// 最近修改时间 2026-11-27（免费模型放行 0 积分账号，面板选中仍按账号级判定）
 func ensureDefaultActiveAuth(accounts []wbAccount) string {
 	cur := getActiveAuthID()
 	live := make(map[string]wbAccount, len(accounts))
@@ -178,8 +178,8 @@ func ensureDefaultActiveAuth(accounts []wbAccount) string {
 
 // accountRoutable reports whether an auth ID may carry traffic at all: not
 // cooling down (failover) and not exhausted or below the residual-credit floor.
-// QwenWork has no free models (verified 2026-10-18: 0-credit accounts get
-// 429 balance_insufficient on every model), so exhausted accounts are excluded.
+// 面板选中等无具体请求模型的场景仍用账号级判定；带请求模型的调度入口
+// （scheduler.pick）与换号（pickNextAuth）改用 accountUsableForModel 放行免费模型。
 func accountRoutable(authID string, model ...string) bool {
 	if isAccountCoolingDown(authID) {
 		return false
