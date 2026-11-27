@@ -21,6 +21,15 @@
 
 ## 项目概况
 
+- **当前会话（2026-11-27 22:00 - 23:55）：doubao-provider 0.1.43：工作模式模型改为自动获取并补齐 6 个缺失模型，已上线**（用户贴客户端模型菜单截图，红框 GLM 5.4 / Qwen 4 Max，问「豆包现在的模型是自动获取的了吗? 我们发现有些模型我们没有」→ 选「先翻我电脑上豆包客户端的本地配置」→ 追加「逆向客户端啊」→「从github其他开源项目中找一下」→「继续」）：
+  - **逆向链**：客户端 `D:\Doubao` 全目录（含 335MB `Doubao.dll`、190MB `liblark.dll`）搜 `person-*` 零命中，i18n 只有模型代码表（`new_model_menu_model_GLM54_cn`→GLM 5.4、`QWEN4MAX_cn`→Qwen 4 Max）；前端 JS 定位到消费结构 `menu_item_list[].model_item_key`；GitHub 项目 `niyouqianma/doubaowork2api`、`3294798852/doubao-work-gateway` 揭示菜单端点 `/alice/slot/action_bar_v3/brief_list` + 需 `{language_code, bot_id}`，`bot_id` 来自 `/alice/user/launch` 的 `assistant_bot_id`。
+  - **根因**：`/alice/basic/launch` 的 `model_list` 67 条只有内部代号（Aoe 等）且**无 model_item_key**；工作模式请求三处必带 key，故只能靠静态表，新模型不会自动出现。实测 4 账号按正确方式调 `brief_list` 全部返回 130KB 含 key，解析出 **16 个工作模式模型**真值与参数。
+  - **修复**：新增 `work_model_discovery.go`（菜单实时发现：`fetchAssistantBotID` → `brief_list` → 解析 `entry_list[].active_switch_conf` 的 `menu_conf_v2.mode_list[].model_list`，过滤 `agent_mode=1`；静态优先、按 `model_item_key` 去重、失败退回静态）；补齐 6 条别名 `glm-5.4`/`qwen3.8-max`/`qwen3.8-flash`/`qwen4-max`/`mimo-v2.6-pro`/`mimo-v2.6-flash`（`300k_230`/`300000`，推理档位 5）；新增 4 单测 + `swapWorkBriefEndpoint`/`swapWorkLaunchEndpoint` 端点覆盖点（测试默认指向不可达地址，不打真实上游）。
+  - **验证**：门禁 `cgo-shim-build.py doubao` 全绿 101s；哨兵反证两条有效（去掉 `workAliasID` 中文兜底 → `TestWorkAliasIDFallsBackToKey` FAIL；去掉 `allAliases` 去重 → `TestAllAliasesMergesDynamic` FAIL，补了 19 条）；污染扫描 PASS；6-review STYLE: PASS；gofmt 无差异。
+  - **发布链**：commit `3c7921a`（7 文件 +788/−7）→ CI run 46027366191（Test(doubao) success、Release success、5 平台、darwin/arm64 cancelled 常态）→ `download-release-assets.py 0.1.43 doubao-provider` ALL CHECKSUMS OK → `publish-assets.py --allow-missing`（5 artifacts）→ registry `02ef3c7` → 远端 raw 200。
+  - **生产热重载已生效**：`POST /v0/management/plugin-store/doubao-provider/install?version=0.1.43`（首次报 `direct plugin version not found` 属 registry CDN 延迟，重试成功）→ `hot reloaded active_version=0.1.43 retired_version=0.1.42`；落盘 `.so` sha256 `5b0bc02f1e113bc9e11e48522622ab6f96bbcda34b487c1dc5c65d7e1a46989d` 与本地 zip 逐字节一致；13 插件 `STATE_UNCHANGED`；容器未重启；生产模型目录 **17 条**（`doubao/video` + 16 工作模型），新增 6 个全部可见。
+  - **教训**：① 菜单端点必须带 `bot_id`，空 body 只回 130 字节空列表；② 管理 API 路径是 `/v0/management/plugin-store/{id}/install`；③ registry 推送后 install 可能因 CDN 延迟报 version not found，重试即可；④ 测试直连真实上游会让门禁崩溃，须加端点覆盖点。
+
 - **当前会话（2026-11-26 23:14 - 2026-11-27 03:05）：doubao-provider 0.1.42：重新开放工作模式文本模型（路径 D 史实恢复）并上线**（用户 m01077「我们想把豆包工作模式的模型也开放出来使用」→ m02199「探活并进入实施规划」→「开始实现, 实现完成发布上线」）：
   - **决策链**：m02109「通过接口自动获取模型」→ m02154「我们之前的提交有做过的吧? 后来删除了」触发史实核查，推翻 A/B/C 三选项定路径 D（复用 `/alice/basic/launch` 动态发现 + 从 `5707b5d^` 逐符号恢复 + 零新增依赖，不接 Node CLI）。
   - **探活**：生产出口 IP + 真实 Cookie + 0.1.25 历史代码与 goja 真签名，3 账号 × 3 模型均无 `-1`（历史最大障碍在正确网页协议口径下非必然），但出口 IP 持续风控（710022002×2 / 710022004×1），出字铁证待干净网络补取，不阻断实施。
