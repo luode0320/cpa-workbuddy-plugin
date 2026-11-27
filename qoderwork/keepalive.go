@@ -274,7 +274,7 @@ func runTokenKeepalive() *keepaliveSummary {
 		return sum
 	}
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 4)
+	sem := make(chan struct{}, 2)
 	var mu sync.Mutex
 	for _, f := range files {
 		f := f

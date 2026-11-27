@@ -553,7 +553,8 @@ func renewLoopWith(startupWait time.Duration, ready func() bool, deps renewDeps,
 // 最近修改时间：2026-10-18；改动原因：新增，宿主 init 时装配。
 func startRenewLoop() {
 	renewStartOnce.Do(func() {
-		go renewLoop()
+		// 启动错峰：避免多个插件在同一时刻拉起后台循环形成内存与请求峰值。
+		goAfterStartupJitter(renewLoop)
 	})
 }
 

@@ -132,21 +132,22 @@ func init() {
 	// (not in a goroutine-closing shutdown path) to avoid the SIGSEGV risk
 	// documented in checkin.go:31 from closing stop channels during plugin
 	// teardown.
-	go watchdogLoop()
+	// 启动错峰：避免多个插件在同一时刻拉起后台循环形成内存与请求峰值。
+	goAfterStartupJitter(watchdogLoop)
 	// 积分扫描：每小时串行刷新全部账号（不区分启用/禁用），写 sidecar 后
 	// 逐个跑三档分级检查。与 watchdog 分工：watchdog 管探活，本循环管积分。
 	// 首轮带抖动，避免六个插件同刻对齐形成整点尖峰。
-	go creditSweepLoop()
+	goAfterStartupJitter(creditSweepLoop)
 	// 禁用探活：每 10 分钟串行遍历被本机制禁用的账号，回放失败模型，成功即解除禁用。
 	// 冷却本身不再探测（cooldown_probe.go 已移除），见 failover_disable.go。
-	go failoverProbeLoop()
+	goAfterStartupJitter(failoverProbeLoop)
 	// 外部启用对账：每 2 分钟把「用户已手动启用」同步回插件侧（含盘上陈旧标记），
 	// 否则手动启用的号最长 10 分钟仍被排除，且探活会反复清零失败计数。
-	go failoverReconcileLoop()
+	goAfterStartupJitter(failoverReconcileLoop)
 	// 账号池规模刷新：慢速冷却的准入闸门需要「启用 + 停用」的账号总数，
 	// 而账号枚举是宿主 RPC（跨进程）。放到独立循环里周期探测，判定入口
 	// 只读内存缓存，避免每次成功请求都付一次 RPC 往返。
-	go slowPoolSizeLoop()
+	goAfterStartupJitter(slowPoolSizeLoop)
 	go func() {
 		ticker := time.NewTicker(loginStatesPruneInterval)
 		defer ticker.Stop()

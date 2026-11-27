@@ -173,7 +173,8 @@ func configure(raw []byte) {
 	storeMu.RUnlock()
 	trackerInfof("store open: %v | version=%s capabilities: usage_plugin=%v management_api=%v", storeOpen, reg.Metadata.Version, reg.Capabilities.UsagePlugin, reg.Capabilities.ManagementAPI)
 	importerOnce.Do(func() {
-		go feedImporterLoop()
+	// 启动错峰：避免多个插件在同一时刻拉起后台循环形成内存与请求峰值。
+		goAfterStartupJitter(feedImporterLoop)
 	})
 }
 

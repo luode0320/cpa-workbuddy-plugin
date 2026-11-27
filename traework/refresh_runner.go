@@ -30,7 +30,7 @@ import (
 )
 
 // refreshConcurrency is the hard-coded max parallel fetches.
-const refreshConcurrency = 10
+const refreshConcurrency = 4
 
 // refreshStatus is the per-account lifecycle state surfaced to the panel.
 type refreshStatus string
@@ -101,7 +101,8 @@ func newRefreshRunner() *refreshRunner {
 var globalRefresh = newRefreshRunner()
 
 func init() {
-	go globalRefresh.run()
+	// 启动错峰：避免多个插件在同一时刻拉起后台循环形成内存与请求峰值。
+	goAfterStartupJitter(globalRefresh.run)
 }
 
 // EnqueueAll starts a full-fleet refresh round and wakes the worker. It

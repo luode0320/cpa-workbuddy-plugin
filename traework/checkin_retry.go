@@ -289,5 +289,5 @@ func requeueCheckinRetryWaiting(e *checkinRetryEntry, message string, wait time.
 }
 
 func init() {
-	go checkinRetryLoop()
+	goAfterStartupJitter(checkinRetryLoop)
 }

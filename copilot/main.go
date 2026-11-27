@@ -78,7 +78,8 @@ var (
 func init() {
 	activeConfig.Store(defaultConfig())
 	// 冷却前探活需要 5s 粒度，与小时级定时探活分开跑。
-	go cooldownProbeLoop()
+	// 启动错峰：避免多个插件在同一时刻拉起后台循环形成内存与请求峰值。
+	goAfterStartupJitter(cooldownProbeLoop)
 }
 
 func main() {}

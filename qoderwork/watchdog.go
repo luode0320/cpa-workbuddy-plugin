@@ -150,8 +150,9 @@ func preserveWatchdogLoop() {
 // 单独成函数是为了让 main.go 的启动序列显式可读（qoderwork 没有 init 启动惯用法）。
 // 最近修改时间：2026-10-22；改动原因：探活周期改为 10 分钟，注释同步。
 func startFailoverProbe() {
-	go failoverProbeLoop()
+	// 启动错峰：避免多个插件在同一时刻拉起后台循环形成内存与请求峰值。
+	goAfterStartupJitter(failoverProbeLoop)
 	// 外部启用对账：每 2 分钟把「用户已手动启用」同步回插件侧（含盘上陈旧标记），
 	// 否则手动启用的号最长 10 分钟仍被排除。
-	go failoverReconcileLoop()
+	goAfterStartupJitter(failoverReconcileLoop)
 }

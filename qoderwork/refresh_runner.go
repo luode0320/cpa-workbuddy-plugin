@@ -32,7 +32,7 @@ import (
 )
 
 // refreshConcurrency is the hard-coded max parallel fetches.
-const refreshConcurrency = 10
+const refreshConcurrency = 4
 
 // refreshStatus is the per-account lifecycle state surfaced to the panel.
 type refreshStatus string

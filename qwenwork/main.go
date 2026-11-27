@@ -133,7 +133,8 @@ func init() {
 	// flips on the physical auth files. Started in init() but waits for the
 	// host bridge + auth discovery before its first tick (see watchdog.go).
 	// 同步自 workbuddy-provider。
-	go preserveWatchdogLoop()
+	// 启动错峰：避免多个插件在同一时刻拉起后台循环形成内存与请求峰值。
+	goAfterStartupJitter(preserveWatchdogLoop)
 }
 
 func main() {}

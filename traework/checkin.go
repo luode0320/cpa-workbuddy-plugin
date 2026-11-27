@@ -570,7 +570,8 @@ func autoCheckinLoop() {
 }
 
 func init() {
-	go autoCheckinLoop()
+	// 启动错峰：避免多个插件在同一时刻拉起后台循环形成内存与请求峰值。
+	goAfterStartupJitter(autoCheckinLoop)
 }
 
 // runFleetCheckin 遍历全部 traework 账号执行签到，返回成功数、逐账号结果与本次新入队数。

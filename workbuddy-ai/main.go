@@ -107,13 +107,14 @@ var (
 const loginStatesPruneInterval = time.Minute
 
 func init() {
-	go watchdogLoop()
+	// 启动错峰：避免多个插件在同一时刻拉起后台循环形成内存与请求峰值。
+	goAfterStartupJitter(watchdogLoop)
 	// 禁用探活：每 10 分钟串行遍历被本机制禁用的账号，回放失败模型，成功即解除禁用。
 	// 冷却本身不再探测（cooldown_probe.go 已移除），见 failover_disable.go。
-	go failoverProbeLoop()
+	goAfterStartupJitter(failoverProbeLoop)
 	// 外部启用对账：每 2 分钟把「用户已手动启用」同步回插件侧（含盘上陈旧标记），
 	// 否则手动启用的号最长 10 分钟仍被排除。
-	go failoverReconcileLoop()
+	goAfterStartupJitter(failoverReconcileLoop)
 	go func() {
 		ticker := time.NewTicker(loginStatesPruneInterval)
 		defer ticker.Stop()

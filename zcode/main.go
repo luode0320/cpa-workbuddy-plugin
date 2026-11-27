@@ -85,7 +85,8 @@ func init() {
 	// 写盘禁用的恢复通道：10 分钟一轮，只探当初失败的模型。
 	// 原 1 秒粒度的冷却前探活已移除——冷却状态本身在同一轮改造中下线，
 	// 恢复统一由这里裁决，避免两条通道重复打上游。
-	go failoverProbeLoop()
+	// 启动错峰：避免多个插件在同一时刻拉起后台循环形成内存与请求峰值。
+	goAfterStartupJitter(failoverProbeLoop)
 }
 
 func main() {}

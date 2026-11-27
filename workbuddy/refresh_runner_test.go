@@ -72,7 +72,7 @@ func TestRefreshRunner_EnqueueAllReturnsImmediately(t *testing.T) {
 	close(release)
 }
 
-// The worker must respect the concurrency limit — at most 10 parallel fetches.
+// The worker must respect the concurrency limit — at most refreshConcurrency parallel fetches.
 func TestRefreshRunner_RespectsConcurrencyLimit(t *testing.T) {
 	var mu sync.Mutex
 	current := 0

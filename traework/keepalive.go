@@ -463,7 +463,7 @@ func retryFailedRefreshes() {
 		return
 	}
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 4)
+	sem := make(chan struct{}, 2)
 	for _, tg := range targets {
 		tg := tg
 		wg.Add(1)
@@ -529,7 +529,7 @@ func runTokenKeepalive() *keepaliveSummary {
 		return sum
 	}
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 4)
+	sem := make(chan struct{}, 2)
 	var mu sync.Mutex
 	for _, f := range files {
 		f := f
@@ -654,5 +654,5 @@ func keepaliveLoop() {
 }
 
 func init() {
-	go keepaliveLoop()
+	goAfterStartupJitter(keepaliveLoop)
 }

@@ -108,6 +108,12 @@ func renewLoop(ctx context.Context, interval time.Duration, done chan struct{}, 
 	defer close(done)
 	waitHostReady(ctx)
 
+	// 启动错峰：容器重启时多个插件会同时进来，错开首轮续期，避免瞬时内存与上游请求峰值。
+	// 用 ctx 感知的等待而非常规 goroutine 延迟，保证 stopRenewLoop 能立刻返回、不拖慢配置热更新。
+	if !waitStartupJitter(ctx) {
+		return
+	}
+
 	// 1. 启动即跑一轮，让容器重启或热重载后立刻刷新会话。
 	runRenewOnce(ctx, deps)
 	ticker := time.NewTicker(interval)

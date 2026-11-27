@@ -144,5 +144,5 @@ func authFlagGuardLoop() {
 }
 
 func init() {
-	go authFlagGuardLoop()
+	goAfterStartupJitter(authFlagGuardLoop)
 }
