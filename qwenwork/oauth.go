@@ -378,8 +378,8 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("refresh: %w", err)
 	}
 
-	if strings.HasPrefix(sa.Auth.RefreshToken, "drt-") {
-		// OAuth device family — deviceToken/refresh ONLY.
+	if isDeviceRefreshFamily(sa.Auth.RefreshToken) {
+		// Device 家族（drt- / ory_）—— deviceToken/refresh ONLY。
 		tok, err := refreshDeviceToken(sa.Auth.RefreshToken)
 		if err != nil {
 			return nil, fmt.Errorf("refresh rejected: %w — deviceToken refresh failed; re-login via OAuth required", err)

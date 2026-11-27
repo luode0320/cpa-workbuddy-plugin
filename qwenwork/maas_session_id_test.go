@@ -69,3 +69,64 @@ func TestMintPayload_SessionIDIsUUID(t *testing.T) {
 		t.Fatalf("empty session key must produce empty payload, got %v", p)
 	}
 }
+
+// TestMaasSessionCacheKey_PerSession 验证票据缓存键按会话隔离：
+// 同账号不同会话必须各自独立，否则上游会话绑定会被折叠成同一个。
+func TestMaasSessionCacheKey_PerSession(t *testing.T) {
+	sa := &storedAuth{Account: storedAccount{UID: "uid-1"}}
+	k1 := maasSessionCacheKey(sa, "conv-a")
+	k2 := maasSessionCacheKey(sa, "conv-b")
+	if k1 == k2 {
+		t.Fatalf("different sessions must get different cache keys, both = %q", k1)
+	}
+	if again := maasSessionCacheKey(sa, "conv-a"); again != k1 {
+		t.Fatalf("same session must be stable: %q vs %q", k1, again)
+	}
+	if got := maasSessionCacheKey(sa, ""); got != "uid-1|nosession" {
+		t.Fatalf("empty session key must use the nosession shard, got %q", got)
+	}
+	// 不同账号即使会话相同也必须隔离。
+	other := &storedAuth{Account: storedAccount{UID: "uid-2"}}
+	if maasSessionCacheKey(other, "conv-a") == k1 {
+		t.Fatal("different accounts must not share a cache key")
+	}
+}
+
+// TestInvalidateMaasSession_ClearsAllSessions 验证按账号失效会清掉该账号
+// 全部会话分片以及升级前的纯账号键，且不影响其他账号。
+func TestInvalidateMaasSession_ClearsAllSessions(t *testing.T) {
+	sa := &storedAuth{Account: storedAccount{UID: "uid-inv"}}
+	other := &storedAuth{Account: storedAccount{UID: "uid-keep"}}
+	base := maasCacheKeyPrefix(sa)
+	keys := []string{
+		base, // 升级前的纯账号键
+		maasSessionCacheKey(sa, "conv-a"),
+		maasSessionCacheKey(sa, "conv-b"),
+		maasSessionCacheKey(other, "conv-a"),
+	}
+	globalMaasCache.mu.Lock()
+	for _, k := range keys {
+		globalMaasCache.sessions[k] = &maasSession{AccessKey: "sk-mm-v1.test"}
+	}
+	globalMaasCache.mu.Unlock()
+	t.Cleanup(func() {
+		globalMaasCache.mu.Lock()
+		for _, k := range keys {
+			delete(globalMaasCache.sessions, k)
+		}
+		globalMaasCache.mu.Unlock()
+	})
+
+	invalidateMaasSession(sa)
+
+	globalMaasCache.mu.Lock()
+	defer globalMaasCache.mu.Unlock()
+	for _, k := range keys[:3] {
+		if _, ok := globalMaasCache.sessions[k]; ok {
+			t.Fatalf("entry %q must be cleared for the invalidated account", k)
+		}
+	}
+	if _, ok := globalMaasCache.sessions[keys[3]]; !ok {
+		t.Fatal("other accounts' entries must survive invalidation")
+	}
+}

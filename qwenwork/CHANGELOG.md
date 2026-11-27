@@ -1,5 +1,25 @@
 # QwenWork Plugin Changelog
 
+## 0.2.18 (2026-11-27)
+
+### Fix - 7 条 P1：并发竞态、票据会话隔离、保活家族、归属标记与多实例守卫
+
+- 免费模型注册表并发安全：`freeModelRegistry` 原先是无锁裸 struct，写侧来自 `callModelsAPI`（探活 / 模型查询 / 调度缓存 miss 多线程触发）、读侧在调度与生命周期热路径，构成 data race。改为 `sync.RWMutex`，并新增并发访问回归测试。
+- 耗尽不再物理禁用：0.2.17 用 `hasFreeModels()` 决定是否禁用，动态发现一旦返回空集就会把 0 积分账号重新写 `disabled:true`，反向抵消免费模型路由。现改为耗尽一律不物理禁用，准入完全交给调度层的模型级判定。
+- refresh token 家族：`keepalive.go` / `oauth.go` 原先只认 `drt-` 前缀，生产账号的 `ory_rt` 前缀被直接判 `unsupported token family`，4 小时保活对全部账号失效。抽出 `isDeviceRefreshFamily` 同时识别 `drt-` 与 `ory_`。
+- MaaS 票据会话隔离：缓存键原先只用账号 UID，`session_id` 只在首次签发生效，同账号不同会话复用同一张票，把上游会话绑定折叠成一个。缓存键改为「账号×会话」，`invalidateMaasSession` 改为前缀清除全部会话分片。
+- token 轮换后旧票据泄漏：`invalidateMaasSession` 在 `AccessToken` 已被新值覆盖后才计算缓存键，账号缺 UID 时新指纹算出的键与旧键不同，旧票据删不掉。抽出 `invalidateForRefresh` 同时清刷新前快照与刷新后凭证。
+- 归属标记丢失：`disableAuth` 走宿主管理 API 成功后直接 return，`exhausted_disable` 标记从未落盘；宿主 API 只写 disabled、不回写插件自定义顶层字段，账号因此变成「无标记禁用」，充值后会被判为用户手动禁用而永不自动恢复。现改为 API 成功后仍落盘标记，落盘失败则回滚宿主禁用。
+- 多实例热重载并发刷新：新增 `instance_guard` 模块（标记文件 + 孤儿接管 + 平台进程存活探测），常驻保活循环每轮先过守卫闸门。热重载不卸载旧 .so，旧实例原先会一直跑到进程结束，多实例并发刷新同一 refresh token 时后到者收 401 TOKEN_EXPIRE，健康账号被误标 session-dead。
+
+### 已知未修（登记）
+
+`price_factor` 缺字段时零值被判免费、`markSessionDead` 不写 disabled 导致死号反复 401、`ensureMaasSession` 的 mint/invalidate TOCTOU、credits 负 total 未夹紧、`maasSession.remaining(now)` 忽略 now 参数。
+
+### 验证
+
+`cgo-shim-build.py qwenwork` build/vet/test 全绿 ×3；每个修复均做哨兵反证（改坏对应行 → 测试 FAIL → 还原全绿）；gofmt 零输出、UTF-8 无 BOM、零行尾空白。竞态修复受环境限制（本机无 gcc、WSL 无发行版）无法跑 `-race`，改以加锁路径审查 + 并发压测 + `go vet` 保障。
+
 ## 0.2.17 (2026-11-27)
 
 ### Fix - 对齐客户端全量模型 + 0 积分账号可用免费模型

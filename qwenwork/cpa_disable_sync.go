@@ -100,6 +100,10 @@ type cpaAuthFileStatusRequest struct {
 	Disabled  bool   `json:"disabled"`
 }
 
+// setHostAuthDisabledFn 是 setHostAuthDisabled 的可替换入口，供单测注入
+// 宿主 API 结果，避免真实网络与宿主 RPC 依赖。
+var setHostAuthDisabledFn = setHostAuthDisabled
+
 // setHostAuthDisabled 通过宿主管理 API 设置某个 auth 文件的禁用状态。
 //
 // 只有 2xx 才算成功；未配置密钥返回 errCPAManagementNotConfigured（调用方据此

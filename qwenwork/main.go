@@ -329,7 +329,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.2.17"
+var version = "0.2.18"
 
 func wbRegistration() registration {
 	return registration{
@@ -341,7 +341,7 @@ func wbRegistration() registration {
 			GitHubRepository: "https://github.com/luode0320/cpa-workbuddy-plugin",
 			Logo:             pluginLogoURL,
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "额度生命周期自动化（默认关闭）。开启后：额度耗尽（含上游 quota.exceeded）的账号自动停用并打 exhausted_disable 标记，充值恢复后自动重新启用；手动禁用的账号永不被自动改动。"},
+				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "额度生命周期自动化（默认关闭）。开启后：已因额度耗尽被停用的账号（带 exhausted_disable 标记）在额度恢复后自动重新启用；额度耗尽本身不再自动停用（路由准入已改为按模型判定，0 积分账号仍可服务免费模型）；手动禁用的账号永不被自动改动。"},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用每4小时 access-token 自动刷新，防止 Keycloak 离线会话过期（默认开启）。"},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "可选模型列表。每个条目可包含 id、name、alias、context、max_tokens、enabled、reasoning 字段；配置后优先于自动获取的模型列表。"},
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeSession, schedulerModeCredits, schedulerModeOff}, Description: "多账号选择策略：session（按会话轮询，同一会话 1 小时内固定同一账号；默认）／credits（面板指定的固定账号）／off（交给内置逻辑）。付费模型对耗尽或低于安全红线的账号排除；免费模型（如 minimax-m3.1-flash）放行 0 积分账号。"},

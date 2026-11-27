@@ -19,13 +19,14 @@ var (
 //
 // [参数] 无。
 // [返回] 无。
-// 最近修改时间：2026-10-18 00:28:00；改动原因：签到调度删除后重建保活循环。
+// 最近修改时间：2026-11-27；改动原因：启动时登记实例所有权，供热重载旧实例退场。
 func ensureScheduler() {
 	schedulerMu.Lock()
 	defer schedulerMu.Unlock()
 	if schedulerStop != nil {
 		return // already running
 	}
+	claimPluginInstance()
 	schedulerStop = make(chan struct{})
 	go schedulerLoop(schedulerStop)
 }
@@ -91,11 +92,17 @@ func nextKeepaliveFireTime(now time.Time) time.Time {
 
 // schedulerLoop 到达保活时刻后执行 token 刷新，并顺带跑一次生命周期对账。
 //
+// 每轮开头先过实例守卫：宿主热重载不卸载旧 .so，旧实例的循环必须自行退场，
+// 否则多个实例会并发刷新同一 refresh token，把健康账号刷成 session-dead。
+//
 // [参数] stop 关闭信号通道，收到后停止定时器并退出循环。
 // [返回] 无（阻塞循环，随 stop 关闭返回）。
-// 最近修改时间：2026-10-18 00:28:00；改动原因：签到调度删除后重建保活循环。
+// 最近修改时间：2026-11-27；改动原因：新增实例守卫闸门。
 func schedulerLoop(stop chan struct{}) {
 	for {
+		if retireIfSuperseded("token-keepalive") {
+			return
+		}
 		// 叠加随机抖动：各插件槽位同刻对齐时会形成整点尖峰，抖动把全机
 		// 唤醒摊平到数分钟窗口内。
 		next := nextKeepaliveFireTime(time.Now())

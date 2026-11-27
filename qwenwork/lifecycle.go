@@ -1,11 +1,10 @@
 // lifecycle.go 实现 qwenwork 基于积分的账号生命周期：
-//   - 额度耗尽（含上游 quota.exceeded）→ 自动禁用：写 disabled:true 与顶层
-//     exhausted_disable:true；积分恢复后由校验流程自动重新启用
-//   - 积分未知时不动作，避免误判
+//   - 额度耗尽（含上游 quota.exceeded）不再自动禁用：路由准入已改为按请求
+//     模型的模型级判定，0 积分账号仍可服务免费模型
 //   - 带 exhausted_disable 标记的历史自动禁用账号在校验时恢复启用
+//   - 积分未知时不动作，避免误判
 //   - 手动禁用（manual_disable 标记，或宿主 UI 写入的无标记禁用）永不自动改动；
 //     SESSION-DEAD / TOKEN_EXPIRE 备注守卫同样保留
-//   - 上游硬额度错误 → 复查积分后按策略处理
 //   - 软限流 → 不删除 CN 账号
 //
 // QwenWork 存在免费模型（实测 minimax-m3.1-flash price_factor=0），
@@ -89,7 +88,7 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) 
 	if lifecycleStateUnchanged(authID, false, note) {
 		return nil
 	}
-	phys, err := hostAuthGetPhysical(authIndex)
+	phys, err := hostAuthGetPhysicalFn(authIndex)
 	name := authFileNameFor(sa)
 	path := ""
 	legacyPath := ""
@@ -102,7 +101,7 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) 
 	}
 	// 恢复优先走宿主管理 API：宿主真相源里的 disabled 不置回 false，
 	// 宿主会继续挡住这个号。未配密钥或调用失败时回落直写物理文件。
-	apiErr := setHostAuthDisabled(name, authIndex, false)
+	apiErr := setHostAuthDisabledFn(name, authIndex, false)
 	if apiErr != nil {
 		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
 			log.Printf("[qwenwork] cpa enable api failed, fallback to disk: auth=%s err=%v", authID, apiErr)
@@ -116,20 +115,20 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) 
 	return nil
 }
 
-// disableAuth 对额度耗尽的账号写入自动禁用状态。
-// 语义与 workbuddy 对齐：仅在账号当前处于启用态时写 disabled:true 与
-// exhausted_disable:true；已禁用的文件保持原状（manual_disable 与
-// exhausted_disable 一律原样带过），避免把用户手动禁用的账号变成可自动恢复。
+// disableAuth 对指定账号写入自动禁用状态。
+// 当前生命周期策略不再自动调用（耗尽由路由层按模型判定），保留供额度策略
+// 回滚或人工运维复用。语义与 workbuddy 对齐：仅在账号当前处于启用态时写
+// disabled:true 与 exhausted_disable:true；已禁用的文件保持原状。
 // [参数] authIndex：宿主账号索引；authID：账号标识；sa：账号凭据；
 // cr：积分快照；reason：附加到备注的原因短语。
 // [返回] 落盘错误；成功返回 nil。
-// 最近修改时间：2026-10-18 17:10:00；改动原因：QwenWork 无免费模型，耗尽需自动禁用。
+// 最近修改时间：2026-11-27；改动原因：耗尽不再自动禁用，本函数退出主流程。
 func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string) error {
 	mu := authFileLockFor(authIndex)
 	mu.Lock()
 	defer mu.Unlock()
 
-	phys, err := hostAuthGetPhysical(authIndex)
+	phys, err := hostAuthGetPhysicalFn(authIndex)
 	name := authFileNameFor(sa)
 	path := ""
 	legacyPath := ""
@@ -172,11 +171,20 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 	// 本机制新写入的禁用优先经宿主管理 API 写进路由真相源；未配置密钥或
 	// 调用失败时回落直写物理文件。非本机关注的禁用（manual/未知）不调 API。
 	if ownsDisable && finalDisabled {
-		apiErr := setHostAuthDisabled(name, authIndex, true)
+		apiErr := setHostAuthDisabledFn(name, authIndex, true)
 		if apiErr == nil {
+			// 宿主 API 只写 disabled，不会回写插件自定义顶层字段。归属标记必须
+			// 另行落盘，否则账号成为「无标记禁用」，充值后会被判为用户手动禁用
+			// 而永不自动恢复。落盘失败则回滚宿主禁用，避免留下半成品状态。
+			if perr := persistAuthDirect(name, path, legacyPath, raw); perr != nil {
+				if rerr := setHostAuthDisabledFn(name, authIndex, false); rerr != nil {
+					log.Printf("[qwenwork] disable rollback failed: auth=%s err=%v", authID, rerr)
+				}
+				return fmt.Errorf("disable: marker persist failed (host disable rolled back): %w", perr)
+			}
 			rememberLifecycleState(authID, finalDisabled, note)
 			accountCache.Delete(authID)
-			log.Printf("[qwenwork] exhausted-disable %s via cpa api (remain=%d)", authID, cr.TotalRemain)
+			log.Printf("[qwenwork] exhausted-disable %s via cpa api + marker persisted (remain=%d)", authID, cr.TotalRemain)
 			return nil
 		}
 		if !errors.Is(apiErr, errCPAManagementNotConfigured) {
@@ -197,7 +205,7 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	phys, err := hostAuthGetPhysical(authIndex)
+	phys, err := hostAuthGetPhysicalFn(authIndex)
 	if err != nil {
 		return err
 	}
@@ -314,7 +322,7 @@ func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 	mu := authFileLockFor(authIndex)
 	mu.Lock()
 	defer mu.Unlock()
-	phys, err := hostAuthGetPhysical(authIndex)
+	phys, err := hostAuthGetPhysicalFn(authIndex)
 	name := authFileNameFor(sa)
 	path := ""
 	legacyPath := ""
@@ -414,29 +422,18 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 			_ = syncAuthNote(authIndex, authID, sa, cr, true)
 			return lifecycleNone, nil
 		}
-		// 积分仍耗尽但存在免费模型时，恢复账号以放行免费模型路由；
-		// 无免费模型则保持禁用，只刷新备注（避免无谓落盘）。
-		if isCreditsExhausted(cr) && !hasFreeModels() {
-			_ = syncAuthNote(authIndex, authID, sa, cr, true)
-			return lifecycleNone, nil
-		}
+		// 积分耗尽也恢复启用：付费模型由调度层按积分红线排除，免费模型仍可服务。
 		if err := reenableAuth(authIndex, authID, sa, cr); err != nil {
 			return lifecycleReenable, err
 		}
 		return lifecycleReenable, nil
 	}
 
-	// 账号启用中：额度耗尽时，若仍有免费模型可用则不物理禁用（0 积分账号
-	// 仍可路由免费模型），只刷新备注；无免费模型才走原自动禁用流程。
+	// 账号启用中：额度耗尽不再物理禁用。路由准入已改为按请求模型的模型级
+	// 判定（付费模型排除、免费模型放行），禁用账号只会让免费模型也无法服务。
 	if isCreditsExhausted(cr) {
-		if hasFreeModels() {
-			_ = syncAuthNote(authIndex, authID, sa, cr, true)
-			return lifecycleNone, nil
-		}
-		if err := disableAuth(authIndex, authID, sa, cr, "耗尽"); err != nil {
-			return lifecycleDisable, err
-		}
-		return lifecycleDisable, nil
+		_ = syncAuthNote(authIndex, authID, sa, cr, true)
+		return lifecycleNone, nil
 	}
 	_ = syncAuthNote(authIndex, authID, sa, cr, false)
 	return lifecycleNone, nil

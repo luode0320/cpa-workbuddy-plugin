@@ -5,12 +5,19 @@
 // 0 积分账号仍可用免费模型，因此路由准入必须按请求模型判定，而非账号级一刀切。
 package main
 
-import "strings"
+import (
+	"strings"
+	"sync"
+)
 
 // defaultFreeModelIDs 是动态发现不可用时的免费模型兜底集合。
 var defaultFreeModelIDs = []string{"minimax-m3.1-flash"}
 
+// freeModelRegistry 缓存动态发现的免费模型集合。
+// 写侧来自 callModelsAPI（可被探活、模型查询、调度缓存 miss 多线程触发），
+// 读侧在调度与生命周期热路径上，故读写都必须持锁。
 var freeModelRegistry struct {
+	mu         sync.RWMutex
 	ids        map[string]struct{}
 	discovered bool
 }
@@ -24,8 +31,10 @@ func setFreeModels(ids []string) {
 			m[id] = struct{}{}
 		}
 	}
+	freeModelRegistry.mu.Lock()
 	freeModelRegistry.ids = m
 	freeModelRegistry.discovered = true
+	freeModelRegistry.mu.Unlock()
 }
 
 // isFreeModel 判定客户端模型名是否为免费模型。
@@ -35,8 +44,11 @@ func isFreeModel(model string) bool {
 	if key == "" {
 		return false
 	}
-	if freeModelRegistry.discovered {
-		_, ok := freeModelRegistry.ids[key]
+	freeModelRegistry.mu.RLock()
+	discovered, ids := freeModelRegistry.discovered, freeModelRegistry.ids
+	freeModelRegistry.mu.RUnlock()
+	if discovered {
+		_, ok := ids[key]
 		return ok
 	}
 	for _, id := range defaultFreeModelIDs {
@@ -50,8 +62,11 @@ func isFreeModel(model string) bool {
 // hasFreeModels 报告当前是否存在已知免费模型。
 // 动态发现成功时以其结果为准；未发现时回退静态兜底集合。
 func hasFreeModels() bool {
-	if freeModelRegistry.discovered {
-		return len(freeModelRegistry.ids) > 0
+	freeModelRegistry.mu.RLock()
+	discovered, ids := freeModelRegistry.discovered, freeModelRegistry.ids
+	freeModelRegistry.mu.RUnlock()
+	if discovered {
+		return len(ids) > 0
 	}
 	return len(defaultFreeModelIDs) > 0
 }

@@ -93,13 +93,13 @@ var globalMaasCache = &maasCache{
 	inflight: make(map[string]*maasMintCall),
 }
 
-// maasCacheKey 生成账号级缓存键；UID 缺失时退化为 access token 指纹，避免
-// 所有匿名账号共用一张票据。
+// maasCacheKeyPrefix 生成账号级缓存键前缀。
+// 票据缓存按「账号×会话」分片，前缀部分只标识账号。
 //
 // [参数] sa 账号凭据。
-// [返回] 缓存键；sa 为空时返回空串。
-// 最近修改时间：2026-10-18 00:45:00；改动原因：补齐函数注释元信息。
-func maasCacheKey(sa *storedAuth) string {
+// [返回] 前缀；sa 为空时返回空串。
+// 最近修改时间：2026-11-27；改动原因：票据改用会话维度分片，本函数降为前缀。
+func maasCacheKeyPrefix(sa *storedAuth) string {
 	if sa == nil {
 		return ""
 	}
@@ -107,6 +107,25 @@ func maasCacheKey(sa *storedAuth) string {
 		return uid
 	}
 	return "token:" + fingerprintToken(sa.Auth.AccessToken)
+}
+
+// maasSessionCacheKey 组装「账号×会话」缓存键。
+// 同一账号的不同会话必须各自持有独立票据：上游把票据绑定到 session_id，
+// 共用一张票会把多个会话折叠成同一个上游会话。会话键为空时归入固定分片，
+// 供探活等无会话场景使用。
+//
+// [参数] sa 账号凭据；sessionKey 调度侧会话键。
+// [返回] 缓存键；sa 为空时返回空串。
+// 最近修改时间：2026-11-27；改动原因：修复跨会话票据混用。
+func maasSessionCacheKey(sa *storedAuth, sessionKey string) string {
+	base := maasCacheKeyPrefix(sa)
+	if base == "" {
+		return ""
+	}
+	if sid := maasSessionID(sessionKey); sid != "" {
+		return base + "|" + sid
+	}
+	return base + "|nosession"
 }
 
 // maasSessionID 把调度用的会话键转换为上游要求的 UUID 形态。
@@ -261,7 +280,7 @@ func exchangeMaasSession(cur *maasSession) (*maasSession, error) {
 // [返回] 可用票据；宿主 token 缺失或签发失败时返回错误。
 // 最近修改时间：2026-10-17 23:45:00；改动原因：新建 QwenWork MaaS 签发层。
 func ensureMaasSession(sa *storedAuth, sessionID string) (*maasSession, error) {
-	key := maasCacheKey(sa)
+	key := maasSessionCacheKey(sa, sessionID)
 	if key == "" {
 		return nil, fmt.Errorf("maas: empty account key")
 	}
@@ -318,19 +337,25 @@ func refreshOrMint(sa *storedAuth, prev *maasSession, sessionID string) (*maasSe
 	return mintMaasSession(hostToken, sessionID)
 }
 
-// invalidateMaasSession 清掉某账号的缓存票据。宿主 token 刷新、账号禁用
-// 或上游返回 401 时调用，确保下一次请求重新签发。
+// invalidateMaasSession 清掉某账号全部会话的缓存票据。宿主 token 刷新、账号
+// 禁用或上游返回 401 时调用，确保下一次请求重新签发。
 //
 // [参数] sa 账号凭据。
 // [返回] 无。
-// 最近修改时间：2026-10-18 00:45:00；改动原因：补齐函数注释元信息。
+// 最近修改时间：2026-11-27；改动原因：票据按会话分片后需清除全部会话条目。
 func invalidateMaasSession(sa *storedAuth) {
-	key := maasCacheKey(sa)
-	if key == "" {
+	base := maasCacheKeyPrefix(sa)
+	if base == "" {
 		return
 	}
+	prefix := base + "|"
 	globalMaasCache.mu.Lock()
-	delete(globalMaasCache.sessions, key)
+	for k := range globalMaasCache.sessions {
+		// 兼容升级前按纯账号键写入的历史条目。
+		if k == base || strings.HasPrefix(k, prefix) {
+			delete(globalMaasCache.sessions, k)
+		}
+	}
 	globalMaasCache.mu.Unlock()
 }
 

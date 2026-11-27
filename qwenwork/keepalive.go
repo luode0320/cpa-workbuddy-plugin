@@ -60,17 +60,27 @@ func isSessionDeadError(msg string) bool {
 	return false
 }
 
+// isDeviceRefreshFamily 报告 refresh token 是否属于 Device Flow 家族，
+// 即能否直接走 POST /api/v1/deviceToken/refresh。
+// 实测 drt-（OAuth 设备流）与 ory_（新版网关）两种前缀都可正常刷新并轮换。
+// [参数] refreshToken：账号保存的 refresh token。
+// [返回] true 表示可走 deviceToken 刷新端点。
+// 最近修改时间：2026-11-27；改动原因：纳入 ory_ 家族，修复保活对生产账号全部失效。
+func isDeviceRefreshFamily(refreshToken string) bool {
+	rt := strings.TrimSpace(refreshToken)
+	return strings.HasPrefix(rt, "drt-") || strings.HasPrefix(rt, "ory_")
+}
+
 // refreshCall refreshes the token pair for one auth via the Device Flow's own
-// refresh endpoint (POST /api/v1/deviceToken/refresh with the drt- token).
+// refresh endpoint (POST /api/v1/deviceToken/refresh with the drt-/ory_ token).
 //
 // Returns the decoded data + raw body + status (raw needed for error
 // classification — doRawJSON collapses 4xx bodies into a generic error and
 // drops the business code, e.g. TOKEN_EXPIRE).
 func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
-	// Device family (drt-): use the device flow's own refresh endpoint.
-	// Routing is by token prefix, not by any other field — QwenWork 只有这一种
-	// 凭据家族，没有 PAT / jobToken 体系。
-	if strings.HasPrefix(sa.Auth.RefreshToken, "drt-") {
+	// Device 家族：统一走 deviceToken 刷新端点。路由按 token 前缀判定，
+	// 不存在 PAT / jobToken 体系。
+	if isDeviceRefreshFamily(sa.Auth.RefreshToken) {
 		body, _ := json.Marshal(map[string]string{"refresh_token": sa.Auth.RefreshToken})
 		data, status, err := doRawJSON(sharedHTTPClient(), http.MethodPost, upstreamBaseCN+"/api/v1/deviceToken/refresh", nil, bytes.NewReader(body))
 		if err == nil {
@@ -78,8 +88,8 @@ func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
 		}
 		return nil, nil, status, err
 	}
-	// QwenWork 只有 Device Flow 一种凭据家族，没有 PAT/jobToken 体系。
-	// 走到这里说明 refreshToken 既不是 drt- 也缺失，直接报错由调用方降级。
+	// 走到这里说明 refreshToken 不属于任何已知可刷新家族或已缺失，
+	// 直接报错由调用方降级。
 	return nil, nil, 0, fmt.Errorf("refresh: unsupported token family")
 }
 
@@ -117,6 +127,9 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 	if tok == "" {
 		return "failed", fmt.Errorf("refresh_failed: no token in response (raw=%s)", truncateRedacted(string(data), 200))
 	}
+	// 刷新前的凭证快照：MaaS 缓存键在账号缺 UID 时取自 access token 指纹，
+	// token 一旦换新，用新值算键会删不到旧票据。
+	staleSA := *sa
 	sa.Auth.AccessToken = tok
 	if dt.RefreshToken != "" {
 		sa.Auth.RefreshToken = dt.RefreshToken
@@ -127,8 +140,19 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 	}
 	// 宿主 token 换了，缓存的 MaaS 票据也要作废：MaaS key 是绑在宿主
 	// 身份上的，继续用旧票会 401。
-	invalidateMaasSession(sa)
+	invalidateForRefresh(&staleSA, sa)
 	return "refreshed", nil
+}
+
+// invalidateForRefresh 用刷新前后的两份凭证清理 MaaS 缓存。
+// MaaS 缓存键在账号缺 UID 时取自 access token 指纹：只按刷新后的凭证清理
+// 会漏删旧票据，因此必须同时清旧快照与新凭证（UID 存在时两者同键，幂等）。
+// [参数] stale：刷新前的凭证快照；fresh：刷新后的凭证。
+// [返回] 无。
+// 最近修改时间：2026-11-27；改动原因：修复 token 轮换后旧票据泄漏。
+func invalidateForRefresh(stale, fresh *storedAuth) {
+	invalidateMaasSession(stale)
+	invalidateMaasSession(fresh)
 }
 
 // persistAuthTokens 把刷新后的凭据写回磁盘。

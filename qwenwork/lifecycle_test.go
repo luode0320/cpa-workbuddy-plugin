@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -129,5 +131,89 @@ func TestExceededFlagMarksExhausted(t *testing.T) {
 	withRemain := &creditsSummary{TotalRemain: 100, Exceeded: true}
 	if isCreditsExhausted(withRemain) {
 		t.Fatal("positive remain must win over a stale exceeded flag")
+	}
+}
+
+// TestDisableAuth_API_SuccessStillPersistsMarker 验证走宿主管理 API 成功后，
+// exhausted_disable 归属标记仍必须落盘：宿主 API 只写 disabled、不回写插件
+// 自定义顶层字段，漏写会让账号变成「无标记禁用」，充值后永不自动恢复。
+func TestDisableAuth_API_SuccessStillPersistsMarker(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "qwenwork-uid-marker.json")
+	initial := []byte(`{"type":"qwenwork-provider","provider":"qwenwork-provider","disabled":false,` +
+		`"auth":{"accessToken":"dt-x"},"account":{"uid":"uid-marker"}}`)
+	if err := os.WriteFile(path, initial, 0o600); err != nil {
+		t.Fatalf("seed auth file: %v", err)
+	}
+
+	origGet, origSet := hostAuthGetPhysicalFn, setHostAuthDisabledFn
+	t.Cleanup(func() {
+		hostAuthGetPhysicalFn = origGet
+		setHostAuthDisabledFn = origSet
+	})
+	hostAuthGetPhysicalFn = func(string) (*hostAuthPhysical, error) {
+		return &hostAuthPhysical{Name: "qwenwork-uid-marker.json", Path: path, JSON: initial}, nil
+	}
+	var apiCalls []bool
+	setHostAuthDisabledFn = func(_ string, _ string, disabled bool) error {
+		apiCalls = append(apiCalls, disabled)
+		return nil
+	}
+
+	sa := &storedAuth{Account: storedAccount{UID: "uid-marker"}}
+	sa.Auth.AccessToken = "dt-x"
+	cr := &creditsSummary{TotalRemain: 0, TotalUsed: 100, TotalSize: 100}
+	if err := disableAuth("idx-marker", "uid-marker", sa, cr, "耗尽"); err != nil {
+		t.Fatalf("disableAuth: %v", err)
+	}
+
+	if len(apiCalls) != 1 || !apiCalls[0] {
+		t.Fatalf("host api disable calls = %v, want exactly one true call", apiCalls)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(written, &doc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if doc["exhausted_disable"] != true {
+		t.Fatalf("exhausted_disable marker must be persisted even when the host API succeeded, got %v", doc["exhausted_disable"])
+	}
+	if doc["disabled"] != true {
+		t.Fatalf("disabled must be true in the persisted file, got %v", doc["disabled"])
+	}
+}
+
+// TestDisableAuth_MarkerPersistFailureRollsBackHostDisable 验证标记落盘失败时
+// 必须回滚宿主禁用，避免留下「已禁用但无归属标记」的半成品状态。
+func TestDisableAuth_MarkerPersistFailureRollsBackHostDisable(t *testing.T) {
+	// Path 留空 → persistAuthDirect 必然失败。
+	initial := []byte(`{"type":"qwenwork-provider","disabled":false,"auth":{"accessToken":"dt-y"},"account":{"uid":"uid-rb"}}`)
+
+	origGet, origSet := hostAuthGetPhysicalFn, setHostAuthDisabledFn
+	t.Cleanup(func() {
+		hostAuthGetPhysicalFn = origGet
+		setHostAuthDisabledFn = origSet
+	})
+	hostAuthGetPhysicalFn = func(string) (*hostAuthPhysical, error) {
+		return &hostAuthPhysical{Name: "qwenwork-uid-rb.json", Path: "", JSON: initial}, nil
+	}
+	var apiCalls []bool
+	setHostAuthDisabledFn = func(_ string, _ string, disabled bool) error {
+		apiCalls = append(apiCalls, disabled)
+		return nil
+	}
+
+	sa := &storedAuth{Account: storedAccount{UID: "uid-rb"}}
+	sa.Auth.AccessToken = "dt-y"
+	cr := &creditsSummary{TotalRemain: 0, TotalUsed: 50, TotalSize: 50}
+	err := disableAuth("idx-rb", "uid-rb", sa, cr, "耗尽")
+	if err == nil {
+		t.Fatal("disableAuth must fail when the marker cannot be persisted")
+	}
+	if len(apiCalls) != 2 || !apiCalls[0] || apiCalls[1] {
+		t.Fatalf("expected disable then rollback (true,false), got %v", apiCalls)
 	}
 }

@@ -145,18 +145,18 @@ func TestMaasInferenceURL(t *testing.T) {
 // 且指纹不泄露 token 原值。
 func TestMaasCacheKey(t *testing.T) {
 	withUID := &storedAuth{Account: storedAccount{UID: "user-1"}, Auth: storedTokens{AccessToken: "dt-secret"}}
-	if got := maasCacheKey(withUID); got != "user-1" {
+	if got := maasCacheKeyPrefix(withUID); got != "user-1" {
 		t.Fatalf("cache key = %q, want user-1", got)
 	}
 	noUID := &storedAuth{Auth: storedTokens{AccessToken: "dt-secret"}}
-	got := maasCacheKey(noUID)
+	got := maasCacheKeyPrefix(noUID)
 	if !strings.HasPrefix(got, "token:") {
 		t.Fatalf("cache key = %q, want token: prefix", got)
 	}
 	if strings.Contains(got, "dt-secret") {
 		t.Fatal("cache key must not contain the raw access token")
 	}
-	if got == maasCacheKey(&storedAuth{Auth: storedTokens{AccessToken: "dt-other"}}) {
+	if got == maasCacheKeyPrefix(&storedAuth{Auth: storedTokens{AccessToken: "dt-other"}}) {
 		t.Fatal("different tokens must produce different cache keys")
 	}
 }

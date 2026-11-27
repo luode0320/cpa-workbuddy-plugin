@@ -2,15 +2,24 @@
 package main
 
 import (
+	"sync"
 	"testing"
 )
 
 func resetFreeModels(t *testing.T) {
 	t.Helper()
-	old := freeModelRegistry
-	t.Cleanup(func() { freeModelRegistry = old })
+	freeModelRegistry.mu.Lock()
+	oldIDs := freeModelRegistry.ids
+	oldDiscovered := freeModelRegistry.discovered
 	freeModelRegistry.ids = nil
 	freeModelRegistry.discovered = false
+	freeModelRegistry.mu.Unlock()
+	t.Cleanup(func() {
+		freeModelRegistry.mu.Lock()
+		freeModelRegistry.ids = oldIDs
+		freeModelRegistry.discovered = oldDiscovered
+		freeModelRegistry.mu.Unlock()
+	})
 }
 
 // TestIsFreeModel_FallbackAndDynamic 验证静态兜底与动态注册两种来源。
@@ -75,5 +84,55 @@ func TestHasFreeModels(t *testing.T) {
 	setFreeModels(nil)
 	if hasFreeModels() {
 		t.Fatal("empty discovered set must report no free models")
+	}
+}
+
+// TestFreeModelRegistry_ConcurrentAccess 验证并发读写免费模型注册表不崩溃且状态自洽：
+// 写侧来自 callModelsAPI（探活/模型查询/调度 cache miss 多线程），读侧在调度热路径。
+func TestFreeModelRegistry_ConcurrentAccess(t *testing.T) {
+	resetFreeModels(t)
+	const (
+		writers  = 4
+		readers  = 4
+		loop     = 200
+		finalID  = "minimax-m3.1-flash"
+		otherIDs = "qwen4-max"
+	)
+	var wg sync.WaitGroup
+	wg.Add(writers + readers)
+	for i := 0; i < writers; i++ {
+		go func(seed int) {
+			defer wg.Done()
+			for j := 0; j < loop; j++ {
+				if (seed+j)%2 == 0 {
+					setFreeModels([]string{finalID})
+				} else {
+					setFreeModels(nil)
+				}
+			}
+		}(i)
+	}
+	for i := 0; i < readers; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < loop; j++ {
+				_ = isFreeModel(finalID)
+				_ = isFreeModel(otherIDs)
+				_ = hasFreeModels()
+			}
+		}()
+	}
+	wg.Wait()
+
+	// 并发结束后写入一个确定状态，断言读取侧与该状态一致。
+	setFreeModels([]string{finalID})
+	if !isFreeModel(finalID) {
+		t.Fatal("registry must reflect the last setFreeModels result")
+	}
+	if isFreeModel(otherIDs) {
+		t.Fatal("registry must not report a model outside the last set")
+	}
+	if !hasFreeModels() {
+		t.Fatal("hasFreeModels must agree with the last set")
 	}
 }
