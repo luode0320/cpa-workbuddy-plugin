@@ -48,8 +48,6 @@ button{background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padd
 button.sec{background:var(--btn-sec);color:var(--fg)}
 button.sec:hover{background:var(--btn-sec-hover)}
 button:disabled{opacity:.5;cursor:default}
-.bar .search{max-width:210px;flex:0 1 210px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--fg);font-size:13px;outline:none}
-.bar .search:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:16px}
 .card h2{font-size:14px;margin:0 0 10px;display:flex;justify-content:space-between;align-items:center;gap:8px}
@@ -108,7 +106,6 @@ button:disabled{opacity:.5;cursor:default}
     <button id="btnLogin">＋ 添加账号（GitHub 授权）</button>
     <button class="sec" id="btnImport">导入 Token</button>
     <button class="sec" id="btnRefresh">刷新</button>
-    <input class="search" id="search" placeholder="搜索账号 / 用户">
     <button class="sec" id="btnEnableAll">全部启用</button>
     <button class="sec" id="btnDisableAll">全部禁用</button>
   </div>
@@ -276,7 +273,6 @@ async function api(path, opts={}){
 
 /* ---------- state + render ---------- */
 let lastAccounts=[];
-let currentSearch="";
 
 function stateBadge(a){
   if(a.disabled) return '<span class="badge b-err">已禁用</span>';
@@ -332,11 +328,7 @@ function card(a){
 }
 
 function render(){
-  const kw=currentSearch.trim().toLowerCase();
-  const list=lastAccounts.filter(a=>{
-    if(!kw) return true;
-    return [a.label,a.username,a.user_id,a.email,a.auth_id].some(v=>(v||"").toLowerCase().includes(kw));
-  });
+  const list=lastAccounts;
   document.getElementById("grid").innerHTML=list.map(card).join("");
   document.getElementById("empty").style.display=list.length?"none":"block";
 }
@@ -386,7 +378,6 @@ document.getElementById("grid").addEventListener("click",async e=>{
 });
 
 document.getElementById("btnRefresh").onclick=()=>loadAccounts().catch(e=>toast("刷新失败","err",e.message));
-document.getElementById("search").oninput=e=>{currentSearch=e.target.value;render()};
 
 document.getElementById("btnEnableAll").onclick=async()=>{
   try{await api("/enable-all",{method:"POST"});toast("已全部启用");await loadAccounts();}

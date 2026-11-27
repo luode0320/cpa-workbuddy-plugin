@@ -54,9 +54,6 @@ button.sec:hover{background:var(--btn-sec-hover)}
 button:disabled{opacity:.5;cursor:default}
 button.danger{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
 button.danger:hover{background:var(--err);color:#fff}
-.bar .search{max-width:220px;flex:0 1 220px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--fg);font-size:13px;outline:none}
-.bar .search:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
-.bar .search::placeholder{color:var(--placeholder)}
 .filter-bar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
 .ftag{background:var(--surface);border:1px solid var(--border);color:var(--mut);border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600}
 .ftag.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}
@@ -213,7 +210,6 @@ button.danger:hover{background:var(--err);color:#fff}
     <button class="sec" id="btnDisableAll" title="禁用全部账号（不再参与路由）">全部禁用</button>
     <button class="sec" id="btnExport" title="导出全部账号凭据为 JSON 备份文件，可通过「导入备份」恢复">导出备份</button>
     <button class="sec" id="btnImport" title="从「导出备份」生成的文件恢复账号（逐条写回，不经过上游换票）">导入备份</button>
-    <input id="searchInput" class="search" type="search" placeholder="搜索昵称 / 手机 / 账号标识" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other">
   </div>
 
   <div class="summary" id="sweepBox" style="display:none"></div>
@@ -383,7 +379,6 @@ let lastAccounts=[];
 // 否则改了配置面板还在按旧值判断低额。
 let lastRedline=0;
 let currentFilter="all";
-let currentSearch="";
 let pendingDeleteID="";
 let pendingTestID="";
 let authFailCount=0;
@@ -481,13 +476,8 @@ function accountMatches(a){
   return true;
 }
 
-function accountHaystack(a){
-  return [a.label,a.screen_name,a.mobile,a.sec_user_id,a.auth_id].filter(Boolean).join(" ").toLowerCase();
-}
-
 function visibleAccounts(){
-  const q=(currentSearch||"").toLowerCase();
-  return (lastAccounts||[]).filter(a=>accountMatches(a)&&(!q||accountHaystack(a).includes(q)));
+  return (lastAccounts||[]).filter(accountMatches);
 }
 
 // 积分区块：可用余量 + 即将过期提示 + 消耗进度条。
@@ -563,7 +553,7 @@ function card(a){
   if(a.created_at) rows.push('<div class="row"><span class="k">创建时间</span><span class="v">'+esc(fmtCST(a.created_at))+'</span></div>');
   const toggleAct=a.disabled?"enable":"disable";
   const toggleText=a.disabled?"启用":"禁用";
-  return '<div class="card" data-auth="'+id+'" data-state="'+(a.disabled?"disabled":(a.auth_state==="expired"?"expired":"ok"))+'" data-hay="'+esc(accountHaystack(a))+'">'+
+  return '<div class="card" data-auth="'+id+'" data-state="'+(a.disabled?"disabled":(a.auth_state==="expired"?"expired":"ok"))+'">'+
     '<h2><span>'+esc(title)+'</span><span style="display:flex;gap:6px;align-items:center">'+stateBadge(a)+
     '<button type="button" class="card-del" data-act="delete" data-id="'+id+'" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>'+
     '<div class="uid" title="'+id+'">'+id+'</div>'+
@@ -1132,7 +1122,6 @@ document.getElementById("importModalClose").addEventListener("click",closeImport
 document.getElementById("importCancel").addEventListener("click",closeImportModal);
 document.getElementById("importConfirm").addEventListener("click",e=>importCred(e.currentTarget));
 document.getElementById("importModal").addEventListener("click",onImportMaskClick);
-document.getElementById("searchInput").addEventListener("input",e=>{currentSearch=String(e.target.value||"").trim();render()});
 document.getElementById("filterBar").addEventListener("click",e=>{
   const btn=e.target.closest?e.target.closest(".ftag"):null;
   if(!btn)return;
@@ -1162,34 +1151,6 @@ document.addEventListener("keydown",e=>{
   if(document.getElementById("deleteModal").classList.contains("show"))closeDeleteModal();
   if(document.getElementById("importModal").classList.contains("show"))closeImportModal();
 });
-
-// 搜索框禁止浏览器自动填入：进入面板先清空历史恢复值，只有用户真主动输入才放行。
-// [参数] 无。
-// [返回] 无。
-// 最近修改时间：2026-11-14；改动原因：新增，修复浏览器表单历史把上次搜索词自动填回搜索框。
-(function searchInputNoAutofill(){
-  const el=document.getElementById("searchInput");
-  if(!el) return;
-  // 每次加载换一个随机 name，浏览器无法用表单历史命中这个输入框。
-  el.setAttribute("name","q"+Math.random().toString(36).slice(2,10));
-  el.setAttribute("autocomplete","off");
-  let typed=false;
-  el.addEventListener("pointerdown",()=>{typed=true;},{passive:true});
-  el.addEventListener("keydown",()=>{typed=true;});
-  el.addEventListener("focus",()=>{ if(!typed) el.value=""; });
-  const reset=()=>{
-    if(el.value!=="") el.value="";
-    if(currentSearch!==""){
-      if(typeof onSearchChange==="function") onSearchChange("");
-      else { currentSearch=""; if(typeof render==="function" && lastAccounts.length) render(); }
-    }
-  };
-  const resetIfUntouched=()=>{ if(!typed) reset(); };
-  resetIfUntouched();
-  // 浏览器可能在首帧之后才恢复历史值，短窗口内多清几轮。
-  [0,60,200,600,1200,2500].forEach(t=>setTimeout(resetIfUntouched,t));
-  window.addEventListener("pageshow",resetIfUntouched);
-})();
 
 /* 启动：先同步主题监听，再按是否已有密钥决定直接加载还是显示鉴权框。 */
 if(window.__cozeThemeSync)window.__cozeThemeSync();

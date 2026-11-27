@@ -50,10 +50,7 @@ h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);font-size:13px;margin-bot
 button{background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
 button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background:var(--btn-sec-hover)}button:disabled{opacity:.5;cursor:default}
 .toggle{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:13px}
-/* Toolbar search + sort */
-.bar .search{max-width:210px;flex:0 1 210px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--fg);font-size:13px;outline:none}
-.bar .search:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
-.bar .search::placeholder{color:var(--placeholder)}
+/* Toolbar sort */
 .bar .provider-select{background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:7px 10px;color:var(--fg);font-size:13px;outline:none;cursor:pointer}
 .bar .provider-select:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
 .bar .sort-btn{font-size:13px;white-space:nowrap}
@@ -252,7 +249,6 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="sec" id="refreshBtn" onclick="refreshAll(this)" title="重新拉取全部账号的每日额度">刷新额度</button>
     <button class="sec" onclick="setAllStatus(false, this)">全部启用</button>
     <button class="sec" onclick="setAllStatus(true, this)">全部禁用</button>
-    <input id="searchInput" class="search" type="search" placeholder="搜索备注 / Key / ID" oninput="onSearchChange(this.value)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other">
     <button class="sec sort-btn" id="sortBtn" onclick="toggleSort(this)" title="当前：创建时间倒序（新→旧），点击切额度升序">创建 ↓</button>
     <span class="toggle ref-progress" id="refreshProgress" style="display:none"></span>
   </div>
@@ -542,7 +538,6 @@ async function api(path, opts={}){
 /* ---------- state + render ---------- */
 let lastAccounts=[];
 let currentFilter="all";
-let currentSearch="";
 let currentSort="created_desc"; // "created_desc" | "quota_asc" | "quota_desc"
 const SORT_LABELS={created_desc:"创建 ↓", quota_asc:"额度 ↑", quota_desc:"额度 ↓"};
 const SORT_NEXT={created_desc:"quota_asc", quota_asc:"quota_desc", quota_desc:"created_desc"};
@@ -648,7 +643,7 @@ function card(a){
   const guideBtn=isUnactivated
     ? `<button class="sec btn-act" data-action="claim" data-auth-index="${esc(a.auth_id)}" title="通过官方无感验证自动领取 Start Plan 每日额度">🎁 领取额度</button>`
     : "";
-  return `<div class="card" data-state="${st}" data-auth="${esc(a.auth_id)}" data-name="${esc(titleName)}" data-quota="${quotaTotal(a)}" data-search="${esc(((a.label||"")+" "+(a.username||"")+" "+(a.email||"")+" "+(a.user_id||"")+" "+(a.api_key_masked||"")+" "+(a.auth_id||"")+" "+(a.provider_family||"zai")).toLowerCase())}">
+  return `<div class="card" data-state="${st}" data-auth="${esc(a.auth_id)}" data-name="${esc(titleName)}" data-quota="${quotaTotal(a)}">
   <h2><span class="name" title="${esc(titleName)}">${esc(titleName)}</span> <span style="display:flex;gap:6px;align-items:center;flex:none">${providerBadge(a)}${stateBadge(a)}${slowBadge(a)}${planBadge}<button type="button" class="card-del" data-action="delete" data-auth-index="${esc(a.auth_id)}" title="删除账号（需二次确认）" aria-label="删除账号">×</button></span></h2>
   <div class="uid" title="${esc(a.auth_id||"")}">${esc(a.auth_id||"")}</div>
   <div class="row"><span class="k">访问令牌</span><span class="v mono" title="已脱敏">${esc(a.api_key_masked||"-")}</span></div>
@@ -691,18 +686,11 @@ function bindCardActions(root){
   });
 }
 function applyCardVisibility(){
-  const q=(currentSearch||"").toLowerCase();
   document.querySelectorAll("#grid .card").forEach(c=>{
     let show=true;
     if(currentFilter!=="all") show=c.dataset.state===currentFilter;
-    if(show&&q) show=(c.dataset.search||"").includes(q);
     c.style.display=show?"":"none";
   });
-}
-function onSearchChange(q){
-  currentSearch=(q==null?"":String(q)).trim().toLowerCase();
-  applyCardVisibility();
-  renderSummary(lastAccounts);
 }
 function filterState(state, btn){
   currentFilter=state;
@@ -1598,33 +1586,6 @@ async function runTestModel(authId, model, btn){
   }
 }
 
-// 搜索框禁止浏览器自动填入：进入面板先清空历史恢复值，只有用户真主动输入才放行。
-// [参数] 无。
-// [返回] 无。
-// 最近修改时间：2026-11-14；改动原因：新增，修复浏览器表单历史把上次搜索词自动填回搜索框。
-(function searchInputNoAutofill(){
-  const el=document.getElementById("searchInput");
-  if(!el) return;
-  // 每次加载换一个随机 name，浏览器无法用表单历史命中这个输入框。
-  el.setAttribute("name","q"+Math.random().toString(36).slice(2,10));
-  el.setAttribute("autocomplete","off");
-  let typed=false;
-  el.addEventListener("pointerdown",()=>{typed=true;},{passive:true});
-  el.addEventListener("keydown",()=>{typed=true;});
-  el.addEventListener("focus",()=>{ if(!typed) el.value=""; });
-  const reset=()=>{
-    if(el.value!=="") el.value="";
-    if(currentSearch!==""){
-      if(typeof onSearchChange==="function") onSearchChange("");
-      else { currentSearch=""; if(typeof render==="function" && lastAccounts.length) render(); }
-    }
-  };
-  const resetIfUntouched=()=>{ if(!typed) reset(); };
-  resetIfUntouched();
-  // 浏览器可能在首帧之后才恢复历史值，短窗口内多清几轮。
-  [0,60,200,600,1200,2500].forEach(t=>setTimeout(resetIfUntouched,t));
-  window.addEventListener("pageshow",resetIfUntouched);
-})();
 /* ---------- boot ---------- */
 (function(){
   if(typeof window.__zcThemeSync==="function") window.__zcThemeSync();
