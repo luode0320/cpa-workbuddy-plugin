@@ -142,6 +142,60 @@ var workModelAliases = []modelAlias{
 		MemoryProfile: "300k_230",
 		TotalWindow:   "300000",
 	},
+	{
+		ID:              "glm-5.4",
+		DisplayName:     "GLM 5.4",
+		Description:     "智谱 GLM 新版旗舰，新增视觉能力。",
+		ModelItemKey:    "person-glm-5-4",
+		MemoryProfile:   "300k_230",
+		TotalWindow:     "300000",
+		ReasoningEffort: "5",
+	},
+	{
+		ID:              "qwen3.8-max",
+		DisplayName:     "Qwen 3.8 Max",
+		Description:     "通义千问 3.8 旗舰档。",
+		ModelItemKey:    "person-qwen3-8-max",
+		MemoryProfile:   "300k_230",
+		TotalWindow:     "300000",
+		ReasoningEffort: "5",
+	},
+	{
+		ID:              "qwen3.8-flash",
+		DisplayName:     "Qwen 3.8 Flash",
+		Description:     "通义千问 3.8 轻量档，额度消耗低。",
+		ModelItemKey:    "person-qwen3-8-flash",
+		MemoryProfile:   "300k_230",
+		TotalWindow:     "300000",
+		ReasoningEffort: "5",
+	},
+	{
+		ID:              "qwen4-max",
+		DisplayName:     "Qwen 4 Max",
+		Description:     "通义千问新一代旗舰档。",
+		ModelItemKey:    "person-qwen4-max",
+		MemoryProfile:   "300k_230",
+		TotalWindow:     "300000",
+		ReasoningEffort: "5",
+	},
+	{
+		ID:              "mimo-v2.6-pro",
+		DisplayName:     "MiMo V2.6 Pro",
+		Description:     "小米 MiMo V2.6 旗舰档。",
+		ModelItemKey:    "person-mimo-v2-6-pro",
+		MemoryProfile:   "300k_230",
+		TotalWindow:     "300000",
+		ReasoningEffort: "5",
+	},
+	{
+		ID:              "mimo-v2.6-flash",
+		DisplayName:     "MiMo V2.6 Flash",
+		Description:     "小米 MiMo V2.6 轻量档，额度消耗极低。",
+		ModelItemKey:    "person-mimo-v2-6-flash",
+		MemoryProfile:   "300k_230",
+		TotalWindow:     "300000",
+		ReasoningEffort: "5",
+	},
 }
 
 // defaultWorkModelID 是工作模式的默认模型别名。
@@ -207,11 +261,18 @@ func modeForAlias(alias modelAlias) generationMode {
 }
 
 // aliasForWorkModel 在工作模式目录中查找模型别名。
+//
+// 静态别名优先保证命名稳定；静态未收录的新模型由上游菜单动态兜底。
 // [参数] name: 已归一化的模型名。
 // [返回] 命中的别名；found 表示是否存在同名条目。
-// 最近修改时间：2026-11-27 00:55:00；改动原因：恢复工作模式模型名解析。
+// 最近修改时间：2026-11-27 23:25:00；改动原因：新增动态菜单兜底，新模型无需改代码即可用。
 func aliasForWorkModel(name string) (modelAlias, bool) {
 	for _, alias := range workModelAliases {
+		if strings.EqualFold(name, alias.ID) {
+			return alias, true
+		}
+	}
+	for _, alias := range workModelsSnapshot() {
 		if strings.EqualFold(name, alias.ID) {
 			return alias, true
 		}
@@ -287,14 +348,32 @@ func catalogueModels() []pluginapi.ModelInfo {
 	return out
 }
 
-// allAliases 返回能力别名与工作模式别名的合并视图（能力别名在前）。
+// allAliases 返回能力别名、静态工作模型与上游动态菜单的合并视图。
+//
+// 静态在前保证命名稳定；动态按 model_item_key 去重，只补静态未收录的新模型。
 // [参数] 无。
 // [返回] 别名列表（新副本，调用方改动不会污染目录）。
-// 最近修改时间：2026-11-27 00:55:00；改动原因：新增，供目录与测试列表共用。
+// 最近修改时间：2026-11-27 23:25:00；改动原因：新增上游菜单动态补充，新模型自动出现。
 func allAliases() []modelAlias {
 	out := make([]modelAlias, 0, len(capabilityAliases)+len(workModelAliases))
 	out = append(out, capabilityAliases...)
 	out = append(out, workModelAliases...)
+
+	// 动态菜单只补静态没有的模型键，避免同键两条冲突条目。
+	seen := make(map[string]struct{}, len(out))
+	for _, alias := range out {
+		seen[strings.TrimSpace(alias.ModelItemKey)] = struct{}{}
+	}
+	for _, alias := range workModelsSnapshot() {
+		key := strings.TrimSpace(alias.ModelItemKey)
+		if _, exists := seen[key]; exists && key != "" {
+			continue
+		}
+		if key != "" {
+			seen[key] = struct{}{}
+		}
+		out = append(out, alias)
+	}
 	return out
 }
 
@@ -486,9 +565,13 @@ func modelForAuth(request []byte) ([]byte, error) {
 // [返回] 合并后的模型列表。
 // 最近修改时间：2026-10-17；改动原因：新增，动态与静态目录合并。
 func catalogueWithUpstream(req pluginapi.AuthModelRequest) []pluginapi.ModelInfo {
-	aliases := catalogueModels()
-
 	sa, errAuth := authForModelRequest(&req)
+	if errAuth == nil {
+		// 先刷新工作模式菜单：成功时 allAliases 会把上游新增模型一并带出。
+		refreshWorkModels(sa)
+	}
+
+	aliases := catalogueModels()
 	if errAuth != nil {
 		return aliases
 	}
@@ -496,7 +579,14 @@ func catalogueWithUpstream(req pluginapi.AuthModelRequest) []pluginapi.ModelInfo
 	if errDiscover != nil || len(upstream) == 0 {
 		return aliases
 	}
+	return mergeModelInfo(aliases, upstream)
+}
 
+// mergeModelInfo 合并别名与上游代号，同名以先出现的为准。
+// [参数] aliases: 别名列表；upstream: 上游模型列表。
+// [返回] 合并结果。
+// 最近修改时间：2026-11-27 23:28:00；改动原因：新增，收敛目录合并逻辑供两条分支复用。
+func mergeModelInfo(aliases, upstream []pluginapi.ModelInfo) []pluginapi.ModelInfo {
 	seen := make(map[string]struct{}, len(aliases)+len(upstream))
 	out := make([]pluginapi.ModelInfo, 0, len(aliases)+len(upstream))
 	for _, m := range aliases {
