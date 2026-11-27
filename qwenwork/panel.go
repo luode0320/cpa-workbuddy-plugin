@@ -127,13 +127,15 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 				_ = syncAuthNote(f.AuthIndex, f.ID, sa, cr, acct.Disabled)
 				acct.Error = strings.Join(errs, "; ")
 			} else {
-				// Light load: use cached values if available, but don't fetch upstream.
-				if v, ok := accountCache.Load(f.ID); ok {
-					if e, ok2 := v.(*accountCacheEntry); ok2 {
-						acct.Plan = e.plan
-						acct.Credits = e.credits
-						acct.Exhausted = isCreditsExhausted(e.credits)
-						acct.LowCredits = isCreditsLowForRouting(e.credits)
+				// Light load: 只读持久化快照，不为每个账号打上游。快照由每小时
+				// 定时扫描维护；缺失时该行显示为未知，等下一轮扫描或手动刷新填充。
+				if entry, ok := creditSnapshotGet(f.ID); ok {
+					acct.Plan = ""
+					acct.Credits = entry.Credits
+					acct.Exhausted = isCreditsExhausted(entry.Credits)
+					acct.LowCredits = isCreditsLowForRouting(entry.Credits)
+					if entry.Nickname != "" {
+						acct.Nickname = entry.Nickname
 					}
 				}
 			}

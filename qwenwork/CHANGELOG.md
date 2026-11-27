@@ -1,5 +1,21 @@
 # QwenWork Plugin Changelog
 
+## 0.2.20 (2026-11-28)
+
+### Feat - 积分持久化与每小时定时扫描（对齐 workbuddy）
+
+- 背景: QwenWork 此前只有 45 秒内存缓存，无任何持久化；冷启动打开面板积分全空，进程重启后数据归零，且面板轻载路径读的就是那份易失缓存。
+- 新增 `credits_snapshot.go`: 积分落 sidecar `data/qwenwork-credits.json`，作为跨重启唯一真相源。含内存镜像、磁盘懒加载、键级合并原子落盘（唯一临时名 + rename，防多实例互删）、损坏文件按空快照容错。
+- 新增 `credits_sweep.go`: 每小时一轮全量扫描，串行 + 每账号 300ms 间隔摊平上游压力，轮末统一落盘；禁用账号同样刷新（积分恢复是其唯一解禁途径）；首轮复用 `watchdogFirstTickDelay()` 抖动，每轮先过 `retireIfSuperseded()` 实例守卫。
+- 面板改读快照: `panel.go` 轻载路径从读内存缓存改为读持久化快照，进页面零上游请求；完整 credits 明细随快照保留，前端 `fetched_at` 与已用/池字段渲染不受影响。
+- 手动刷新兜底: `/refresh` 与 `/credits` 仍实时拉上游，`refresh_runner.go` 刷新后同步写快照，避免结果只活在内存。
+- 脏数据保护: 单账号失败保留上一轮快照（stale-while-error）；nil 积分不覆盖真实数据。
+- 与 workbuddy 的差异: QwenWork 是二值模型（无三档分级），快照条目不带 `Tier`、扫描不做分级检查，落盘合并逻辑保持一致。
+
+### 验证
+
+`cgo-shim-build.py qwenwork` build/vet/test 全绿 ×3；新增 6 个快照用例（写入读回/重启恢复/磁盘合并/损坏容错/删号清理/nil 保护）；哨兵反证命中（禁用磁盘合并 → 测试 FAIL → 还原全绿）；gofmt 零输出、UTF-8 无 BOM、零行尾空白。
+
 ## 0.2.19 (2026-11-27)
 
 ### Fix - 插件自限内存上限并错峰启动，抑制容器 OOM

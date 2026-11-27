@@ -19,8 +19,9 @@ var (
 //
 // [参数] 无。
 // [返回] 无。
-// 最近修改时间：2026-11-27；改动原因：启动时登记实例所有权，供热重载旧实例退场。
+// 最近修改时间：2026-11-28；改动原因：一并启动积分扫描循环，让面板读持久化快照。
 func ensureScheduler() {
+	ensureCreditsSweepLoop()
 	schedulerMu.Lock()
 	defer schedulerMu.Unlock()
 	if schedulerStop != nil {
@@ -29,6 +30,22 @@ func ensureScheduler() {
 	claimPluginInstance()
 	schedulerStop = make(chan struct{})
 	go schedulerLoop(schedulerStop)
+}
+
+// creditsSweepStop 与 creditsSweepOnce 保证积分扫描循环只启动一次。
+var (
+	creditsSweepStop chan struct{}
+	creditsSweepOnce sync.Once
+)
+
+// ensureCreditsSweepLoop 幂等启动每小时积分扫描循环。
+// [参数] 无。
+// [返回] 无。
+func ensureCreditsSweepLoop() {
+	creditsSweepOnce.Do(func() {
+		creditsSweepStop = make(chan struct{})
+		go creditSweepLoop()
+	})
 }
 
 // Note: there is deliberately no stopScheduler. The plugin shutdown export is

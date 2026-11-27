@@ -26,6 +26,7 @@ package main
 
 import (
 	"errors"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -295,10 +296,18 @@ func doFetchOne(authIndex, authID string) error {
 	if err != nil {
 		return err
 	}
-	_, _, errs := cachedAccountDetails(authID, sa, true)
+	_, cr, errs := cachedAccountDetails(authID, sa, true)
 	for _, e := range errs {
 		if strings.Contains(e, "credits:") {
 			return errors.New(e)
+		}
+	}
+	// 手动刷新同样要写进持久化快照：面板进页面只读快照，只更新内存会让
+	// 这次刷新的结果在下次开面板时消失。
+	if cr != nil {
+		recordCreditSnapshot(authID, cr, sa.Account.Nickname, "cn")
+		if perr := persistCreditSnapshot(); perr != nil {
+			log.Printf("[qwenwork] credits snapshot persist failed after manual refresh: %v", perr)
 		}
 	}
 	// 刷新后立即对账：耗尽账号在此自动停用，充值后自动恢复。非 force
