@@ -745,6 +745,28 @@
           }
         ]
       }
+    },
+    {
+      "id": "glm-web-provider",
+      "name": "GLM Web Provider",
+      "description": "Zhipu Qingyan (chatglm.cn) web refresh_token reverse proxy for CLIProxyAPI: refresh_token to access_token with web signing, OpenAI-compatible streaming chat with parts-delta conversion and reasoning split, multi-account pool with failover and active ping, glm-web/ model prefix, refresh_token import panel and NDJSON usage feed.",
+      "author": "luode0320 (cpa-workbuddy-plugin)",
+      "version": "0.1.0",
+      "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
+      "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/ZCode.png",
+      "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/glm-web",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "GLM",
+        "RefreshToken",
+        "WebReverseProxy",
+        "Management"
+      ],
+      "install": {
+        "type": "direct",
+        "artifacts": []
+      }
     }
   ]
 }
