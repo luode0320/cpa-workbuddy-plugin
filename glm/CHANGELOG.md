@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.14 (2026-11-29)
+
+面板按 workbuddy 规格重构，从「能用」补到「可运维」：
+
+- **积分进度条**：`progressHTML` 按 workbuddy 同构渲染「可用 N 分 · 已用 X% · 额度池 · 快照时刻」，按已用比例着色（>60% 黄、>85% 红），未拉到数据时显示 spinner 加载态；`score_rule` 挂在 meta 的 title 上做说明。
+- **筛选标签增加「低积分」**：阈值 `LOW_CREDIT_THRESHOLD=20` 单一来源，筛选计数与卡片警示共用，避免两边漂移。
+- **概览增加「剩余积分合计」**：`renderSummary` 汇总已知积分，未知时显示读取中。
+- **四种排序**：`创建 ↓ / 创建 ↑ / 积分 ↑ / 积分 ↓` 轮转，按钮文案与 tooltip 同步；后端 `accountSummary` 补 `created_at` / `updated_at` 两个字段，否则排序无据。
+- **批量操作**：「全部测试」并发探测所有未停用账号并把结果写回列表；「刷新积分」串行重拉全部账号积分，顶部显示 `刷新积分 n/m` 进度。
+- **单卡「刷积分」**：`manualRefreshCredits` 清缓存后重拉，即时 toast 反馈。
+- **增量刷新**：`patchCardProgress` 只替换单卡进度条区域，不再整表重绘，避免打断滚动与闪烁。
+- 积分缓存 `creditCache` 按 auth_id 存储，`load()` 只补缺失项，不每次全量回源。
+
 ## 0.2.13 (2026-11-29)
 
 - **修复默认档重复**：上游会话历史把默认档记成 `chat_mode=normal`，而请求侧传 `""` 与 `normal` 行为一致，导致目录同时出现 `glm/glm-4-plus`（空档）与 `glm/normal` 两个同档项。新增 `normalizeChatMode`，把 `normal`（含大小写与空白变体）归一到 `""`；`resolveAssistantID` 同步处理，`glm/normal` 请求归一到默认档。

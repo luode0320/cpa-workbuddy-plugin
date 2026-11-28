@@ -94,6 +94,8 @@ type accountSummary struct {
 	RefreshMasked string `json:"refresh_token_masked"`
 	UserID        string `json:"user_id,omitempty"`
 	ExpiresAt     string `json:"expires_at,omitempty"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
 	Disabled      bool   `json:"disabled"`
 	TestFailed    bool   `json:"test_failed"`
 }
@@ -235,6 +237,8 @@ func handleListAccounts() ([]byte, error) {
 			RefreshMasked: maskRefreshToken(sa.RefreshToken),
 			UserID:        sa.UserID,
 			ExpiresAt:     expires,
+			CreatedAt:     sa.CreatedAt,
+			UpdatedAt:     sa.UpdatedAt,
 			Disabled:      sa.Disabled,
 			TestFailed:    sa.TestFailed,
 		})
