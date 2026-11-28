@@ -798,8 +798,8 @@
             "goos": "windows",
             "goarch": "arm64",
             "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.3.0/glm-provider_0.3.0_windows_arm64.zip",
-            "sha256": "5dccd6c6aa8208153e0c174ee7c6a405872c1e48b4a82e7168529eaf604d5691",
-            "size": 2820066
+            "sha256": "55246d6921b8911c83962cf93cdaf65f276b91dba640568d60530f9af176f95a",
+            "size": 2820069
           }
         ]
       }
