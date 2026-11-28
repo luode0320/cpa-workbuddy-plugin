@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.10 (2026-11-29)
+
+- **修复 `/credits` 取不到 `auth_id`**：宿主下发管理请求时可能只给纯路径（查询串单独放在 `req.Query`），而 `normalizeMgmtSubPath` 只从 `url.Parse(req.Path)` 取查询，导致 `/credits?auth_id=...` 恒返回 `auth_id required`。新增 `mergeRequestQuery` 合并两个来源，宿主下发的值优先。
+- 移除 `handleManagement` 中原本显式忽略查询参数的 `_ = urlQuery` / `_ = req.Query` 两行占位。
+- 新增 `TestMergeRequestQueryPrefersHostQuery`（三种合并组合）与 `TestNormalizeMgmtSubPathCredits`（management / 短前缀 / resource 三种前缀都归一到 `/credits`）。
+
 ## 0.2.9 (2026-11-28)
 
 - **面板「测试」支持选择模型**：账号卡片新增模型下拉（目录取自 `/models` 的五个别名），测试时把选中值随 `/test-active` 一起提交；后端 `handleMgmtTest` 早已支持 `model` 字段，此前面板未传，恒用默认模型 `glm/glm-5.1`。

@@ -148,6 +148,25 @@ func normalizeMgmtSubPath(path string) (string, url.Values) {
 	return sub, parsed.Query()
 }
 
+// mergeRequestQuery 合并路径里的查询串与宿主单独下发的查询参数，后者优先。
+// 宿主可能只下发纯路径（不含查询串），此时 req.Query 才是查询参数的真实来源。
+// [参数] pathQuery: 从路径解析出的查询；hostQuery: 宿主下发的查询。
+// [返回] 合并后的查询参数。
+// 最近修改时间：2026-11-29 新增, /credits 的 auth_id 依赖该合并才取得到。
+func mergeRequestQuery(pathQuery url.Values, hostQuery map[string][]string) url.Values {
+	if len(hostQuery) == 0 {
+		return pathQuery
+	}
+	merged := url.Values{}
+	for k, v := range pathQuery {
+		merged[k] = v
+	}
+	for k, v := range hostQuery {
+		merged[k] = v
+	}
+	return merged
+}
+
 // handleManagement 处理管理请求。
 // [参数] raw: ManagementRequest JSON。
 // [返回] 响应、错误。
@@ -158,6 +177,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	subPath, urlQuery := normalizeMgmtSubPath(req.Path)
+	urlQuery = mergeRequestQuery(urlQuery, req.Query)
 	method := strings.ToUpper(req.Method)
 	rememberPublicOrigin(req.Headers)
 
@@ -170,9 +190,6 @@ func handleManagement(raw []byte) ([]byte, error) {
 	if (method == http.MethodPost || method == http.MethodGet) && subPath == callbackPath {
 		return handleLoginCallback(req)
 	}
-
-	_ = urlQuery
-	_ = req.Query
 
 	switch {
 	case method == http.MethodGet && (subPath == "/accounts" || subPath == "/status"):
