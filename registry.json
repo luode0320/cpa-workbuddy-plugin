@@ -765,7 +765,43 @@
       ],
       "install": {
         "type": "direct",
-        "artifacts": []
+        "artifacts": [
+          {
+            "goos": "darwin",
+            "goarch": "amd64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.2.2/glm-provider_0.2.2_darwin_amd64.zip",
+            "sha256": "95fc61fcb6ae1beb6ca16c215aca0ed698463d3d3dfc73565c9fc2338eee3ec4",
+            "size": 2945198
+          },
+          {
+            "goos": "linux",
+            "goarch": "amd64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.2.2/glm-provider_0.2.2_linux_amd64.zip",
+            "sha256": "12f6ceaacf511e8432d8e9ae6e10f15bbaf7cadfb209048093a0ff8c44d0e9d6",
+            "size": 3095457
+          },
+          {
+            "goos": "linux",
+            "goarch": "arm64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.2.2/glm-provider_0.2.2_linux_arm64.zip",
+            "sha256": "9c8a4d32d56c3fab812e3c1902fe7d79f9b23a48d16228896a0f020ce68d0f10",
+            "size": 2808687
+          },
+          {
+            "goos": "windows",
+            "goarch": "amd64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.2.2/glm-provider_0.2.2_windows_amd64.zip",
+            "sha256": "a796ad33a097a1f77140fa8a9cc1ed734eca058328db9baba1389d3dd2f31e5d",
+            "size": 3013160
+          },
+          {
+            "goos": "windows",
+            "goarch": "arm64",
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.2.2/glm-provider_0.2.2_windows_arm64.zip",
+            "sha256": "76efff98b4e3603c0229e832b1d02ccc680f9d4d9a857965c3682a87387deda7",
+            "size": 2794748
+          }
+        ]
       }
     }
   ]
