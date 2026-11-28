@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -342,6 +343,11 @@ type hostHTTPStream struct {
 	// 计数必须在整条流读完才释放：上游的并行槽位占用时长等于响应流生命周期，
 	// 提前释放会让调度层低估负载并继续往同一个号上堆并发。
 	releaseAccountLoad func()
+
+	// cancelOpen 释放 open 阶段的 context（见 hostHTTPDoStream 的 timer 说明）。
+	// 拿到响应头后 timer 已停表，但 context 仍需在流结束时取消以回收资源；
+	// nil 表示本次尝试没有独立的可取消 context（测试或直连 seam 直接构造的流）。
+	cancelOpen func()
 }
 
 // streamOpenHeaderTimeoutDefault 是「请求已发出 → 上游响应头到达」的**单次尝试**
@@ -505,7 +511,29 @@ func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream
 		// 真正中断，不会每重试一次就多漏一份上游请求。
 		viaBridge := useBridge && attempt == 1
 		started := time.Now()
-		stream, status, headers, err := openStreamOnce(req, bodyBytes, hostCallbackID, viaBridge)
+		// 每次尝试套一个真正覆盖「建连 + 上传请求体 + 等响应头」的硬 deadline。
+		//
+		// 为什么不能只靠 ResponseHeaderTimeout（2026-11-29 生产实测）：
+		// ResponseHeaderTimeout 的计时起点是**请求体写完**之后，上传本身不受它约束。
+		// 生产 body 1.2MB 时上传要 ~19s，于是日志出现
+		// `elapsed_ms=25193 budget_ms=6000`、`elapsed_ms=32019 budget_ms=6000`——
+		// 单次尝试实际耗时是预算的 4~5 倍，重试环的上界（预算×次数）完全失效。
+		//
+		// 实现细节：用 WithCancel + 手工 timer 而不是 WithTimeout。WithTimeout 的
+		// deadline 会一直有效，6s 后会把已经拿到响应头、正在正常生成的长流一起掐断；
+		// 这里只约束 open 阶段——拿到响应头就停表（stopTimer），cancel 转交给
+		// hostHTTPStream.Close，流生命周期结束时才释放 context。
+		attemptCtx, cancelAttempt := context.WithCancel(req.Context())
+		openTimer := time.AfterFunc(loadedHostBridgeOpenTimeout(), cancelAttempt)
+		stream, status, headers, err := openStreamOnce(attemptCtx, req, bodyBytes, hostCallbackID, viaBridge)
+		if !openTimer.Stop() {
+			// timer 已触发：本次尝试被判超时，cancel 已生效，不再挂到流上。
+			cancelAttempt()
+		} else if stream != nil {
+			stream.cancelOpen = cancelAttempt
+		} else {
+			cancelAttempt()
+		}
 		if err == nil {
 			if attempt > 1 {
 				log.Printf("[traework] stream open recovered after retry: url=%s attempt=%d/%d body_bytes=%d elapsed_ms=%d",
@@ -537,16 +565,18 @@ func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream
 // 与 hostHTTPDoStream 的分工：本函数不含重试与看门狗语义，只负责「走桥」或
 // 「走直连」其中的一条路径并把结果原样返回，让重试环可以干净地重复调用。
 //
+// [参数] ctx: 本次尝试的 context；其取消（含 open 预算到点）会中断建连、上传与
+// 等待响应头，但拿到响应头后不再约束正文流（见 hostHTTPDoStream 的 timer 说明）。
 // [参数] req: 上游 HTTP 请求（仅提供方法/URL/头，body 由 bodyBytes 提供）。
 // [参数] bodyBytes: 已读出的请求体；重试时必须原样重发，不能复用已读的 Body。
 // [参数] hostCallbackID: 宿主侧异步执行回调标识，走桥时透传。
 // [参数] viaBridge: true 走宿主 host.http.do_stream，false 走插件直连客户端。
 // [返回] hostHTTPStream: 可按块读取的响应流；int: HTTP 状态码；
 // http.Header: 响应头；error: 本次尝试失败。
-// 最近修改时间：2026-11-29；改动原因：新增，从 hostHTTPDoStream 中抽出单次尝试。
-func openStreamOnce(req *http.Request, bodyBytes []byte, hostCallbackID string, viaBridge bool) (*hostHTTPStream, int, http.Header, error) {
+// 最近修改时间：2026-11-29；改动原因：新增 ctx 入参，使上传阶段也受 open 预算约束。
+func openStreamOnce(ctx context.Context, req *http.Request, bodyBytes []byte, hostCallbackID string, viaBridge bool) (*hostHTTPStream, int, http.Header, error) {
 	if !viaBridge {
-		return hostStreamDirectFn(req, bodyBytes)
+		return hostStreamDirectFn(req.WithContext(ctx), bodyBytes)
 	}
 	wire := rpcHostHTTPRequestWire{
 		HostCallbackID: hostCallbackID, // 绑定 CPA 异步执行保留到输出流结束的 callback context。
@@ -865,6 +895,12 @@ func (s *hostHTTPStream) Close() {
 	if s.releaseAccountLoad != nil {
 		s.releaseAccountLoad()
 		s.releaseAccountLoad = nil
+	}
+	// 释放 open 阶段 context：拿到响应头时 timer 已停表，但 context 本身要等到
+	// 流结束才回收，否则每次请求都会漏一个 context 节点。
+	if s.cancelOpen != nil {
+		s.cancelOpen()
+		s.cancelOpen = nil
 	}
 	if s.liveBody != nil {
 		_ = s.liveBody.Close()

@@ -1,5 +1,14 @@
 # TraeWork Plugin Changelog
 
+## 0.5.69 (2026-11-29)
+
+### Fix - 单次尝试预算没管住上传，1.2MB 请求体仍能撑出 25~81s 的单次尝试
+
+- 现象: 0.5.67 上线后生产 90 分钟统计，25~35s 台阶已由 12.9% 降到 **1.8%**（p50=3.9s / p90=16.8s），但 `stream open retry` 日志里仍有 32 次尝试耗时超过预算的 2 倍，最大单次尝试 **81.8s**（`elapsed_ms=81766 budget_ms=6000`）。
+- 根因: 0.5.67 只靠 transport 的 `ResponseHeaderTimeout` 来实施「单次尝试预算」，而它的计时起点是**请求体写完**之后——上传本身完全不受约束。生产 body 1.2MB 时上传要 ~19s，于是 `elapsed_ms=25193 budget_ms=6000`、`elapsed_ms=32019 budget_ms=6000` 这种 4~5 倍超支出现，重试环的上界（预算×次数）彻底失效。
+- 改动: `hostHTTPDoStream` 的每次尝试改用 `context.WithCancel` + `time.AfterFunc(预算)` 覆盖 open 全过程（建连 + 上传 + 等响应头）。**刻意不用 `WithTimeout`**：它的 deadline 会一直有效，6s 后会把已经拿到响应头、正在正常生成的长流一起掐断；这里拿到响应头就停表（`openTimer.Stop()`），`cancel` 转交给 `hostHTTPStream.Close` 在流结束时回收。`openStreamOnce` 增加 ctx 入参，直连路径 `req.WithContext(ctx)` 使上传也能被中断。
+- 验证: `cgo-shim-build.py traework` build/vet/test 全绿。新增 `stream_open_budget_test.go` 两个用例：`TestStreamOpenBudgetCoversUpload`（上传卡住时单次尝试必须在预算附近结束、总耗时受预算×次数约束）、`TestStreamOpenBudgetDoesNotKillEstablishedStream`（拿到响应头后正文晚于预算 5 倍到达仍必须完整可读，锁死「预算只约束 open、不约束正文」）。**哨兵反证**：把预算 timer 改成 24h 后，`TestStreamOpenBudgetCoversUpload` 直接永久挂起（被 `go test` 超时打断），证明预算确实是那个约束；恢复后全绿。
+
 ## 0.5.68 (2026-11-29)
 
 ### Docs - 修正配置面板里已失效的默认值与缺项
