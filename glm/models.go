@@ -61,26 +61,31 @@ var chatModeCatalog = []chatModeEntry{
 	{Mode: "deep_research", Suffix: "-research", Label: "深度研究"},
 }
 
-// allModelEntries 展开模型 × 模式，生成完整目录。
-// 默认模式只暴露模型本体（glm/glm-5.3），其余模式加后缀（glm/glm-5.3-think）。
+// allModelEntries 生成对外模型目录。
+// 默认只暴露网页模型菜单里的两个模型（GLM-5.3 / GLM-5.3 Flash），
+// 与网页保持一一对应；模式（思考 / 智能体 / 深度研究）是正交维度，
+// 仅在配置显式开启 expose_mode_aliases 时才追加带后缀的别名，
+// 避免目录里出现网页上找不到的条目。
 // [参数] 无。
-// [返回] 展开后的条目列表。
-// 最近修改时间：2026-11-29 重写, 按真实两模型 + 模式正交展开。
+// [返回] 条目列表。
+// 最近修改时间：2026-11-29 重写, 默认只含网页真实两项，模式别名改为可选。
 func allModelEntries() []modelEntry {
-	entries := make([]modelEntry, 0, len(modelCatalog)*len(chatModeCatalog))
+	entries := make([]modelEntry, 0, len(modelCatalog))
+	for _, model := range modelCatalog {
+		entries = append(entries, model)
+	}
+	if !currentConfig().ExposeModeAliases {
+		return entries
+	}
 	for _, model := range modelCatalog {
 		for _, mode := range chatModeCatalog {
-			id := model.ID + mode.Suffix
-			name := model.DisplayName
-			note := model.Note
-			if mode.Mode != "" {
-				name = model.DisplayName + " " + mode.Label
-				note = "if_plus_model=" + boolText(model.PlusModel) + ", chat_mode=" + mode.Mode
+			if mode.Mode == "" {
+				continue
 			}
 			entries = append(entries, modelEntry{
-				ID:          id,
-				DisplayName: name,
-				Note:        note,
+				ID:          model.ID + mode.Suffix,
+				DisplayName: model.DisplayName + " " + mode.Label,
+				Note:        "if_plus_model=" + boolText(model.PlusModel) + ", chat_mode=" + mode.Mode,
 				PlusModel:   model.PlusModel,
 			})
 		}
@@ -180,6 +185,22 @@ func resolveUpstreamTarget(model string) (string, string, bool) {
 	for _, entry := range allModelEntries() {
 		if strings.EqualFold(entry.ID, "glm/"+trimmed) {
 			return defaultAssistantID, modeFromModelID(entry.ID), entry.PlusModel
+		}
+	}
+
+	// 目录未暴露模式别名时，仍允许显式带上模式后缀，便于老调用方继续使用。
+	for _, mode := range chatModeCatalog {
+		if mode.Suffix == "" {
+			continue
+		}
+		if !strings.HasSuffix(lower, mode.Suffix) {
+			continue
+		}
+		base := strings.TrimSuffix(lower, mode.Suffix)
+		for _, model := range modelCatalog {
+			if strings.EqualFold(model.ID, "glm/"+base) {
+				return defaultAssistantID, mode.Mode, model.PlusModel
+			}
 		}
 	}
 

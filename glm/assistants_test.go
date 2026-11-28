@@ -15,6 +15,15 @@ func resetModeCache() {
 	modeDiscoveryCache.mu.Unlock()
 }
 
+// setConfigForTest 临时替换全局配置，供目录展开相关测试使用。
+// [参数] t: 测试上下文；cfg: 待生效的配置。
+// [返回] 无。
+// 最近修改时间：2026-11-29 新增, 配置开关测试支撑。
+func setConfigForTest(t *testing.T, cfg Config) {
+	t.Helper()
+	activeConfig.Store(cfg)
+}
+
 // TestModelCatalogOnlyRealModels 锁定核心契约：对外模型名必须能在网页模型菜单里找到对应项。
 // 网页菜单只有 GLM-5.3 与 GLM-5.3 Flash，任何额外模型名都属于虚构，必须被这个测试挡住。
 func TestModelCatalogOnlyRealModels(t *testing.T) {
@@ -169,30 +178,32 @@ func TestListUpstreamAssistantsParsesList(t *testing.T) {
 	}
 }
 
-// TestDiscoverChatModesFromHistory 验证从历史会话发现 chat_mode。
-func TestDiscoverChatModesFromHistory(t *testing.T) {
+// TestDiscoverChatModesFiltersUnknown 验证历史里的未知 chat_mode 被白名单丢弃。
+// 这是 0.3.0 线上事故的回归测试：探测残留（zzz-bogus 等）曾被当成模式写进模型目录。
+func TestDiscoverChatModesFiltersUnknown(t *testing.T) {
 	resetModeCache()
 	access := fakeToken("mode-device", "access")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.Contains(r.URL.Path, "/assistant/list"):
+		if strings.Contains(r.URL.Path, "/assistant/list") {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status": 0, "result": map[string]any{"assistant_list": []any{}},
 			})
-		default:
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status": 0,
-				"result": map[string]any{
-					"has_more": false,
-					"conversation_list": []map[string]any{
-						{"id": "c1", "meta_data": map[string]any{"chat_mode": "normal"}},
-						{"id": "c2", "meta_data": map[string]any{"chat_mode": "zero"}},
-						{"id": "c3", "meta_data": map[string]any{"chat_mode": "brand_new_mode"}},
-						{"id": "c4", "meta_data": map[string]any{"chat_mode": "zero"}},
-					},
-				},
-			})
+			return
 		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": 0,
+			"result": map[string]any{
+				"has_more": false,
+				"conversation_list": []map[string]any{
+					{"id": "c1", "meta_data": map[string]any{"chat_mode": "normal"}},
+					{"id": "c2", "meta_data": map[string]any{"chat_mode": "zero"}},
+					{"id": "c3", "meta_data": map[string]any{"chat_mode": "zzz-bogus"}},
+					{"id": "c4", "meta_data": map[string]any{"chat_mode": "___definitely_not_a_real_value___"}},
+					{"id": "c5", "meta_data": map[string]any{"chat_mode": "turbo"}},
+					{"id": "c6", "meta_data": map[string]any{"chat_mode": "zero"}},
+				},
+			},
+		})
 	}))
 	defer srv.Close()
 
@@ -203,9 +214,9 @@ func TestDiscoverChatModesFromHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discoverChatModes failed: %v", err)
 	}
-	want := []string{"normal", "zero", "brand_new_mode"}
+	want := []string{"normal", "zero"}
 	if len(modes) != len(want) {
-		t.Fatalf("got %v want %v", modes, want)
+		t.Fatalf("unknown modes must be filtered, got %v want %v", modes, want)
 	}
 	for i, m := range want {
 		if modes[i] != m {
@@ -214,9 +225,9 @@ func TestDiscoverChatModesFromHistory(t *testing.T) {
 	}
 }
 
-// TestDynamicModelInfosKeepsRealModels 验证动态目录始终包含两个真实模型，
-// 且新发现的模式只作为后缀扩展，不会新增模型。
-func TestDynamicModelInfosKeepsRealModels(t *testing.T) {
+// TestDynamicModelInfosIgnoresPollutedHistory 验证被污染的会话历史不会再扩出假模型。
+// 线上 0.3.0 曾出现 glm/glm-5.3-zzz-bogus 等 19 个垃圾条目，此测试锁定该缺陷。
+func TestDynamicModelInfosIgnoresPollutedHistory(t *testing.T) {
 	resetModeCache()
 	access := fakeToken("dyn-device", "access")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -230,7 +241,9 @@ func TestDynamicModelInfosKeepsRealModels(t *testing.T) {
 			"status": 0,
 			"result": map[string]any{
 				"conversation_list": []map[string]any{
-					{"id": "c1", "meta_data": map[string]any{"chat_mode": "glm_next_gen"}},
+					{"id": "c1", "meta_data": map[string]any{"chat_mode": "zzz-bogus"}},
+					{"id": "c2", "meta_data": map[string]any{"chat_mode": "___definitely_not_a_real_value___"}},
+					{"id": "c3", "meta_data": map[string]any{"chat_mode": "glm-5.3"}},
 				},
 			},
 		})
@@ -238,29 +251,53 @@ func TestDynamicModelInfosKeepsRealModels(t *testing.T) {
 	defer srv.Close()
 
 	cfg := defaultConfig()
+	cfg.ExposeModeAliases = false
 	cfg.AssistantListEndpoint = srv.URL + "/assistant/list"
 	cfg.ConversationListEndpoint = srv.URL + "/conversation/list"
 	infos, warnings := dynamicModelInfos(access, cfg)
 	if len(warnings) != 0 {
-		t.Fatalf("unexpected warnings: %v", warnings)
+		t.Fatalf("filtered modes must not warn, got %v", warnings)
 	}
-
-	var hasGLM53, hasFlash, hasNewMode bool
+	if len(infos) != len(modelCatalog) {
+		t.Fatalf("catalog must stay at %d real models, got %d: %+v",
+			len(modelCatalog), len(infos), infos)
+	}
 	for _, info := range infos {
-		switch info.ID {
-		case "glm/glm-5.3":
-			hasGLM53 = true
-		case "glm/glm-5.3-flash":
-			hasFlash = true
-		case "glm/glm-5.3-glm_next_gen":
-			hasNewMode = true
+		if info.ID != "glm/glm-5.3" && info.ID != "glm/glm-5.3-flash" {
+			t.Fatalf("polluted history leaked into catalog: %s", info.ID)
 		}
 	}
-	if !hasGLM53 || !hasFlash {
-		t.Fatal("both real models must always be present")
+}
+
+// TestAllModelEntriesWithoutModeAliases 验证默认配置下目录只有网页那两个模型。
+func TestAllModelEntriesWithoutModeAliases(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.ExposeModeAliases = false
+	setConfigForTest(t, cfg)
+	defer setConfigForTest(t, defaultConfig())
+	entries := allModelEntries()
+	if len(entries) != 2 {
+		t.Fatalf("default catalog must be exactly 2 models, got %d", len(entries))
 	}
-	if !hasNewMode {
-		t.Fatal("discovered mode must extend the real model, not add a fake model")
+	if entries[0].ID != "glm/glm-5.3" || entries[1].ID != "glm/glm-5.3-flash" {
+		t.Fatalf("unexpected default catalog: %+v", entries)
+	}
+}
+
+// TestAllModelEntriesWithModeAliases 验证开启开关后追加模式别名，且 ID 仍以真实模型为前缀。
+func TestAllModelEntriesWithModeAliases(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.ExposeModeAliases = true
+	setConfigForTest(t, cfg)
+	defer setConfigForTest(t, defaultConfig())
+	entries := allModelEntries()
+	if len(entries) != len(modelCatalog)*(1+len(chatModeCatalog)-1) {
+		t.Fatalf("unexpected alias count: %d", len(entries))
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.ID, "glm/glm-5.3") {
+			t.Fatalf("alias %q must derive from a real model", entry.ID)
+		}
 	}
 }
 

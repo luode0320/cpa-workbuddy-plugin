@@ -86,7 +86,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.3.0"
+	version      = "0.3.1"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -116,6 +116,9 @@ type Config struct {
 	AssistantListEndpoint string `yaml:"assistant_list_endpoint" json:"assistant_list_endpoint"`
 	// ConversationListEndpoint 覆盖会话列表端点，档位发现由此拉取。
 	ConversationListEndpoint string `yaml:"conversation_list_endpoint" json:"conversation_list_endpoint"`
+	// ExposeModeAliases 是否额外暴露模式别名（如 glm/glm-5.3-think）。
+	// 默认关闭：目录只保留网页模型菜单里的两个模型，避免出现网页上找不到的条目。
+	ExposeModeAliases bool `yaml:"expose_mode_aliases" json:"expose_mode_aliases"`
 	// TimeoutSeconds 元数据短请求整体超时（秒）。
 	TimeoutSeconds int `yaml:"timeout_seconds" json:"timeout_seconds"`
 	// StreamTimeoutSeconds 流式请求响应头等待上限（秒）。

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 (2026-11-29)
+
+**修复 0.3.0 的目录污染：模型目录被历史会话里的垃圾 chat_mode 撑成 27 项。**
+
+- **根因**：0.3.0 的 `discoverChatModes` 无过滤采信历史会话里的 `chat_mode`，再用它给每个真实模型拼后缀生成条目。而该字段是客户端可任意写入的——协议探测期间留下的 `zzz-bogus`、`___definitely_not_a_real_value___`、`glm-5.3`、`turbo` 等全部被当成「模式」写进目录，线上实际产出 27 个模型（含 `glm/glm-5.3-zzz-bogus`、`glm/glm-5.3-flash-___definitely_not_a_real_value___` 等 19 个垃圾条目）。
+- **白名单过滤**：新增 `isKnownChatMode`，历史发现只放行已知模式（`""` / `zero` / `chat_agent` / `deep_research`），其余一律丢弃，不再污染目录。
+- **发现结果不再扩目录**：`discoverChatModes` 的产出只用于告警提示（`unknownChatModes`），不再参与模型条目生成。目录只由 `modelCatalog` 决定。
+- **模式别名改为可选开关**：新增配置 `expose_mode_aliases`（默认 `false`）。默认状态下目录严格等于网页模型菜单的两项；需要 `-think` / `-agent` / `-research` 后缀时显式开启。`resolveUpstreamTarget` 即使开关关闭也能解析这些后缀，老调用方不受影响。
+- 新增回归测试：`TestDiscoverChatModesFiltersUnknown`（垃圾取值被过滤）、`TestDynamicModelInfosIgnoresPollutedHistory`（污染历史不得扩出假模型）、`TestAllModelEntriesWithoutModeAliases`（默认恰好 2 项）、`TestAllModelEntriesWithModeAliases`（开启后 ID 仍派生自真实模型）。
+
 ## 0.3.0 (2026-11-29)
 
 **重大修正：删除全部虚构模型名，只暴露网页真实存在的两个模型。**

@@ -165,6 +165,12 @@ func discoverChatModes(accessToken string, cfg Config) ([]string, error) {
 			items := envelope.Result.ConversationList
 			for _, item := range items {
 				mode := strings.TrimSpace(item.MetaData.ChatMode)
+				// 严格白名单：只接受已知模式。
+				// 历史会话里的 chat_mode 可能是客户端任意传入的值（含垃圾与探测残留），
+				// 无过滤采信会把目录污染成大量无意义条目，因此不认识的取值一律丢弃。
+				if !isKnownChatMode(mode) {
+					continue
+				}
 				if _, ok := seen[mode]; ok {
 					continue
 				}
@@ -209,6 +215,21 @@ func discoveryAssistantIDs(accessToken string, cfg Config) []string {
 	return ids
 }
 
+// isKnownChatMode 判断 chat_mode 取值是否属于已知模式。
+// 用于过滤历史会话里的任意字符串，只放行上游确实支持的取值。
+// [参数] mode: 归一化前的原始取值。
+// [返回] true 表示已知模式。
+// 最近修改时间：2026-11-29 新增, 阻断垃圾取值污染模型目录。
+func isKnownChatMode(mode string) bool {
+	normalized := normalizeChatMode(mode)
+	for _, known := range knownChatModes {
+		if normalized == known {
+			return true
+		}
+	}
+	return false
+}
+
 // normalizeChatMode 把上游历史里记录的 chat_mode 归一化成请求侧取值。
 // 上游会话历史把默认档记成 "normal"，而请求时传 "" 与 "normal" 行为一致
 // （0.2.11 实测两者响应形态相同），故统一归到 ""，避免目录里出现同档重复项。
@@ -240,6 +261,28 @@ func effectiveChatModes(discovered []string) []string {
 		}
 		seen[mode] = struct{}{}
 		out = append(out, mode)
+	}
+	return out
+}
+
+// unknownChatModes 返回发现结果里不属于已知模式的取值，仅用于告警提示。
+// [参数] discovered: 历史发现的档位。
+// [返回] 未知取值列表。
+// 最近修改时间：2026-11-29 新增, 未知模式只提示不采纳。
+func unknownChatModes(discovered []string) []string {
+	out := make([]string, 0, len(discovered))
+	for _, raw := range discovered {
+		mode := normalizeChatMode(raw)
+		known := false
+		for _, entry := range chatModeCatalog {
+			if entry.Mode == mode {
+				known = true
+				break
+			}
+		}
+		if !known {
+			out = append(out, mode)
+		}
 	}
 	return out
 }
@@ -285,40 +328,19 @@ func dynamicModelInfos(accessToken string, cfg Config) ([]pluginapi.ModelInfo, [
 	}
 
 	var warnings []string
+	// 档位发现只用于面板展示「上游当前有哪些模式」，不再据此扩展模型目录。
+	// 历史会话的 chat_mode 可能被客户端任意写入，若凭它生成模型条目，
+	// 目录会被垃圾取值污染成大量网页上不存在的模型（0.3.0 实测即如此）。
 	discovered, err := discoverChatModes(accessToken, cfg)
 	if err != nil {
 		warnings = append(warnings, err.Error())
+	} else if unknown := unknownChatModes(discovered); len(unknown) > 0 {
+		warnings = append(warnings, "上游出现未知模式（已忽略，不影响模型目录）: "+strings.Join(unknown, ", "))
 	}
-	// 历史里发现的新模式：为每个真实模型补一个带后缀的条目。
-	known := make(map[string]struct{}, len(chatModeCatalog))
-	for _, mode := range chatModeCatalog {
-		known[mode.Mode] = struct{}{}
-	}
+
 	added := make(map[string]struct{}, len(infos))
 	for _, info := range infos {
 		added[info.ID] = struct{}{}
-	}
-	for _, raw := range discovered {
-		mode := normalizeChatMode(raw)
-		if _, ok := known[mode]; ok {
-			continue
-		}
-		known[mode] = struct{}{}
-		for _, model := range modelCatalog {
-			id := model.ID + "-" + mode
-			if _, ok := added[id]; ok {
-				continue
-			}
-			added[id] = struct{}{}
-			infos = append(infos, pluginapi.ModelInfo{
-				ID:                         id,
-				Object:                     "model",
-				OwnedBy:                    providerName,
-				DisplayName:                model.DisplayName + " " + mode,
-				Description:                "if_plus_model=" + boolText(model.PlusModel) + ", chat_mode=" + mode + "（历史会话发现）",
-				SupportedGenerationMethods: []string{"chat"},
-			})
-		}
 	}
 
 	briefs, err := listUpstreamAssistants(accessToken, cfg)
