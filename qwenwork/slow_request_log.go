@@ -37,10 +37,12 @@ var (
 // logSlowRequest 记录一条首字超阈值的请求。
 //
 // [参数] authID：承载请求的账号标识；model：上游模型名；ttftNS：首字延迟纳秒值；
-// detail：本次请求的用量明细（提供输入/缓存/输出 token 数）；total：请求总耗时。
+// detail：本次请求的用量明细（提供输入/缓存/输出 token 数）；total：请求总耗时；
+// upstreamHint：上游侧的可观测摘要（响应头白名单 + 首帧前的帧形态签名），
+// 可空。
 // [返回] true 表示本次真的落了日志（未超阈值或被节流时为 false）。
 // 最近修改时间：2026-11-28；改动原因：新增，首字慢请求的可观测埋点。
-func logSlowRequest(authID, model string, ttftNS uint64, detail usage.Detail, total time.Duration) bool {
+func logSlowRequest(authID, model string, ttftNS uint64, detail usage.Detail, total time.Duration, upstreamHint string) bool {
 	if ttftNS == 0 {
 		return false
 	}
@@ -63,9 +65,9 @@ func logSlowRequest(authID, model string, ttftNS uint64, detail usage.Detail, to
 	if detail.InputTokens > 0 {
 		cacheRatio = float64(detail.CachedTokens) / float64(detail.InputTokens)
 	}
-	log.Printf("[qwenwork] slow first token: auth=%s model=%s ttft=%dms total=%s input=%d cached=%d cache_ratio=%.3f output=%d reasoning=%d",
+	log.Printf("[qwenwork] slow first token: auth=%s model=%s ttft=%dms total=%s input=%d cached=%d cache_ratio=%.3f output=%d reasoning=%d upstream=[%s]",
 		key, model, ttft.Milliseconds(), total.Round(time.Millisecond),
 		detail.InputTokens, detail.CachedTokens, cacheRatio,
-		detail.OutputTokens, detail.ReasoningTokens)
+		detail.OutputTokens, detail.ReasoningTokens, upstreamHint)
 	return true
 }

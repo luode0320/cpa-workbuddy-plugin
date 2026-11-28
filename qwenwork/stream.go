@@ -254,7 +254,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		// 基准必须早于发请求：晚于发请求就退化成「响应头到首帧」，生产实测
 		// 恒为 0~1ms（慢速冷却样本全部低于绝对下限，慢号永远不让位）。
 		attemptStarted := time.Now()
-		stream, statusCode, _, err := hostHTTPDoStream(curReq, hostCallbackID)
+		stream, statusCode, respHeaders, err := hostHTTPDoStream(curReq, hostCallbackID)
 		if err != nil {
 			publishUsage(requestedModel, upstreamModel, curAuthUID, started, usage.Detail{}, true, 0, err.Error(), reasoningEffort, 0, curAccountLabel, sessionKey)
 			noteAccountFailure(curAuthID, 0, err.Error())
@@ -326,6 +326,9 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
+			// 首帧前的行形态要留痕：上游可能在首个内容帧之前发出排队/路由提示，
+			// 而扫描器此前对不认识的行直接跳过 ⇒ 那类事件会被完全忽略。
+			collector.notePrelude(line)
 			chunkJSON, isDone := parseQoderSSEChunk(line)
 			if isDone {
 				break
@@ -466,7 +469,13 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		// 慢速打点：真实成功才记样本，失败换号不计（错误耗时不是首字延迟）。
 		noteSlowObservation(curAuthID, upstreamModel, successTTFTNS)
 		// 首字慢留痕：持续监控用（阈值与用户口径「首字大于 10s」一致）。
-		logSlowRequest(curAuthID, upstreamModel, successTTFTNS, successDetail, time.Since(started))
+		// upstream 摘要带上上游响应头白名单与首帧前的帧形态签名——这是看清
+		// 「上游在首字前到底做了什么」的唯一现场证据。
+		upstreamHint := upstreamHeaderSummary(respHeaders)
+		if prelude := collector.preludeSignature(); prelude != "" {
+			upstreamHint = strings.TrimSpace(upstreamHint + " prelude=" + prelude)
+		}
+		logSlowRequest(curAuthID, upstreamModel, successTTFTNS, successDetail, time.Since(started), upstreamHint)
 		return
 	}
 }
@@ -556,6 +565,9 @@ func collectUpstreamStreamOpenAI(encodedBody []byte, sa *storedAuth, maasSession
 		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
+			// 首帧前的行形态要留痕：上游可能在首个内容帧之前发出排队/路由提示，
+			// 而扫描器此前对不认识的行直接跳过 ⇒ 那类事件会被完全忽略。
+			collector.notePrelude(line)
 			chunkJSON, isDone := parseQoderSSEChunk(line)
 			if isDone {
 				break

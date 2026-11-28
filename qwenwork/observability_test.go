@@ -77,10 +77,10 @@ func TestLogSlowRequest_OnlyAboveThreshold(t *testing.T) {
 	slowRequestLogMu.Unlock()
 
 	detail := usage.Detail{InputTokens: 600000, CachedTokens: 599000, OutputTokens: 120}
-	if logSlowRequest("acct-fast", "minimax-m3.1-flash", uint64(5*time.Second), detail, 6*time.Second) {
+	if logSlowRequest("acct-fast", "minimax-m3.1-flash", uint64(5*time.Second), detail, 6*time.Second, "") {
 		t.Fatal("首字 5s 不应触发慢请求留痕")
 	}
-	if !logSlowRequest("acct-slow", "deepseek-flash", uint64(12*time.Second), detail, 20*time.Second) {
+	if !logSlowRequest("acct-slow", "deepseek-flash", uint64(12*time.Second), detail, 20*time.Second, "") {
 		t.Fatal("首字 12s 必须触发慢请求留痕")
 	}
 }
@@ -92,14 +92,14 @@ func TestLogSlowRequest_ThrottledPerAccount(t *testing.T) {
 	slowRequestLogMu.Unlock()
 
 	detail := usage.Detail{InputTokens: 100}
-	if !logSlowRequest("acct-throttle", "m", uint64(30*time.Second), detail, 31*time.Second) {
+	if !logSlowRequest("acct-throttle", "m", uint64(30*time.Second), detail, 31*time.Second, "") {
 		t.Fatal("首次慢请求必须留痕")
 	}
-	if logSlowRequest("acct-throttle", "m", uint64(31*time.Second), detail, 32*time.Second) {
+	if logSlowRequest("acct-throttle", "m", uint64(31*time.Second), detail, 32*time.Second, "") {
 		t.Fatal("同账号的慢请求日志必须按间隔节流")
 	}
 	// 换账号不受前一个账号的节流影响。
-	if !logSlowRequest("acct-other", "m", uint64(31*time.Second), detail, 32*time.Second) {
+	if !logSlowRequest("acct-other", "m", uint64(31*time.Second), detail, 32*time.Second, "") {
 		t.Fatal("节流必须按账号独立计数")
 	}
 }

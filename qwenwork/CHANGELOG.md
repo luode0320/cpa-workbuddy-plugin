@@ -1,5 +1,18 @@
 # QwenWork Plugin Changelog
 
+## 0.2.29 (2026-11-28)
+
+### Feat - 把「上游在首字前到底做了什么」变成可见事实
+
+- **动机**: 首字延迟排查卡在死结上——插件侧 TTFT 与客户端首帧时间逐条一致（只差 ~0.2s），但**看不出上游在首帧之前做了什么**。生产统计进一步确认：同会话 TTFT 序列的 lag-1 自相关 **-0.018**（无会话粘性/实例亲和 ⇒ 0.2.25 的亲和头假设被证伪），而**相邻慢请求间隔中位 46s、83% ≤120s** ⇒ 上游是**潮汐式排队**。要继续推进，只能先把上游的行为看清楚。
+- **两个现成的观测缺口（本轮补上）**：
+  1. `hostHTTPDoStream` **本就返回上游响应头**，但 pump 里写的是 `stream, statusCode, _, err := …` ⇒ 响应头被直接丢弃；
+  2. SSE 扫描器对不认识的行直接 `continue` ⇒ 上游若在首个内容帧之前发出**排队/路由事件**（社区记载上游存在带 `request_set_id` 的排队事件），我们一直在忽略它。
+- **修复**: 新增 `sse_signature.go`——① `upstreamHeaderSummary` 摘出上游响应头白名单（`x-*` / `ratelimit-*` / `retry-after` / `content-type` / `server` / `via`，取值截断 80 字符）；② `sseFrameSignature` / `sseLineSignature` 产出帧的**结构签名**（顶层键名 + `event`/`type`/`status`/`object`/`index`/`error.code` 等枚举型标识）；③ collector 记录首帧前最多 3 帧签名；④ 慢请求日志新增 `upstream=[…]` 字段。
+- **隐私红线**: 签名只含**键名**与**枚举型标识**，消息内容、增量文本、token 一律不落日志；响应头只取白名单，凭据类头（authorization / cookie / set-cookie）显式排除。两条都有单测锁定。
+- **影响范围**: 仅观测（日志与内存缓冲），不改请求构造、不改路由、不改响应。
+- **验证**: `cgo-shim-build.py qwenwork` build/vet/test 全绿；新增 `sse_signature_test.go`（签名含键名与标识 / **内容不泄漏** / 各类 SSE 行形态 / 响应头白名单且无凭据 / prelude 帧数上限）；哨兵反证新增 S26（prelude 不限帧数）、S27（响应头白名单放宽到凭据头）两条。
+
 ## 0.2.28 (2026-11-28)
 
 ### Feat - 采集「前缀缓存创建量」（区分缓存复用与缓存整体重建）

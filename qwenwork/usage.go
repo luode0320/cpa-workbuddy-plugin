@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -308,6 +309,35 @@ type sseUsageCollector struct {
 	firstByteAt time.Time
 	// attemptStarted 是本次账号尝试的发出时刻：TTFT 必须以它为基准，见 ttftNS。
 	attemptStarted time.Time
+	// prelude 记录首帧前若干帧的结构签名（见 sse_signature.go）：只记形态不记内容。
+	prelude []string
+}
+
+// notePrelude 记录一行 SSE 的结构签名（只保留前若干帧）。
+//
+// [参数] line：SSE 原始行。
+// [返回] 无。
+// 最近修改时间：2026-11-28；改动原因：新增，观测上游首帧前是否发出排队/路由事件。
+func (c *sseUsageCollector) notePrelude(line string) {
+	if len(c.prelude) >= ssePreludeLimit {
+		return
+	}
+	c.prelude = append(c.prelude, sseLineSignature(line))
+}
+
+// preludeSignature 返回已记录的结构签名摘要。
+//
+// [返回] 形如 "1:keys=... 2:event-line:queued" 的摘要；无记录时返回空串。
+// 最近修改时间：2026-11-28；改动原因：新增，配合慢请求日志输出上游首帧前的帧形态。
+func (c *sseUsageCollector) preludeSignature() string {
+	if len(c.prelude) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(c.prelude))
+	for i, s := range c.prelude {
+		parts = append(parts, fmt.Sprintf("%d:%s", i+1, s))
+	}
+	return strings.Join(parts, " | ")
 }
 
 func (c *sseUsageCollector) feed(rawJSON string) {

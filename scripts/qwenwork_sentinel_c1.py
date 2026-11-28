@@ -217,6 +217,22 @@ MUTATIONS = [
         "expect": "TestUsageDetailFromMap_ReadsCacheCreation",
         "all": False,
     },
+    {
+        "name": "S26 首帧前形态留痕不限帧数",
+        "file": "usage.go",
+        "old": '\tif len(c.prelude) >= ssePreludeLimit {',
+        "new": '\tif false {',
+        "expect": "TestSseUsageCollector_PreludeLimited",
+        "all": False,
+    },
+    {
+        "name": "S27 响应头白名单放宽到凭据头",
+        "file": "sse_signature.go",
+        "old": 'lk == "retry-after" || lk == "content-type" || lk == "server" || lk == "via" {',
+        "new": 'lk == "retry-after" || lk == "content-type" || lk == "server" || lk == "via" || lk == "authorization" {',
+        "expect": "TestUpstreamHeaderSummary_WhitelistOnly",
+        "all": False,
+    },
 ]
 
 
