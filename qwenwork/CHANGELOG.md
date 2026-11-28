@@ -1,5 +1,15 @@
 # QwenWork Plugin Changelog
 
+## 0.2.28 (2026-11-28)
+
+### Feat - 采集「前缀缓存创建量」（区分缓存复用与缓存整体重建）
+
+- **动机**: 只看「缓存命中数」无法区分两种完全不同的状态——**缓存被复用**（首字只付新后缀的 prefill）与**缓存被整体重建**（每次都重付全量 prefill，正是 45~71 万 token 场景下首字 >10s 的机制）。上游在 Anthropic 协议形态下把该数放在 `prompt_tokens_details.cache_creation_input_tokens`（官方模型目录亦记载 `cache_creation_input_tokens` 与 `cache_type: "ephemeral"`）。
+- **缺陷**: `usage.Detail.CacheCreationTokens` 一直写进用量 feed，但 `usageDetailFromMap` **从不解析它** ⇒ 该字段**恒为 0**，监控侧完全看不到「缓存是否被重建」。
+- **修复**: `usageDetailFromMap` 解析 `prompt_tokens_details.cache_creation_input_tokens` 与顶层 `cache_creation_input_tokens`。
+- **影响范围**: 仅用量采集口径；不改请求构造、不改路由。
+- **验证**: `cgo-shim-build.py qwenwork` build/vet/test 全绿；新增一条断言（命中数与创建量同时解析）。
+
 ## 0.2.27 (2026-11-28)
 
 ### Fix - 兜底 MaaS 入口对齐官方客户端 + 补齐设备 UA 头

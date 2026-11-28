@@ -262,10 +262,19 @@ func usageDetailFromMap(m map[string]any) usage.Detail {
 		OutputTokens: num("completion_tokens", "output_tokens"),
 		TotalTokens:  num("total_tokens"),
 		CachedTokens: num("cached_tokens", "cache_read_input_tokens"),
+		// 缓存「创建量」必须单独采集：只看重命中数无法区分「缓存被复用」与
+		// 「缓存被整体重建」——后者意味着每次请求都要重付全量 prefill，正是首字
+		// 延迟的机制。上游在 Anthropic 协议形态下把该数放在
+		// prompt_tokens_details.cache_creation_input_tokens（官方模型目录亦记载
+		// cache_creation_input_tokens 与 cache_type: "ephemeral"）。
+		CacheCreationTokens: num("cache_creation_input_tokens"),
 	}
 	// OpenAI 形态优先：上游回报的前缀缓存命中数放在 prompt_tokens_details 里。
 	if v := nested("prompt_tokens_details", "cached_tokens", "cache_read_input_tokens"); v > 0 {
 		d.CachedTokens = v
+	}
+	if v := nested("prompt_tokens_details", "cache_creation_input_tokens"); v > 0 {
+		d.CacheCreationTokens = v
 	}
 	if d.CacheReadTokens == 0 {
 		d.CacheReadTokens = num("cache_read_input_tokens")

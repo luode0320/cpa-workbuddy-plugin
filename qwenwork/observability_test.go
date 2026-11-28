@@ -127,6 +127,25 @@ func TestLogMaasTicketMint_Throttled(t *testing.T) {
 	}
 }
 
+// TestUsageDetailFromMap_ReadsCacheCreation 锁定「缓存创建量」也被采集。
+//
+// 只看重命中数无法区分「缓存被复用」与「缓存被整体重建」——后者意味着每次
+// 请求都要重付全量 prefill，正是首字延迟的机制。
+func TestUsageDetailFromMap_ReadsCacheCreation(t *testing.T) {
+	raw := `{"prompt_tokens":1000,"prompt_tokens_details":{"cached_tokens":900,"cache_creation_input_tokens":1200}}`
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	d := usageDetailFromMap(m)
+	if d.CachedTokens != 900 {
+		t.Fatalf("CachedTokens = %d, want 900", d.CachedTokens)
+	}
+	if d.CacheCreationTokens != 1200 {
+		t.Fatalf("CacheCreationTokens = %d, want 1200（缓存创建量必须被采集）", d.CacheCreationTokens)
+	}
+}
+
 // TestMaasDefaultBaseURLMatchesOfficialClient 锁定兜底入口与官方客户端一致。
 //
 // 官方桌面客户端的 DEFAULT_MAAS_BASE_URL 是 https://api9.qwenwork.cn；原先本插件

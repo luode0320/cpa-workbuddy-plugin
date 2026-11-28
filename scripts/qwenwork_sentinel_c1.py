@@ -209,6 +209,14 @@ MUTATIONS = [
         "expect": "TestApplyMaasHeaders_SendsDeviceUA",
         "all": False,
     },
+    {
+        "name": "S25 不采集前缀缓存创建量",
+        "file": "usage.go",
+        "old": '\tif v := nested("prompt_tokens_details", "cache_creation_input_tokens"); v > 0 {\n\t\td.CacheCreationTokens = v\n\t}\n',
+        "new": '',
+        "expect": "TestUsageDetailFromMap_ReadsCacheCreation",
+        "all": False,
+    },
 ]
 
 
