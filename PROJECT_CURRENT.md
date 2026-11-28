@@ -92,6 +92,14 @@
 
 ## 活动会话进展摘要
 
+- **当前会话（2026-11-29 02:40 - 03:35）：GLM 每日积分机制取证 + access_token 缺失修复**（用户两问：每日积分是否自动发放、为何导出只有 refresh_token）：
+  - **每日 200 积分全自动，无签到端点**：26 条候选路径（`user/sign`、`user/checkin`、`task/list`、`reward`、`score/record`、`activity` 等）GET/POST 全 404。`user/info` 的 `result` 仅 17 键，无任何 sign/task/reward 字段。`member_info.score_rule` 原文「免费用户，登录赠送200积分/天」。实证：02:10 读 199.01 → 02:44 读 **399.01**（+200），期间只做只读操作。**面板不应设签到按钮**，workbuddy 的「全部签到」无法平移。
+  - **access_token 缺失是我们自己的 bug，非 GLM 限制**：`StoredAuth` 早有 `access_token`/`expires_at` 字段，但 `acquireToken` 刷新成功后**只写内存 `globalTokenCache`，从不回写账号对象**；加 `omitempty` 后空值不进文件 → 磁盘永远只有 refresh_token。
+  - **0.2.15 修复**：`persistAccessToken`（刷新成功后按 refresh_token 反查账号并落盘 access_token/expires_at/轮换 refresh_token/updated_at，失败只记日志不阻断）；`findAuthByRefreshToken`（推理路径上只有 refresh_token，需反查）；`handleMgmtExport` 导出前对缺 token 或过期的补刷一次。新增 `persist_test.go` 3 个测试。
+  - **生产验证**：`/export` 现返回 `access_token` + `expires_at`(1795896626) + `updated_at`，问题闭环。
+  - **registry 校验和踩坑**：CI 多轮 dispatch 会**用同名资产覆盖**上一轮产物（Go 构建非比特级可复现），导致本地下载的 zip 与 GitHub 上现有资产 sha256 不一致（大小相同、内容不同）→ 宿主 install 报 `artifact checksum mismatch`。**解法**：删 `release-assets/<plugin>-<ver>/` 重跑 `download-release-assets.py`（会按 release 的 checksums.txt 校验，输出 ALL CHECKSUMS OK），再 `publish-assets.py` 重同步；用 GitHub API `releases/tags/<tag>` 的 `assets[].digest` 作权威值比对。
+  - **并行会话**：同期把模型目录重写为「2 真实模型（GLM-5.3 / GLM-5.3 Flash，由 `if_plus_model` 切换）× 4 模式」，并在 0.3.1 加白名单过滤历史 `chat_mode` 垃圾取值。生产当前 0.3.0，registry 0.3.0，代码 0.3.1 未发。
+
 - **当前会话（2026-11-29 02:15 - 02:40）：glm-provider 0.2.14：面板按 workbuddy 规格重构**（用户「账号面板的功能和 workbuddy 的面板功能还是差距很大，继续调整参考 workbuddy 的面板功能」）：
   - **差距量化**：workbuddy 面板 87KB / 17 接口，glm 原 30KB / 10 接口。缺：积分进度条、排序、批量操作、低积分筛选、概览积分合计、增量刷新。
   - **实现**：① `progressHTML` 按 workbuddy 同构渲染「可用 N 分 · 已用 X% · 额度池 · 快照时刻」，>60% 黄 >85% 红，未拉到显示 spinner；额度池按百分比反推（上游只给 percent 不给总额）。② `toggleSort` 四态轮转（创建↓/创建↑/积分↑/积分↓）。③ `testAll` 全部测试 + `refreshAllCredits` 刷新积分，顶部 `#refreshProgress` 显示 n/m。④ 「低积分」筛选，`LOW_CREDIT_THRESHOLD=20` 单一来源供计数与卡片警示共用。⑤ `patchCardProgress` 只替换单卡进度条，不整表重绘。⑥ 单卡「刷积分」`manualRefreshCredits`。
@@ -167,22 +175,6 @@
   - **发布（已完成）**：commit `82f4399` → tag `safeguard-killer-v0.1.13` 触发 CI `46156063595` 但 **Release skipped**（darwin/arm64 cancelled，tag 路径无 allow_partial）→ 追加一次性 dispatch 工作流（仓库内置 `GITHUB_TOKEN`）触发 `46156785282`（allow_partial=true）→ **Release success**（5 平台，缺 darwin_arm64）→ 资产 `ALL CHECKSUMS OK` → `publish-assets --allow-missing` → registry commit `de6741a` → 生产 install 200 / `restart_required:false` → **`hot reloaded active_version=0.1.13 retired_version=0.1.11`**（23:04:26）→ 落盘 `.so` sha256 `043fa063…57ffd` 与本地 zip 逐字节一致 → 临时工作流删除 commit `23dd7d8`。
   - **生产行为验收**：① `count_tokens` 用成员模型名 `deepseek-v4.1-flash` → `200 {"input_tokens":2}`（0.1.11 会报 `model group … is not configured`）；② `state` 由 **58163 B**（200 决策 + 9 条会话含过期项）降到 2076 B，5 分钟后 16680 B（55 决策 + 3 条会话全未过期），23:09:42 过期那条已从 `sessions` 消失；③ 6 分钟日志无 panic/unknown_method/[error]，容器未重启。
   - **教训**：`Split-Path (Split-Path $shim)` 会落到仓库根 `F:\cpa-plugin`，`Remove-Item -Recurse` 差一步删整仓；删临时目录前必须先断言路径匹配 `\\cpa-shim-[a-z0-9_]+$`。
-
-- **当前会话（2026-11-28 21:58 - 22:20）：glm-provider 0.2.6：版本三轨统一 + 移除 glm-web 旧目录（生产已热重载）**（用户「全部实现, 发布生产」）：
-  - **起点纠偏**：探查发现插件早已实现（`glm/` 18 个 Go 文件、`cgo-shim` 全绿），真实问题是**四层版本错配**：`main.go`=0.2.5 / `VERSION`=0.2.2 / registry=0.2.2（指向 v0.2.2）/ 生产实跑 `glm-provider-v0.2.5.so`；且 `glm-web/` 22 文件删除未提交、`CHANGELOG` 只到 0.2.0。故计划改为「收口式」而非重写。
-  - **改动（零逻辑）**：`git rm --cached glm-web` 22 文件；`VERSION` 0.2.2→0.2.6；`main.go:85` 0.2.5→0.2.6；`CHANGELOG` 补 `0.2.1`~`0.2.6` 六节。门禁 `cgo-shim-build.py glm` 全绿（15 测试）、面板两 `<script>` `node --check` OK、gofmt 18 文件 PASS。
-  - **发布链**：commit `796cbef`（25 = D22 + M3）→ CI dispatch run `46152719667`（Test(glm) success、5 平台 success、darwin/arm64 cancelled 常态、**Release job success**）→ `ALL CHECKSUMS OK` → `publish-assets --allow-missing`（5 artifacts）→ registry `fb7a3df`。
-  - **生产**：`install?version=0.2.6&source=source-636fa01121af` → `restart_required:false` → **一次 install 即 `hot reloaded active_version=0.2.6 retired_version=0.2.5`**；落盘 `.so` sha256 `dcff315d…` 与本地 zip 逐字节一致；`/panel` 200（26029 B）、`/login` 200、`/accounts` 200、`/models` 200（5 个 `glm/*`）。
-  - **启用态**：`glm-provider` 四字段前后全 `true`（STATE_UNCHANGED）；`safeguard-killer` 于 22:17:00 被**外部并发会话** `PUT /v8/management/config/...` 修改，非本轮链路，未擅自还原。
-  - **遗留**：TASK-007 真实 `chatglm_refresh_token` 端到端验证阻塞，待用户 OAuth 登录后提供凭据。
-  - **教训**：① `release job` 判定含 `workflow_dispatch && version != ''`，**不依赖 tag**，故 workflow `tags` 列表缺 `glm-provider-v*` 不影响 dispatch 发版（推 tag 触发仍不可用，待补）；② 生产插件实际路径是宿主机 `/usr/local/src/cli-proxy-api/plugins/...`，容器内 `/CLIProxyAPI/plugins/...` 是挂载点；③ `models`/`accounts` 在 `/v0/management/plugins/<id>/` 下，`/v0/resource/plugins/<id>/` 只有 `panel`/`login`；④ 生产启用态快照会受并行会话干扰，判 STATE_UNCHANGED 须按影响范围裁定。
-
-- 会话（2026-11-28 18:17 - 18:38）：**glm-provider 0.2.4：面板自动解密宿主管理密钥，不再要求手填（生产已热重载）**：
-  - **用户反馈**：面板弹出「需要管理密钥」输入框，参考 workbuddy 不该让用户填。
-  - **根因**：宿主主面板把管理密钥**加密**后写入 `localStorage["cli-proxy-auth"]`：`XOR(salt|host[|ua]) + base64`，带 `enc::v1::`（salt|host|UA）/ `enc::v2::`（salt|host）前缀。此前只做 `JSON.parse` 明文，解不出来 → 弹框。
-  - **修复**：完整移植 workbuddy 的 `_keyBytes/_xor/_b64d/deobfuscate/readPanelKey/readUrlKey/persistKey/readSessionKey/getKey`；`SECRET_SALT="cli-proxy-api-webui::secure-storage"`、`PANEL_STORE="cli-proxy-auth"`。另放宽两处：① `readPanelKey` 不限定 `isEmbedded`（同源独立标签页也读 localStorage，并回退 `window.top.localStorage`）；② `api()` 无 key 时**先尝试请求**，仅首次 401 且无 key 才弹框。
-  - **验证**：本地 Node 闭环测试 v1/v2 加密→解密往返均 PASS；生产面板已含 `deobfuscate`×3、`enc::v2::`×2、`managementKey`×4。
-  - **发布**：commit `a7c3d9c` → CI run `46135146523`（Release success）→ 资产 ALL CHECKSUMS OK → registry `39d8e7a` → 生产 install → **`hot reloaded active_version=0.2.4 retired_version=0.2.3`**；落盘 `.so` sha256 `00b279a9…6ac3` 与 release zip 一致；容器未重启。
 
 
 > 更早的会话明细（2026-11-20 及之前：store-auth PAT、10 插件面板、doubao 0.1.8/0.1.9/0.1.11/0.1.19~0.1.22 等）已归档至 git 提交历史与 doc/ 对应文档，本文件只保留最近 7 条会话摘要以控制体积。
