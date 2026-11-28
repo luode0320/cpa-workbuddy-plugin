@@ -92,6 +92,14 @@
 
 ## 活动会话进展摘要
 
+- **当前会话（2026-11-29 02:15 - 02:40）：glm-provider 0.2.14：面板按 workbuddy 规格重构**（用户「账号面板的功能和 workbuddy 的面板功能还是差距很大，继续调整参考 workbuddy 的面板功能」）：
+  - **差距量化**：workbuddy 面板 87KB / 17 接口，glm 原 30KB / 10 接口。缺：积分进度条、排序、批量操作、低积分筛选、概览积分合计、增量刷新。
+  - **实现**：① `progressHTML` 按 workbuddy 同构渲染「可用 N 分 · 已用 X% · 额度池 · 快照时刻」，>60% 黄 >85% 红，未拉到显示 spinner；额度池按百分比反推（上游只给 percent 不给总额）。② `toggleSort` 四态轮转（创建↓/创建↑/积分↑/积分↓）。③ `testAll` 全部测试 + `refreshAllCredits` 刷新积分，顶部 `#refreshProgress` 显示 n/m。④ 「低积分」筛选，`LOW_CREDIT_THRESHOLD=20` 单一来源供计数与卡片警示共用。⑤ `patchCardProgress` 只替换单卡进度条，不整表重绘。⑥ 单卡「刷积分」`manualRefreshCredits`。
+  - **后端配套**：`accountSummary` 补 `created_at` / `updated_at` —— 否则排序无据（`""` 与 `""` 比较恒等）。
+  - **未移植（有理由）**：`/checkin` 签到、`/trial` 专家试用、`/growth` 成长值（WorkBuddy 平台特有，GLM 无对应端点）、`/keepalive`（GLM refresh_token 长期有效无需保活）、`/select`（无当前账号概念）、`/export/zip`（账号量少暂不需要）。
+  - **验证**：build/vet/test 全绿（34 测试），gofmt 23 文件 PASS，面板 2 script 块 node --check OK；面板 30752→41166 B。生产 `hot reloaded active=0.2.14`，面板 12 个新元素全部在返回 HTML 中出现，`/accounts` 已含 `created_at`。四层版本一致 0.2.14。
+  - **部署**：本次 `plugin-store install` 第 1 次即成功（registry 缓存已刷新），无需手动 docker cp。
+
 - **当前会话（2026-11-29 00:54 - 02:15）：glm-provider 0.2.12/0.2.13：模型档位改为从历史会话动态发现，补 chat_agent**（用户「模型还是对不上...我们希望的是可以动态获取到准确的模型，未来新增模型不用改插件」）：
   - **`model` 字段是死路**：九组实验（`meta.model` / 顶层 `model` / 真实名 / `glm-4-air` / `glm-5.1` / `totally-bogus-model`）上游全部回报同一内部路由名 `moe_53f`，**传任何值都被忽略**，含不存在的模型名也不报错。
   - **真开关是 `chat_mode`**：实测 `""` / `zero` / `chat_agent` / `deep_research` 改变 `think` / `tool_call_name` / `answer_type` 形态。
@@ -176,18 +184,5 @@
   - **验证**：本地 Node 闭环测试 v1/v2 加密→解密往返均 PASS；生产面板已含 `deobfuscate`×3、`enc::v2::`×2、`managementKey`×4。
   - **发布**：commit `a7c3d9c` → CI run `46135146523`（Release success）→ 资产 ALL CHECKSUMS OK → registry `39d8e7a` → 生产 install → **`hot reloaded active_version=0.2.4 retired_version=0.2.3`**；落盘 `.so` sha256 `00b279a9…6ac3` 与 release zip 一致；容器未重启。
 
-- 会话（2026-11-28 17:21 - 17:40）：**glm-provider 0.2.3：面板按 workbuddy 规格重构（生产已热重载）**：
-  - **用户反馈**：面板太简陋，「也没有参考 workbuddy 的面板来实现，也要重构一下」。
-  - **重构内容（`glm/panel.html` 100 行 → 503 行 / 25KB）**，完整复刻 workbuddy 面板骨架：
-    - **主题令牌**：light/dark 两套 CSS 变量（对齐 CPA 主面板），嵌入 iframe 时同步父级 `data-theme`。
-    - **管理密钥获取**：嵌入自动读 `cli-proxy-auth` / URL `?key=` 参数（读后从历史清除）/ 手工输入（仅 sessionStorage）；401 累计 3 次才清 key 并退避 60s，403 IP 封禁识别后统一退避——避免连点触发封禁。
-    - **工具栏**：添加账号 / 导出凭证 / 刷新列表。
-    - **筛选栏**：全部 / 可用 / 已停用 / 测试失败，带实时计数。
-    - **汇总卡**：账号总数、可用、已停用、测试失败四项指标格。
-    - **账号卡片网格**（3 列响应式）：标签 + 状态徽章 + AuthID + 令牌掩码 + Access 过期时间 + 用户 ID + 测试/启停/删除按钮。
-    - **模态框**：添加账号（含 chatglm.cn 取 token 三步指引 + textarea + 备注）、删除二次确认；Esc/遮罩关闭。
-    - **toast 通知栈**：右上滑入，ok/err/warn 三态。
-  - **发布**：commit `f6e1ef2` → CI run `46130513004`（Release success）→ 资产 ALL CHECKSUMS OK → registry `a1b94fe` → 生产 install → **`hot reloaded active_version=0.2.3 retired_version=0.2.2`**；落盘 `.so` sha256 `e6884556…ee3b` 与 release zip 一致；容器未重启。
-  - **验收**：面板 25330 字节，含标题「智谱清言 账号面板」、filter-bar、summaryBox、toasts、management key 框、导入并校验按钮；两 script 块 node --check 通过。
 
 > 更早的会话明细（2026-11-20 及之前：store-auth PAT、10 插件面板、doubao 0.1.8/0.1.9/0.1.11/0.1.19~0.1.22 等）已归档至 git 提交历史与 doc/ 对应文档，本文件只保留最近 7 条会话摘要以控制体积。
