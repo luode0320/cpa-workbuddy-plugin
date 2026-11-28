@@ -14,7 +14,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -22,34 +21,42 @@ import (
 	"time"
 )
 
-// TestHostBridgeOpenTimeoutDoesNotResend 验证 open 看门狗到点时**不重发**上游请求，
-// 而是把错误如实返回（由换号逻辑收口）。
+// TestHostBridgeOpenTimeoutRetriesOnNewConnection 验证 open 看门狗到点时**换一条新连接
+// 重发**（第 2 次走直连），而不是干等或直接失败。
 //
-// 背景（2026-11-28 生产取证）：旧语义「超时即降级直连并重发一次完整请求」会让
-// 客户端总耗时 = 看门狗预算 + 第二次上游耗时（生产 8/8 降级事件均为此形态，
-// 表现为 33~36s / 123~126s 人造台阶），且同一逻辑请求在上游变成两份。
+// 背景（2026-11-29 直测上游）：`event:timing_cost` 显示上游自身处理只要
+// server_processing_time=901~1575ms（810KB / 152k tokens 亦然），而客户端观测的
+// 响应头延迟会随机飙到 20~110s —— 长尾发生在响应头到达之前的链路上，且是
+// 连接级的。同 body 8 次对照：单次干等 p90=max=80.7s；6~8s 看门狗 + 最多 3 次
+// 重发 p90=max=11.7s。所以「卡住」的正确响应是换连接，不是等。
+//
+// 旧语义「超时即如实报错，绝不重发」的前提（上游真需要那么久）已被推翻：
+// 它把上游拥塞全量转嫁给客户端，实测就是 20~110s 的首字。
 //
 // [参数] t: 当前测试。
 // [返回] 无。
-// 最近修改时间：2026-11-28 17:00:00；改动原因：看门狗语义改为不重发。
-func TestHostBridgeOpenTimeoutDoesNotResend(t *testing.T) {
+// 最近修改时间：2026-11-29；改动原因：语义由「超时即失败」改为「超时即换连接重试」。
+func TestHostBridgeOpenTimeoutRetriesOnNewConnection(t *testing.T) {
 	origOpenCall := hostStreamOpenCallFn
 	origDirect := hostStreamDirectFn
 	origAvailable := hostBridgeAvailableFn
 	origForce := streamDirectForced()
 	origBudget := loadedHostBridgeOpenTimeout()
+	origAttempts := streamOpenMaxAttempts
 	t.Cleanup(func() {
 		hostStreamOpenCallFn = origOpenCall
 		hostStreamDirectFn = origDirect
 		hostBridgeAvailableFn = origAvailable
 		setStreamDirectForce(origForce)
 		setHostBridgeOpenTimeout(origBudget)
+		streamOpenMaxAttempts = origAttempts
 	})
 
-	// 1. 桥可用 + 未强制直连，确保走宿主桥分支。
+	// 1. 桥可用 + 未强制直连，确保第 1 次走宿主桥分支。
 	hostBridgeAvailableFn = func() bool { return true }
 	setStreamDirectForce(false)
 	setHostBridgeOpenTimeout(100 * time.Millisecond)
+	streamOpenMaxAttempts = 3
 
 	// 2. 只让最内层 open RPC 挂起：看门狗包装仍在，验证它确实能兜住。
 	hostStreamOpenCallFn = func(wireJSON []byte) ([]byte, error) {
@@ -57,10 +64,10 @@ func TestHostBridgeOpenTimeoutDoesNotResend(t *testing.T) {
 		return nil, io.EOF
 	}
 
-	// 3. 直连 seam 绝不能被调用：调用即代表发生了重发。
-	directCalled := false
+	// 3. 直连 seam 必须被调用且只调用一次：那就是「换连接重发」。
+	directCalls := 0
 	hostStreamDirectFn = func(req *http.Request, bodyBytes []byte) (*hostHTTPStream, int, http.Header, error) {
-		directCalled = true
+		directCalls++
 		return &hostHTTPStream{liveBody: io.NopCloser(strings.NewReader(""))}, 200, http.Header{}, nil
 	}
 
@@ -70,25 +77,25 @@ func TestHostBridgeOpenTimeoutDoesNotResend(t *testing.T) {
 		t.Fatalf("build req: %v", err)
 	}
 
-	// 4. open 应在预算内返回错误，而不是永久阻塞、也不应重发。
+	// 4. 第 1 次在预算内被判超时，第 2 次直连成功。
 	started := time.Now()
-	stream, _, _, openErr := hostHTTPDoStream(req, "cb-1")
+	stream, status, _, openErr := hostHTTPDoStream(req, "cb-1")
 	elapsed := time.Since(started)
-	if openErr == nil {
-		t.Fatalf("open err = nil; want watchdog error (no resend)")
+	if openErr != nil {
+		t.Fatalf("open err = %v; want retry to recover", openErr)
 	}
-	if !errors.Is(openErr, errHostBridgeOpenTimeout) {
-		t.Fatalf("open err = %v; want it to wrap errHostBridgeOpenTimeout", openErr)
+	if status != 200 {
+		t.Fatalf("status = %d; want 200", status)
 	}
-	if directCalled {
-		t.Fatalf("direct seam called on watchdog timeout; must not resend the upstream request")
+	if directCalls != 1 {
+		t.Fatalf("direct attempts = %d; want 1 (watchdog must retry on a new connection)", directCalls)
 	}
-	if stream != nil {
-		t.Fatalf("stream = %#v; want nil on watchdog timeout", stream)
+	if stream == nil {
+		t.Fatal("stream = nil; want the recovered stream")
 	}
 	// 5. 必须及时返回：预算是 100ms，给足调度余量后仍应远小于 30s。
 	if elapsed > 5*time.Second {
-		t.Fatalf("watchdog took %v; want bounded by open budget", elapsed)
+		t.Fatalf("open took %v; want bounded by open budget", elapsed)
 	}
 }
 
@@ -177,25 +184,30 @@ func TestHostBridgeOpenTimeoutConfigurable(t *testing.T) {
 	}
 }
 
-// TestHostBridgeOpenTimeoutDefaultAboveUpstreamP99 锁定默认预算不低于上游响应头
-// 实测 p99，避免把合法慢请求误判成桥故障。
+// TestHostBridgeOpenTimeoutDefaultIsShortPerAttempt 锁定默认预算是**秒级单次尝试**
+// 预算，而不是历史那个 180s 的「等到上游尾部」。
 //
-// 生产直连实测（2026-11-28，380k token 大上下文）：上游响应头延迟 p50≈5~10s、
-// p90≈19.6s、p99≈103s。旧默认 30s 落在 p90~p99 之间，会把正常慢请求掐断并触发
-// 整包重发——这正是 33~36s TTFT 台阶（= 30s 白等 + 一次直连耗时）的来源。
-// 因此默认值必须显著高于 30s。
+// 旧断言的依据是「上游响应头 p99≈103s，所以预算必须 >= 90s 才是如实等待」。
+// 该依据已被直测推翻（2026-11-29）：上游自身处理只要 server_processing_time=
+// 901~1575ms，20~110s 全部发生在响应头到达之前，且换连接重发即可绕开
+// （同 body 8 次：干等 p90=max=80.7s vs 预算+重试 p90=max=11.7s）。
+// 短预算 + 重试环的总耗时上界 ≈ 6s × 3 = 18s，远优于干等 80s。
 //
 // [参数] t: 当前测试。
 // [返回] 无。
-// 最近修改时间：2026-11-28 15:20:00；改动原因：把「默认值定值依据」变成回归断言，
-// 防止有人为了压台阶高度又把它调回 30s 以下。
-func TestHostBridgeOpenTimeoutDefaultAboveUpstreamP99(t *testing.T) {
-	if hostBridgeOpenTimeoutDefault <= 30*time.Second {
-		t.Fatalf("default budget = %v; want > 30s (30s 是历史台阶地板，会掐断 p90~p99 的合法慢请求)",
+// 最近修改时间：2026-11-29；改动原因：默认值由 180s 改为 6s，断言同步反过来，
+// 防止有人再把它调回「等到上游尾部」导致重试环前面白等三分钟。
+func TestHostBridgeOpenTimeoutDefaultIsShortPerAttempt(t *testing.T) {
+	if hostBridgeOpenTimeoutDefault > 10*time.Second {
+		t.Fatalf("default budget = %v; want <= 10s（单次尝试预算必须短，重试才划算）",
 			hostBridgeOpenTimeoutDefault)
 	}
-	if hostBridgeOpenTimeoutDefault < 90*time.Second {
-		t.Fatalf("default budget = %v; want >= 90s (上游响应头实测 p99≈103s)",
+	if hostBridgeOpenTimeoutDefault < 3*time.Second {
+		t.Fatalf("default budget = %v; want >= 3s（健康窗口响应头实测最大 4.6s，太短会误伤健康请求）",
 			hostBridgeOpenTimeoutDefault)
+	}
+	// 总上界必须仍然可控：预算 × 尝试次数不应超过 20s。
+	if total := hostBridgeOpenTimeoutDefault * time.Duration(streamOpenMaxAttemptsDefault); total > 20*time.Second {
+		t.Fatalf("worst case = %v; want <= 20s (budget × attempts)", total)
 	}
 }

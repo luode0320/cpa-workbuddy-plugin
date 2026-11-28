@@ -344,27 +344,70 @@ type hostHTTPStream struct {
 	releaseAccountLoad func()
 }
 
-// hostBridgeOpenTimeoutDefault 是宿主桥 open 看门狗的默认预算。
+// streamOpenHeaderTimeoutDefault 是「请求已发出 → 上游响应头到达」的**单次尝试**
+// 预算，也是 open 重试环的判据。
 //
-// 语义（2026-11-28 生产取证校正）：宿主的 host.http.do_stream 是**同步阻塞到
-// 上游响应头**才返回 stream_id 的 RPC，且宿主侧 ResponseHeaderTimeout 与
-// client.Timeout 双为 0 —— 宿主自己不做任何超时，open 会一直等到上游给响应头。
-// 这与官方客户端行为一致，是正确语义。
+// 取证结论（2026-11-28，绕过插件与 CPA 直测上游 llm_utils_chat）：
 //
-// 关键实测（绕过插件与 CPA 直测上游 llm_utils_chat，同账号同 body、每次新建连接）：
+//  1. 上游**自身处理**只要 1.0~1.6s。`event:timing_cost` 里
+//     server_processing_time=901~1575ms、first_sse_event_time=1006~1509ms，
+//     即使 body 810KB / 152k tokens 也是如此。queue_timing 仅 3~24ms。
+//  2. 也就是说 20~110s 的「首字长尾」里，真正属于模型的只有 1 秒多，其余全部
+//     发生在**响应头到达之前**的链路上（CDN/网关把响应头压住）。
+//  3. 该长尾是**瞬时拥塞窗口**而非稳定状态：同一进程随机交错测 4 档 body × 9 轮
+//     （n=36）时，慢事件全部落在前 4 轮，后 5 轮全快；空闲窗口内 header 只要
+//     1.4~3.1s。
+//  4. 体积决定**暴露面**：8KB 0/9 慢、128KB 0/9 慢、512KB 1/9(11%)、
+//     810KB 4/9(44%)。700~730KB 仍全快，760KB 起开始出现 16~40s。
+//  5. **关键**：卡住后中止并换新连接重发，几乎立刻恢复。同 body 8 次对照：
+//     单次干等 p90=80.7s max=80.7s；6~8s 看门狗 + 最多 3 次重发
+//     p90=11.7s max=11.7s（trial1 第 1 次 8s 超时、第 2 次 2.0s 成功）。
+//     即「卡住」是**连接级**的，换连接就能绕开。
 //
-//	650KB  body：p50=11.35s  max=40.17s   >25s 占 25%
-//	1500KB body：p50=15.97s  max=79.98s   >25s 占 50%
-//	2400KB body：p50=13.29s  max=101.22s  >25s 占 25%
+// 因此正确策略不是「如实等 180s」（那是把上游拥塞全量转嫁给客户端），而是
+// 「短预算 + 换连接重试」：把最坏 20~110s 压到 ~8~18s。取 6s —— 健康窗口
+// header 实测最大 4.6s，6s 能覆盖健康 p99 又足够早地甩掉拥塞连接。
+// 可用配置项 host_bridge_open_timeout_seconds 覆盖。
+const streamOpenHeaderTimeoutDefault = 6 * time.Second
+
+// hostBridgeOpenTimeoutDefault 保留为旧名，语义已收敛为「单次尝试预算」。
+// 历史名保留是为了让既有配置项与测试继续可用（它驱动的本来就是同一个看门狗）。
+const hostBridgeOpenTimeoutDefault = streamOpenHeaderTimeoutDefault
+
+// streamOpenMaxAttemptsDefault 是 open 重试环的最大尝试次数。
 //
-// 即**上游本身就有 40~101s 的随机长尾**，与 body 大小无单调关系。官方客户端遇到
-// 长尾就是如实等待，不会变成别的数字。
+// 依据：单次尝试失败（卡住）后换连接的成功率很高（见上，重发链实测 2s 内恢复）。
+// 上游拥塞窗口内单次卡住概率约 25%~44%，3 次尝试后仍全部卡住的概率降到
+// 0.44^3 ≈ 8.5%（810KB 最坏档），而总耗时上界 = 3 × 预算 ≈ 18s。
+// 取 3 是「最坏耗时」与「残余卡死率」的折中；可用配置项 stream_open_max_attempts 覆盖。
+const streamOpenMaxAttemptsDefault = 3
+
+// streamOpenMaxAttempts 是当前生效的最大尝试次数（可被配置覆盖）。
+var streamOpenMaxAttempts = streamOpenMaxAttemptsDefault
+
+// loadedStreamOpenMaxAttempts 读取当前生效的最大尝试次数。
 //
-// 因此本预算的职责只有一个：兜住真正的**永久**挂起（宿主 RPC 无超时，理论上可无限
-// 等）。它必须显著高于上游实测尾部（101s），否则就会把正常长尾判成挂起，触发
-// 调用方的「放弃 + 重发」放大回路（见 hostHTTPDoStreamBridged 注释）。取 180s。
-// 需要更短时用配置项 host_bridge_open_timeout_seconds 覆盖，但要清楚代价。
-const hostBridgeOpenTimeoutDefault = 180 * time.Second
+// [参数] 无。
+// [返回] 当前生效的最大尝试次数（恒 >= 1）。
+// 最近修改时间：2026-11-29；改动原因：新增 open 重试环的运行时旋钮。
+func loadedStreamOpenMaxAttempts() int {
+	if streamOpenMaxAttempts < 1 {
+		return 1
+	}
+	return streamOpenMaxAttempts
+}
+
+// setStreamOpenMaxAttempts 设置最大尝试次数；非正值忽略，保持既有值。
+//
+// [参数] n: 新的最大尝试次数，必须 > 0。
+// [返回] 无。
+// 最近修改时间：2026-11-29；改动原因：新增，配合 stream_open_max_attempts 配置项。
+func setStreamOpenMaxAttempts(n int) {
+	if n <= 0 {
+		return
+	}
+	streamOpenMaxAttempts = n
+}
 
 // hostBridgeOpenTimeout 是当前生效的 open 看门狗预算（可被配置覆盖）。
 // 保留为 var 而非 const：测试需要把它缩短到毫秒级来驱动降级路径。
@@ -375,18 +418,23 @@ var hostBridgeOpenTimeout = hostBridgeOpenTimeoutDefault
 // HTTP client so the request still completes.
 var errHostBridgeOpenTimeout = fmt.Errorf("host stream bridge open timed out after %s", hostBridgeOpenTimeout)
 
-// setHostBridgeOpenTimeout 设置 open 看门狗预算；非正值忽略，保持既有值。
+// setHostBridgeOpenTimeout 设置 open 单次尝试预算；非正值忽略，保持既有值。
 //
-// [参数] d: 新的看门狗预算，必须 > 0。
+// [参数] d: 新的单次尝试预算，必须 > 0。
 // [返回] 无。
-// 最近修改时间：2026-11-28 17:00:00；改动原因：默认值由 120s 上调到 180s。
-// 直测上游实测尾部达 101s，预算低于尾部会把正常长尾判成挂起并触发重发放大。
+// 最近修改时间：2026-11-29；改动原因：默认值由 180s 下调到 6s。
+// 180s 的依据是「上游长尾要如实等」，但后续取证推翻了该前提——长尾里只有 ~1.2s
+// 属于上游处理，其余是响应头到达前的链路拥塞，且换连接重发即可绕开（详见
+// streamOpenHeaderTimeoutDefault 注释）。因此预算改为「尽早判定 + 重试」。
 func setHostBridgeOpenTimeout(d time.Duration) {
 	if d <= 0 {
 		return
 	}
 	hostBridgeOpenTimeout = d
 	errHostBridgeOpenTimeout = fmt.Errorf("host stream bridge open timed out after %s", d)
+	// transport 上的 ResponseHeaderTimeout 是静态字段，直连重试要跟随同一个
+	// 预算就必须重建客户端。
+	resetStreamHTTPClient()
 }
 
 // loadedHostBridgeOpenTimeout 读取当前 open 看门狗预算，供测试与日志使用。
@@ -414,12 +462,21 @@ var hostBridgeReadTimeout = 90 * time.Second
 // completes instead of hanging.
 var errHostBridgeReadTimeout = fmt.Errorf("host stream bridge read timed out after %s", hostBridgeReadTimeout)
 
-// hostHTTPDoStream 通过宿主流桥打开上游请求，并把异步执行的 callback context 传给宿主。
+// hostHTTPDoStream 打开上游流式请求，并在「响应头迟迟不到」时换连接重试。
+//
+// 重试环的形状（取证见 streamOpenHeaderTimeoutDefault 注释）：
+//   - 第 1 次走宿主桥（host.http.do_stream），保留 request-log 与宿主传输策略；
+//   - 第 2..N 次走插件直连客户端，因为它能被 ResponseHeaderTimeout 真正中断，
+//     不会每重试一次就在宿主侧多漏一份仍在等待的上游请求；
+//   - 上游已给出 4xx/5xx 明确结论时不重试（那是账号/参数问题）；
+//   - 每次尝试都落一条 [traework] stream open retry 日志，恢复时另落一条
+//     stream open recovered，使「卡住—换连接—恢复」成为可直接观测的事件。
+//
 // [参数] req: 上游 HTTP 请求；hostCallbackID: CPA 为当前异步执行注册的 callback 标识。
-// [返回] hostHTTPStream: 可按块读取的响应流；int: HTTP 状态码；http.Header: 响应头；error: 打开流失败。
-// 最近修改时间：2026-11-28 14:30:00；改动原因：open 超时降级原本完全静默，
-// 生产 30s 台阶只能靠 TTFT 分布反推。补显式降级日志（带耗时、预算与 body 大小），
-// 让「桥 open 卡住」成为可直接观测的事件而不是统计推断。
+// [返回] hostHTTPStream: 可按块读取的响应流；int: HTTP 状态码；http.Header: 响应头；
+// error: 全部尝试都失败时的最后一次错误。
+// 最近修改时间：2026-11-29；改动原因：由「超时即放弃/静默降级」改为
+// 「短预算 + 换连接重试」，把上游拥塞造成的 20~110s 首字压到 ~8~18s。
 func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream, int, http.Header, error) {
 	if req == nil {
 		return nil, 0, nil, fmt.Errorf("nil request")
@@ -436,7 +493,59 @@ func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream
 	// 直连开关：用于实测「插件直连」与「宿主桥」两条路径的 TTFT 差异。
 	// 生产流量默认全部走宿主桥（host.http.do_stream RPC），插件的连接池配置因此
 	// 对生产无效 —— 这个开关让运维可以在不改代码的前提下做 A/B 对照。
-	if !hostBridgeAvailable() || streamDirectForced() {
+	useBridge := hostBridgeAvailable() && !streamDirectForced()
+	attempts := loadedStreamOpenMaxAttempts()
+	var lastErr error
+	var lastStatus int
+	var lastHeaders http.Header
+	for attempt := 1; attempt <= attempts; attempt++ {
+		// 只有第 1 次走宿主桥：桥 open 是同步 cgo 调用、宿主侧无任何超时，
+		// 看门狗到点后无法真正取消宿主那次请求（会漏一个仍在等待的宿主流）。
+		// 重试因此全部走插件自己的直连客户端——它能被 ResponseHeaderTimeout
+		// 真正中断，不会每重试一次就多漏一份上游请求。
+		viaBridge := useBridge && attempt == 1
+		started := time.Now()
+		stream, status, headers, err := openStreamOnce(req, bodyBytes, hostCallbackID, viaBridge)
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("[traework] stream open recovered after retry: url=%s attempt=%d/%d body_bytes=%d elapsed_ms=%d",
+					req.URL.Redacted(), attempt, attempts, len(bodyBytes),
+					time.Since(started).Milliseconds())
+			}
+			return stream, status, headers, nil
+		}
+		lastErr, lastStatus, lastHeaders = err, status, headers
+		// 上游已经给出明确 HTTP 结论（4xx/5xx）时不重试：那是账号/参数问题，
+		// 换连接重发只会重复同样的错误，还会多打一次上游。
+		if status >= 400 {
+			return nil, status, headers, err
+		}
+		reason := "open_error"
+		if errors.Is(err, errHostBridgeOpenTimeout) {
+			reason = "header_timeout"
+		}
+		log.Printf("[traework] stream open retry: url=%s attempt=%d/%d via_bridge=%t reason=%s elapsed_ms=%d budget_ms=%d body_bytes=%d err=%s",
+			req.URL.Redacted(), attempt, attempts, viaBridge, reason,
+			time.Since(started).Milliseconds(), loadedHostBridgeOpenTimeout().Milliseconds(),
+			len(bodyBytes), truncateRedacted(err.Error(), 200))
+	}
+	return nil, lastStatus, lastHeaders, lastErr
+}
+
+// openStreamOnce 执行**一次**上游 open 尝试。
+//
+// 与 hostHTTPDoStream 的分工：本函数不含重试与看门狗语义，只负责「走桥」或
+// 「走直连」其中的一条路径并把结果原样返回，让重试环可以干净地重复调用。
+//
+// [参数] req: 上游 HTTP 请求（仅提供方法/URL/头，body 由 bodyBytes 提供）。
+// [参数] bodyBytes: 已读出的请求体；重试时必须原样重发，不能复用已读的 Body。
+// [参数] hostCallbackID: 宿主侧异步执行回调标识，走桥时透传。
+// [参数] viaBridge: true 走宿主 host.http.do_stream，false 走插件直连客户端。
+// [返回] hostHTTPStream: 可按块读取的响应流；int: HTTP 状态码；
+// http.Header: 响应头；error: 本次尝试失败。
+// 最近修改时间：2026-11-29；改动原因：新增，从 hostHTTPDoStream 中抽出单次尝试。
+func openStreamOnce(req *http.Request, bodyBytes []byte, hostCallbackID string, viaBridge bool) (*hostHTTPStream, int, http.Header, error) {
+	if !viaBridge {
 		return hostStreamDirectFn(req, bodyBytes)
 	}
 	wire := rpcHostHTTPRequestWire{
@@ -448,38 +557,13 @@ func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream
 			Body:    bodyBytes,
 		},
 	}
-	openStarted := time.Now()
 	raw, err := hostStreamOpenFn(mustJSON(wire))
 	if err != nil {
-		elapsed := time.Since(openStarted)
-		// 1. 看门狗到点（errHostBridgeOpenTimeout）表示「宿主 open 等了整个预算
-		//    仍未拿到上游响应头」。这里**不再降级重发**：重发会把同一逻辑请求在
-		//    上游变成两份，并让客户端总耗时 = 预算 + 第二次上游耗时，产生与上游
-		//    真实延迟无关的人造台阶（生产 8/8 降级事件均为此形态）。
-		//    改为如实返回错误，由 executor 的换号逻辑决定下一步——换号会挑一个
-		//    不同的账号重试，而不是在同一个账号上重复排队。
-		if errors.Is(err, errHostBridgeOpenTimeout) {
-			log.Printf("[traework] host bridge open watchdog fired (no resend): url=%s elapsed_ms=%d budget_ms=%d body_bytes=%d",
-				req.URL.Redacted(), elapsed.Milliseconds(), loadedHostBridgeOpenTimeout().Milliseconds(),
-				len(bodyBytes))
-			return nil, 0, nil, fmt.Errorf("%w (upstream did not return response headers within the bridge watchdog; body_bytes=%d)",
-				errHostBridgeOpenTimeout, len(bodyBytes))
-		}
-		// 2. 其余错误（宿主 RPC 本身失败/信封损坏）说明桥这条路走不通，而不是
-		//    上游慢，此时降级直连是合理的：直连只会发一次请求，不构成重发放大。
-		//    本分支历史上完全静默，是生产台阶长期只能靠分布反推的直接原因。
-		log.Printf("[traework] host bridge open failed, degraded to direct: url=%s elapsed_ms=%d body_bytes=%d err=%s",
-			req.URL.Redacted(), elapsed.Milliseconds(), len(bodyBytes),
-			truncateRedacted(err.Error(), 200))
-		return hostStreamDirectFn(req, bodyBytes)
+		return nil, 0, nil, err
 	}
 	result, err := hostBridgeUnwrap(raw, pluginabi.MethodHostHTTPDoStream)
 	if err != nil {
-		elapsed := time.Since(openStarted)
-		log.Printf("[traework] host bridge open envelope invalid, degraded to direct: url=%s elapsed_ms=%d body_bytes=%d err=%s",
-			req.URL.Redacted(), elapsed.Milliseconds(), len(bodyBytes),
-			truncateRedacted(err.Error(), 200))
-		return hostStreamDirectFn(req, bodyBytes)
+		return nil, 0, nil, err
 	}
 	var resp rpcHostHTTPStreamResponseWire
 	if err := json.Unmarshal(result, &resp); err != nil {
@@ -531,14 +615,17 @@ var hostStreamOpenCallFn = func(wireJSON []byte) ([]byte, error) {
 // 变成两份。这正是台阶随预算移动的原因（30s 预算 → 33~36s 台阶；120s 预算 →
 // 123~126s 台阶）。
 //
-// 因此这里**不再把超时当作「降级并重发」的触发条件**：超时只作为防永久挂起的
-// 最后兜底，且必须显著大于上游实测尾部（101s），使正常长尾请求走「原样等待」
-// 路径——与官方客户端行为一致。真正的无限挂起仍由调用方的换号逻辑收口。
+// 因此这里的语义是「**单次尝试**预算，不是最终放弃点」：到点返回
+// errHostBridgeOpenTimeout，由调用方 hostHTTPDoStream 的重试环换一条新连接重发。
+// 关键取证（2026-11-29，同 body 8 次对照）：卡住后换连接重发几乎立刻恢复——
+// 单次干等 p90=80.7s max=80.7s，6~8s 看门狗 + 最多 3 次重发 p90/max 均为 11.7s。
+// 即「卡住」是连接级的链路拥塞，不是上游真需要那么久（上游自报处理仅 ~1.2s）。
+// 预算必须**短**才有效：旧的 180s 会让每次重试前面白等三分钟。
 //
 // [参数] wireJSON: 已序列化的宿主请求信封。
 // [返回] 宿主原始信封；error 表示 RPC 失败或看门狗超时（errHostBridgeOpenTimeout）。
-// 最近修改时间：2026-11-28 17:00:00；改动原因：看门狗语义由「到点即降级重发」
-// 改为「仅兜永久挂起」，消除「预算 + 重发」的人造延迟放大回路。
+// 最近修改时间：2026-11-29；改动原因：看门狗语义定为「单次尝试预算」，
+// 与 hostHTTPDoStream 的重试环配套，默认值 180s → 6s。
 func hostHTTPDoStreamBridged(wireJSON []byte) ([]byte, error) {
 	type res struct {
 		raw []byte
@@ -587,8 +674,14 @@ func hostHTTPDoStreamDirect(req *http.Request, bodyBytes []byte) (*hostHTTPStrea
 // runs to completion.
 //
 // 上游 HTTP 分阶段超时：拨号与 TLS 握手挡住「连不上」，ResponseHeaderTimeout
-// 挡住「连上了但首字节迟迟不来」，http.Client.Timeout 仍是整体兜底。
+// 挡住「连上了但首字节迟迟不来」。
+//
+// ResponseHeaderTimeout 绑定的是**单次尝试预算**（loadedHostBridgeOpenTimeout），
+// 不是历史那个 120s：直连重试必须能被真正中断，否则一次拥塞会把重试环拖成
+// 120s × N，反而比不重试更糟。
 func streamHTTPClient() *http.Client {
+	streamHTTPClientMu.Lock()
+	defer streamHTTPClientMu.Unlock()
 	streamHTTPClientOnce.Do(func() {
 		streamClient = &http.Client{
 			Transport: &http.Transport{
@@ -606,11 +699,25 @@ func streamHTTPClient() *http.Client {
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
 				TLSHandshakeTimeout:   upstreamTLSHandshakeTimeout,
-				ResponseHeaderTimeout: upstreamResponseHeaderTimeout,
+				ResponseHeaderTimeout: loadedHostBridgeOpenTimeout(),
 			},
 		}
 	})
 	return streamClient
+}
+
+// resetStreamHTTPClient 丢弃已构造的流式直连客户端，让下一次调用按当前
+// 单次尝试预算重建 transport。
+//
+// [参数] 无。
+// [返回] 无。
+// 最近修改时间：2026-11-29；改动原因：ResponseHeaderTimeout 改为跟随
+// host_bridge_open_timeout_seconds，配置热更新后必须重建才生效。
+func resetStreamHTTPClient() {
+	streamHTTPClientMu.Lock()
+	defer streamHTTPClientMu.Unlock()
+	streamClient = nil
+	streamHTTPClientOnce = sync.Once{}
 }
 
 // Read pulls the next chunk. Returns (payload, done, err). done=true means the

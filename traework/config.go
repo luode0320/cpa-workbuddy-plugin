@@ -353,11 +353,19 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 				nextSlowMinPool = n
 			}
 		case "host_bridge_open_timeout_seconds":
-			// 宿主桥 open 看门狗预算。台阶高度 = 该预算 + 一次直连耗时，
-			// 所以它是唯一能直接压低 30s 级台阶的运行时旋钮。
+			// open **单次尝试**预算（秒）。上游拥塞表现为「响应头迟迟不到」，
+			// 且换连接重发即可绕开，所以这个旋钮决定「多久判定这一条连接废了」，
+			// 最终总耗时 ≈ 预算 × 尝试次数。默认 6s。
 			// 缺省键保持当前值（kill-switch 安全），非正数忽略。
 			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n > 0 {
 				setHostBridgeOpenTimeout(time.Duration(n) * time.Second)
+			}
+		case "stream_open_max_attempts":
+			// open 重试环的最大尝试次数。第 1 次走宿主桥，其余走直连。
+			// 默认 3：最坏总耗时 ≈ 3 × 预算，残余全卡概率 ≈ 0.44^3。
+			// 缺省键保持当前值，非正数忽略。
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n > 0 {
+				setStreamOpenMaxAttempts(n)
 			}
 		case "context_char_budget":
 			// 请求上下文字符预算：超预算时裁掉最旧历史，把输入压回可控区间。

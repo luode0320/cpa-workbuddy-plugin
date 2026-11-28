@@ -29,17 +29,26 @@ import (
 const (
 	// defaultContextCharBudget 是默认的输入字符预算。
 	//
-	// 取值依据（2026-11-28 生产实测校准）：
-	//   裁剪日志 input_chars=1199741 与 feed input_tokens=521369 对齐，
-	//   得 **1 token ≈ 2.30 字符**（中文为主的长上下文）。
-	//   生产原始输入 p50=440,013 token、p90=667,280、max=884,674，
-	//   上游 >20s 占比：0-100k 15% / 300-400k 33% / 800k+ 100%。
+	// 取值依据（2026-11-29 直测上游校准，这是第二版）：
+	//   1 token ≈ 2.30 字符；生产裁剪日志 input_chars p50=456,692 对应
+	//   实测请求体 810KB（约 1.775 字节/字符 + 协议开销）。
 	//
-	// 首版取 1,200,000 字符，实测只压到 52 万 token，仍落在 >20s 占比 ~20% 的区间，
-	// 效果不足。改为 460,000 字符 ≈ 200k token：把绝大多数会话压到「慢请求占比
-	// 明显更低」的规模，同时仍保留约 200k token 历史供模型理解任务。
+	// 关键新证据：请求体大小直接决定「响应头卡住」的暴露面。绕过插件与 CPA
+	// 直测上游 llm_utils_chat（同账号、随机交错 n=36，4 档 body × 9 轮）：
+	//
+	//	  8KB  >10s 0/9      128KB >10s 0/9
+	//	  512KB >10s 1/9(11%) 810KB >10s 4/9(44%)
+	//
+	// 而 20~110s 的长尾里上游自身处理只有 server_processing_time=901~1575ms，
+	// 即长尾不是模型在算，是链路在压（详见 host_bridge.go 的
+	// streamOpenHeaderTimeoutDefault 注释）。
+	//
+	// 首版 1,200,000 字符只压到 52 万 token，仍落在高暴露区；第二版 460,000 字符
+	// ≈ 200k token ≈ 810KB body，正好踩在 44% 暴露档上。改为 290,000 字符
+	// ≈ 126k token ≈ 512KB body，把暴露面从 44% 降到 ~11%，配合 open 重试环
+	// （stream_open_max_attempts=3）后残余「首字 >10s」概率降到千分之一量级。
 	// 需要更激进/更保守时用配置项 context_char_budget 覆盖，填 0 关闭裁剪。
-	defaultContextCharBudget = 460000
+	defaultContextCharBudget = 290000
 
 	// contextKeepTailMessages 是裁剪时始终保留的最近消息条数。
 	// 最近几轮承载当前任务上下文，裁掉会让模型失去即时语境。

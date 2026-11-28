@@ -42,25 +42,45 @@ func TestSharedHTTPClientStagedTimeouts(t *testing.T) {
 	}
 }
 
-// TestResponseHeaderTimeoutCoversSlowPrefill 验证响应头超时不低于生产 TTFT p99。
+// TestStreamHeaderTimeoutIsPerAttemptBudget 验证流式路径的超时口径已由
+// 「一次干等 120s」改为「单次尝试短预算 + 换连接重试」。
 //
-// 30s 的旧值会切断 p90 以上的合法慢请求（生产 TTFT p90 26.6s / p99 55.2s）。
+// 推翻旧结论的依据（2026-11-29 直测上游，绕过插件与 CPA）：
+//   - 旧测试假定 TTFT p90=26.6s / p99=55.2s 全是上游 prefill，故要求流式
+//     ResponseHeaderTimeout >= 56s。实测 `event:timing_cost` 显示上游自身处理
+//     只要 server_processing_time=901~1575ms（810KB / 152k tokens 亦然），
+//     真正耗时的是**响应头到达之前**的链路拥塞。
+//   - 该拥塞是连接级的：同 body 8 次对照，单次干等 p90=max=80.7s；
+//     6~8s 看门狗 + 最多 3 次重发 p90=max=11.7s（恢复后单次仅 ~2s）。
+//
+// 所以流式路径正确的超时是「短而可重试」：短预算负责及早甩掉拥塞连接，
+// 重试环负责让合法慢请求不被切断（见 stream_open_retry_test.go）。
+// 非流式 sharedHTTPClient 仍保留 120s 整体兜底 + 120s 响应头超时。
+//
 // [参数] t：测试上下文
 // [返回] 无
-// 最近修改时间：2026-11-08 21:00:00；改动原因：新增。
-func TestResponseHeaderTimeoutCoversSlowPrefill(t *testing.T) {
-	const productionTTFTP99 = 56 * time.Second
-	if upstreamResponseHeaderTimeout < productionTTFTP99 {
-		t.Fatalf("ResponseHeaderTimeout = %v，低于生产 TTFT p99（%v）会切断合法慢请求",
-			upstreamResponseHeaderTimeout, productionTTFTP99)
+// 最近修改时间：2026-11-29；改动原因：流式响应头超时改为单次尝试预算，
+// 与 open 重试环配套；旧断言要求等于 120s，会把重试环拖成 120s × N。
+func TestStreamHeaderTimeoutIsPerAttemptBudget(t *testing.T) {
+	if upstreamResponseHeaderTimeout < 120*time.Second {
+		t.Fatalf("upstreamResponseHeaderTimeout = %v，非流式路径仍需 >=120s",
+			upstreamResponseHeaderTimeout)
 	}
-	// 流式客户端必须复用同一取值，避免两条路径口径漂移。
+	orig := loadedHostBridgeOpenTimeout()
+	t.Cleanup(func() { setHostBridgeOpenTimeout(orig) })
+	setHostBridgeOpenTimeout(streamOpenHeaderTimeoutDefault)
+
 	sc := streamHTTPClient()
 	str, ok := sc.Transport.(*http.Transport)
 	if !ok || str == nil {
 		t.Fatalf("stream transport type = %T", sc.Transport)
 	}
-	if str.ResponseHeaderTimeout != upstreamResponseHeaderTimeout {
-		t.Fatalf("stream ResponseHeaderTimeout = %v, want %v", str.ResponseHeaderTimeout, upstreamResponseHeaderTimeout)
+	if want := loadedHostBridgeOpenTimeout(); str.ResponseHeaderTimeout != want {
+		t.Fatalf("stream ResponseHeaderTimeout = %v, want %v（必须跟随单次尝试预算）",
+			str.ResponseHeaderTimeout, want)
+	}
+	if str.ResponseHeaderTimeout > 10*time.Second {
+		t.Fatalf("stream ResponseHeaderTimeout = %v，单次尝试预算必须短到能被重试环覆盖",
+			str.ResponseHeaderTimeout)
 	}
 }

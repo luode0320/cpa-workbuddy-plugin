@@ -11,35 +11,42 @@ import (
 	"time"
 )
 
-// TestHostHTTPDoStreamWatchdogDoesNotResend 验证看门狗到点时**不重发**上游请求，
-// 而是把错误如实返回给调用方（由换号逻辑决定下一步）。
+// TestHostHTTPDoStreamWatchdogResendsOnNewConnection 验证看门狗到点后**换一条新连接
+// 重发**，而不是干等或直接失败。
 //
-// 背景（2026-11-28 生产取证）：旧语义是「超时即降级直连并重发一次完整请求」，
-// 导致客户端总耗时 = 看门狗预算 + 第二次上游耗时（生产 8/8 降级事件均为此形态，
-// 表现为 33~36s / 123~126s 的人造台阶），且同一逻辑请求在上游变成两份。
-// 新语义：看门狗只兜「永久挂起」，到点即如实报错，绝不重发。
+// 背景（2026-11-29 直测上游，绕过插件与 CPA）：`event:timing_cost` 显示上游自身
+// 处理只要 server_processing_time=901~1575ms（810KB / 152k tokens 亦然），
+// 而客户端实测响应头延迟会随机飙到 20~110s —— 说明长尾发生在**响应头到达之前**
+// 的链路上，且是**连接级**的。同 body 8 次对照：单次干等 p90=max=80.7s；
+// 6~8s 看门狗 + 最多 3 次重发 p90=max=11.7s，恢复后单次仅 ~2s。
+//
+// 因此看门狗到点的正确响应是「判定这条连接废了，换连接重试」。
+// 旧测试断言的「绝不重发」会把拥塞全量转嫁给客户端（干等 20~110s）。
 //
 // [参数] t: 当前测试。
 // [返回] 无；断言失败时由 testing 终止用例。
-// 最近修改时间：2026-11-28 17:00:00；改动原因：看门狗语义改为不重发。
-func TestHostHTTPDoStreamWatchdogDoesNotResend(t *testing.T) {
+// 最近修改时间：2026-11-29；改动原因：语义由「超时即失败」改为「超时即换连接重试」。
+func TestHostHTTPDoStreamWatchdogResendsOnNewConnection(t *testing.T) {
 	prevAvailable := hostBridgeAvailableFn
 	prevOpen := hostStreamOpenFn
 	prevDirect := hostStreamDirectFn
+	prevAttempts := streamOpenMaxAttempts
 	t.Cleanup(func() {
 		hostBridgeAvailableFn = prevAvailable
 		hostStreamOpenFn = prevOpen
 		hostStreamDirectFn = prevDirect
+		streamOpenMaxAttempts = prevAttempts
 	})
 	// 宿主流桥"可用"但打开立即返回超时错误（等价于等到预算上限，测试不真实等待）。
 	hostBridgeAvailableFn = func() bool { return true }
+	streamOpenMaxAttempts = 3
 	hostStreamOpenFn = func([]byte) ([]byte, error) {
 		return nil, errHostBridgeOpenTimeout
 	}
-	// 直连 seam 绝不能被调用：调用即代表发生了重发。
-	directCalled := false
+	// 直连 seam 必须被调用一次：那就是「换连接重发」，且本次应当成功。
+	directCalls := 0
 	hostStreamDirectFn = func(req *http.Request, bodyBytes []byte) (*hostHTTPStream, int, http.Header, error) {
-		directCalled = true
+		directCalls++
 		return &hostHTTPStream{liveBody: io.NopCloser(strings.NewReader(""))}, 200, http.Header{}, nil
 	}
 
@@ -48,18 +55,18 @@ func TestHostHTTPDoStreamWatchdogDoesNotResend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, _, _, err := hostHTTPDoStream(req, "cb-watchdog")
-	if err == nil {
-		t.Fatalf("hostHTTPDoStream err = nil, want watchdog error (no resend)")
+	stream, status, _, err := hostHTTPDoStream(req, "cb-watchdog")
+	if err != nil {
+		t.Fatalf("hostHTTPDoStream err = %v, want retry to recover", err)
 	}
-	if !errors.Is(err, errHostBridgeOpenTimeout) {
-		t.Fatalf("err = %v, want it to wrap errHostBridgeOpenTimeout", err)
+	if status != 200 {
+		t.Fatalf("status = %d, want 200", status)
 	}
-	if directCalled {
-		t.Fatalf("direct seam called on watchdog timeout; must not resend the upstream request")
+	if directCalls != 1 {
+		t.Fatalf("direct attempts = %d, want 1 (watchdog must retry on a new connection)", directCalls)
 	}
-	if stream != nil {
-		t.Fatalf("stream = %#v, want nil on watchdog timeout", stream)
+	if stream == nil {
+		t.Fatal("stream = nil, want the recovered stream")
 	}
 }
 

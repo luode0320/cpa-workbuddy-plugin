@@ -84,8 +84,14 @@ var (
 
 	// streamHTTPClientOnce / streamClient 是流式直连专用客户端（无整体超时），
 	// 与 sharedClient（120s 整体超时）分离：桥降级直连长推理时不被整体超时掐断。
+	//
+	// streamHTTPClientMu 串行化「构造」与「重建」：单次尝试预算
+	// （host_bridge_open_timeout_seconds）是 transport 上的静态字段，配置热更新后
+	// 必须重建客户端才能生效。sync.Once 不能在并发 Do 中被重置，所以两者共用
+	// 同一把锁，保证重置时没有 goroutine 正停在 Do 里。
 	streamHTTPClientOnce sync.Once
 	streamClient         *http.Client
+	streamHTTPClientMu   sync.Mutex
 )
 
 func main() {}
@@ -281,7 +287,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.5.66"
+var version = "0.5.67"
 
 func wbRegistration() registration {
 	return registration{

@@ -1,5 +1,24 @@
 # TraeWork Plugin Changelog
 
+## 0.5.67 (2026-11-29)
+
+### Fix - 首字 20~110s：卡住的是「连接」不是「模型」，改为短预算 + 换连接重试
+
+- 现象: 用户反馈「输入 45~71 万 token，首字 30s、160s，正常应在 10s 以下；只要出现 10s 以上的首字肯定有问题」，且「几乎到了无法使用的地步」。生产 120 分钟日志统计 TTFT `p50=4.5s p90=34.6s p99=149s max=239s`，`>15s` 占 49/202。
+- 根因（三层取证）:
+  1. **上游自身很快**：直测 `llm_utils_chat`（绕过插件与 CPA）拿 `event:timing_cost`，`server_processing_time=901~1575ms`、`first_sse_event_time=1006~1509ms`、`queue_timing=3~24ms` —— 即使 810KB body / 152k token 也如此。**20~110s 的长尾里模型只占 1 秒多**，其余全部发生在响应头到达之前。
+  2. **长尾是连接级的**：同一进程随机交错测 4 档 body × 9 轮（n=36），慢事件集中在瞬时拥塞窗口；持久连接、换账号、降低并发、改 payload 形态（补 `model_name`/`session_id`/`config_source`）均无效；gzip 请求体被上游 `4001` 拒绝。
+  3. **体积决定暴露面**：`8KB 0/9`、`128KB 0/9`、`512KB 1/9(11%)`、`810KB 4/9(44%)`；健康窗口内响应头只要 1.4~3.1s。生产 body 恰为 810KB（`input_chars p50=456,692`），正好踩在 44% 暴露档。
+- 关键对照实验（同 body 810KB，8 次）: 单次干等 `p50=2.8s p90=max=80.7s`；**6~8s 看门狗 + 最多 3 次重发 `p50=3.0s p90=max=11.7s`**。trial1 记录「第 1 次 8s 超时 → 第 2 次 2.0s 成功」，证明卡住后换连接几乎立刻恢复。
+- 改动:
+  - `hostHTTPDoStream` 由「单次 open，超时即放弃/静默降级」改为**重试环**：第 1 次走宿主桥（保留 request-log），第 2..N 次走插件直连（可被 `ResponseHeaderTimeout` 真正中断，不会每重试一次就在宿主侧多漏一份仍在等待的上游请求）；上游已给出 4xx/5xx 结论时不重试。
+  - `hostBridgeOpenTimeoutDefault` 180s → **6s**（单次尝试预算）。旧的 180s 让每次重试前白等三分钟，是把上游拥塞全量转嫁给客户端。
+  - 新增 `streamOpenMaxAttemptsDefault = 3` 与 `stream_open_max_attempts` 配置项；最坏总耗时上界 = 6s × 3 = 18s。
+  - 流式客户端 `ResponseHeaderTimeout` 改为跟随单次尝试预算（原 120s 会把重试环拖成 120s × N），配置热更新时重建客户端（`resetStreamHTTPClient`）。
+  - 每次尝试落 `[traework] stream open retry` 日志（含 attempt/budget/elapsed/body_bytes/reason），恢复时落 `stream open recovered`，把「卡住—换连接—恢复」变成可直接观测事件。
+  - 上下文预算 460,000 → **290,000 字符**（≈810KB → ≈512KB body），把暴露面从 44% 降到 ~11%。
+- 验证: `cgo-shim-build.py traework` build/vet/test 全绿。新增 `stream_open_retry_test.go`（默认值上界、超时后换连接恢复、4xx 不重试、attempts 用尽返回最后错误）；改写 3 个与新语义冲突的旧用例（`TestHostBridgeOpenTimeoutRetriesOnNewConnection`、`TestHostHTTPDoStreamWatchdogResendsOnNewConnection`、`TestHostBridgeOpenTimeoutDefaultIsShortPerAttempt`、`TestStreamHeaderTimeoutIsPerAttemptBudget`），把「绝不重发」的旧契约换成「超时即换连接」。
+
 ## 0.5.66 (2026-11-28)
 
 ### Fix - 上下文裁剪方向反了，长会话每轮丢弃最近上千条刚完成的工作
