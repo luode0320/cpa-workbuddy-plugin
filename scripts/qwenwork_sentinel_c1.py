@@ -169,6 +169,30 @@ MUTATIONS = [
         "expect": "TestApplyMaasHeaders_AffinityHeadersAreSessionScoped",
         "all": False,
     },
+    {
+        "name": "S20 会话粘性不再检查在跑软上限",
+        "file": "session_auth.go",
+        "old": '\t\t\t\tif current < sessionAccountInflightSoftCap {',
+        "new": '\t\t\t\tif true {',
+        "expect": "TestPickSessionAuth_RebindsWhenOverSoftCap",
+        "all": False,
+    },
+    {
+        "name": "S21 选号退回「第一个候选」不看负载",
+        "file": "account_load.go",
+        "old": '\t\tn := accountLoadOf(c.ID)\n\t\tif bestID == "" || n < bestLoad {',
+        "new": '\t\tn := accountLoadOf(c.ID)\n\t\tif bestID == "" || n < bestLoad || true {',
+        "expect": "TestPickLeastLoaded_PrefersIdleKeepsOrder",
+        "all": False,
+    },
+    {
+        "name": "S22 单账号在飞软上限放大到 100",
+        "file": "account_load.go",
+        "old": 'const sessionAccountInflightSoftCap = 2',
+        "new": 'const sessionAccountInflightSoftCap = 100',
+        "expect": "TestPickSessionAuth_RebindsWhenOverSoftCap",
+        "all": False,
+    },
 ]
 
 

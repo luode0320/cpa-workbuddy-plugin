@@ -330,7 +330,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.2.25"
+var version = "0.2.26"
 
 func wbRegistration() registration {
 	return registration{
@@ -749,7 +749,11 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	nonStreamTTFTNS := uint64(0)
 	for attempt := 0; attempt <= budget; attempt++ {
 		var attemptTTFT uint64
+		// 在跑计数（与流式路径同口径）：调度层按真实负载平摊并发，避免把同一会话
+		// 的并发子请求全压到一个号上、超出上游并行槽位后被上游静默排队。
+		releaseAttempt := accountLoadAcquire(usedAuthID)
 		completion, attemptTTFT, completionErr = doExecuteOnceQwenWork(body, curSA, req.Model, maasSessionKey, req.HostCallbackID)
+		releaseAttempt()
 		nonStreamTTFTNS = attemptTTFT
 		if completionErr == nil {
 			// The account that actually served the request may differ from the
@@ -1024,7 +1028,10 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// No async stream id → fall back to synchronous chunk collection.
 	if req.StreamID == "" {
 		collector := &sseUsageCollector{}
+		// 在跑计数（与流式路径同口径）：调度层按真实负载平摊并发。
+		releaseCollect := accountLoadAcquire(req.AuthID)
 		chunks, statusCode, errCollect := collectUpstreamStreamOpenAI(body, sa, maasSessionKey, sseFramed, collector, req.AuthID, req.Model, req.HostCallbackID)
+		releaseCollect()
 		if errCollect != nil {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error(), reasoningEffort, collector.ttftNS(started), accountLabel, sessionKey)
 			// Unlike the workbuddy plugin, collectUpstreamStreamQoder does not

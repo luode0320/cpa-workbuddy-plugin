@@ -14,7 +14,6 @@ import (
 
 var (
 	activeAuthID string
-	activeAuthRR uint64
 	activeAuthMu sync.RWMutex
 )
 
@@ -28,9 +27,6 @@ func setActiveAuthID(id string) {
 	id = strings.TrimSpace(id)
 	activeAuthMu.Lock()
 	activeAuthID = id
-	if id == "" {
-		activeAuthRR = 0
-	}
 	activeAuthMu.Unlock()
 }
 
@@ -57,13 +53,12 @@ type activeAuthCandidate struct {
 }
 
 // pickActiveAuth chooses which qwenwork auth to use from host candidates.
-// The panel selection is sticky: it stays on the current account unless that
-// account is no longer in the candidate list (disabled/deleted by host) or is
-// no longer routable (cooling down / low residual credits). When switching, it
-// picks the first ready candidate — the caller already ordered them
-// high-credit-first — and updates activeAuthID so the panel reflects the change
-// on next dashboard load. When NO routable candidate exists, it returns "" so
-// the scheduler defers to the host's built-in scheduler (cross-provider failover).
+//
+// 面板选择只作为「平级优先」，不再是无条件直通。原实现在这里直接 return cur，
+// 下面按在跑请求数平摊的 pickLeastLoaded 永远走不到，等于面板粘性盖过了负载
+// 均衡：只要面板指着某个号，并发就一直堆在它身上。上游按账号分配并行槽位，
+// 堆积部分在账号侧排队（不报错、只抬首字延迟）。改成把 cur 排在候选首位：负载与
+// 其它可用号持平时照样选它（面板选择仍然生效），一旦它堆得更多就让位给更空闲的号。
 func pickActiveAuth(candidates []activeAuthCandidate) string {
 	if len(candidates) == 0 {
 		return ""
@@ -74,17 +69,16 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 	}
 
 	cur := getActiveAuthID()
-	// Keep current selection if it's still a live candidate AND routable.
+	var ready []string
 	if cur != "" {
 		if c, ok := byID[cur]; ok && !c.Disabled && !c.Exhausted && !isAccountCoolingDown(cur) {
-			return cur
+			ready = append(ready, cur)
 		}
 	}
-
-	// Selection is gone or unusable — pick the first ready candidate (the
-	// slice is pre-ordered high-credit-first), else report no routable account.
-	var ready []string
 	for _, c := range candidates {
+		if c.ID == cur {
+			continue
+		}
 		if !c.Disabled && !c.Exhausted && !isAccountCoolingDown(c.ID) {
 			ready = append(ready, c.ID)
 		}
@@ -92,9 +86,20 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 	if len(ready) == 0 {
 		return ""
 	}
+	// 从 ready 里挑在跑请求数最少的账号，而不是轮到谁就谁。
+	//
+	// 轮询只保证「请求数均摊」，不保证「同时在跑的数量均摊」：长请求会堆积在同一
+	// 个刚被轮到的账号上，短请求早已结束。ready 已按高积分优先排序，pickLeastLoaded
+	// 平级时保留该顺序，因此这里不会把残血号提到健康号前面。
+	cands := make([]activeAuthCandidate, 0, len(ready))
+	for _, id := range ready {
+		cands = append(cands, activeAuthCandidate{ID: id})
+	}
+	next := pickLeastLoaded(cands)
+	if next == "" {
+		next = ready[0]
+	}
 	activeAuthMu.Lock()
-	next := ready[int(activeAuthRR%uint64(len(ready)))]
-	activeAuthRR++
 	if next != cur {
 		activeAuthID = next
 	}

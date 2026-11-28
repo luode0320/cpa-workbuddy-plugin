@@ -47,16 +47,12 @@ type sessionAuthBinding struct {
 }
 
 var (
-	// sessionAuthMu guards sessionAuthBindings and sessionRR.
+	// sessionAuthMu guards sessionAuthBindings.
 	sessionAuthMu sync.RWMutex
 	// sessionAuthBindings maps a session key (see extractSessionKey) to its
 	// pinned account. Entries are created on first pick of a conversation and
 	// removed by the pruner after expiry.
 	sessionAuthBindings = make(map[string]sessionAuthBinding)
-	// sessionRR is a monotonically increasing counter used to spread new
-	// conversations across accounts when every usable account already has
-	// bindings.
-	sessionRR uint64
 )
 
 func init() {
@@ -348,10 +344,26 @@ func pickSessionAuth(sessionKey string, candidates []activeAuthCandidate) string
 	sessionAuthMu.Lock()
 	defer sessionAuthMu.Unlock()
 
-	// Sticky hit: binding fresh AND its account still usable.
+	// Sticky hit: binding fresh AND its account still usable。
+	//
+	// 命中后还要过一次在跑数软上限：粘性只该保证「同一会话优先复用同一个号」，
+	// 不能变成「把同一会话的并发子请求全塞给同一个号」。上游按账号分配并行槽位，
+	// 超出的请求不报错而是在账号侧排队，表现为首字延迟被推高而错误率健康。
+	// 生产观测（0.2.24）：同账号 + 同一会话 + 99.8% 前缀缓存命中，首字仍在
+	// 5.9s~23.2s 之间波动，与「并发子请求压满一个号、超槽位后排队」吻合。
+	// 因此：命中且未超软上限 → 直接复用（保住缓存与上游亲和）；已超上限且池中存在
+	// 更空闲的可用账号 → 改绑到最空闲的号。
 	if b, ok := sessionAuthBindings[sessionKey]; ok {
 		if _, isLive := live[b.AuthID]; isLive {
 			if _, isUsable := usableSet[b.AuthID]; isUsable && now.Before(b.ExpiresAt) {
+				current := accountLoadOf(b.AuthID)
+				if current < sessionAccountInflightSoftCap {
+					return b.AuthID
+				}
+				if alt := pickLessLoadedThan(usable, b.AuthID, current); alt != "" {
+					sessionAuthBindings[sessionKey] = sessionAuthBinding{AuthID: alt, ExpiresAt: now.Add(sessionStickinessTTL)}
+					return alt
+				}
 				return b.AuthID
 			}
 		}
@@ -365,8 +377,12 @@ func pickSessionAuth(sessionKey string, candidates []activeAuthCandidate) string
 		return ""
 	}
 
-	// Fresh assignment: prefer accounts with no live bindings (spreads
-	// conversations across accounts), then round-robin.
+	// Fresh assignment: 在跑请求数最少优先，绑定会话数次之，平级保留 usable
+	// 已有的高积分优先顺序。
+	//
+	// 改成按真实并发记账而不是按会话数选号：上游每个账号的并行槽位有限，超出部分
+	// 不报错而是在账号侧排队。按会话分配的旧逻辑下，一个会话连发多个并发子请求时
+	// 全部压到同一个号，实测账号并发中位数远高于活跃会话数。
 	boundCounts := make(map[string]int, len(usable))
 	for _, b := range sessionAuthBindings {
 		if now.Before(b.ExpiresAt) {
@@ -374,17 +390,12 @@ func pickSessionAuth(sessionKey string, candidates []activeAuthCandidate) string
 		}
 	}
 	next := ""
-	for i := 0; i < len(usable); i++ {
-		candID := usable[(int(sessionRR)+i)%len(usable)]
-		if boundCounts[candID] == 0 {
-			next = candID
-			sessionRR++
-			break
+	bestLoad, bestBound := -1, -1
+	for _, id := range usable {
+		load, bound := accountLoadOf(id), boundCounts[id]
+		if bestLoad < 0 || load < bestLoad || (load == bestLoad && bound < bestBound) {
+			next, bestLoad, bestBound = id, load, bound
 		}
-	}
-	if next == "" {
-		next = usable[int(sessionRR%uint64(len(usable)))]
-		sessionRR++
 	}
 
 	sessionAuthBindings[sessionKey] = sessionAuthBinding{AuthID: next, ExpiresAt: now.Add(sessionStickinessTTL)}
@@ -429,6 +440,5 @@ func evictSessionBindingsForAuth(authID string) int {
 func clearSessionBindings() {
 	sessionAuthMu.Lock()
 	sessionAuthBindings = make(map[string]sessionAuthBinding)
-	sessionRR = 0
 	sessionAuthMu.Unlock()
 }

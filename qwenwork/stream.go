@@ -200,6 +200,23 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	curAuthUID := authUID
 	curAccountLabel := accountLabel
 
+	// 在跑计数：调度层据此按真实负载平摊并发。上游按账号分配并行槽位，超出额度
+	// 的请求不报错而是在账号侧排队，表现为首字延迟升高而错误率健康；把同一会话的
+	// 并发子请求全压到一个号上就会触发它。计数覆盖整条流的生命周期——上游的排队
+	// 发生在「请求已抵达上游、还没产出首字」这段时间里，所以不能在首帧后就归还。
+	loadAuthID := curAuthID
+	releaseLoad := accountLoadAcquire(loadAuthID)
+	defer func() { releaseLoad() }()
+	// migrateLoad 把在跑计数迁到新账号（换号时用），避免计数留在已不再承载请求的号上。
+	migrateLoad := func(nextID string) {
+		if nextID == loadAuthID {
+			return
+		}
+		releaseLoad()
+		loadAuthID = nextID
+		releaseLoad = accountLoadAcquire(loadAuthID)
+	}
+
 	// Snapshot the encoded body once: it is account-independent and every
 	// retry re-signs the SAME body via applyCosyHeaders for the new
 	// account. The stream path builds httpReq with strings.NewReader, so
@@ -221,6 +238,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			if nextReq, rebErr := rebuildRequestWithQwenAuth(nextSA, []byte(encodedBody), maasSessionKey, curReq.Context()); rebErr == nil {
 				curReq = nextReq
 				curAuthID = nextID
+				migrateLoad(curAuthID)
 				curAuthUID = nextSA.Account.UID
 				curAccountLabel = strings.TrimSpace(nextSA.Account.Nickname)
 				if curAccountLabel == "" {
@@ -284,6 +302,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			}
 			curReq = nextReq
 			curAuthID = nextID
+			migrateLoad(curAuthID)
 			curAuthUID = nextSA.Account.UID
 			curAccountLabel = strings.TrimSpace(nextSA.Account.Nickname)
 			if curAccountLabel == "" {
@@ -364,6 +383,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 					}
 					curReq = nextReq
 					curAuthID = nextID
+					migrateLoad(curAuthID)
 					curAuthUID = nextSA.Account.UID
 					curAccountLabel = strings.TrimSpace(nextSA.Account.Nickname)
 					if curAccountLabel == "" {
@@ -417,6 +437,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			}
 			curReq = nextReq
 			curAuthID = nextID
+			migrateLoad(curAuthID)
 			curAuthUID = nextSA.Account.UID
 			curAccountLabel = strings.TrimSpace(nextSA.Account.Nickname)
 			if curAccountLabel == "" {
