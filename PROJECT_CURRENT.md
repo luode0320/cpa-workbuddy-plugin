@@ -70,6 +70,8 @@
   - **验证**：门禁 `cgo-shim-build.py safeguard-killer` build/vet/test 全绿（`PASS=58 FAIL=0`，0.28~0.32s）；gofmt CLEAN（CRLF→LF 临时副本）；**4 条哨兵变异逐条 KILLED**（删清理调用 / 清理空实现 / 去状态过滤 / 退回 `cfg.group`）。
   - **登记未修**：`claudeStreams.states` 无 TTL（只靠 `request.complete` 回调清理）、`handleStreamIntercept` 在 `ChunkIndex=-1` 不 flush 残余缓冲（流被截断时丢内容）、`stream.go:79` ST1005 错误串首字母大写（既有对外文本，非必要不改）。
   - **文档**：`doc/4-bugs/2026-11-28_223000_safeguard-killer会话绑定泄漏与count-tokens口径根因与修复.md`、`doc/5-tests/2026-11-28_224500_safeguard-killer0.1.13会话清理与口径收敛代码级验证.md`、`doc/6-review/2026-11-28_230000_safeguard-killer0.1.13_6-review.md`。
+  - **发布（已完成）**：commit `82f4399` → tag `safeguard-killer-v0.1.13` 触发 CI `46156063595` 但 **Release skipped**（darwin/arm64 cancelled，tag 路径无 allow_partial）→ 追加一次性 dispatch 工作流（仓库内置 `GITHUB_TOKEN`）触发 `46156785282`（allow_partial=true）→ **Release success**（5 平台，缺 darwin_arm64）→ 资产 `ALL CHECKSUMS OK` → `publish-assets --allow-missing` → registry commit `de6741a` → 生产 install 200 / `restart_required:false` → **`hot reloaded active_version=0.1.13 retired_version=0.1.11`**（23:04:26）→ 落盘 `.so` sha256 `043fa063…57ffd` 与本地 zip 逐字节一致 → 临时工作流删除 commit `23dd7d8`。
+  - **生产行为验收**：① `count_tokens` 用成员模型名 `deepseek-v4.1-flash` → `200 {"input_tokens":2}`（0.1.11 会报 `model group … is not configured`）；② `state` 由 **58163 B**（200 决策 + 9 条会话含过期项）降到 2076 B，5 分钟后 16680 B（55 决策 + 3 条会话全未过期），23:09:42 过期那条已从 `sessions` 消失；③ 6 分钟日志无 panic/unknown_method/[error]，容器未重启。
   - **教训**：`Split-Path (Split-Path $shim)` 会落到仓库根 `F:\cpa-plugin`，`Remove-Item -Recurse` 差一步删整仓；删临时目录前必须先断言路径匹配 `\\cpa-shim-[a-z0-9_]+$`。
 
 - **当前会话（2026-11-28 21:58 - 22:20）：glm-provider 0.2.6：版本三轨统一 + 移除 glm-web 旧目录（生产已热重载）**（用户「全部实现, 发布生产」）：
