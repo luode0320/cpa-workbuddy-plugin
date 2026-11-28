@@ -93,6 +93,14 @@
 ## 活动会话进展摘要
 
 - **当前会话（2026-11-29 02:40 - 03:35）：GLM 每日积分机制取证 + access_token 缺失修复**（用户两问：每日积分是否自动发放、为何导出只有 refresh_token）：
+- **当前会话（2026-11-29 02:45 - 04:00）：glm-provider 0.3.0/0.3.1/0.3.2：模型名全部虚构导致与网页对不上**（用户「网页只有2个模型, 而我们插件的模型一个都没对上, 这是一个巨大的bug吧」，随后给出真实名「GLM-5.3」和「GLM-5.3 Flash」）：
+  - **根因**：0.2.x 暴露的 `glm-4-plus`/`glm-5.1`/`glm-4.7`/`glm/zero`/`glm/chat_agent`/`glm/deep_research` **全部是编造的**，网页模型菜单里一个都没有。把「上游内部实现细节」误当模型标识：`zero`/`chat_agent`/`deep_research` 本是 `chat_mode`（模式）取值，`model`/`subscribe_id` 等字段上游根本忽略。
+  - **字段注入取证**：17 个 `meta_data` 候选 + 5 个顶层候选注入非法值，回读会话记录判定。只有 `chat_mode`（原样记录）与 `if_plus_model`（回显并记录）被读取；`model`/`model_id`/`chat_model`/`glm_model`/`subscribe_id`/`is_old_model` 等**全部忽略**——传垃圾不报错，这正是长期未被识破的原因。上游回报的模型标识恒为 `moe_53f`。`/openapi.json` 405、WAF 拦首页，拿不到字段定义。
+  - **0.3.0**：`modelCatalog` 只留两个真实模型，`if_plus_model` 由条目携带（true=GLM-5.3，false=Flash）；模型与模式正交分离；未知模型名回落 GLM-5.3 而非当 `chat_mode` 透传；顺带修 `is_networking` 硬编码 true→false。新增契约测试锁死「目录只能有这两项」。
+  - **0.3.1（我自己造成的二次污染）**：0.3.0 用历史 `chat_mode` 给模型拼后缀做「动态发现」，而我协议探测时塞进去的 `zzz-bogus`/`___definitely_not_a_real_value___`/`	urbo` 等被当成模式收录，线上目录从 7 项炸到 **27 项**。修复：`isKnownChatMode` 白名单（只放行 `""`/`zero`/`chat_agent`/`deep_research`）；发现结果只告警不扩目录；模式别名改为 `xpose_mode_aliases` 开关（默认关，目录严格等于网页两项）。并删除生产账号里 10 条被污染的会话。
+  - **0.3.2**：非流式回答重复三遍（`收到收到收到`）。上游每帧 `parts` 是**全量快照**（应答仅 3 帧，每帧都含完整 `收到`），流式 `parseGLMFrame` 有增量去重，`convertNonStream` 却逐帧直接拼接。改为复用增量算法。
+  - **生产验证（0.3.2）**：`plugin loaded version=0.3.2` + `hot reloaded active=0.3.2`；目录恰好 2 项（`glm/glm-5.3`、`glm/glm-5.3-flash`）；面板 200；两模型 × 流式/非流式全部只返回一份 `收到`；单测 41 全 PASS，gofmt 24 文件 PASS。
+  - **教训**：三轮迭代同一个病根——**用「调用成功」代替「行为正确」**。必须断言具体值（模型名等于网页那两项、回答等于 `收到` 而非包含），不能只断言 200。
   - **每日 200 积分全自动，无签到端点**：26 条候选路径（`user/sign`、`user/checkin`、`task/list`、`reward`、`score/record`、`activity` 等）GET/POST 全 404。`user/info` 的 `result` 仅 17 键，无任何 sign/task/reward 字段。`member_info.score_rule` 原文「免费用户，登录赠送200积分/天」。实证：02:10 读 199.01 → 02:44 读 **399.01**（+200），期间只做只读操作。**面板不应设签到按钮**，workbuddy 的「全部签到」无法平移。
   - **access_token 缺失是我们自己的 bug，非 GLM 限制**：`StoredAuth` 早有 `access_token`/`expires_at` 字段，但 `acquireToken` 刷新成功后**只写内存 `globalTokenCache`，从不回写账号对象**；加 `omitempty` 后空值不进文件 → 磁盘永远只有 refresh_token。
   - **0.2.15 修复**：`persistAccessToken`（刷新成功后按 refresh_token 反查账号并落盘 access_token/expires_at/轮换 refresh_token/updated_at，失败只记日志不阻断）；`findAuthByRefreshToken`（推理路径上只有 refresh_token，需反查）；`handleMgmtExport` 导出前对缺 token 或过期的补刷一次。新增 `persist_test.go` 3 个测试。
@@ -164,17 +172,5 @@
   - **真实端到端（TASK-007 关闭）**：授权「账号 glm Ji4HOg 已导入」→ `/accounts` 1 个账号 `disabled=false/test_failed=false` → 非流式「你好你好你好」→ 流式 `reasoning_content`+`content` 分帧正常 → `glm-think`/`glm-5.1` 均 200。
   - **教训**：①「提交后白屏」第一嫌疑是回调响应为空，不是 HTML 错；curl 用 GET 能拿到完整页面会误判「接口通」，**方法本身**必须核对；② 伪装头里凡能与实物对上的（如 `X-Device-Id`）都不能伪造，要从凭据派生，造不出就查协议；③ 同类校验常被多端点共享，修完一处必须扫全部调用方（`grep X-Device-Id` 只 1 处，但 `refreshHeaders` 有 2 个调用点都传了随机值）。
 
-- **当前会话（2026-11-28 22:23 - 23:05）：safeguard-killer 0.1.13：会话绑定泄漏修复 + 未使用功能移除（本地已提交，未发布）**（用户「Safeguard Killer插件, 持续监控一下bug和不需要没使用的功能移除。」）：
-  - **巡检手段**：`deadcode`（结论作废：c-shared 插件入口是 `//export cliproxyPluginCall` 而非 `main()`，全量符号报 unreachable 属假象）→ `staticcheck -checks all`（命中 1 条真 U1000 + 1 条 ST1005）→ 生产取证（`docker logs` 6h 无 panic/unknown_method/not_supported/[error]；`/v0/resource/plugins/safeguard-killer/state` 19508 B、60 条决策全 `served`、8 条会话）→ 宿主契约取证（`internal/pluginhost/executor_route.go`、`sdk/api/handlers/handlers_model_router_test.go` 的 `plugin_executor_count_tokens`）。
-  - **BUG-1 过期会话绑定无人清理**：`pruneSessions` 自 0.1.7 精简后零调用（staticcheck U1000 直接命中），过期只在「同 key 再次被访问」时由 `groupCandidateOrder` 懒删 ⇒ 不再被访问的会话 key 永久驻留 map（≈200 B/条），且 `/state` 每 10s 全量返给面板。修法：新增 `sessionPruneInterval=5min` 节流 + `pruneSessionsThrottled`，挂到 `bindGroupSession` 写入路径；`buildUIState` 持锁后先 prune，并只回 `IdleExpiresAt` 未过期的绑定（保留 24h `sessionRetention` 供 `buildGroupNotice` 的「上一轮由谁服务」提示）。
-  - **BUG-2 成员模型名 count_tokens 被判未知分组**：宿主对 count_tokens 与对话共用 `model.route`，路由链 `resolveTargetGroup` 认成员模型名、计数链 `cfg.group` 只认分组代号。修为 `resolveTargetGroup(cfg, req.Model, "")`。
-  - **未使用功能移除**：`goAfterStartupJitter` / `waitStartupJitter` / `startupJitterMax`（本插件无 scheduler、无定时器，三者零调用，staticcheck U1000）+ 两个只测它们的用例；`withModel` 内部重复 `sanitizeRequest`（且用 `currentConfig()` 覆盖本次请求口径）改为只改 `model` 字段。保留 `init()` 内存软上限与 `CPA_PLUGIN_MEMORY_LIMIT_MB` 覆盖（仍必需）。
-  - **验证**：门禁 `cgo-shim-build.py safeguard-killer` build/vet/test 全绿（`PASS=58 FAIL=0`，0.28~0.32s）；gofmt CLEAN（CRLF→LF 临时副本）；**4 条哨兵变异逐条 KILLED**（删清理调用 / 清理空实现 / 去状态过滤 / 退回 `cfg.group`）。
-  - **登记未修**：`claudeStreams.states` 无 TTL（只靠 `request.complete` 回调清理）、`handleStreamIntercept` 在 `ChunkIndex=-1` 不 flush 残余缓冲（流被截断时丢内容）、`stream.go:79` ST1005 错误串首字母大写（既有对外文本，非必要不改）。
-  - **文档**：`doc/4-bugs/2026-11-28_223000_safeguard-killer会话绑定泄漏与count-tokens口径根因与修复.md`、`doc/5-tests/2026-11-28_224500_safeguard-killer0.1.13会话清理与口径收敛代码级验证.md`、`doc/6-review/2026-11-28_230000_safeguard-killer0.1.13_6-review.md`。
-  - **发布（已完成）**：commit `82f4399` → tag `safeguard-killer-v0.1.13` 触发 CI `46156063595` 但 **Release skipped**（darwin/arm64 cancelled，tag 路径无 allow_partial）→ 追加一次性 dispatch 工作流（仓库内置 `GITHUB_TOKEN`）触发 `46156785282`（allow_partial=true）→ **Release success**（5 平台，缺 darwin_arm64）→ 资产 `ALL CHECKSUMS OK` → `publish-assets --allow-missing` → registry commit `de6741a` → 生产 install 200 / `restart_required:false` → **`hot reloaded active_version=0.1.13 retired_version=0.1.11`**（23:04:26）→ 落盘 `.so` sha256 `043fa063…57ffd` 与本地 zip 逐字节一致 → 临时工作流删除 commit `23dd7d8`。
-  - **生产行为验收**：① `count_tokens` 用成员模型名 `deepseek-v4.1-flash` → `200 {"input_tokens":2}`（0.1.11 会报 `model group … is not configured`）；② `state` 由 **58163 B**（200 决策 + 9 条会话含过期项）降到 2076 B，5 分钟后 16680 B（55 决策 + 3 条会话全未过期），23:09:42 过期那条已从 `sessions` 消失；③ 6 分钟日志无 panic/unknown_method/[error]，容器未重启。
-  - **教训**：`Split-Path (Split-Path $shim)` 会落到仓库根 `F:\cpa-plugin`，`Remove-Item -Recurse` 差一步删整仓；删临时目录前必须先断言路径匹配 `\\cpa-shim-[a-z0-9_]+$`。
 
-
-> 更早的会话明细（2026-11-20 及之前：store-auth PAT、10 插件面板、doubao 0.1.8/0.1.9/0.1.11/0.1.19~0.1.22 等）已归档至 git 提交历史与 doc/ 对应文档，本文件只保留最近 7 条会话摘要以控制体积。
+> 更早的会话明细（2026-11-20 及之前）已归档，见 doc/ 目录与 git 历史。
