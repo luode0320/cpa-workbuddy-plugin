@@ -74,22 +74,12 @@ func waitHostReadyForWatchdog(maxWait time.Duration, ready func() bool) bool {
 	}
 }
 
-// runWatchdogTick walks every qwenwork auth and hands the whole fleet to the
-// throttled concurrent refresh runner. Rebuilds the daily cooling mirror on
-// the same cadence.
+// runWatchdogTick 重建日冷却镜像。
+//
+// 不再顺带全量刷新积分：积分已由每小时扫描（credits_sweep.go）统一维护到
+// 持久化快照，面板读快照；此处再按 10 分钟全量打一遍上游属重复压力。
 func runWatchdogTick() {
 	refreshDailyCoolingSetFromDisk()
-	files, err := hostAuthList()
-	if err != nil {
-		return
-	}
-	targets := make([]refreshTarget, 0, len(files))
-	for _, f := range files {
-		targets = append(targets, refreshTarget{AuthIndex: f.AuthIndex, AuthID: f.ID})
-	}
-	if len(targets) > 0 {
-		globalRefresh.EnqueueAll(targets, "watchdog")
-	}
 }
 
 // watchdogFirstTickDelay 返回启动首轮全量刷新前的抖动延迟。

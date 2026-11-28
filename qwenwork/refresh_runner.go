@@ -8,10 +8,11 @@
 // returns immediately, while a background worker pool drains the queue with
 // a hard-coded concurrency limit of 10.
 //
-// Trigger sources (three entry points converge on one runner):
-//  1. panel enter (auto, no button)  — POST /refresh → EnqueueAll(source="panel")
-//  2. preserve watchdog 10m tick     — EnqueueAll(source="watchdog")
-//  3. GET /credits?track=1 (one card)— EnqueueOne(source="credits")
+// Trigger sources (two entry points converge on one runner):
+//  1. POST /refresh (explicit call only)— EnqueueAll(source="panel")
+//  2. GET /credits?track=1 (one card)   — EnqueueOne(source="credits")
+//
+// 面板进入不触发本 runner：积分由每小时扫描写入持久化快照，面板只读快照。
 //
 // All are idempotent. The runner keeps a per-account state machine
 // (pending → running → done|failed) so the panel can poll GET /refresh/status

@@ -829,8 +829,8 @@ async function load(force, btn){
     bindCardActions(g);
     filterRegion(currentFilter, null);
     renderSummary(accounts);
-    // 打开面板仅读缓存，不再自动全量并发拉上游；
-    // 无 credits 的卡片显示"加载中…"占位，点顶部"刷新数据"触发异步节流刷新。
+    // 打开面板只读持久化快照，不为任何账号打上游；积分由后端每小时扫描维护，
+    // 需要立即更新时点单卡「刷新」。
   }catch(e){
     if(force) toast("刷新失败","err",e.message||String(e));
     // 强制刷新失败时保留旧卡片，只 toast；首次加载仍写错误到 grid。
@@ -1226,21 +1226,10 @@ async function confirmDeleteAuth(){
     busy(btn,false);
   }
 }
-// 进入页面统一入口：先渲染缓存数据，再自动触发一次后台异步刷新
-// （同步自 workbuddy 0.14.9：去按钮 + 进入自动触发，前端无感知）。
+// 进入页面统一入口：只渲染持久化快照，不触发任何上游拉取。
+// 积分由后端每小时定时扫描维护；需要立即更新时点单卡「刷新」。
 async function enterPanel(){
   await load();
-  startBackgroundRefresh();
-}
-// 进入页面自动触发一次后台异步刷新（1s/账号，幂等，前端无感知）。
-// 页面已先渲染缓存数据；随后轮询 /refresh/status 逐账号局部刷新。
-// 若已有一轮刷新在跑（幂等），后端忽略本次请求，仍继续轮询展示进度。
-async function startBackgroundRefresh(){
-  try{
-    const d=await api("/refresh", {method:"POST"});
-    if(d.error) return; // 静默：后台刷新失败不打扰用户
-  }catch(e){ return; }
-  pollRefreshStatus();
 }
 document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
 document.addEventListener("keydown",e=>{
