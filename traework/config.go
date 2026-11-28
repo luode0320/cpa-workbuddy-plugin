@@ -359,6 +359,13 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n > 0 {
 				setHostBridgeOpenTimeout(time.Duration(n) * time.Second)
 			}
+		case "context_char_budget":
+			// 请求上下文字符预算：超预算时裁掉最旧历史，把输入压回可控区间。
+			// 对齐官方 SOLO 客户端的上下文压缩行为；填 0 关闭裁剪（全量透传）。
+			// 缺省键保持当前值，负数忽略。
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 {
+				setContextCharBudget(n)
+			}
 		}
 	}
 	// 每次 configure 都整套写入：四个键互为配套，分开写会让「serve 改了、

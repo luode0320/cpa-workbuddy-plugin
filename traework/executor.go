@@ -200,6 +200,17 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "empty messages", "", 0, authUID, sessionKey)
 		return nil, fmt.Errorf("empty messages after normalization")
 	}
+	// 上下文预算（同流式路径）：超预算裁掉最旧历史，压回可控输入规模。
+	messages, trimmedCount := trimMessagesToBudget(messages, loadedContextCharBudget())
+	if len(messages) == 0 {
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "empty messages after context trim", "", 0, authUID, sessionKey)
+		return nil, fmt.Errorf("empty messages after context trim")
+	}
+	if trimmedCount > 0 {
+		log.Printf("[traework] exec context trimmed: model=%s auth_uid=%s dropped_messages=%d kept=%d budget_chars=%d input_chars=%d",
+			req.Model, authUID, trimmedCount, len(messages),
+			loadedContextCharBudget(), estimateInputChars(messages))
+	}
 	tools := traeToolsFromOpenAI(oa.Tools)
 	toolChoice, suppressTools := normalizeTraeToolChoice(oa.ToolChoice)
 	if suppressTools {
@@ -338,6 +349,19 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	if len(messages) == 0 {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "empty messages", "", 0, authUID, sessionKey)
 		return nil, fmt.Errorf("empty messages after normalization")
+	}
+	// 上下文预算：官方 SOLO 客户端会在上下文快满时压缩历史，本插件此前全量透传，
+	// 导致同一会话每轮把完整历史重发、输入随轮次线性膨胀（生产实测 p50=413k token，
+	// 最大 884k）。超预算时裁掉最旧的历史，把输入压回可控区间。
+	messages, trimmedCount := trimMessagesToBudget(messages, loadedContextCharBudget())
+	if len(messages) == 0 {
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "empty messages after context trim", "", 0, authUID, sessionKey)
+		return nil, fmt.Errorf("empty messages after context trim")
+	}
+	if trimmedCount > 0 {
+		log.Printf("[traework] exec stream context trimmed: model=%s auth_uid=%s dropped_messages=%d kept=%d budget_chars=%d input_chars=%d",
+			req.Model, authUID, trimmedCount, len(messages),
+			loadedContextCharBudget(), estimateInputChars(messages))
 	}
 	inputChars := estimateInputChars(messages)
 	tools := traeToolsFromOpenAI(oa.Tools)

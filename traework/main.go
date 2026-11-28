@@ -281,7 +281,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.5.63"
+var version = "0.5.64"
 
 func wbRegistration() registration {
 	return registration{
@@ -319,7 +319,8 @@ func wbRegistration() registration {
 				{Name: "min_routable_credits", Type: pluginapi.ConfigFieldTypeInteger, Description: "保活线（默认 20 点）：剩余积分低于该值但高于禁用线的账号打「保活」标，仍可路由但排在正常号之后。填 0 关闭保活降级。"},
 				{Name: "low_credit_disable_below", Type: pluginapi.ConfigFieldTypeInteger, Description: "积分硬禁用线（默认 10 点）：刷新积分时发现剩余低于该值就写盘停用该账号，积分回升到线上后由下一轮刷新自动解禁。填 0 关闭新增禁用（已禁的号仍会自动解禁）。注意：禁用线高于保活线（min_routable_credits，默认 20）时保活档不再出现——低于禁用线的号直接停用，而不是降级排序；若想保留「禁用线以上、保活线以下」的降级区间，请把禁用线调到保活线之下。"},
 				{Name: "stream_direct_forced", Type: pluginapi.ConfigFieldTypeBoolean, Description: "强制流式请求走插件直连，跳过宿主 host.http.do_stream 桥（默认 false）。仅用于对照实验：生产默认走宿主桥，插件连接池配置对它无效。"},
-				{Name: "host_bridge_open_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "宿主桥 open 看门狗预算（秒，默认 120）。宿主 open 同步阻塞到上游响应头且宿主侧无任何超时，故本项是插件侧唯一兜底：超时后降级插件直连，并会重发一次完整上游请求。默认 120s 与上游响应头实测 p99（≈103s）同量级，只兜真正无限挂起；调低会掐断正常慢请求并触发整包重发（历史 30s 默认曾造成 33~36s TTFT 人造台阶）。填 0 或缺省保持当前值。"},
+				{Name: "host_bridge_open_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "宿主桥 open 看门狗预算（秒，默认 180）。宿主 open 同步阻塞到上游响应头且宿主侧无任何超时，故本项是插件侧唯一兜底：超时后如实报错并交由换号逻辑处理（不重发）。默认 180s 高于上游响应头实测尾部（101s），只兜真正无限挂起；调低会把正常长尾判成挂起。填 0 或缺省保持当前值。"},
+				{Name: "context_char_budget", Type: pluginapi.ConfigFieldTypeInteger, Description: "请求上下文字符预算（默认 1200000，约 300k token）。官方 SOLO 客户端会在上下文快满时压缩历史，本插件此前全量透传，导致同一会话每轮重发完整历史、输入随轮次线性膨胀（生产实测 p50=413k token、最大 884k，48% 落在 300k-500k）。超预算时裁掉最旧的历史，永远保留 system、首轮与最近 12 条；被裁的 tool 调用会成对清理。填 0 关闭裁剪（全量透传）。"},
 				{Name: "rotation_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用连续使用轮换（默认开启）：单个账号连续承流达到 rotation_serve_minutes 后主动让位，进入 rotation_cooldown_minutes 冷却，后续请求改由其它账号承接。已在会话粘性绑定中的会话同样生效；关闭填 false。"},
 				{Name: "rotation_serve_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "单账号连续承流多少分钟后让位（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
 				{Name: "rotation_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "轮换让位后停留在冷却的时长（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
