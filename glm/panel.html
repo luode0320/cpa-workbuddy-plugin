@@ -3,107 +3,501 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>智谱清言 Provider 面板</title>
+<title>智谱清言 面板</title>
 <style>
-:root{--bg:#faf9f5;--card:#fff;--border:#e3e1db;--fg:#2d2a26;--mut:#6d6760;--acc:#4c8dff;--on-acc:#fff;--ok:#10b981;--err:#c65746;--surface:#f0eee8;--input-bg:#fff;color-scheme:light}
-:root[data-theme="dark"]{--bg:#1e1d1b;--card:#26241f;--border:#3a3833;--fg:#ede9e3;--mut:#9a948c;--surface:#2f2d28;--input-bg:#1e1d1b;color-scheme:dark}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-.wrap{max-width:960px;margin:0 auto;padding:24px 20px}h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);font-size:13px;margin-bottom:20px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px}
-label{display:block;font-size:12px;color:var(--mut);margin:10px 0 4px}input,textarea{width:100%;background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:13px;font-family:inherit}
-textarea{min-height:64px;resize:vertical}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}
-button{background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}button.sec{background:var(--surface);color:var(--fg)}.btn{display:inline-block;background:var(--acc);color:var(--on-acc);text-decoration:none;padding:8px 14px;border-radius:8px;font-size:13px}button:disabled{opacity:.5}
-table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--border)}th{color:var(--mut);font-weight:600}.badge{font-size:11px;padding:2px 8px;border-radius:99px;background:rgba(16,185,129,.15);color:var(--ok)}.badge.off{background:rgba(109,103,96,.15);color:var(--mut)}
-.hint{font-size:12px;color:var(--mut);line-height:1.7}.err{color:var(--err)}.ok{color:var(--ok)}
+/* Theme tokens aligned with CPA management panel: default light, data-theme=dark, iframe 同步父级。 */
+:root{
+  --bg:#faf9f5;--card:#ffffff;--border:#e3e1db;--fg:#2d2a26;--mut:#6d6760;
+  --acc:#4c8dff;--on-acc:#ffffff;--ok:#10b981;--warn:#e0aa14;--err:#c65746;
+  --surface:#f0eee8;--surface-muted:#e9e6df;--btn-sec:#eef1f6;--btn-sec-hover:#e4e8ef;
+  --input-bg:#ffffff;--code-bg:#f3f4f6;--code-fg:#374151;--placeholder:rgba(109,103,96,.55);
+  --ok-soft:rgba(16,185,129,.10);--ok-border:rgba(16,185,129,.30);
+  --warn-soft:rgba(224,170,20,.12);--warn-border:rgba(224,170,20,.32);
+  --err-soft:rgba(198,87,70,.10);--err-border:rgba(198,87,70,.30);
+  --mut-soft:rgba(109,103,96,.12);--mut-border:rgba(109,103,96,.28);
+  --scrim:rgba(45,42,38,.35);--toast-shadow:0 10px 28px rgba(0,0,0,.12),0 0 0 1px rgba(0,0,0,.04);
+  --modal-shadow:0 24px 56px rgba(0,0,0,.18),0 0 0 1px rgba(0,0,0,.04);
+  --acc-ring:rgba(76,141,255,.18);--radius-md:12px;--radius-lg:16px;
+  color-scheme:light
+}
+:root[data-theme="dark"]{
+  --bg:#1e1d1b;--card:#26241f;--border:#3a3833;--fg:#ede9e3;--mut:#9a948c;
+  --acc:#4c8dff;--on-acc:#ffffff;--ok:#34d399;--warn:#f0c050;--err:#e07a6a;
+  --surface:#2f2d28;--surface-muted:#35332e;--btn-sec:#35332e;--btn-sec-hover:#3f3c36;
+  --input-bg:#1e1d1b;--code-bg:#35332e;--code-fg:#d6d1c9;--placeholder:rgba(154,148,140,.55);
+  --ok-soft:rgba(52,211,153,.12);--ok-border:rgba(52,211,153,.38);
+  --warn-soft:rgba(240,192,80,.14);--warn-border:rgba(240,192,80,.38);
+  --err-soft:rgba(224,122,106,.12);--err-border:rgba(224,122,106,.38);
+  --mut-soft:rgba(154,148,140,.16);--mut-border:rgba(154,148,140,.32);
+  --scrim:rgba(0,0,0,.55);--toast-shadow:0 10px 28px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.03);
+  --modal-shadow:0 24px 56px rgba(0,0,0,.45),0 0 0 1px rgba(255,255,255,.04);
+  --acc-ring:rgba(76,141,255,.28);
+  color-scheme:dark
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1400px;margin:0 auto;padding:24px 20px}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--mut);font-size:13px;margin-bottom:20px}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+button{background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
+button.sec{background:var(--btn-sec);color:var(--fg)}
+button.sec:hover{background:var(--btn-sec-hover)}
+button.danger{background:var(--err);color:#fff}
+button:disabled{opacity:.5;cursor:default}
+.toggle{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+@media(max-width:1100px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){.grid{grid-template-columns:1fr}}
+.card,.summary{background:var(--card);border:1px solid var(--border);border-radius:12px}
+.card{padding:16px}
+.card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:12px}
+.badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border);white-space:nowrap}
+.badge.off{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
+.badge.warn{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
+.badge.err{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
+.filter-bar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.ftag{background:var(--surface);border:1px solid var(--border);color:var(--mut);border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600}
+.ftag.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}
+.ftag .cnt{font-size:10px;opacity:.75;margin-left:4px}
+.summary{padding:16px;margin-bottom:14px}
+.summary-hd{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.summary-title{font-weight:700;font-size:14px}
+.summary-meta{color:var(--mut);font-size:12px}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.summary-item{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.summary-item .k{color:var(--mut);font-size:11px;margin-bottom:4px}
+.summary-item .v{font-size:18px;font-weight:700}
+.summary-item .v.ok{color:var(--ok)}
+.summary-item .v.warn{color:var(--warn)}
+.summary-item .v.err{color:var(--err)}
+.row{display:flex;justify-content:space-between;padding:5px 0;border-top:1px dashed var(--border)}
+.row:first-of-type{border-top:0}
+.k{color:var(--mut)}
+.v{font-weight:600}
+.v.ok{color:var(--ok)}.v.warn{color:var(--warn)}.v.err{color:var(--err)}
+.actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
+.loading{color:var(--mut);padding:24px 0;text-align:center}
+.field-input{flex:1;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--fg);font-size:13px}
+.toasts{position:fixed;top:16px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:9999;max-width:360px}
+.toast{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--ok);border-radius:10px;padding:10px 14px;box-shadow:var(--toast-shadow);font-size:13px;animation:slideIn .18s ease}
+.toast.err{border-left-color:var(--err)}
+.toast.warn{border-left-color:var(--warn)}
+.toast .t{font-weight:700;margin-bottom:2px}
+.toast .d{color:var(--mut);font-size:12px;word-break:break-word}
+@keyframes slideIn{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:none}}
+.modal-mask{position:fixed;inset:0;background:var(--scrim);display:none;align-items:center;justify-content:center;z-index:9000;padding:20px}
+.modal-mask.show{display:flex}
+.modal{background:var(--card);border-radius:var(--radius-lg);box-shadow:var(--modal-shadow);width:100%;max-width:560px;max-height:88vh;display:flex;flex-direction:column}
+.modal-hd{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid var(--border)}
+.modal-hd h2{font-size:16px;margin:0}
+.modal-x{background:transparent;color:var(--mut);font-size:20px;line-height:1;padding:2px 8px}
+.modal-bd{padding:16px 18px;overflow:auto}
+.modal-ft{display:flex;justify-content:flex-end;gap:8px;padding:14px 18px;border-top:1px solid var(--border)}
+.hint{color:var(--mut);font-size:12.5px;line-height:1.7;margin:0 0 10px}
+.hint code,code{background:var(--code-bg);color:var(--code-fg);padding:1px 5px;border-radius:4px;font-size:12px}
+textarea{width:100%;background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:9px 11px;font:13px/1.5 ui-monospace,monospace;resize:vertical}
+label{display:block;font-size:12px;color:var(--mut);margin:12px 0 5px}
+.import-result{margin-top:12px;font-size:12.5px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+.import-result.ok{color:var(--ok)}
+.import-result.err{color:var(--err)}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px;margin-right:5px}
+@keyframes sp{to{transform:rotate(360deg)}}
 </style>
+<script>
+/* 主题同步：嵌在 CPA 主面板 iframe 里时跟随父级 data-theme。 */
+(function(){
+  try{
+    var t=window.top.document.documentElement.getAttribute("data-theme");
+    if(t){document.documentElement.setAttribute("data-theme",t)}
+  }catch(e){}
+})();
+</script>
 </head>
 <body>
 <div class="wrap">
-  <h1>智谱清言 Provider</h1>
-  <div class="sub">refresh_token 鉴权 · OpenAI 兼容反代 · 模型前缀 <code>glm/</code></div>
+  <h1>智谱清言 账号面板</h1>
+  <div class="sub">chatglm_refresh_token 授权 · OpenAI 兼容反代 · 模型前缀 glm/</div>
 
-  <div class="card">
-    <h2>添加账号</h2>
-    <div class="hint">在 chatglm.cn 登录后，按 F12 → Application → Local Storage 复制 <code>chatglm_refresh_token</code>，粘贴到下方导入。插件用它换 access_token 调用上游，全程 token 鉴权。</div>
-    <label for="token">chatglm_refresh_token</label>
-    <textarea id="token" placeholder="粘贴 chatglm_refresh_token"></textarea>
-    <label for="label">备注（可选）</label>
-    <input id="label" placeholder="例如：主账号">
-    <div class="row"><button id="importBtn" data-action="import">导入并校验</button><span id="importMsg" class="hint"></span></div>
+  <div id="authBox" class="card" style="display:none;margin-bottom:16px">
+    <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
+    <div style="display:flex;gap:8px">
+      <input id="keyInput" type="password" placeholder="management key" class="field-input">
+      <button onclick="saveKey()">连接</button>
+    </div>
   </div>
 
-  <div class="card">
-    <h2>账号列表 <button class="sec" id="refreshBtn" data-action="refresh">刷新</button></h2>
-    <table><thead><tr><th>账号</th><th>标识</th><th>过期</th><th>状态</th><th>操作</th></tr></thead><tbody id="accountsBody"><tr><td colspan="5" class="hint">加载中…</td></tr></tbody></table>
+  <div class="bar">
+    <button class="sec" id="importBtn" onclick="openImportModal()">添加账号</button>
+    <button class="sec" id="exportBtn" onclick="exportAuth(this)" title="导出全部账号凭据为单个 JSON 汇总文件">导出凭证</button>
+    <button class="sec" onclick="load(this)">刷新列表</button>
+  </div>
+
+  <div class="filter-bar" id="filterBar">
+    <button type="button" class="ftag active" data-filter="all" onclick="filterAccounts('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
+    <button type="button" class="ftag" data-filter="enabled" onclick="filterAccounts('enabled',this)" title="已启用且未标记测试失败">可用 <span class="cnt" id="cntEnabled">0</span></button>
+    <button type="button" class="ftag" data-filter="disabled" onclick="filterAccounts('disabled',this)">已停用 <span class="cnt" id="cntDisabled">0</span></button>
+    <button type="button" class="ftag" data-filter="failed" onclick="filterAccounts('failed',this)" title="测试失败的账号">测试失败 <span class="cnt" id="cntFailed">0</span></button>
+  </div>
+
+  <div class="summary card" id="summaryBox" style="display:none"></div>
+  <div id="grid" class="grid"><div class="loading">加载中…</div></div>
+</div>
+
+<div class="modal-mask" id="importModal" onclick="onMaskClick(event,'importModal')">
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-hd">
+      <h2>添加账号</h2>
+      <button type="button" class="modal-x" onclick="closeModal('importModal')" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint"><b>获取令牌</b>：在浏览器打开并登录 <a href="https://chatglm.cn/" target="_blank" rel="noopener">chatglm.cn</a> → 按 <code>F12</code> → <code>Application</code> → <code>Local Storage</code> → 找到 <code>chatglm_refresh_token</code> → 复制它的值。</p>
+      <label for="importToken">chatglm_refresh_token</label>
+      <textarea id="importToken" rows="4" placeholder="粘贴 chatglm_refresh_token"></textarea>
+      <label for="importLabel">备注（可选）</label>
+      <input id="importLabel" class="field-input" placeholder="例如：主账号">
+      <div class="import-result" id="importResult"></div>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="closeModal('importModal')">取消</button>
+      <button type="button" id="importSubmit" onclick="importAuth(this)">导入并校验</button>
+    </div>
   </div>
 </div>
+
+<div class="modal-mask" id="deleteModal" onclick="onMaskClick(event,'deleteModal')">
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-hd">
+      <h2>删除账号</h2>
+      <button type="button" class="modal-x" onclick="closeModal('deleteModal')" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint" id="deleteModalHint">确定要删除该账号吗？</p>
+      <p class="hint" style="color:var(--err)">此操作会永久删除该账号及其认证文件，且不可恢复。</p>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="closeModal('deleteModal')">取消</button>
+      <button type="button" class="danger" id="deleteConfirmBtn" onclick="confirmDelete()">删除</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
 <script>
 const API = "/v0/management/plugins/glm-provider";
-function post(path, body) {
-  return fetch(API + path, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body || {})}).then(r => r.json());
+const SS_KEY = "glm-panel-key";
+const AUTH_PANEL_KEY = "cli-proxy-auth";
+
+/* ---------- management key 获取（嵌入自动读 / URL 参数 / 手工输入） ---------- */
+var authFailCount = 0, authFailUntil = 0;
+
+function readPanelKey(){
+  try{
+    var raw = window.top.localStorage.getItem(AUTH_PANEL_KEY) || localStorage.getItem(AUTH_PANEL_KEY);
+    if(!raw) return "";
+    var o = JSON.parse(raw);
+    if(typeof o === "string") return o;
+    return o.key || o.token || o.managementKey || "";
+  }catch(e){ return ""; }
 }
-function esc(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-function loadAccounts() {
-  fetch(API + "/accounts").then(r => r.json()).then(env => {
-    const list = (env && env.result && JSON.parse(env.result).accounts) || [];
-    const body = document.getElementById("accountsBody");
-    if (!list.length) { body.innerHTML = '<tr><td colspan="5" class="hint">暂无账号，请先导入 refresh_token</td></tr>'; return; }
-    body.innerHTML = list.map(a => {
-      const id = a.auth_id || a.auth_index;
-      const badge = a.disabled ? '<span class="badge off">停用</span>' : '<span class="badge">启用</span>';
-      const toggle = a.disabled ? "enable" : "disable";
-      const toggleText = a.disabled ? "启用" : "禁用";
-      return '<tr><td>'+esc(a.label)+'</td><td class="hint">'+esc(a.refresh_token_masked)+'</td><td class="hint">'+esc(a.expires_at)+'</td><td>'+badge+'</td><td>'+
-        '<button class="sec" data-action="test" data-auth-id="'+esc(id)+'">测试</button> '+
-        '<button class="sec" data-action="'+toggle+'" data-auth-id="'+esc(id)+'">'+toggleText+'</button> '+
-        '<button class="sec" data-action="delete" data-auth-id="'+esc(id)+'">删除</button></td></tr>';
-    }).join("");
-  }).catch(e => { document.getElementById("accountsBody").innerHTML = '<tr><td colspan="5" class="err">加载失败: '+esc(e.message)+'</td></tr>'; });
+function readUrlKey(){
+  try{
+    var u = new URL(location.href);
+    var k = u.searchParams.get("key") || "";
+    if(k){
+      sessionStorage.setItem(SS_KEY, k);
+      u.searchParams.delete("key");
+      history.replaceState(null,"",u.toString());
+    }
+    return k;
+  }catch(e){ return ""; }
 }
-function unwrap(env) {
-  if (env && env.result) { try { return JSON.parse(env.result); } catch (e) { return env; } }
-  return env || {};
+function readSessionKey(){
+  try{ return sessionStorage.getItem(SS_KEY) || ""; }catch(e){ return ""; }
 }
-document.addEventListener("click", function(ev) {
-  const btn = ev.target.closest("[data-action]");
-  if (!btn) return;
-  const action = btn.getAttribute("data-action");
-  const authID = btn.getAttribute("data-auth-id");
-  const msg = document.getElementById("importMsg");
-  if (action === "import") {
-    const token = document.getElementById("token").value.trim();
-    const label = document.getElementById("label").value.trim();
-    if (!token) { msg.className = "err"; msg.textContent = "请先粘贴 refresh_token"; return; }
-    btn.disabled = true; msg.className = "hint"; msg.textContent = "校验中…";
-    post("/import", {refresh_token: token, label: label}).then(env => {
-      const r = unwrap(env);
-      if (r.error) { msg.className = "err"; msg.textContent = r.error; }
-      else { msg.className = "ok"; msg.textContent = "导入成功"; document.getElementById("token").value = ""; loadAccounts(); }
-      btn.disabled = false;
-    }).catch(e => { msg.className = "err"; msg.textContent = e.message; btn.disabled = false; });
-    return;
+function getKey(){ return readSessionKey() || readPanelKey() || readUrlKey(); }
+function saveKey(){
+  var v = (document.getElementById("keyInput").value || "").trim();
+  if(!v){ toast("请输入管理密钥","err"); return; }
+  try{ sessionStorage.setItem(SS_KEY, v); }catch(e){}
+  authFailCount = 0; authFailUntil = 0;
+  document.getElementById("authBox").style.display = "none";
+  load();
+}
+function showAuth(){ document.getElementById("authBox").style.display = "block"; }
+function authHeaders(k){ return k ? {"Authorization":"Bearer "+k} : {}; }
+
+/* ---------- 通用工具 ---------- */
+function esc(s){
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+  });
+}
+function toast(title, kind, detail){
+  kind = kind || "ok";
+  var box = document.getElementById("toasts");
+  var el = document.createElement("div");
+  el.className = "toast" + (kind === "ok" ? "" : " " + kind);
+  el.innerHTML = '<div class="t">' + esc(title) + '</div>' + (detail ? '<div class="d">' + esc(detail) + '</div>' : "");
+  box.appendChild(el);
+  setTimeout(function(){ el.remove(); }, 4200);
+}
+function busy(btn, on){
+  if(!btn) return;
+  if(on){ btn.dataset.txt = btn.textContent; btn.disabled = true; btn.innerHTML = '<span class="spin"></span>' + esc(btn.dataset.txt); }
+  else { btn.disabled = false; if(btn.dataset.txt) btn.textContent = btn.dataset.txt; }
+}
+function fmtTime(s){
+  if(!s) return "-";
+  var d = new Date(s);
+  if(isNaN(d.getTime())) return s;
+  var p = function(n){ return n < 10 ? "0"+n : ""+n; };
+  return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes());
+}
+
+/* ---------- API ---------- */
+async function api(path, opts){
+  opts = opts || {};
+  var silent = !!opts.__silent;
+  var fo = Object.assign({}, opts); delete fo.__silent;
+  var k = getKey();
+  if(!k){ if(!silent) showAuth(); throw new Error("需要管理密钥"); }
+  if(Date.now() < authFailUntil){ throw new Error("认证多次失败，请稍后重试（防 IP 封禁）"); }
+  var r = await fetch(API + path, Object.assign({}, fo, {credentials:"omit", headers:Object.assign({}, opts.headers||{}, authHeaders(k))}));
+  if(r.status === 401){
+    authFailCount++;
+    if(authFailCount >= 3){
+      try{ sessionStorage.removeItem(SS_KEY); }catch(e){}
+      authFailUntil = Date.now() + 60000; authFailCount = 0; showAuth();
+      throw new Error("认证多次失败，请检查管理密钥后 60s 再试");
+    }
+    throw new Error("management key 无效或缺失（将自动重试）");
   }
-  if (action === "refresh") { loadAccounts(); return; }
-  if (action === "enable" || action === "disable") {
-    post("/"+action, {auth_id: authID}).then(() => loadAccounts()); return;
+  if(r.status === 403){
+    var body = ""; try{ body = await r.text(); }catch(e){}
+    if(/IP banned|too many failed/i.test(body)){
+      authFailUntil = Date.now() + 60000;
+      throw new Error(body.trim() || "IP 被封禁，请稍后再试");
+    }
+    throw new Error(body.trim() || "禁止访问 (403)");
   }
-  if (action === "delete") {
-    if (!confirm("确认删除该账号?")) return;
-    post("/delete", {auth_id: authID}).then(() => loadAccounts()); return;
-  }
-  if (action === "test") {
-    btn.disabled = true; const old = btn.textContent; btn.textContent = "测试中…";
-    post("/test-active", {auth_id: authID}).then(env => {
-      const r = unwrap(env);
-      alert(r.ok ? "测试通过: " + (r.model || "") : ("测试失败: " + (r.error || "unknown")));
-      btn.disabled = false; btn.textContent = old;
-    }).catch(e => { alert("测试失败: " + e.message); btn.disabled = false; btn.textContent = old; });
-    return;
+  if(!silent) authFailCount = 0;
+  var text = await r.text();
+  if(!text) return {error:"empty response (HTTP " + r.status + ")"};
+  try{ return JSON.parse(text); }catch(e){ return {error:"bad JSON (HTTP " + r.status + "): " + text.slice(0,200)}; }
+}
+
+/* ---------- 账号数据 ---------- */
+var allAccounts = [], currentFilter = "all";
+
+async function load(btn){
+  if(btn) busy(btn, true);
+  try{
+    if(!getKey()){ showAuth(); document.getElementById("grid").innerHTML = '<div class="loading">请先填写 management key</div>'; return; }
+    var res = await api("/accounts");
+    if(res.error){ throw new Error(res.error); }
+    allAccounts = res.accounts || [];
+    updateFilterCounts();
+    renderSummary();
+    renderGrid();
+  }catch(e){
+    document.getElementById("grid").innerHTML = '<div class="loading" style="color:var(--err)">加载失败：' + esc(e.message) + '</div>';
+    toast("加载失败","err",e.message);
+  }finally{ if(btn) busy(btn, false); }
+}
+
+function isDisabled(a){ return !!a.disabled; }
+function isFailed(a){ return !!a.test_failed; }
+
+function updateFilterCounts(){
+  var n = {all: allAccounts.length, enabled:0, disabled:0, failed:0};
+  allAccounts.forEach(function(a){
+    if(isDisabled(a)) n.disabled++;
+    else if(isFailed(a)) n.failed++;
+    else n.enabled++;
+  });
+  document.getElementById("cntAll").textContent = n.all;
+  document.getElementById("cntEnabled").textContent = n.enabled;
+  document.getElementById("cntDisabled").textContent = n.disabled;
+  document.getElementById("cntFailed").textContent = n.failed;
+}
+
+function filterAccounts(f, btn){
+  currentFilter = f;
+  var tags = document.querySelectorAll("#filterBar .ftag");
+  for(var i=0;i<tags.length;i++){ tags[i].classList.remove("active"); }
+  if(btn) btn.classList.add("active");
+  renderGrid();
+}
+
+function accountsForFilter(){
+  return allAccounts.filter(function(a){
+    if(currentFilter === "enabled") return !isDisabled(a) && !isFailed(a);
+    if(currentFilter === "disabled") return isDisabled(a);
+    if(currentFilter === "failed") return isFailed(a) && !isDisabled(a);
+    return true;
+  });
+}
+
+function renderSummary(){
+  var box = document.getElementById("summaryBox");
+  if(!allAccounts.length){ box.style.display = "none"; return; }
+  box.style.display = "block";
+  var enabled = 0, disabled = 0, failed = 0;
+  allAccounts.forEach(function(a){
+    if(isDisabled(a)) disabled++;
+    else if(isFailed(a)) failed++;
+    else enabled++;
+  });
+  box.innerHTML =
+    '<div class="summary-hd"><div class="summary-title">账号概览</div>' +
+    '<div class="summary-meta">模型前缀 glm/ · refresh_token 鉴权</div></div>' +
+    '<div class="summary-grid">' +
+      '<div class="summary-item"><div class="k">账号总数</div><div class="v">' + allAccounts.length + '</div></div>' +
+      '<div class="summary-item"><div class="k">可用</div><div class="v ok">' + enabled + '</div></div>' +
+      '<div class="summary-item"><div class="k">已停用</div><div class="v">' + disabled + '</div></div>' +
+      '<div class="summary-item"><div class="k">测试失败</div><div class="v warn">' + failed + '</div></div>' +
+    '</div>';
+}
+
+function accountCard(a){
+  var id = a.auth_id || a.auth_index || "";
+  var badge = isDisabled(a)
+    ? '<span class="badge off">已停用</span>'
+    : (isFailed(a) ? '<span class="badge err">测试失败</span>' : '<span class="badge">可用</span>');
+  var toggleAction = isDisabled(a) ? "enable" : "disable";
+  var toggleText = isDisabled(a) ? "启用" : "停用";
+  var rows = "";
+  rows += '<div class="row"><span class="k">令牌</span><span class="v">' + esc(a.refresh_token_masked || "-") + '</span></div>';
+  rows += '<div class="row"><span class="k">Access 过期</span><span class="v">' + esc(fmtTime(a.expires_at)) + '</span></div>';
+  if(a.user_id){ rows += '<div class="row"><span class="k">用户 ID</span><span class="v">' + esc(a.user_id) + '</span></div>'; }
+  return '<div class="card" data-auth-id="' + esc(id) + '">' +
+    '<h2><span>' + esc(a.label || id) + '</span>' + badge + '</h2>' +
+    '<div class="uid">' + esc(id) + '</div>' + rows +
+    '<div class="actions">' +
+      '<button class="sec" data-action="test" data-auth-id="' + esc(id) + '">测试</button>' +
+      '<button class="sec" data-action="' + toggleAction + '" data-auth-id="' + esc(id) + '">' + toggleText + '</button>' +
+      '<button class="sec" data-action="delete" data-auth-id="' + esc(id) + '">删除</button>' +
+    '</div></div>';
+}
+
+function renderGrid(){
+  var g = document.getElementById("grid");
+  var list = accountsForFilter();
+  if(!allAccounts.length){ g.innerHTML = '<div class="loading">暂无账号，点上方「添加账号」导入 chatglm_refresh_token</div>'; return; }
+  if(!list.length){ g.innerHTML = '<div class="loading">当前筛选下没有账号</div>'; return; }
+  g.innerHTML = list.map(accountCard).join("");
+}
+
+/* ---------- 卡片操作 ---------- */
+document.getElementById("grid").addEventListener("click", function(ev){
+  var btn = ev.target.closest("[data-action]");
+  if(!btn) return;
+  var action = btn.dataset.action, id = btn.dataset.authId;
+  if(action === "test") return testAccount(id, btn);
+  if(action === "enable" || action === "disable") return setStatus(id, action === "disable", btn);
+  if(action === "delete") return openDelete(id);
+});
+
+async function testAccount(id, btn){
+  busy(btn, true);
+  try{
+    var res = await api("/test-active", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({auth_id:id})});
+    if(res.error) throw new Error(res.error);
+    if(res.ok){ toast("测试通过", "ok", res.model || ""); }
+    else { toast("测试失败", "err", res.error || "unknown"); }
+  }catch(e){ toast("测试失败","err",e.message); }
+  finally{ busy(btn, false); }
+}
+
+async function setStatus(id, disabled, btn){
+  busy(btn, true);
+  try{
+    var res = await api(disabled ? "/disable" : "/enable", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({auth_id:id})});
+    if(res.error) throw new Error(res.error);
+    toast(disabled ? "已停用" : "已启用", "ok");
+    await load();
+  }catch(e){ toast("操作失败","err",e.message); }
+  finally{ busy(btn, false); }
+}
+
+/* ---------- 删除（二次确认） ---------- */
+var pendingDelete = "";
+function openDelete(id){
+  pendingDelete = id;
+  document.getElementById("deleteModalHint").textContent = "确定要删除账号 " + id + " 吗？";
+  document.getElementById("deleteModal").classList.add("show");
+}
+async function confirmDelete(){
+  var btn = document.getElementById("deleteConfirmBtn");
+  busy(btn, true);
+  try{
+    var res = await api("/delete", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({auth_id:pendingDelete})});
+    if(res.error) throw new Error(res.error);
+    toast("已删除","ok", pendingDelete);
+    closeModal("deleteModal");
+    await load();
+  }catch(e){ toast("删除失败","err",e.message); }
+  finally{ busy(btn, false); }
+}
+
+/* ---------- 导入 ---------- */
+function openImportModal(){
+  document.getElementById("importResult").textContent = "";
+  document.getElementById("importToken").value = "";
+  document.getElementById("importLabel").value = "";
+  document.getElementById("importModal").classList.add("show");
+  document.getElementById("importToken").focus();
+}
+async function importAuth(btn){
+  var token = (document.getElementById("importToken").value || "").trim();
+  var label = (document.getElementById("importLabel").value || "").trim();
+  var out = document.getElementById("importResult");
+  if(!token){ out.className = "import-result err"; out.textContent = "请先粘贴 chatglm_refresh_token"; return; }
+  busy(btn, true);
+  out.className = "import-result"; out.textContent = "校验中…";
+  try{
+    var res = await api("/import", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({refresh_token:token, label:label})});
+    if(res.error) throw new Error(res.error);
+    out.className = "import-result ok"; out.textContent = "导入成功：" + (res.imported || "");
+    toast("导入成功","ok", res.imported || "");
+    await load();
+    setTimeout(function(){ closeModal("importModal"); }, 900);
+  }catch(e){
+    out.className = "import-result err"; out.textContent = "导入失败：" + e.message;
+    toast("导入失败","err",e.message);
+  }finally{ busy(btn, false); }
+}
+
+/* ---------- 导出 ---------- */
+async function exportAuth(btn){
+  busy(btn, true);
+  try{
+    var res = await api("/export");
+    if(res.error) throw new Error(res.error);
+    var blob = new Blob([JSON.stringify(res.accounts || [], null, 2)], {type:"application/json"});
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "glm-accounts.json";
+    a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+    toast("已导出","ok");
+  }catch(e){ toast("导出失败","err",e.message); }
+  finally{ busy(btn, false); }
+}
+
+/* ---------- 模态框 ---------- */
+function closeModal(id){ document.getElementById(id).classList.remove("show"); }
+function onMaskClick(ev, id){ if(ev.target.id === id) closeModal(id); }
+document.addEventListener("keydown", function(e){
+  if(e.key === "Escape"){
+    ["importModal","deleteModal"].forEach(function(id){ closeModal(id); });
   }
 });
-</script>
-<script>
-loadAccounts();
+
+/* ---------- 启动 ---------- */
+load();
 </script>
 </body>
 </html>
