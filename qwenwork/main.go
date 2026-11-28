@@ -751,6 +751,8 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		var attemptTTFT uint64
 		// 在跑计数（与流式路径同口径）：调度层按真实负载平摊并发，避免把同一会话
 		// 的并发子请求全压到一个号上、超出上游并行槽位后被上游静默排队。
+		// 正常返回路径在此归还；异常路径不需要额外兜底——本插件无 recover()，
+		// panic 会经 cgo 杀死宿主进程，进程重启后内存计数一并清零。
 		releaseAttempt := accountLoadAcquire(usedAuthID)
 		completion, attemptTTFT, completionErr = doExecuteOnceQwenWork(body, curSA, req.Model, maasSessionKey, req.HostCallbackID)
 		releaseAttempt()
