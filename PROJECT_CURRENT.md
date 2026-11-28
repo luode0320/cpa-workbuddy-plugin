@@ -78,6 +78,14 @@
 
 ## 活动会话进展摘要
 
+- **当前会话（2026-11-28 23:45 - 2026-11-29 00:10）：safeguard-killer 0.1.15：状态契约审计 + 死字段清理 + 用例补强（已发布生产）**（同一目标第 3 轮）：
+  - **审计结论**：配置项 11 个全部有生效点且在面板可见可改；CSS 变量 28 定义 / 25 引用，差集 3 个都是「两套主题各定义 + 一处引用」的活变量；JS 51 个函数全部被调用；`data-action` 6 个值与处理分支完全对称；面板按**响应形状**（`output`/`content`/`choices`）而非格式名注入提示，未知形状原样返回属设计。
+  - **唯一死字段**：`sessionBinding.Provider` 只被赋常量 `groupProvider`，`ui.go` 全文检索 `provider` 0 次。已删字段 + 两处赋值 + 注释说明为何不放。生产验证：`/state` 的会话字段变为 `session,auth_id,model,bound_at,last_seen,idle_expires_at`。
+  - **覆盖率基线**：`go test -coverprofile` 显示 102 函数 / 26 个 0 覆盖 / 语句 64.8%。`configurePlugin`、`validateConfig`（热更新唯一入口与守门）此前完全没测。
+  - **补测 7 条**：`config_test.go` 4 条（合法 YAML 落盘含 notice_prefix、空下发回落默认、8 类非法配置逐条被挡**且不污染生效配置**、信封非 JSON 报错）+ `inspect_test.go` 3 条（Claude 内容三形态、Gemini 六安全/四非拒答 finishReason、流中拒答后绑定推进含三种 no-op）。覆盖率 64.8% → 67.2%，0 覆盖 26 → 23（剩下多为 cgo ABI 与 `main`）。
+  - **发布**：`eafe557`（代码）→ 内置 token dispatch run `46162188990` → Release success → registry `59bade4` → 宿主可见版本轮询 6 轮（约 6 分钟）到位 → install 200 → `hot reloaded active_version=0.1.15 retired_version=0.1.14`（00:07:45）→ sha256 `7dcfc6f4…2d9b` 一致 → 分组对话 200。门禁 `PASS=68 FAIL=0`。
+  - **观察**：darwin/arm64 连续两个版本（0.1.14、0.1.15）都被 cancelled，其余 5 平台正常；`allow_partial=true` 让 Release 照常产出，registry 继续 5 平台。macOS runner 的取消不是偶发一次，后续可按「5 平台为常态」处理。
+
 - **当前会话（2026-11-28 23:20 - 23:40）：safeguard-killer 0.1.14：流式加固（本地已提交，已发布生产）**（用户「Safeguard Killer插件, 持续监控一下bug和不需要没使用的功能移除。」第 2 轮）：
   - **巡检手段**：配置项使用面逐字段反查（`pluginConfig`/`featureConfig` 全部有生产读取点，**无死配置**）；生产决策分布（108 决策 / 114 attempt **全部 served**，无 fallback）；`staticcheck -checks all`（除 C ABI 假象只剩 `stream.go:79 ST1005`）；`executeGroup`→`prefetchStream`→`forwardStream`→`emitExhaustedNoticeStream` 逐段读。
   - **排除的假缺陷**：① `prefetchStream` 每条错误路径都已关源流（`refusal.go:875/880/889/898/905/911`），`continue` 不泄漏；② `request.intercept_before/after` 共用 handler 是宿主语义（`rpc_client.go:719/728` 都映射到 `InterceptRequestAfterAuth`）；③ `ChunkIndex == -1` 是 `StreamChunkHeaderInitIndex`（仅响应头初始化），不是流结束，早退正确。
