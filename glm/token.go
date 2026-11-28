@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/md5"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -85,10 +86,32 @@ func newNonce() string {
 	return strings.ReplaceAll(fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().UnixMicro()), "-", "")
 }
 
+// deviceIDFromRefreshToken 从 refresh_token 的 JWT 载荷中读取 device_id。
+// [参数] refreshToken: chatglm_refresh_token。
+// [返回] device_id；格式不符或取不到时返回空串。
+// 最近修改时间：2026-11-28 新增，上游要求 X-Device-Id 与令牌载荷内的设备标识一致。
+func deviceIDFromRefreshToken(refreshToken string) string {
+	parts := strings.Split(refreshToken, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(claims.DeviceID)
+}
+
 // refreshHeaders 构造刷新端点所需的全部伪装头。
-// [参数] refreshToken: 刷新令牌；sign: 签名三元组；deviceID: 设备标识。
+// [参数] refreshToken: 刷新令牌；sign: 签名三元组；deviceID: 取自令牌载荷的设备标识。
 // [返回] HTTP 头。
-// 最近修改时间：2026-11-28 新增, 双源协议取证一致的伪装头集合。
+// 最近修改时间：2026-11-28 修正 deviceID 来源；上游按此头校验设备一致性，随机值必被拒。
 func refreshHeaders(refreshToken string, sign signResult, deviceID string) http.Header {
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+refreshToken)
@@ -115,15 +138,19 @@ func refreshHeaders(refreshToken string, sign signResult, deviceID string) http.
 // requestToken 用 refresh_token 换取 access_token。
 // [参数] refreshToken: 刷新令牌；cfg: 插件配置。
 // [返回] 令牌结果、错误。
-// 最近修改时间：2026-11-28 新增, refresh_token 换 access_token 主链路。
+// 最近修改时间：2026-11-28 修正 X-Device-Id 取值，随机设备标识会被上游判 40004。
 func requestToken(refreshToken string, cfg Config) (*tokenResult, error) {
+	deviceID := deviceIDFromRefreshToken(refreshToken)
+	if deviceID == "" {
+		return nil, fmt.Errorf("refresh_token 缺少 device_id，请从 chatglm.cn 重新复制")
+	}
 	sign := generateSign(cfg.SignSecret, time.Now().UnixMilli(), newNonce())
 	body := bytes.NewBufferString("{}")
 	req, err := http.NewRequest(http.MethodPost, cfg.RefreshEndpoint, body)
 	if err != nil {
 		return nil, fmt.Errorf("build refresh request: %w", err)
 	}
-	req.Header = refreshHeaders(refreshToken, sign, newNonce())
+	req.Header = refreshHeaders(refreshToken, sign, deviceID)
 	resp, err := tokenHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("refresh request failed: %w", err)

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.7 (2026-11-28)
+
+- **修复 `refresh_token` 换取 `access_token` 必失败（上游 `40004 bad request`）**：`X-Device-Id` 原先发送随机串，上游要求它必须等于 `refresh_token` 的 JWT 载荷里编码的 `device_id`。新增 `deviceIDFromRefreshToken` 从载荷解析 `device_id` 并用作该请求头；载荷缺失时在请求上游前直接报「refresh_token 缺少 device_id」。
+- **修复授权页提交后白屏**：`/login` 表单原以 `POST` 提交到 `/v0/resource/plugins/glm-provider/login/callback`，而 resource 路由只接受 `GET`，`POST` 返回 404 空响应体，前端 `document.write` 写入空串导致整页空白。改为 `GET` + `X-GLM-RefreshToken` 请求头（同源不触发预检，令牌不进 URL 与历史），并增加状态码判空兜底，失败时改为就地报错而非清空页面。
+- 测试夹具改用 JWT 形 `fakeRefreshToken(deviceID)`，新增 `TestDeviceIDFromRefreshToken`（四种边界）与 `TestRequestTokenRejectsMissingDeviceID`，并在 `TestRequestTokenMock` 中断言 `X-Device-Id` 来自载荷。
+
 ## 0.2.6 (2026-11-28)
 
 - 版本三轨统一：`main.go` 的 `version`、`VERSION`、`registry.json` 三处同值 0.2.6，消除 0.2.2/0.2.5 并存导致的发布歧义。

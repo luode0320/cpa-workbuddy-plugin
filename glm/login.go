@@ -349,9 +349,12 @@ document.getElementById("submitBtn").addEventListener("click",function(){
   if(!tok){msg.className="msg err";msg.textContent="请先粘贴 chatglm_refresh_token";return}
   btn.disabled=true;msg.className="msg";msg.textContent="校验中…";
   var h={};h["` + callbackTokenHeader + `"]=tok;
-  fetch(CALLBACK,{method:"POST",headers:h,credentials:"omit"})
-    .then(function(r){return r.text()})
-    .then(function(t){document.open();document.write(t);document.close()})
+  fetch(CALLBACK,{method:"GET",headers:h,credentials:"omit",cache:"no-store"})
+    .then(function(r){return r.text().then(function(t){return {ok:r.ok,status:r.status,body:t}})})
+    .then(function(res){
+      if(!res.ok||!res.body){btn.disabled=false;msg.className="msg err";msg.textContent="回调失败 HTTP "+res.status;return}
+      document.open();document.write(res.body);document.close();
+    })
     .catch(function(e){btn.disabled=false;msg.className="msg err";msg.textContent="提交失败: "+e});
 });
 </script>`)
