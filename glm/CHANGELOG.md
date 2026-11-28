@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.13 (2026-11-29)
+
+- **修复默认档重复**：上游会话历史把默认档记成 `chat_mode=normal`，而请求侧传 `""` 与 `normal` 行为一致，导致目录同时出现 `glm/glm-4-plus`（空档）与 `glm/normal` 两个同档项。新增 `normalizeChatMode`，把 `normal`（含大小写与空白变体）归一到 `""`；`resolveAssistantID` 同步处理，`glm/normal` 请求归一到默认档。
+- 新增 `TestNormalizeChatModeCollapsesDefault`、`TestEffectiveChatModesDedupesNormal` 锁定该归一化。
+
 ## 0.2.12 (2026-11-29)
 
 - **模型目录真正动态化，上游新增档位无需改插件**：新增 `discoverChatModes`，从账号历史会话 `POST/GET /chatglm/backend-api/assistant/conversation/list` 的 `meta_data.chat_mode` 中发现上游实际用过的档位。历史里出现过的任何取值都会被纳入目录，未知档位原样透传，因此上游上线新模型时插件下次刷新即自动获得。

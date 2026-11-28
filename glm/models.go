@@ -117,6 +117,9 @@ func resolveAssistantID(model string) (string, string) {
 	case lower == "glm-4-plus" || lower == "glm-5.1" || lower == "glm-4.7" || lower == "glm-4":
 		// 历史别名与默认档等价。
 		return assistantID, ""
+	case lower == "normal":
+		// 上游历史把默认档记成 normal，请求侧归一到空串。
+		return assistantID, ""
 	case strings.Contains(lower, "deepresearch"):
 		return assistantID, "deep_research"
 	case strings.Contains(lower, "think"):

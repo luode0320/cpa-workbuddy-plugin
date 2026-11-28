@@ -285,6 +285,39 @@ func TestResolveAssistantIDMapsModes(t *testing.T) {
 	}
 }
 
+// TestNormalizeChatModeCollapsesDefault 验证上游记录的 normal 与请求侧的 "" 归一到同一档，
+// 避免目录里同时出现 glm-4-plus 与 glm/normal 两个同档项。
+func TestNormalizeChatModeCollapsesDefault(t *testing.T) {
+	cases := map[string]string{
+		"normal":         "",
+		"Normal":         "",
+		"  normal  ":     "",
+		"":               "",
+		"zero":           "zero",
+		"chat_agent":     "chat_agent",
+		"deep_research":  "deep_research",
+		"brand_new_mode": "brand_new_mode",
+	}
+	for in, want := range cases {
+		if got := normalizeChatMode(in); got != want {
+			t.Errorf("normalizeChatMode(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestEffectiveChatModesDedupesNormal 验证发现到 normal 时不会额外产生一个同档条目。
+func TestEffectiveChatModesDedupesNormal(t *testing.T) {
+	got := effectiveChatModes([]string{"normal", "zero"})
+	if len(got) != len(knownChatModes) {
+		t.Fatalf("normal must collapse into default, got %v", got)
+	}
+	for _, m := range got {
+		if m == "normal" {
+			t.Fatalf("normal must not survive as its own mode: %v", got)
+		}
+	}
+}
+
 // TestChatModeModelIDRoundTrip 验证档位到模型名再到档位可无损往返。
 func TestChatModeModelIDRoundTrip(t *testing.T) {
 	for _, mode := range []string{"", "zero", "chat_agent", "deep_research", "brand_new"} {

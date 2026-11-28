@@ -217,6 +217,19 @@ func discoveryAssistantIDs(accessToken string, cfg Config) []string {
 	return ids
 }
 
+// normalizeChatMode 把上游历史里记录的 chat_mode 归一化成请求侧取值。
+// 上游会话历史把默认档记成 "normal"，而请求时传 "" 与 "normal" 行为一致
+// （0.2.11 实测两者响应形态相同），故统一归到 ""，避免目录里出现同档重复项。
+// [参数] mode: 上游记录值。
+// [返回] 归一化后的取值。
+// 最近修改时间：2026-11-29 新增, 消除默认档的两种写法。
+func normalizeChatMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "normal") {
+		return ""
+	}
+	return strings.TrimSpace(mode)
+}
+
 // effectiveChatModes 返回内置基线与历史发现的并集，保持稳定顺序。
 // [参数] discovered: 历史发现的档位。
 // [返回] 合并后的档位列表。
@@ -228,7 +241,8 @@ func effectiveChatModes(discovered []string) []string {
 		seen[mode] = struct{}{}
 		out = append(out, mode)
 	}
-	for _, mode := range discovered {
+	for _, raw := range discovered {
+		mode := normalizeChatMode(raw)
 		if _, ok := seen[mode]; ok {
 			continue
 		}
@@ -247,9 +261,7 @@ func chatModeModelID(mode string) string {
 		return "glm/glm-4-plus"
 	}
 	return "glm/" + mode
-}
-
-// chatModeDisplayName 返回档位的展示名，未知档位原样显示并标注来源。
+} // chatModeDisplayName 返回档位的展示名，未知档位原样显示并标注来源。
 // [参数] mode: chat_mode 取值。
 // [返回] 展示名。
 // 最近修改时间：2026-11-29 新增, 未知档位也能在面板上如实呈现。
