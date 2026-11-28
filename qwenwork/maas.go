@@ -158,6 +158,62 @@ func logMaasTicketMint(account, sessionID string) bool {
 	return true
 }
 
+// maasAffinity 是一组「会话级恒定」的客户端归因头取值。
+type maasAffinity struct {
+	// requestID 对应 x-mm-client-request-id。
+	requestID string
+	// traceID 对应 x-mm-client-trace-id（32 位 hex）。
+	traceID string
+	// requestSet 对应 x-mm-request-set。
+	requestSet string
+	// traceparent 是 OTel 形式的链路头：trace 段会话级恒定、span 段每请求唯一。
+	traceparent string
+}
+
+// maasAffinityHeaders 从上游会话标识派生亲和类归因头。
+//
+// 官方桌面客户端把 x-mm-client-request-id / x-mm-client-trace-id / x-mm-request-set
+// 做成**每 turn 恒定**（同一 turn 内的多次模型调用共用同一组值），而不是每请求
+// 随机（逆向证据：out/main/main.js 的 registerMainSessionTransportTurn 里
+// x-mm-client-request-id=turnId、x-mm-client-trace-id=每 turn 一个随机 UUID、
+// x-mm-request-set=requestSetId）。本插件此前每请求生成随机 UUID + 随机 trace id，
+// 等于每次请求都换一次「调用身份」。
+//
+// 为什么这会变成首字慢：生产实测（2026-11-28）同一账号 + 同一会话 + 99.8% 前缀
+// 缓存命中，首字仍在 **5.9s~23.2s** 之间大幅波动，而上下文规模、账号、会话、缓存
+// 命中四个维度与首字均无相关性 —— 波动只能来自「这次请求有没有落到持有该上下文
+// 的上游实例」。若上游按这些头做实例亲和 / 缓存局部性路由，每请求随机的头就等于
+// 每请求换实例，KV 每次都要重新搬回本地。
+//
+// traceparent 按 OTel 语义给每请求一个 span id（00-<trace>-<span>-01），trace 段
+// 取会话级恒定值：既保留每请求可区分性，又不破坏亲和。
+//
+// [参数] sessionID：上游会话标识（票据里回填的那个），可空。
+// [返回] 亲和类归因头取值；sessionID 为空时退回每请求随机（保持既有行为）。
+// 最近修改时间：2026-11-28；改动原因：新增，亲和类归因头由每请求随机改为会话级恒定。
+func maasAffinityHeaders(sessionID string) maasAffinity {
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return maasAffinity{
+			requestID:   newMaasRequestID(),
+			traceID:     newMaasTraceID(),
+			traceparent: "",
+		}
+	}
+	sum := sha256.Sum256([]byte("qwenwork-maas-trace:" + sid))
+	traceID := hex.EncodeToString(sum[:])[:32]
+	span := make([]byte, 8)
+	if _, err := rand.Read(span); err != nil {
+		span = []byte(strconv.FormatInt(time.Now().UnixNano(), 16))[:8]
+	}
+	return maasAffinity{
+		requestID:   sid,
+		traceID:     traceID,
+		requestSet:  sid,
+		traceparent: "00-" + traceID + "-" + hex.EncodeToString(span) + "-01",
+	}
+}
+
 // maasSessionCacheKey 组装「账号×上游会话」的票据缓存键。
 // 同一账号的不同会话必须各自持有独立票据：上游把票据绑定到 session_id，
 // 共用一张票会把多个会话折叠成同一个上游会话。上游会话键为空时归入固定分片，

@@ -11,6 +11,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,12 +52,13 @@ func TestApplyMaasHeaders_CarriesSessionBinding(t *testing.T) {
 	}
 }
 
-// TestApplyMaasHeaders_PerRequestIDsAreUnique 锁定归因头每请求唯一。
+// TestApplyMaasHeaders_PerRequestIDsAreUnique 锁定每请求可区分性落在 traceparent 上。
 //
-// 官方客户端的 x-mm-client-trace-id 每 turn 一个随机 32 位 hex；
-// 复用同一个值会让上游把多次请求认成同一次。
+// 亲和类归因头（x-mm-client-request-id / x-mm-client-trace-id）自 0.2.25 起是
+// **会话级恒定**（官方为每 turn 恒定）；每请求的唯一性由 OTel 的 traceparent
+// 的 span 段承担。
 func TestApplyMaasHeaders_PerRequestIDsAreUnique(t *testing.T) {
-	sess := &maasSession{AccessKey: "sk-mm-v1.test", SessionID: "sess-1"}
+	sess := &maasSession{AccessKey: "sk-mm-v1.test", SessionID: "sess-affinity-1"}
 	seen := map[string]bool{}
 	for i := 0; i < 8; i++ {
 		req, err := http.NewRequest(http.MethodPost, "https://maas.example/v1/chat/completions", nil)
@@ -64,14 +66,15 @@ func TestApplyMaasHeaders_PerRequestIDsAreUnique(t *testing.T) {
 			t.Fatalf("new request: %v", err)
 		}
 		applyMaasHeaders(req, sess)
-		trace := req.Header.Get("x-mm-client-trace-id")
+		trace := req.Header.Get("traceparent")
 		if trace == "" {
-			t.Fatal("x-mm-client-trace-id 缺失")
+			t.Fatal("traceparent 必须发出")
 		}
-		if seen[trace] {
-			t.Fatalf("x-mm-client-trace-id 必须每请求唯一，重复值 %q", trace)
+		span := strings.Split(trace, "-")[2]
+		if seen[span] {
+			t.Fatalf("traceparent 的 span 段必须每请求唯一，重复值 %q", span)
 		}
-		seen[trace] = true
+		seen[span] = true
 	}
 }
 

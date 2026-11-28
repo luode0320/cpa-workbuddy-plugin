@@ -330,7 +330,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.2.24"
+var version = "0.2.25"
 
 func wbRegistration() registration {
 	return registration{
@@ -885,23 +885,39 @@ func doExecuteOnceQwenWork(bodyRaw []byte, sa *storedAuth, requestedModel, maasS
 //   - x-session-id：把本次请求绑定到票据对应的上游会话。缺失时上游拿不到
 //     「这张票属于哪个会话」，请求退化成无归属流量——生产表现为上游排队、
 //     官方客户端不排队。
-//   - x-mm-client-request-source / x-mm-device-type / x-mm-client-request-id /
-//     x-mm-client-trace-id：客户端归因与链路追踪，上游按来源区分流量。
+//   - x-mm-client-request-source / x-mm-device-type：客户端归因。
+//   - x-mm-client-request-id / x-mm-client-trace-id / x-mm-request-set：**会话级
+//     恒定**（官方为每 turn 恒定），不能每请求随机——每请求随机等于每次请求换
+//     一个「调用身份」，若上游按这些头做实例亲和，请求就在持有该上下文的实例之间
+//     轮转，KV 每次都要搬回本地（生产实测同会话同账号 99.8% 缓存命中，首字仍在
+//     5.9s~23.2s 之间波动，见 maasAffinityHeaders 注释）。
+//   - traceparent：OTel 形式，trace 段会话级恒定、span 段每请求唯一。
 //
 // [参数] req 待发送请求；sess 已签发的 MaaS 票据。
 // [返回] 无（就地修改请求头）。
-// 最近修改时间：2026-11-28；改动原因：补齐客户端归因头与 x-session-id 会话绑定。
+// 最近修改时间：2026-11-28；改动原因：亲和类归因头改为会话级恒定。
 func applyMaasHeaders(req *http.Request, sess *maasSession) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+sess.AccessKey)
-	if sess != nil && strings.TrimSpace(sess.SessionID) != "" {
-		req.Header.Set("x-session-id", sess.SessionID)
+	sessionID := ""
+	if sess != nil {
+		sessionID = strings.TrimSpace(sess.SessionID)
 	}
+	if sessionID != "" {
+		req.Header.Set("x-session-id", sessionID)
+	}
+	aff := maasAffinityHeaders(sessionID)
 	req.Header.Set("x-mm-client-request-source", maasClientRequestSource)
 	req.Header.Set("x-mm-device-type", maasDeviceType())
-	req.Header.Set("x-mm-client-request-id", newMaasRequestID())
-	req.Header.Set("x-mm-client-trace-id", newMaasTraceID())
+	req.Header.Set("x-mm-client-request-id", aff.requestID)
+	req.Header.Set("x-mm-client-trace-id", aff.traceID)
+	if aff.requestSet != "" {
+		req.Header.Set("x-mm-request-set", aff.requestSet)
+	}
+	if aff.traceparent != "" {
+		req.Header.Set("traceparent", aff.traceparent)
+	}
 	req.Header.Set("User-Agent", maasUserAgent())
 }
 

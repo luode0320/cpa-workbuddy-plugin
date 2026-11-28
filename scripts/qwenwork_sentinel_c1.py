@@ -145,6 +145,30 @@ MUTATIONS = [
         "expect": "TestLogMaasTicketMint_Throttled",
         "all": False,
     },
+    {
+        "name": "S17 亲和头退回每请求随机",
+        "file": "main.go",
+        "old": '\treq.Header.Set("x-mm-client-request-id", aff.requestID)',
+        "new": '\treq.Header.Set("x-mm-client-request-id", newMaasRequestID())',
+        "expect": "TestApplyMaasHeaders_AffinityHeadersAreSessionScoped",
+        "all": False,
+    },
+    {
+        "name": "S18 request-set 缺失",
+        "file": "main.go",
+        "old": '\tif aff.requestSet != "" {\n\t\treq.Header.Set("x-mm-request-set", aff.requestSet)\n\t}\n',
+        "new": '',
+        "expect": "TestApplyMaasHeaders_AffinityHeadersAreSessionScoped",
+        "all": False,
+    },
+    {
+        "name": "S19 traceparent 的 trace 段退回每请求随机",
+        "file": "maas.go",
+        "old": '\ttraceID := hex.EncodeToString(sum[:])[:32]',
+        "new": '\ttraceID := newMaasTraceID()\n\t_ = sum',
+        "expect": "TestApplyMaasHeaders_AffinityHeadersAreSessionScoped",
+        "all": False,
+    },
 ]
 
 
