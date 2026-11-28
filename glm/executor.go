@@ -118,12 +118,17 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 }
 
 // convertNonStream 把 GLM 非流式 SSE 聚合结果转成 OpenAI chat.completion。
+// 上游每一帧都携带 parts 的「全量快照」而非增量，因此不能逐帧直接拼接，
+// 否则同一段回答会按帧数重复（实测 3 帧即得到三份）。这里复用流式路径的
+// 快照增量算法：只在快照变长时追加新增部分。
 // [参数] raw: 上游响应体；model: 模型名。
 // [返回] OpenAI 兼容响应字节。
-// 最近修改时间：2026-11-28 新增, 非流式响应转换。
+// 最近修改时间：2026-11-29 修正, 按快照增量去重，修复回答重复三遍。
 func convertNonStream(raw []byte, model string) []byte {
 	var text, reasoning strings.Builder
 	convID := ""
+	sentText := 0
+	sentReasoning := 0
 	lines := strings.Split(string(raw), "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:"))
@@ -137,15 +142,11 @@ func convertNonStream(raw []byte, model string) []byte {
 		if frame.ConversationID != "" {
 			convID = frame.ConversationID
 		}
-		for _, part := range frame.Parts {
-			for _, c := range part.Content {
-				if c.Type == "text" {
-					text.WriteString(c.Text)
-				} else if c.Type == "think" {
-					reasoning.WriteString(c.Think)
-				}
-			}
-		}
+		textDelta, reasoningDelta, newText, newReasoning := parseGLMFrame(frame, sentText, sentReasoning)
+		sentText = newText
+		sentReasoning = newReasoning
+		text.WriteString(textDelta)
+		reasoning.WriteString(reasoningDelta)
 	}
 	message := map[string]any{"role": "assistant", "content": text.String()}
 	if reasoning.Len() > 0 {

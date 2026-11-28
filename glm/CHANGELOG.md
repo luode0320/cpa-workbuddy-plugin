@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 (2026-11-29)
+
+**修复非流式回答重复三遍。**
+
+- **现象**：非流式请求问「只回答两个字：收到」，返回 `收到收到收到`。
+- **根因**：上游每一帧 `parts` 携带的是**全量快照**而非增量（实测应答只有 3 帧：`init` / `finish` / `finish`，每帧都含完整 `收到`）。流式路径用 `parseGLMFrame` 按快照长度求增量、有去重；`convertNonStream` 却逐帧直接 `WriteString(c.Text)`，于是把 3 帧的全量快照拼成 3 份。
+- **修复**：`convertNonStream` 改为复用 `parseGLMFrame` 的快照增量算法，只在快照变长时追加新增部分。
+- 新增回归测试：`TestConvertNonStreamDedupsSnapshots`（三帧同一快照只出一份）、`TestConvertNonStreamAccumulatesGrowingSnapshots`（快照真增长时正确累积为最长版本）。
+
 ## 0.3.1 (2026-11-29)
 
 **修复 0.3.0 的目录污染：模型目录被历史会话里的垃圾 chat_mode 撑成 27 项。**

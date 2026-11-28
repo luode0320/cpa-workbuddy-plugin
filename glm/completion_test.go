@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"testing"
 )
 
@@ -44,6 +45,60 @@ func TestSSEDeltaDedup(t *testing.T) {
 	text2, _, _, _ := parseGLMFrame(frame, n, 0)
 	if text2 != "" {
 		t.Fatalf("duplicate frame must not emit delta, got %q", text2)
+	}
+}
+
+// TestConvertNonStreamDedupsSnapshots 验证非流式聚合不会因多帧全量快照而重复回答。
+// 上游每一帧都发完整 parts 快照，实测 3 帧曾被拼成「收到收到收到」。
+// 最近修改时间：2026-11-29 新增, 锁定非流式重复缺陷。
+func TestConvertNonStreamDedupsSnapshots(t *testing.T) {
+	frame := `{"conversation_id":"c1","parts":[{"role":"assistant","status":"finish","content":[{"type":"text","text":"收到"}]}]}`
+	raw := []byte("data: " + frame + "\n\n" +
+		"data: " + frame + "\n\n" +
+		"data: " + frame + "\n\n")
+
+	out := convertNonStream(raw, "glm/glm-5.3")
+	var resp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("want 1 choice, got %d", len(resp.Choices))
+	}
+	if got := resp.Choices[0].Message.Content; got != "收到" {
+		t.Fatalf("repeated snapshots must not duplicate content, got %q", got)
+	}
+}
+
+// TestConvertNonStreamAccumulatesGrowingSnapshots 验证快照确实增长时仍能正确累积。
+// 最近修改时间：2026-11-29 新增, 快照增量累积正确性。
+func TestConvertNonStreamAccumulatesGrowingSnapshots(t *testing.T) {
+	mk := func(text string) string {
+		return `{"conversation_id":"c1","parts":[{"role":"assistant","content":[{"type":"text","text":"` + text + `"}]}]}`
+	}
+	raw := []byte("data: " + mk("你") + "\n\n" +
+		"data: " + mk("你好") + "\n\n" +
+		"data: " + mk("你好世界") + "\n\n")
+
+	out := convertNonStream(raw, "glm/glm-5.3")
+	var resp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := resp.Choices[0].Message.Content; got != "你好世界" {
+		t.Fatalf("got %q want 你好世界", got)
 	}
 }
 
