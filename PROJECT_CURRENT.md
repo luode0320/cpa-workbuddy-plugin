@@ -21,14 +21,19 @@
 
 ## 项目概况
 
-- **当前会话（2026-11-28 23:45 - 2026-11-29 00:50）：qwenwork-provider 0.2.31「保留摘要」上下文压缩 —— 把被裁掉的语义还回模型**：
+- **当前会话（2026-11-28 23:45 - 2026-11-29 02:05）：qwenwork-provider 0.2.31/0.2.32「保留摘要」上下文压缩 —— 把被裁掉的语义还回模型**：
   - **起点**：0.2.30 用纯本地裁剪把上游实收输入钳到 ~153K token（用户原话场景「45~71 万 token、首字 30s/160s」结构性消除，残余首字>10s 13.3% 判定为上游侧）。**但裁剪的代价是被裁历史语义消失 ⇒ 长会话持续「失忆」**。
   - **官方真实做法（逆向证据）**：官方桌面客户端**不是本地裁剪，而是调模型做一次锚定摘要再注回历史**——客户端内嵌 opencode harness（`resources/agent-sdk/components/flash-cli/0.47.0-26112401/runtime/chunk-*.mjs` 的 `@opencode/SessionCompaction`）的 `d1()` 提示词模板、`a9`/`Hie` 锚定 Markdown 结构（Objective / Important Details / Work State / Next Move / Relevant Files）、`<prior-summary>` 滚动合并分支、role=user 的 `<conversation-checkpoint>` 注入形态、官方交替文本序列化（`[User]:`/`[Tool result]:`…）。
-  - **本轮实现**：`qwenwork/context_summary.go`（新）——摘要缓存（会话键 → 条目，容量 256）、内容签名判定失效、官方对齐的提示词与注入形态、后台异步摘要（并发封顶 2，与主请求同会话同票据、共用账号在跑计数）；`context_budget.go` 抽出 `planContextTrim`（摘要需要「裁剪点下标」定位未覆盖区段）；`payload.go` 的 `prepareUpstreamBody` 改为返回 `{Body, Origin, SessionKey, Summary}`（会话键**在裁剪前、基于客户端原文**派生）；`main.go` 两个执行入口接线；`usage_config.go` 新增 `context_summary_enabled` / `context_summary_model` / `context_summary_max_chars`。
+  - **本轮实现**：`qwenwork/context_summary.go`（新）——摘要缓存（会话键 → 条目，容量 256）、内容签名判定失效、官方对齐的提示词与注入形态、后台异步摘要（与主请求同会话同票据、共用账号在跑计数）；`context_budget.go` 抽出 `planContextTrim`（摘要需要「裁剪点下标」定位未覆盖区段）；`payload.go` 的 `prepareUpstreamBody` 改为返回 `{Body, Origin, SessionKey, Summary}`（会话键**在裁剪前、基于客户端原文**派生）；`main.go` 两个执行入口接线；`usage_config.go` 新增 `context_summary_enabled` / `context_summary_model` / `context_summary_max_chars`。
   - **关键取舍**：**摘要绝不阻塞首字**——当前请求照旧纯裁剪，摘要后台生成，**下一轮同会话命中并注入 checkpoint**（用一轮语义缺失换首字不变）。
   - **防串味**：摘要记录「被覆盖段的内容签名」，客户端一旦回退/改写历史 ⇒ 旧摘要立即作废（既不注入也不参与滚动合并）。
-  - **过程中修掉的两个实现缺陷**：① 按**字节**截断会切坏 UTF-8 ⇒ 注入回请求后模型读到乱码 ⇒ 改按 rune 截断；② `context_summary_model` 配置项被读取但未接线 ⇒ 已接入摘要模型选择。
-  - **验证**：`cgo-shim-build.py qwenwork` 全绿；新增 `context_summary_test.go`（11 条）+ `context_budget_test.go` 增补「极端预算退化分支下会话键仍基于原文」用例；哨兵扩到 36 条（修正 S5/S29 失效锚点、新增 S30~S36）。
+  - **0.2.32（生产暴露的缺陷）**：0.2.31 上线后同一会话 3 秒内生成**两份**摘要（`covered=1169` 两次）⇒ 根因是 `enqueueContextSummary` **无会话级去重**；代价是每次摘要带整段待摘要历史（约 46 万字符 / 13 万 token）重复烧上游额度，且每个任务占住一个**账号在跑槽位**、与主请求抢同一账号 ⇒ 直接抵消「不阻塞首字」的设计目标。修法：`claimContextSummarySlot` / `releaseContextSummarySlot` 成对管理 `contextSummaryRunning`（同会话同时只允许一个在跑任务；**全局并发上限是限流不是去重**）。
+  - **过程中修掉的三个实现缺陷**：① 按**字节**截断会切坏 UTF-8 ⇒ 注入回请求后模型读到乱码 ⇒ 改按 rune 截断；② `context_summary_model` 配置项被读取但未接线 ⇒ 已接入；③ **哨兵脚本三处工程缺陷**：GBK 打印崩溃（`UnicodeEncodeError` 打断整个脚本）/ 异常时源码不还原 / **宿主编译器被 OOM 杀掉（Windows 分页文件仅 26MB ⇒ 提交额度打满）被误判为 NO-HIT** ⇒ 修好并新增 `ENV-FAILED` 判定。
+  - **验证**：`cgo-shim-build.py qwenwork` 全绿；新增 `context_summary_test.go`（12 条）+ `context_budget_test.go` 增补「极端预算退化分支下会话键仍基于原文」用例；哨兵扩到 **37 条**、分批跑完 **全部命中**（每批 `restore recheck === all green`）。
+  - **生产验证（0.2.31）**：`hot reloaded active_version=0.2.31 retired_version=0.2.30`；容器 `.so` sha256 `9e291be7…70fa5` 与本地 zip **逐字节一致**；14 插件 `STATE_UNCHANGED`；容器 `restarts=0` 未重启；**摘要全链路日志闭环**：`pending_summary=true` → `context summary ready: covered=1169 chars=8960` → 下一轮 `summary_injected=true`。
+  - **未闭环**：摘要**质量未做人工评读**（只验机制成立，未验对回答质量的增益 ⇒ 需「同会话开/关摘要」语义 A/B）；`context_summary_model`（用便宜模型做摘要）生产未配置未验证；部署后 TTFT 样本仅 31 条 ⇒ 「无回归」只是方向性结论。
+  - **并行会话踩坑（新增）**：并行会话的 `ec1f399` 把本会话未暂存的 0.2.32 源码一并带入（内容完整无误），**提交信息归属错乱** ⇒ commit 后必须 `git show HEAD:<file>` 核对内容归属。
+
 
 - **当前会话（2026-11-28 20:00 - 23:45）：qwenwork-provider 首字延迟收口复核 —— 0.2.30 稳态全量样本判定「残余首字>10s」属上游侧**（用户「继续」）：
   - **稳态数据**（插件用量流，0.2.30 生效后 2026-11-28T14:29:48Z~15:12:52Z，n=457）：TTFT p50 **3,136ms** / p90 11,396 / p99 18,698 / max **20,497ms**；**首字>10s 13.3%、>15s 3.9%、>30s 0 条**；input p50 **138,126** / p90 146,182 / max **153,251**（裁剪前 p50 409,518、max 927,650）；cache_ratio p50 0.992；**cache_creation_tokens>0 = 0 条**（前缀缓存从未被整体重建）；状态码 0×434 / 429×21 / 502×2（失败率 5.0%，**无 400** ⇒ 裁剪未破坏 tool 配对）。
