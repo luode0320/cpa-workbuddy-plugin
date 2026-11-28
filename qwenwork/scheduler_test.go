@@ -130,8 +130,8 @@ func TestSchedulerPick_KeepsHealthyPanelSelection(t *testing.T) {
 	}
 }
 
-// TestSchedulerPick_ZeroCreditSelectionSwitches 验证耗尽账号被换掉：
-// QwenWork 无免费模型，0 积分账号只会 429，选中项必须让位给有额度的账号。
+// TestSchedulerPick_ZeroCreditSelectionSwitches 验证请求付费模型时耗尽账号被换掉：
+// 选中项必须让位给有额度的账号（免费模型请求另由 accountUsableForModel 放行）。
 func TestSchedulerPick_ZeroCreditSelectionSwitches(t *testing.T) {
 	resetActiveAuth(t)
 	resetFailover(t)

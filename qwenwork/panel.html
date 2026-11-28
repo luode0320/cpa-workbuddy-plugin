@@ -209,7 +209,7 @@ button.danger:hover{background:var(--err);color:#fff}
 <body>
 <div class="wrap">
   <h1>QwenWork 账号面板</h1>
-  <div class="sub">积分余额 · 额度耗尽自动停用，充值后自动恢复 · 登录走 CPA 账号登录（Device Flow）</div>
+  <div class="sub">积分余额 · 每小时自动刷新入库 · 付费模型按积分准入，免费模型不受限 · 登录走 CPA 账号登录（Device Flow）</div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
     <div style="display:flex;gap:8px">
@@ -229,7 +229,7 @@ button.danger:hover{background:var(--err);color:#fff}
     <button type="button" class="ftag active" data-region="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
     <button type="button" class="ftag" data-region="available" onclick="filterRegion('available',this)" title="未禁用 · 未耗尽 · 未低额 · 未处于日限冷却，可正常路由">可用 <span class="cnt" id="cntAvailable">0</span></button>
     <button type="button" class="ftag" data-region="cooling" onclick="filterRegion('cooling',this)" title="触发上游每日调用次数上限，处于 24 小时冷却中">冷却 <span class="cnt" id="cntCooling">0</span></button>
-    <button type="button" class="ftag" data-region="exhausted" onclick="filterRegion('exhausted',this)" title="额度耗尽的账号（已停止参与路由，充值后自动恢复）">0积分 <span class="cnt" id="cntExhausted">0</span></button>
+    <button type="button" class="ftag" data-region="exhausted" onclick="filterRegion('exhausted',this)" title="额度耗尽的账号（付费模型不参与路由，免费模型仍可用；充值后恢复）">0积分 <span class="cnt" id="cntExhausted">0</span></button>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
@@ -398,7 +398,7 @@ function progressHTML(c, a){
   // 全为 0 也是确定状态，不能继续转圈。
   if(c&&(c.exceeded===true||a.exhausted)){
     const when0=c.fetched_at?` · 快照 ${esc(String(c.fetched_at).replace('T',' ').replace('Z',' UTC'))}`:'';
-    return `<div class="pb"><div class="pb-label"><span class="pb-primary"><span class="pb-segment">已耗尽 · 余0</span>${statHTML}</span><span class="pb-used">已用 ${Number(c.total_used)||0}</span></div><div class="pb-track"><div class="pb-bar" style="width:100%;background:var(--err)"></div></div><div class="pb-meta">额度已耗尽，账号已停止参与路由；充值或领取额度后自动恢复${when0}</div></div>`;
+    return `<div class="pb"><div class="pb-label"><span class="pb-primary"><span class="pb-segment">已耗尽 · 余0</span>${statHTML}</span><span class="pb-used">已用 ${Number(c.total_used)||0}</span></div><div class="pb-track"><div class="pb-bar" style="width:100%;background:var(--err)"></div></div><div class="pb-meta">额度已耗尽：付费模型不再路由，免费模型仍可用；充值或领取额度后恢复全部模型${when0}</div></div>`;
   }
   if(!c||(!(c.total_remain||0)&&!(c.total_used||0)&&!(c.total_size||0)))return `<div class="pb"><div class="pb-label">${primaryHTML}<span class="pb-used"><span class="spin"></span>加载中…</span></div><div class="pb-track"><div class="pb-bar" style="width:0%"></div></div></div>`;
   const remain=c.total_remain||0, used=c.total_used||0;
@@ -455,7 +455,7 @@ function card(a){
     : (disabled?``:`<button class="sec" data-action="select" data-auth-index="${esc(a.auth_index)}">选用</button>`);
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
   const clearCooldownBtn=dailyCooling?`<button class="sec" data-action="clear-cooldown" data-auth-index="${esc(a.auth_index)}" title="手动解除 110 日调用上限冷却">解冷</button>`:"";
-  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted" title="额度耗尽，已停止参与路由；充值后自动恢复">0积分</span>`:lowCreditsBadge)+coolingBadge+regionBadge+`<span class="badge ${esc(plan)}">${esc(a.plan||"-")}</span>`;
+  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted" title="额度耗尽：付费模型不参与路由，免费模型仍可用；充值后恢复">0积分</span>`:lowCreditsBadge)+coolingBadge+regionBadge+`<span class="badge ${esc(plan)}">${esc(a.plan||"-")}</span>`;
   const display=(a.nickname||a.label||a.name||"").replace(/^qwenwork-?/i,"");
   const nick=display||("u"+(a.uid||"").slice(-8));
   return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}" data-refresh-state="${a._refreshState||""}">
@@ -537,7 +537,7 @@ function filterRegion(region, btn){
     const r=c.dataset.region||"cn";
     let show=true;
     if(currentFilter==="all") show=true;
-    // 耗尽账号属不可用：QwenWork 无免费模型，0 积分只会 429
+    // 耗尽账号不计入「可用」：其付费模型不再路由；免费模型仍可用，见「0积分」筛选
     else if(currentFilter==="available") show=!(c.dataset.disabled==="1"||c.querySelector(".badge.exhausted")!=null||c.querySelector(".badge.low-credits")!=null||c.querySelector(".badge.cooling")!=null);
     else if(currentFilter==="cooling") show=c.querySelector(".badge.cooling")!=null;
     else if(currentFilter==="exhausted") show=c.querySelector(".badge.exhausted")!=null;
@@ -673,7 +673,7 @@ function renderSummary(accounts){
     const c=creditOf(a);
     const isExhausted=isAccountExhausted(a);
     const isLowCredits=!isExhausted&&(!!a.low_credits||(c.known&&c.remain>0&&c.remain<20));
-    // 耗尽账号计入不可用：QwenWork 无免费模型，0 积分只会 429。
+    // 耗尽账号计入不可用：其付费模型不再路由，仅免费模型可用。
     const isUnavailable=!!a.disabled||isExhausted||isLowCredits||!!a.daily_cooling;
     if(c.known){
       if(isUnavailable){ remainUnavail+=c.remain; unavailN++; }

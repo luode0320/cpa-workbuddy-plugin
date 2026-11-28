@@ -79,9 +79,8 @@ func TestBuildAuthFileJSONExhaustedMarker(t *testing.T) {
 	}
 }
 
-// TestExhaustedCreditsAreNotRoutable 验证耗尽账号被排除路由并显示「耗尽」：
-// QwenWork 无免费模型（2026-10-18 生产实测 0 积分账号对全部模型返回
-// 429 balance_insufficient），因此 0 积分不得继续参与路由。
+// TestExhaustedCreditsAreNotRoutable 验证耗尽账号在「付费模型」维度被排除并显示「耗尽」。
+// 免费模型另由 accountUsableForModel 放行，见 free_models_test.go。
 func TestExhaustedCreditsAreNotRoutable(t *testing.T) {
 	zero := &creditsSummary{TotalRemain: 0, TotalUsed: 500, TotalSize: 500}
 
