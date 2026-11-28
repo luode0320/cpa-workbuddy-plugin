@@ -21,6 +21,15 @@
 
 ## 项目概况
 
+- **当前会话（2026-11-28 23:45 - 2026-11-29 00:50）：qwenwork-provider 0.2.31「保留摘要」上下文压缩 —— 把被裁掉的语义还回模型**：
+  - **起点**：0.2.30 用纯本地裁剪把上游实收输入钳到 ~153K token（用户原话场景「45~71 万 token、首字 30s/160s」结构性消除，残余首字>10s 13.3% 判定为上游侧）。**但裁剪的代价是被裁历史语义消失 ⇒ 长会话持续「失忆」**。
+  - **官方真实做法（逆向证据）**：官方桌面客户端**不是本地裁剪，而是调模型做一次锚定摘要再注回历史**——客户端内嵌 opencode harness（`resources/agent-sdk/components/flash-cli/0.47.0-26112401/runtime/chunk-*.mjs` 的 `@opencode/SessionCompaction`）的 `d1()` 提示词模板、`a9`/`Hie` 锚定 Markdown 结构（Objective / Important Details / Work State / Next Move / Relevant Files）、`<prior-summary>` 滚动合并分支、role=user 的 `<conversation-checkpoint>` 注入形态、官方交替文本序列化（`[User]:`/`[Tool result]:`…）。
+  - **本轮实现**：`qwenwork/context_summary.go`（新）——摘要缓存（会话键 → 条目，容量 256）、内容签名判定失效、官方对齐的提示词与注入形态、后台异步摘要（并发封顶 2，与主请求同会话同票据、共用账号在跑计数）；`context_budget.go` 抽出 `planContextTrim`（摘要需要「裁剪点下标」定位未覆盖区段）；`payload.go` 的 `prepareUpstreamBody` 改为返回 `{Body, Origin, SessionKey, Summary}`（会话键**在裁剪前、基于客户端原文**派生）；`main.go` 两个执行入口接线；`usage_config.go` 新增 `context_summary_enabled` / `context_summary_model` / `context_summary_max_chars`。
+  - **关键取舍**：**摘要绝不阻塞首字**——当前请求照旧纯裁剪，摘要后台生成，**下一轮同会话命中并注入 checkpoint**（用一轮语义缺失换首字不变）。
+  - **防串味**：摘要记录「被覆盖段的内容签名」，客户端一旦回退/改写历史 ⇒ 旧摘要立即作废（既不注入也不参与滚动合并）。
+  - **过程中修掉的两个实现缺陷**：① 按**字节**截断会切坏 UTF-8 ⇒ 注入回请求后模型读到乱码 ⇒ 改按 rune 截断；② `context_summary_model` 配置项被读取但未接线 ⇒ 已接入摘要模型选择。
+  - **验证**：`cgo-shim-build.py qwenwork` 全绿；新增 `context_summary_test.go`（11 条）+ `context_budget_test.go` 增补「极端预算退化分支下会话键仍基于原文」用例；哨兵扩到 36 条（修正 S5/S29 失效锚点、新增 S30~S36）。
+
 - **当前会话（2026-11-28 20:00 - 23:45）：qwenwork-provider 首字延迟收口复核 —— 0.2.30 稳态全量样本判定「残余首字>10s」属上游侧**（用户「继续」）：
   - **稳态数据**（插件用量流，0.2.30 生效后 2026-11-28T14:29:48Z~15:12:52Z，n=457）：TTFT p50 **3,136ms** / p90 11,396 / p99 18,698 / max **20,497ms**；**首字>10s 13.3%、>15s 3.9%、>30s 0 条**；input p50 **138,126** / p90 146,182 / max **153,251**（裁剪前 p50 409,518、max 927,650）；cache_ratio p50 0.992；**cache_creation_tokens>0 = 0 条**（前缀缓存从未被整体重建）；状态码 0×434 / 429×21 / 502×2（失败率 5.0%，**无 400** ⇒ 裁剪未破坏 tool 配对）。
   - **预算「真被执行」的核查（本轮新增）**：0.2.30 生效后 **49 分钟（14:29:33Z~15:18:41Z）内 515 次裁剪事件**，其中 440 次与用量流 ±6s 对齐 ⇒ 裁剪后 **440/440 条全部落在 460,000 字符预算内（超预算 0 例）**；稳态窗口内 input>200k 的 6 条全部落在热重载（14:29:32Z）前 30 秒的在途窗口 ⇒ **0.2.30 生效后无一条请求超过预算**（裁剪前 input_chars p50 1,054,762 / max 2,540,814）。
@@ -77,6 +86,15 @@
 - 当前时间：2026-11-26 (GMT+8)
 
 ## 活动会话进展摘要
+
+- **当前会话（2026-11-29 00:30 - 00:55）：glm-provider 0.2.11：模型目录改为接口动态获取 + 档位核实**（用户「好像模型获取得也不对, 我们现在是通过接口动态获取模型的吗?」）：
+  - **答**：此前**不是**动态的，`/models` 只回放 `glm/models.go` 的硬编码数组，从不回源。workbuddy 才是「缓存 → `callModelsAPI` 回源 → 落缓存」。
+  - **更严重**：`resolveAssistantID` 对非 ID 的模型名一律返回 `defaultAssistantID`，所以 `glm-5.1` / `glm-4.7` / `glm-4-plus` 打到**同一智能体同一 chat_mode**，行为完全一致；只有 `think`(`zero`) 与 `deepresearch`(`deep_research`) 有真实差异 —— 五个名字其实三档。
+  - **上游探测**：18 个候选路径只有两条有效 —— `POST /chatglm/backend-api/assistant/list`（用户自建智能体，需 `page`/`page_size`，缺省 400）与 `GET /assistant/info?assistant_id=`。GLM **没有官方模型列表接口**，官方模型由预置智能体承载。
+  - **维度实验**：`(if_plus_model, chat_mode)` 六组合实测 —— `if_plus_model` 取 true/false 对响应形态无影响（均 `text`），真正区分档位的只有 `chat_mode`，故不虚构「Plus/普通」两版。
+  - **实现**：`modelCatalog` 结构化（DisplayName 如实标注「glm-4-plus 同档」）；新增 `assistants.go`（`listUpstreamAssistants` / `dynamicModelInfos` 追加 `glm/<assistant_id>` / 失败降级带 warning）；`resolveAssistantID` 支持 `glm/<id>` 前缀；`Config` 加 `assistant_list_endpoint`；面板下拉显示 DisplayName、value 用 ID、title 挂档位说明。
+  - **验证**：单测 24→29 全 PASS，gofmt 23 文件 PASS，面板 2 script 块 node --check OK；生产 `hot reloaded active=0.2.11`，`/models` 返回 5 条且 DisplayName 已标明同档别名，`warnings` 为空（回源成功，该账号无自建智能体）。
+  - **遗留**：官方模型版本由上游按账号决定、插件无法选择；当前账号自建智能体为空，动态链路已通但无真实数据体现。
 
 - **当前会话（2026-11-28 23:45 - 2026-11-29 00:25)：glm-provider 0.2.9/0.2.10：面板测试可选模型 + 账号积分额度展示**（用户「测试没有选择模型, 可以参考workbuddy」「账户没有显示积分」）：
   - **积分端点取证**：16 个候选路径只有 `GET /chatglm/user-api/user/info` 命中 200（`/user/credit`、`/user/quota`、`/user/point` 及 `backend-api` 同类路径全 404），积分在 `result.member_info.left_score`（`"199.01"`），额度用 `token_left_percent` / `token_usage_percent`。workbuddy 的积分走它自家 billing API（`/v2/billing/meter/get-user-resource`），GLM 没有同一套，只能照搬「懒加载 + 卡片形态」。
@@ -171,16 +189,5 @@
   - **验收**：`/accounts` 返回 `{"accounts":null}`（无账号属正常）、`/models` 返回 5 个 `glm/*` 模型、panel=200、login=200。
   - **旧 id 清理（用户确认删除）**：先备份到 `/root/plugin_cleanup_20261128163711`（config.json + 7.6MB .so），再 `DELETE /v0/management/plugins/glm-web-provider` → `configured_removed:true, file_deleted:true`；旧面板页现 404；最终 14 插件，`glm-provider` 全 true，其余状态不变。
   - **教训**：CPA 插件所有 management/resource 响应都必须用 `pluginapi.ManagementResponse{StatusCode, Headers, Body []byte}` 包装；裸 `okEnvelope(map)` 会返回空体（面板白屏、接口空响应的同一根因）。
-- 会话（2026-11-28 14:33 - 15:58）：**glm-provider 0.2.0：改名 + 修面板白屏 + 书签一键授权（已发版，生产待重启加载）**：
-  - **用户反馈**：①面板白屏，且名称要改成 `glm-provider`（不要 glm-web-provider）；②授权不完整，登录后应自动回调。
-  - **改名**：`glm-web-provider`→`glm-provider`、目录 `glm-web/`→`glm/`、模型前缀 `glm-web/`→`glm/`、go.mod module、CI options/matrix/PLUGINS map/tag/display、registry 条目全部同步；registry 已无旧 id 残留。
-  - **白屏根因与修复**：面板必须返回 `pluginapi.ManagementResponse`（StatusCode/Headers/Body），原实现返回自定义 map → 宿主拿不到 HTML。新增 `glm/panel.go` 用 `embed.FS` + `ManagementResponse`，`management.go` 改调 `handlePanelPage()`。
-  - **书签一键授权（新增 `glm/login.go`）**：`/login` 引导页（拖书签）+ `/login/callback` 接收 `X-GLM-RefreshToken` 头并落盘（免管理密钥）+ 登录会话 state 与 15 分钟 TTL + 轮询返回成功/失败；书签在 chatglm.cn 页面读 `chatglm_refresh_token`（localStorage 优先，Cookie 兜底）后同源 fetch 回插件，页面自动跳转结果页；保留手工粘贴兜底。`normalizeMgmtSubPath` 增加 `/v0/resource/plugins/<id>` 前缀兼容。
-  - **门禁**：`cgo-shim-build.py glm` build+vet+test 全绿；面板两 script 块 node --check OK；gofmt PASS。
-  - **发布链**：commit `83a8111`（26 文件，含旧目录删除）→ CI run `46118422228`（head 83a8111，Release success）→ `download-release-assets.py 0.2.0 glm-provider` ALL CHECKSUMS OK → `publish-assets.py glm-provider 0.2.0 --allow-missing`（5 artifacts）→ registry commit `f3120e0` → 远端 raw 0.2.0/5 artifacts。
-  - **生产部署状态（⚠️ 未完成加载）**：首次 install 遇 registry CDN 旧缓存报 `direct install requires at least one artifact`（502），等 60s 重试成功；`glm-provider` configured=true、`.so` 已落盘 `/CLIProxyAPI/plugins/linux/amd64/glm-provider-v0.2.0.so`（sha256 `0475d771…6f6d53`），但 **registered=false、面板/授权页 404**。
-  - **根因**：宿主仅在**启动时**扫描插件目录，热重载只对已加载插件生效；新插件 id 首次安装必须重启才能加载。已探测 `/plugins/reload`、`/plugin-store/reload`、`/plugins/rescan` 等端点均 404，无免重启通道；`PUT /plugins/<id>/config` 同内容不触发加载（符合项目既有结论）。
-  - **用户裁定（15:57）**：选择「先不重启，保留现状」——重启留待后续维护窗口。旧 `glm-web-provider` 0.1.0 仍在运行（configured/registered/enabled 全 true），暂未清理。
-  - **恢复步骤（重启后即可用）**：重启 `cli-proxy-api` → 日志确认 `plugin loaded + plugin registered plugin_id=glm-provider` → 验证 `GET /v0/resource/plugins/glm-provider/panel` 200 且非白屏 → `GET .../login` 200 → 面板或引导页导入 refresh_token → 真实对话验证。清理旧 id：确认新版可用后 `DELETE /v0/management/plugins/glm-web-provider`（会同时删配置与落盘 .so）。
 
 > 更早的会话明细（2026-11-20 及之前：store-auth PAT、10 插件面板、doubao 0.1.8/0.1.9/0.1.11/0.1.19~0.1.22 等）已归档至 git 提交历史与 doc/ 对应文档，本文件只保留最近 7 条会话摘要以控制体积。
