@@ -85,6 +85,7 @@ var (
 	contextSummaryMaxChars  = defaultContextSummaryMaxChars
 	contextSummaryCache     = make(map[string]*contextSummaryEntry)
 	contextSummaryInFlight  = 0
+	contextSummaryRunning   = make(map[string]bool)
 	contextSummaryLastPrune = time.Time{}
 )
 
@@ -659,6 +660,45 @@ func buildContextSummaryBody(model, prompt string) []byte {
 	return b
 }
 
+// claimContextSummarySlot 尝试为会话占用一个后台摘要槽位。
+//
+// 同一会话同时只允许一个在跑的摘要任务：摘要请求会带上整段待摘要历史
+// （生产实测约 460K 字符 / 13 万 token），重复登记等于重复烧上游额度，
+// 且会多占一个账号在跑槽位（与主请求抢同一个账号）。
+//
+// [参数] sessionKey: 会话键。
+// [返回] true 表示占到了槽位（调用方必须配对释放）；false 表示并发超限
+//
+//	或该会话已有在跑的摘要任务。
+// 最近修改时间：2026-11-29；改动原因：新增，同会话去重。
+func claimContextSummarySlot(sessionKey string) bool {
+	contextSummaryMu.Lock()
+	defer contextSummaryMu.Unlock()
+	if contextSummaryInFlight >= contextSummaryMaxConcurrent {
+		return false
+	}
+	if contextSummaryRunning[sessionKey] {
+		return false
+	}
+	contextSummaryRunning[sessionKey] = true
+	contextSummaryInFlight++
+	return true
+}
+
+// releaseContextSummarySlot 释放后台摘要槽位。
+//
+// [参数] sessionKey: 会话键。
+// [返回] 无。
+// 最近修改时间：2026-11-29；改动原因：新增，配对 claimContextSummarySlot。
+func releaseContextSummarySlot(sessionKey string) {
+	contextSummaryMu.Lock()
+	defer contextSummaryMu.Unlock()
+	if contextSummaryInFlight > 0 {
+		contextSummaryInFlight--
+	}
+	delete(contextSummaryRunning, sessionKey)
+}
+
 // enqueueContextSummary 登记一次后台摘要任务并立即返回（不阻塞主请求）。
 //
 // 主请求已经在途，摘要再慢也不影响它的首字；摘要失败只是让下一轮继续
@@ -675,20 +715,12 @@ func enqueueContextSummary(sessionKey string, sa *storedAuth, model, previousSum
 	if sessionKey == "" || sa == nil || len(block) == 0 || !loadedContextSummaryEnabled() {
 		return
 	}
-	contextSummaryMu.Lock()
-	if contextSummaryInFlight >= contextSummaryMaxConcurrent {
-		contextSummaryMu.Unlock()
+	if !claimContextSummarySlot(sessionKey) {
 		return
 	}
-	contextSummaryInFlight++
-	contextSummaryMu.Unlock()
 
 	go func() {
-		defer func() {
-			contextSummaryMu.Lock()
-			contextSummaryInFlight--
-			contextSummaryMu.Unlock()
-		}()
+		defer releaseContextSummarySlot(sessionKey)
 		summary := runContextSummary(sa, model, sessionKey, previousSummary, block)
 		if strings.TrimSpace(summary) == "" {
 			return

@@ -306,6 +306,16 @@ MUTATIONS = [
         "expect": "TestExecutors_EnqueueContextSummary",
         "all": False,
     },
+    {
+        "name": "S37 同一会话不再去重后台摘要任务",
+        "file": "context_summary.go",
+        "old": '\tif contextSummaryRunning[sessionKey] {\n'
+               '\t\treturn false\n'
+               '\t}\n',
+        "new": '',
+        "expect": "TestClaimContextSummarySlot_DedupesSameSession",
+        "all": False,
+    },
 ]
 
 

@@ -365,3 +365,40 @@ func TestBuildContextSummaryBody_NoTools(t *testing.T) {
 		t.Fatal("摘要请求必须走流式（宿主按 SSE 聚合）")
 	}
 }
+
+// TestClaimContextSummarySlot_DedupesSameSession 同一会话不得并发跑两个摘要任务。
+//
+// 背景（2026-11-29 生产观测）：0.2.31 上线后同一会话在 3 秒内生成了两份摘要
+// （covered=1169 两次）——摘要请求会带上整段待摘要历史（约 460K 字符 / 13 万
+// token），重复登记等于重复烧上游额度，且会多占一个账号在跑槽位、与主请求抢
+// 同一个账号。
+func TestClaimContextSummarySlot_DedupesSameSession(t *testing.T) {
+	contextSummaryMu.Lock()
+	base := contextSummaryInFlight
+	contextSummaryInFlight = 0
+	contextSummaryMu.Unlock()
+	defer func() {
+		contextSummaryMu.Lock()
+		contextSummaryInFlight = base
+		contextSummaryMu.Unlock()
+	}()
+
+	key := "session-dedup-test"
+	other := "session-dedup-other"
+	defer releaseContextSummarySlot(key)
+	defer releaseContextSummarySlot(other)
+
+	if !claimContextSummarySlot(key) {
+		t.Fatal("首次占用摘要槽位应成功")
+	}
+	if claimContextSummarySlot(key) {
+		t.Fatal("同一会话不得并发跑两个摘要任务（重复烧上游额度并多占账号槽位）")
+	}
+	if !claimContextSummarySlot(other) {
+		t.Fatal("不同会话应能各自占用槽位")
+	}
+	releaseContextSummarySlot(key)
+	if !claimContextSummarySlot(key) {
+		t.Fatal("释放后应能重新占用同一会话的槽位")
+	}
+}

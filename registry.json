@@ -172,7 +172,7 @@
       "name": "TraeWork Provider",
       "description": "Trae Work SOLO provider for CLIProxyAPI: multi-account pool from local SOLO credentials (tc-header decryption), OpenAI/Anthropic-compatible reverse proxy to llm_utils_chat, account-level failover (401/403/404/405/429 retry budget + 1/3/10min cooldown + anomaly quarantine), daily/manual check-in with credits query, account enable/disable, credits panel with failover status.",
       "author": "Sliverkiss",
-      "version": "0.5.68",
+      "version": "0.5.69",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
       "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/TraeWork.png",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/traework",
@@ -191,37 +191,37 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.68/traework-provider_0.5.68_darwin_amd64.zip",
-            "sha256": "a0438c3b7fdb1fcc85f9bb865c77233e2931dfee486edbe6ea0d6e57cf810d3c",
-            "size": 3281050
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.69/traework-provider_0.5.69_darwin_amd64.zip",
+            "sha256": "1bd82fe81a731ac28fee53384eea643e3f5050bd265bf7ffba9695c8691809ea",
+            "size": 3281466
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.68/traework-provider_0.5.68_linux_amd64.zip",
-            "sha256": "b607036b54fcc141496a7acc48e88568c8a52f127bd808eae283e7f264f0d299",
-            "size": 3460065
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.69/traework-provider_0.5.69_linux_amd64.zip",
+            "sha256": "f22137ae871eff6cd6e19eccdde5c91443b82757b1ae084a0a7af6414ad0d74e",
+            "size": 3460616
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.68/traework-provider_0.5.68_linux_arm64.zip",
-            "sha256": "c832d220a5a6cd7c486f96dc174bbe240a5fe3c8262e14ca7f1beb1c173c3764",
-            "size": 3147965
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.69/traework-provider_0.5.69_linux_arm64.zip",
+            "sha256": "9a5deab62c00538b166fa086ae0ffaafceb6563726efe446821ce64e295b9964",
+            "size": 3148549
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.68/traework-provider_0.5.68_windows_amd64.zip",
-            "sha256": "4cf4a80c9cf87ad05fb9cbb28177e8b793933496c56d2701e0797606f4b7e339",
-            "size": 3368300
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.69/traework-provider_0.5.69_windows_amd64.zip",
+            "sha256": "6ce5683f996f8f316e0b8d4be496b9410c900ad0287a4f6a61284b2494f2a791",
+            "size": 3368653
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.68/traework-provider_0.5.68_windows_arm64.zip",
-            "sha256": "b52d6613d46efccd7b6f5c8300a53ca756f99c99ac773364490ba8ef4107c998",
-            "size": 3115234
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/traework-provider-v0.5.69/traework-provider_0.5.69_windows_arm64.zip",
+            "sha256": "7d68668d3e500670dfdb9c1d79910bba1e6e3de0069665b2d7f4f46bb9e7ef06",
+            "size": 3115736
           }
         ]
       }

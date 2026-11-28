@@ -1,5 +1,14 @@
 # QwenWork Plugin Changelog
 
+## 0.2.32 (2026-11-29)
+
+### Fix - 同一会话的待摘要区段不再重复生成摘要
+
+- **生产观测（0.2.31 上线后当日）**: 同一会话在 3 秒内生成了**两份**摘要（日志 `context summary ready: session=msg:050d2fe47ee7903a covered=1169` 出现两次，chars=8960 / 8965）。根因是 `enqueueContextSummary` **没有会话级去重**：摘要尚未就绪期间到达的每个请求都会再登记一个后台任务（全局并发上限 2，故最多两份同时在跑，第三份被上限丢弃）。
+- **代价**: 摘要请求会带上**整段待摘要历史**（生产实测 `dropped_messages=1167`、`budget_chars=460000`，约 46 万字符 / 13 万 token）⇒ 重复登记等于重复烧上游额度；且每个摘要任务会 `accountLoadAcquire` 占住一个**账号在跑槽位**，与主请求抢同一个账号 ⇒ 直接抵消「摘要不阻塞首字」的设计目标。
+- **修复**: 引入会话级在跑去重——`claimContextSummarySlot` / `releaseContextSummarySlot` 成对管理 `contextSummaryRunning`；同一会话同时只允许一个在跑的摘要任务，其余请求直接跳过（下一轮命中缓存后自然不再登记）；并发上限与失败语义不变（摘要失败只影响摘要本身，不传导给客户端，下一轮会重新登记）。
+- **验证**: 新增 `TestClaimContextSummarySlot_DedupesSameSession`（同会话二次占用必须失败、释放后可再占用、不同会话互不影响）；`cgo-shim-build.py qwenwork` build/vet/test 全绿；哨兵新增 S37（把会话去重判据改坏必须 FAIL）。
+
 ## 0.2.31 (2026-11-29)
 
 ### Feat - 「保留摘要」上下文压缩：对齐官方客户端的锚定摘要语义
