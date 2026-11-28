@@ -14,17 +14,9 @@ import (
 )
 
 // knownChatModes 是上游 chat_mode 的内置基线。
-// 真实取值来自会话历史实测：""（普通）、zero（思考）、chat_agent（智能体）、deep_research（深度研究）。
-// 该列表只是基线，运行时以历史会话发现结果为准并集。
+// 真实取值来自会话历史实测：""（标准）、zero（思考）、chat_agent（智能体）、deep_research（深度研究）。
+// 注意：这些是「模式」维度，不是模型；模型只有 GLM-5.3 与 GLM-5.3 Flash 两个。
 var knownChatModes = []string{"", "zero", "chat_agent", "deep_research"}
-
-// chatModeLabel 把 chat_mode 映射成面板展示名。
-var chatModeLabel = map[string]string{
-	"":              "GLM 标准",
-	"zero":          "GLM 思考",
-	"chat_agent":    "GLM 智能体",
-	"deep_research": "GLM 深度研究",
-}
 
 // modeCacheEntry 缓存一次历史会话档位发现结果。
 type modeCacheEntry struct {
@@ -252,65 +244,81 @@ func effectiveChatModes(discovered []string) []string {
 	return out
 }
 
-// chatModeModelID 把 chat_mode 映射成对外模型名。
-// [参数] mode: chat_mode 取值。
-// [返回] 模型名，如 glm/chat_agent；空档位沿用 glm/glm-4-plus 兼容名。
-// 最近修改时间：2026-11-29 新增, 档位到模型名的稳定映射。
-func chatModeModelID(mode string) string {
-	if mode == "" {
-		return "glm/glm-4-plus"
-	}
-	return "glm/" + mode
-} // chatModeDisplayName 返回档位的展示名，未知档位原样显示并标注来源。
+// chatModeDisplayName 返回模式的展示名，未知模式原样显示。
 // [参数] mode: chat_mode 取值。
 // [返回] 展示名。
-// 最近修改时间：2026-11-29 新增, 未知档位也能在面板上如实呈现。
+// 最近修改时间：2026-11-29 改写, 未知模式也能如实呈现。
 func chatModeDisplayName(mode string) string {
-	if label, ok := chatModeLabel[mode]; ok {
-		return label
-	}
 	if mode == "" {
-		return "GLM 标准"
+		return "标准"
 	}
-	return "GLM " + mode
+	for _, entry := range chatModeCatalog {
+		if entry.Mode == mode {
+			return entry.Label
+		}
+	}
+	return mode
 }
 
-// dynamicModelInfos 返回动态模型目录：上游实际可用的档位 + 账号自建智能体。
-// 档位来自历史会话发现，未知档位会被自动纳入，因此上游新增模型无需改插件。
-// [参数] accessToken: 调用令牌，为空表示只回放内置基线；cfg: 插件配置。
+// dynamicModelInfos 返回模型目录：真实两模型 × 模式，外加账号自建智能体。
+// 模型集合固定为 GLM-5.3 与 GLM-5.3 Flash（由 if_plus_model 切换）；
+// 模式集合以 chatModeCatalog 为基线，并用历史会话发现的新取值扩展，
+// 因此上游新增「模式」时无需改插件，但不会凭空造出模型。
+// [参数] accessToken: 调用令牌，为空表示只回放基线；cfg: 插件配置。
 // [返回] 模型信息列表、告警列表。
-// 最近修改时间：2026-11-29 新增, 面板模型目录动态化。
+// 最近修改时间：2026-11-29 重写, 模型与模式分离，杜绝虚构模型名。
 func dynamicModelInfos(accessToken string, cfg Config) ([]pluginapi.ModelInfo, []string) {
-	if strings.TrimSpace(accessToken) == "" {
-		return baselineModelInfos(), nil
+	entries := allModelEntries()
+	infos := make([]pluginapi.ModelInfo, 0, len(entries))
+	for _, entry := range entries {
+		infos = append(infos, pluginapi.ModelInfo{
+			ID:                         entry.ID,
+			Object:                     "model",
+			OwnedBy:                    providerName,
+			DisplayName:                entry.DisplayName,
+			Description:                entry.Note,
+			SupportedGenerationMethods: []string{"chat"},
+		})
 	}
+	if strings.TrimSpace(accessToken) == "" {
+		return infos, nil
+	}
+
 	var warnings []string
 	discovered, err := discoverChatModes(accessToken, cfg)
 	if err != nil {
 		warnings = append(warnings, err.Error())
 	}
-	modes := effectiveChatModes(discovered)
-
-	infos := make([]pluginapi.ModelInfo, 0, len(modes)+2)
-	added := make(map[string]struct{}, len(modes)+2)
-	for _, mode := range modes {
-		id := chatModeModelID(mode)
-		if _, ok := added[id]; ok {
+	// 历史里发现的新模式：为每个真实模型补一个带后缀的条目。
+	known := make(map[string]struct{}, len(chatModeCatalog))
+	for _, mode := range chatModeCatalog {
+		known[mode.Mode] = struct{}{}
+	}
+	added := make(map[string]struct{}, len(infos))
+	for _, info := range infos {
+		added[info.ID] = struct{}{}
+	}
+	for _, raw := range discovered {
+		mode := normalizeChatMode(raw)
+		if _, ok := known[mode]; ok {
 			continue
 		}
-		added[id] = struct{}{}
-		note := "chat_mode=" + mode
-		if mode == "" {
-			note = "chat_mode=normal（网页默认档）"
+		known[mode] = struct{}{}
+		for _, model := range modelCatalog {
+			id := model.ID + "-" + mode
+			if _, ok := added[id]; ok {
+				continue
+			}
+			added[id] = struct{}{}
+			infos = append(infos, pluginapi.ModelInfo{
+				ID:                         id,
+				Object:                     "model",
+				OwnedBy:                    providerName,
+				DisplayName:                model.DisplayName + " " + mode,
+				Description:                "if_plus_model=" + boolText(model.PlusModel) + ", chat_mode=" + mode + "（历史会话发现）",
+				SupportedGenerationMethods: []string{"chat"},
+			})
 		}
-		infos = append(infos, pluginapi.ModelInfo{
-			ID:                         id,
-			Object:                     "model",
-			OwnedBy:                    providerName,
-			DisplayName:                chatModeDisplayName(mode),
-			Description:                note,
-			SupportedGenerationMethods: []string{"chat"},
-		})
 	}
 
 	briefs, err := listUpstreamAssistants(accessToken, cfg)
@@ -337,22 +345,6 @@ func dynamicModelInfos(accessToken string, cfg Config) ([]pluginapi.ModelInfo, [
 			OwnedBy:                    providerName,
 			DisplayName:                name + "（自建智能体）",
 			Description:                strings.TrimSpace(brief.Description),
-			SupportedGenerationMethods: []string{"chat"},
-		})
-	}
-
-	// 兼容别名始终保留，避免打断既有调用方。
-	for _, entry := range legacyAliasModels {
-		if _, ok := added[entry.ID]; ok {
-			continue
-		}
-		added[entry.ID] = struct{}{}
-		infos = append(infos, pluginapi.ModelInfo{
-			ID:                         entry.ID,
-			Object:                     "model",
-			OwnedBy:                    providerName,
-			DisplayName:                entry.DisplayName,
-			Description:                entry.Note,
 			SupportedGenerationMethods: []string{"chat"},
 		})
 	}

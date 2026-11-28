@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.15 (2026-11-29)
+
+修复导出文件只有 `refresh_token`、没有 `access_token` 的缺陷：
+
+- **根因**：`acquireToken` 刷新成功后只写内存缓存 `globalTokenCache`，从不回写 `StoredAuth.AccessToken`；`StoredAuth` 虽有 `access_token` / `expires_at` 字段（带 `omitempty`），但磁盘上永远为空，导出自然是空的。
+- **回写**：新增 `persistAccessToken`，刷新成功后按 `refresh_token` 反查账号并落盘 `access_token` / `expires_at` / 轮换后的 `refresh_token` / `updated_at`。回写失败只记日志，不阻断调用（令牌已在内存可用）。
+- **反查**：新增 `findAuthByRefreshToken`，因为刷新发生在推理路径上，此时手上只有 `refresh_token`。
+- **导出补齐**：`handleMgmtExport` 导出前对缺 `access_token` 或已过期的账号补刷一次（未过期则沿用），保证导出文件是完整令牌对。
+- 新增 `persist_test.go`：`TestPersistAccessTokenWritesFile`（回写前后对比磁盘）、`TestPersistAccessTokenSkipsEmpty`（空令牌不覆盖）、`TestFindAuthByRefreshTokenMatches`（空/不存在令牌不误匹配）。
+
 ## 0.2.14 (2026-11-29)
 
 面板按 workbuddy 规格重构，从「能用」补到「可运维」：

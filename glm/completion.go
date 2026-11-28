@@ -66,15 +66,15 @@ type openAIChunk struct {
 // [返回] 上游请求体字节、错误。
 // 最近修改时间：2026-11-28 新增, 对话端点请求构造。
 func buildStreamPayload(req completionRequest, cfg Config, sa *StoredAuth) ([]byte, error) {
-	assistantID, chatMode := resolveAssistantID(req.Model)
+	assistantID, chatMode, plusModel := resolveUpstreamTarget(req.Model)
 	content := mergeMessages(req.Messages)
 	meta := map[string]any{
 		"channel":             "",
 		"chat_mode":           chatMode,
 		"draft_id":            "",
-		"if_plus_model":       true,
+		"if_plus_model":       plusModel,
 		"input_question_type": "xxxx",
-		"is_networking":       true,
+		"is_networking":       false,
 		"is_test":             false,
 		"platform":            "pc",
 		"quote_log_id":        "",

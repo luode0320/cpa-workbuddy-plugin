@@ -269,10 +269,29 @@ func handleMgmtImport(body []byte) ([]byte, error) {
 // [参数] 无。
 // [返回] 导出响应。
 // 最近修改时间：2026-11-28 新增, 面板凭据导出。
+// handleMgmtExport 导出全部账号凭据，包含 refresh_token 与 access_token。
+// 导出前对缺 access_token 或已过期的账号补刷一次，避免导出文件里只有 refresh_token。
+// [参数] 无。
+// [返回] 导出响应。
+// 最近修改时间：2026-11-29 改写, 导出补齐 access_token。
 func handleMgmtExport() ([]byte, error) {
 	accounts, err := listAllAuthFiles()
 	if err != nil {
 		return nil, err
+	}
+	cfg := currentConfig()
+	now := time.Now().Unix()
+	for _, sa := range accounts {
+		if sa == nil || strings.TrimSpace(sa.RefreshToken) == "" {
+			continue
+		}
+		// 已有未过期令牌就沿用，避免无谓刷新。
+		if strings.TrimSpace(sa.AccessToken) != "" && sa.ExpiresAt > now+60 {
+			continue
+		}
+		if token, err := acquireToken(sa.RefreshToken, cfg); err == nil {
+			sa.AccessToken = token
+		}
 	}
 	return jsonResponse(map[string]any{"accounts": accounts})
 }

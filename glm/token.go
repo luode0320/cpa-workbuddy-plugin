@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -193,6 +194,38 @@ func requestToken(refreshToken string, cfg Config) (*tokenResult, error) {
 // [参数] refreshToken: 刷新令牌；cfg: 插件配置。
 // [返回] access_token、错误。
 // 最近修改时间：2026-11-28 新增, access_token 缓存与并发单飞。
+// persistAccessToken 把刚刷新的 access_token 回写到账号文件。
+// 宿主重载插件或进程重启后，凭据文件里若没有 access_token，面板会显示为「无令牌」，
+// 且必须等下一次请求才重新换取。回写后导出文件即包含完整令牌对，便于迁移。
+// 回写失败不阻断调用（令牌已在内存缓存中可用），只记录日志。
+// [参数] refreshToken: 用于定位账号的刷新令牌；result: 刷新结果。
+// [返回] 无。
+// 最近修改时间：2026-11-29 新增, 修复导出缺少 access_token。
+func persistAccessToken(refreshToken string, result *tokenResult) {
+	if result == nil || strings.TrimSpace(result.AccessToken) == "" {
+		return
+	}
+	sa := findAuthByRefreshToken(refreshToken)
+	if sa == nil {
+		return
+	}
+	sa.AccessToken = result.AccessToken
+	if !result.RefreshTime.IsZero() {
+		sa.ExpiresAt = result.RefreshTime.Unix()
+	}
+	if result.RefreshToken != "" {
+		sa.RefreshToken = result.RefreshToken
+	}
+	sa.UpdatedAt = time.Now().Format(time.RFC3339)
+	if err := writeAuthFileDirect(sa.PhysicalPath, sa); err != nil {
+		log.Printf("[glm] persist access_token for %s failed: %v", sa.AuthID, err)
+	}
+}
+
+// acquireToken 获取 access_token：命中缓存直接返回，否则单飞刷新并回写账号文件。
+// [参数] refreshToken: 刷新令牌；cfg: 插件配置。
+// [返回] access_token、错误。
+// 最近修改时间：2026-11-29 改写, 刷新成功后回写 access_token 与过期时间。
 func acquireToken(refreshToken string, cfg Config) (string, error) {
 	globalTokenCache.mu.Lock()
 	if cached, ok := globalTokenCache.entries[refreshToken]; ok && time.Now().Before(cached.RefreshTime) {
@@ -217,6 +250,7 @@ func acquireToken(refreshToken string, cfg Config) (string, error) {
 		globalTokenCache.mu.Lock()
 		globalTokenCache.entries[refreshToken] = result
 		globalTokenCache.mu.Unlock()
+		persistAccessToken(refreshToken, result)
 	}
 
 	globalTokenCache.mu.Lock()

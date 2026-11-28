@@ -418,6 +418,28 @@ func findAuthByID(authID string) *StoredAuth {
 	return nil
 }
 
+// findAuthByRefreshToken 按 refresh_token 查找账号。
+// 令牌刷新发生在推理路径上，此时只有 refresh_token 可用，需要反查账号才能回写 access_token。
+// [参数] refreshToken: 刷新令牌。
+// [返回] 账号指针；未找到返回 nil。
+// 最近修改时间：2026-11-29 新增, 支持刷新后回写 access_token。
+func findAuthByRefreshToken(refreshToken string) *StoredAuth {
+	refreshToken = strings.TrimSpace(refreshToken)
+	if refreshToken == "" {
+		return nil
+	}
+	accounts, err := listAllAuthFiles()
+	if err != nil {
+		return nil
+	}
+	for _, sa := range accounts {
+		if sa != nil && sa.RefreshToken == refreshToken {
+			return sa
+		}
+	}
+	return nil
+}
+
 // resolveTargetAuth 按请求指定的账号解析目标，缺失时回退调度器选号。
 // [参数] reqAuthID: 宿主指定账号标识；storageJSON: 宿主下发的凭据快照。
 // [返回] 目标账号；无可选账号返回 nil。
