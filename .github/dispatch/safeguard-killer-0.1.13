@@ -1,0 +1,3 @@
+safeguard-killer 0.1.13 release dispatch trigger
+created: 2026-11-28T22:52+08:00
+reason: 本机无 gh 凭据，用仓库内置 GITHUB_TOKEN 触发 build.yml workflow_dispatch（allow_partial=true）
