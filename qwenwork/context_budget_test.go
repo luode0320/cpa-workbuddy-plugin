@@ -186,7 +186,8 @@ func TestPrepareUpstreamBody_SessionKeyUnaffectedByTrim(t *testing.T) {
 
 	msgs := makeMessages(60, 1000)
 	body, _ := json.Marshal(map[string]any{"model": "minimax-m3.1-flash", "messages": msgs})
-	out, origin := prepareUpstreamBody(body, "minimax-m3.1-flash")
+	prep := prepareUpstreamBody(body, "minimax-m3.1-flash")
+	out, origin := prep.Body, prep.Origin
 	if origin == nil {
 		t.Fatal("必须返回原始请求体对象")
 	}
@@ -207,6 +208,49 @@ func TestPrepareUpstreamBody_SessionKeyUnaffectedByTrim(t *testing.T) {
 	gotKey := maasSessionKeyFromPayload(origin)
 	if want == "" || gotKey != want {
 		t.Fatalf("会话键受裁剪影响：want %q got %q", want, gotKey)
+	}
+	// 改写结果里的会话键也必须来自原始对象。
+	if prep.SessionKey != want {
+		t.Fatalf("改写结果的会话键必须基于原始对象：want %q got %q", want, prep.SessionKey)
+	}
+}
+
+// TestPrepareUpstreamBody_SessionKeyUnaffectedByHardTrim 极端预算下（头尾都超预算，
+// 走「只保留尾部」退化分支，首条 user 消息被裁掉）会话键仍必须基于客户端原文。
+//
+// 普通预算下裁剪保留头部，头条 user 消息仍在 ⇒ 用裁剪后的对象派生也会得到同一个
+// 键，测不出回归；只有退化分支能把两种派生的差别暴露出来。
+//
+// [参数] t：测试上下文。
+// [返回] 无。
+// 最近修改时间：2026-11-28；改动原因：新增，覆盖裁剪后派生会话键的回归。
+func TestPrepareUpstreamBody_SessionKeyUnaffectedByHardTrim(t *testing.T) {
+	resetContextBudget(t)
+	setContextCharBudget(1000)
+
+	msgs := make([]any, 0, 40)
+	msgs = append(msgs, map[string]any{"role": "system", "content": strings.Repeat("s", 5000)})
+	msgs = append(msgs, map[string]any{"role": "user", "content": "FIRST-REQUEST"})
+	for i := 0; i < 30; i++ {
+		msgs = append(msgs, map[string]any{"role": "assistant", "content": strings.Repeat("m", 3000)})
+	}
+	body, _ := json.Marshal(map[string]any{"model": "minimax-m3.1-flash", "messages": msgs})
+	prep := prepareUpstreamBody(body, "minimax-m3.1-flash")
+
+	want := maasSessionKeyFromPayload(map[string]any{"messages": msgs})
+	if want == "" {
+		t.Fatal("原始请求体必须能派生会话键")
+	}
+	if prep.SessionKey != want {
+		t.Fatalf("会话键必须基于裁剪前的客户端原文：want %q got %q", want, prep.SessionKey)
+	}
+	// 反证：裁剪后的对象确实派生出不同的键（否则本用例测不出回归）。
+	var trimmed map[string]any
+	if err := json.Unmarshal(prep.Body, &trimmed); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if got := maasSessionKeyFromPayload(trimmed); got == want {
+		t.Fatalf("裁剪后的对象必须派生出不同的会话键（否则测不出回归），got %q", got)
 	}
 }
 

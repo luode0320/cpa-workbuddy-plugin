@@ -107,7 +107,7 @@ func TestNormalizeMaxTokensInPlace(t *testing.T) {
 // 最近修改时间：2026-11-07；改动原因：删除自研 max_tokens 控制，对齐社区共识。
 func TestPrepareUpstreamBody_MaxTokensPassthrough(t *testing.T) {
 	in := []byte(`{"model":"qwen3.8-max","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}],"max_tokens":8192}`)
-	out, _ := prepareUpstreamBody(in, "qwen3.8-max")
+	out := prepareUpstreamBody(in, "qwen3.8-max").Body
 
 	var obj map[string]any
 	if err := json.Unmarshal(out, &obj); err != nil {
@@ -119,7 +119,7 @@ func TestPrepareUpstreamBody_MaxTokensPassthrough(t *testing.T) {
 
 	// 未传 max_tokens -> 不得凭空补值
 	in2 := []byte(`{"model":"qwen3.8-max","messages":[{"role":"user","content":"hi"}]}`)
-	out2, _ := prepareUpstreamBody(in2, "qwen3.8-max")
+	out2 := prepareUpstreamBody(in2, "qwen3.8-max").Body
 
 	var obj2 map[string]any
 	if err := json.Unmarshal(out2, &obj2); err != nil {

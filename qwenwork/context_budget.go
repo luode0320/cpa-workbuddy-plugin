@@ -74,7 +74,22 @@ func loadedContextCharBudget() int {
 	return contextCharBudget
 }
 
-// trimMessagesToBudget 在输入超预算时裁掉最旧的历史消息，返回裁剪后的消息与被裁条数。
+// contextTrimPlan 是一次裁剪的规划结果（纯计算，不改入参）。
+//
+// cut 是关键字段：它是被裁掉的最旧历史与保留段之间的分界下标。
+// 「保留摘要」机制需要它来定位「哪一段历史还没被摘要覆盖」。
+type contextTrimPlan struct {
+	// kept 是裁剪后保留的全部消息（头部 + 中间保留段 + 尾部）。
+	kept []map[string]any
+	// keptTail 是保留段的起点之后的部分（norm[cut:]），摘要注入时用它拼尾部。
+	keptTail []map[string]any
+	// cut 是被裁掉的最旧历史与保留段的分界下标。
+	cut int
+	// dropped 是被裁掉的条数。
+	dropped int
+}
+
+// planContextTrim 计算输入超预算时的裁剪方案。
 //
 // 裁剪策略（保守，永不破坏协议结构）：
 //  1. 未超预算直接原样返回；
@@ -84,30 +99,22 @@ func loadedContextCharBudget() int {
 //  4. 被删消息若是 assistant 的 tool_calls 而对应 tool 结果仍在，一并删除该 tool
 //     结果，避免留下无主的 tool 消息（上游按 tool_call_id 校验会 400）。
 //
-// [参数] messages: OpenAI 形态的 messages 数组；budget: 字符预算，<=0 表示不裁剪。
-// [返回] 裁剪后的消息（未裁剪时是入参本身）；被裁掉的条数。
-// 最近修改时间：2026-11-28；改动原因：新增，对齐官方客户端的上下文规模控制。
-func trimMessagesToBudget(messages []any, budget int) ([]any, int) {
-	if budget <= 0 || len(messages) == 0 {
-		return messages, 0
-	}
-	norm := make([]map[string]any, 0, len(messages))
-	for _, m := range messages {
-		mm, ok := m.(map[string]any)
-		if !ok {
-			// 形态不是对象数组：不裁剪（宁可不裁，也不要把请求改坏）。
-			return messages, 0
-		}
-		norm = append(norm, mm)
+// [参数] norm: 消息对象数组；budget: 字符预算，<=0 表示不裁剪。
+// [返回] 裁剪方案；不需要裁剪时 ok=false。
+// 最近修改时间：2026-11-28；改动原因：新增，摘要机制需要裁剪点下标。
+func planContextTrim(norm []map[string]any, budget int) (contextTrimPlan, bool) {
+	var plan contextTrimPlan
+	if budget <= 0 || len(norm) == 0 {
+		return plan, false
 	}
 	if messageChars(norm) <= budget {
-		return messages, 0
+		return plan, false
 	}
 	head := contextKeepHeadMessages
 	tail := contextKeepTailMessages
 	// 消息太少时不做裁剪：删到只剩头尾反而破坏上下文完整性。
 	if len(norm) <= head+tail+1 {
-		return messages, 0
+		return plan, false
 	}
 
 	// 1. 逐条累计尾部字符量，先确定「必须保留的尾部」起点。
@@ -133,9 +140,13 @@ func trimMessagesToBudget(messages []any, budget int) ([]any, int) {
 		// 头尾削完仍超预算：退化到只保留尾部（尾部才是当前任务）。
 		out := dropOrphanToolMessages(norm[keepTail:])
 		if len(out) == 0 {
-			return messages, 0
+			return plan, false
 		}
-		return messagesToAny(out), len(norm) - len(out)
+		plan.kept = out
+		plan.keptTail = out
+		plan.cut = keepTail
+		plan.dropped = len(norm) - len(out)
+		return plan, true
 	}
 	cut := keepTail
 	used := 0
@@ -166,9 +177,34 @@ func trimMessagesToBudget(messages []any, budget int) ([]any, int) {
 	//    一起走，否则上游按 tool_call_id 校验会报错。
 	out = dropOrphanToolMessages(out)
 	if len(out) == 0 {
+		return plan, false
+	}
+	plan.kept = out
+	plan.keptTail = norm[cut:]
+	plan.cut = cut
+	plan.dropped = dropped
+	return plan, true
+}
+
+// trimMessagesToBudget 在输入超预算时裁掉最旧的历史消息，返回裁剪后的消息与被裁条数。
+//
+// [参数] messages: OpenAI 形态的 messages 数组；budget: 字符预算，<=0 表示不裁剪。
+// [返回] 裁剪后的消息（未裁剪时是入参本身）；被裁掉的条数。
+// 最近修改时间：2026-11-28；改动原因：新增，对齐官方客户端的上下文规模控制。
+func trimMessagesToBudget(messages []any, budget int) ([]any, int) {
+	if budget <= 0 || len(messages) == 0 {
 		return messages, 0
 	}
-	return messagesToAny(out), dropped
+	norm, ok := toMessageObjects(messages)
+	if !ok {
+		// 形态不是对象数组：不裁剪（宁可不裁，也不要把请求改坏）。
+		return messages, 0
+	}
+	plan, ok := planContextTrim(norm, budget)
+	if !ok {
+		return messages, 0
+	}
+	return messagesToAny(plan.kept), plan.dropped
 }
 
 // shrinkTailToBudget 在「头 + 尾」已超预算时，把尾部从旧到新削短到给定额度内。

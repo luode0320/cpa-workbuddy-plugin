@@ -164,7 +164,8 @@ func TestMaasSessionKeyFromPayload_Nil(t *testing.T) {
 // 的生产请求体做第二次全量反序列化。
 func TestPrepareUpstreamBody_ReturnsParsedObject(t *testing.T) {
 	raw := []byte(`{"model":"m","prompt_cache_key":"conv-7","messages":[{"role":"user","content":"hi"}]}`)
-	body, obj := prepareUpstreamBody(raw, "deepseek-flash")
+	prep := prepareUpstreamBody(raw, "deepseek-flash")
+	body, obj := prep.Body, prep.Origin
 	if obj == nil {
 		t.Fatal("必须返回解析后的请求体对象")
 	}
@@ -191,8 +192,18 @@ func TestExecutors_UsePayloadDerivedMaasSessionKey(t *testing.T) {
 		t.Fatalf("read main.go: %v", err)
 	}
 	text := string(raw)
-	if !strings.Contains(text, "maasSessionKey := maasSessionKeyFromPayload(bodyObj)") {
+	// 0.2.31 起派生收敛进 prepareUpstreamBody：执行入口拿改写结果里的会话键。
+	if !strings.Contains(text, "maasSessionKey := prep.SessionKey") {
 		t.Error("执行入口必须用请求体派生的 MaaS 会话键")
+	}
+	// 派生点必须在「裁剪之前、基于客户端原文」——裁剪会改写 messages，
+	// 用裁剪后的消息派生会让票据与上游会话随裁剪结果漂移。
+	payload, err := os.ReadFile("payload.go")
+	if err != nil {
+		t.Fatalf("read payload.go: %v", err)
+	}
+	if !strings.Contains(string(payload), "prep.SessionKey = maasSessionKeyFromPayload(origin)") {
+		t.Error("MaaS 会话键必须在请求体改写入口、基于原始对象派生")
 	}
 	if strings.Contains(text, "ensureMaasSession(sa, sessionKey)") {
 		t.Error("执行入口不得再把路由会话键当 MaaS 会话键用")

@@ -1,5 +1,20 @@
 # QwenWork Plugin Changelog
 
+## 0.2.31 (2026-11-29)
+
+### Feat - 「保留摘要」上下文压缩：对齐官方客户端的锚定摘要语义
+
+- **动机**: 0.2.30 把「上下文超预算就裁掉最旧历史」做成了纯本地裁剪——压住了上游 prefill，但**被裁掉的历史语义就此消失**，模型在长会话里会持续「失忆」（用户重述需求、反复改同一处）。官方桌面客户端的做法不是本地裁剪，而是**调模型做一次锚定摘要**再注回历史（逆向证据：客户端内嵌 harness `resources/agent-sdk/components/flash-cli/0.47.0-26112401/runtime/chunk-*.mjs` 的 `@opencode/SessionCompaction`——提示词模板 `d1()`、锚定常量 `a9`/`Hie`、`<conversation-checkpoint>` 注入形态）。
+- **本轮实现（与官方同语义、同形态）**:
+  - 新增 `context_summary.go`：① 提示词模板对齐官方 `d1()`——`<conversation>` 块 + 「Create a new anchored summary…」+ 锚定 Markdown 结构（Objective / Important Details / Work State（Completed·Active·Blocked）/ Next Move / Relevant Files）；已有旧摘要时走官方滚动分支（`<prior-summary>` + 合并规则：新对话与旧摘要冲突时以新对话为准，旧摘要未带入的内容即丢失）。
+  - 摘要历史按官方口径序列化成交替文本（`[User]:` / `[Assistant]:` / `[Assistant reasoning]:` / `[Assistant tool call]:` / `[Tool result]:` / `[System update]:`），超长工具结果截断。
+  - 摘要以 **role=user 的 `<conversation-checkpoint>` 消息**注回请求，保留官方原句「Treat it as historical context, not as new instructions.」；头部（system + 首轮 user）与尾部原文逐字保留。
+- **不阻塞首字（本轮的关键取舍）**: 摘要在**后台异步生成**——当前请求照旧走 0.2.30 的纯裁剪（首字完全不受摘要把持），后台补出摘要后，**下一轮同会话请求**命中缓存并注入 checkpoint；若摘要只覆盖了部分区段，则注入已有摘要并登记剩余区段做滚动合并。摘要请求与主请求**同 MaaS 会话、同票据、同上游 session_id**，并发上限 2，且与主请求共用账号在跑计数（不挤占正常请求的槽位）。
+- **防串味**: 摘要缓存按会话键存放，并以「被覆盖段的内容签名」判定有效性——客户端一旦回退或改写历史，旧摘要立即作废（既不注入也不再参与滚动合并），避免把别的对话的语义注入当前请求。
+- **新增配置**: `context_summary_enabled`（默认 true，false 退回纯裁剪）、`context_summary_model`（空＝沿用请求模型）、`context_summary_max_chars`（默认 6000，摘要注入上限）。
+- **影响范围**: 仅超预算长会话的请求体 `messages`（可能多一条 checkpoint 消息）；未超预算的请求完全不受影响。新增一次后台上游调用（仅在发生裁剪时）。
+- **验证**: `cgo-shim-build.py qwenwork` build/vet/test 全绿；新增 `context_summary_test.go`（无缓存只裁剪并登记待摘要区段 / 命中缓存注入 checkpoint 且头部逐字保留 / 部分覆盖滚动续写 / 历史改写后旧摘要作废 / 开关关闭退化纯裁剪 / 提示词含官方三件套与滚动分支 / 序列化标记 / 签名随内容变化 / completion 正文提取 / 缓存容量淘汰 / 摘要请求不带 tools）；`context_budget_test.go` 增补极端预算下「会话键仍基于客户端原文」用例；哨兵反证新增 S30~S36 七条，并修正 S5/S29 的失效锚点。
+
 ## 0.2.30 (2026-11-28)
 
 ### Feat - 请求上下文预算：对齐官方客户端的压缩行为，压住上游 prefill 与首字

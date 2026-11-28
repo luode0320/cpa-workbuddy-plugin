@@ -11,6 +11,18 @@ import (
 	"strings"
 )
 
+// preparedUpstreamBody 是一次上游请求体改写的结果。
+type preparedUpstreamBody struct {
+	// Body 是改写后的请求体字节。
+	Body []byte
+	// Origin 是**原始**请求体对象（会话身份派生用，不受裁剪影响）。
+	Origin map[string]any
+	// SessionKey 是由 Origin 派生的 MaaS 会话键（逐对话隔离）。
+	SessionKey string
+	// Summary 是上下文压缩的结果（待摘要区段、是否注入摘要等）。
+	Summary ctxSummaryOutcome
+}
+
 // prepareUpstreamBody 对客户端请求体做透传前的最小改写。
 //
 // 同时返回已反序列化的**原始**请求体对象，供 MaaS 会话键派生复用：生产请求体普遍在
@@ -21,15 +33,16 @@ import (
 // 上游会话会随裁剪结果漂移（每轮重建票据、失去上游会话绑定）。
 //
 // [参数] bodyRaw: 客户端原始请求体；upstreamModel: 已反解出的上游模型 ID。
-// [返回] 改写后的请求体与原始请求体对象；解析失败时原样返回请求体、对象为 nil。
-// 最近修改时间：2026-11-28；改动原因：随 MaaS 会话键派生补出解析结果，避免二次解析。
-func prepareUpstreamBody(bodyRaw []byte, upstreamModel string) ([]byte, map[string]any) {
+// [返回] 改写结果；解析失败时原样返回请求体、对象为 nil。
+// 最近修改时间：2026-11-28；改动原因：新增「保留摘要」上下文压缩与会话键回传。
+func prepareUpstreamBody(bodyRaw []byte, upstreamModel string) preparedUpstreamBody {
+	prep := preparedUpstreamBody{Body: bodyRaw}
 	if len(bodyRaw) == 0 {
-		return bodyRaw, nil
+		return prep
 	}
 	var obj map[string]any
 	if err := json.Unmarshal(bodyRaw, &obj); err != nil {
-		return bodyRaw, nil
+		return prep
 	}
 	// 原始对象的浅拷贝：会话键只读 messages，后续裁剪会整体替换 obj["messages"]，
 	// 浅拷贝保留原数组头指针 ⇒ 会话身份不受裁剪影响。
@@ -37,6 +50,9 @@ func prepareUpstreamBody(bodyRaw []byte, upstreamModel string) ([]byte, map[stri
 	for k, v := range obj {
 		origin[k] = v
 	}
+	prep.Origin = origin
+	// MaaS 会话键在裁剪之前派生（基于客户端原文）。
+	prep.SessionKey = maasSessionKeyFromPayload(origin)
 	// 1. 上游按 SSE 返回；同步路径同样依赖事件流聚合。
 	obj["stream"] = true
 	// 2. 透传体会原样带上客户端模型名。宿主虽然已把 ExecutorRequest.Model
@@ -52,20 +68,27 @@ func prepareUpstreamBody(bodyRaw []byte, upstreamModel string) ([]byte, map[stri
 	//    依据：上游首字随输入 token 线性增长（实测 ~43ms/K token，70 万 token ≈
 	//    30s 首字），而官方客户端会在上下文快满时压缩历史；本插件此前全量透传，
 	//    同一会话每轮重发完整历史 ⇒ 「越用越慢」。裁剪只影响 messages，不改其它字段。
+	//
+	//    「保留摘要」在此之上叠加官方同款语义：命中会话摘要缓存时，被裁掉的
+	//    历史以 <conversation-checkpoint> 消息还回模型；未命中时登记待摘要区段，
+	//    由后台异步补摘要（不阻塞本请求首字）。
 	if budget := loadedContextCharBudget(); budget > 0 {
 		if raw, ok := obj["messages"].([]any); ok {
-			if trimmed, dropped := trimMessagesToBudget(raw, budget); dropped > 0 {
-				obj["messages"] = trimmed
-				log.Printf("[qwenwork] context trimmed: dropped_messages=%d kept=%d budget_chars=%d input_chars=%d",
-					dropped, len(trimmed), budget, messageCharsOfAny(raw))
+			msgs, outcome := applyContextSummary(raw, budget, prep.SessionKey)
+			if outcome.Trimmed {
+				obj["messages"] = msgs
+				prep.Summary = outcome
+				log.Printf("[qwenwork] context trimmed: dropped_messages=%d kept=%d budget_chars=%d input_chars=%d summary_injected=%t pending_summary=%t",
+					outcome.Dropped, len(msgs), budget, messageCharsOfAny(raw), outcome.SummaryInjected, outcome.PendingTo > outcome.PendingFrom)
 			}
 		}
 	}
 	out, err := json.Marshal(obj)
 	if err != nil {
-		return bodyRaw, origin
+		return prep
 	}
-	return out, origin
+	prep.Body = out
+	return prep
 }
 
 // normalizeMaxTokensInPlace 已迁移至 model_specs.go：

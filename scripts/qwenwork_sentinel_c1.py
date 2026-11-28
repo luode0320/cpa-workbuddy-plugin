@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 ROOT = r"F:\cpa-plugin"
 PKG = os.path.join(ROOT, "qwenwork")
@@ -26,8 +27,8 @@ MUTATIONS = [
     {
         "name": "S2 出站缺 x-session-id 会话绑定",
         "file": "main.go",
-        "old": '\tif sess != nil && strings.TrimSpace(sess.SessionID) != "" {\n'
-               '\t\treq.Header.Set("x-session-id", sess.SessionID)\n'
+        "old": '\tif sessionID != "" {\n'
+               '\t\treq.Header.Set("x-session-id", sessionID)\n'
                '\t}\n',
         "new": '',
         "expect": "TestApplyMaasHeaders_CarriesSessionBinding",
@@ -52,8 +53,8 @@ MUTATIONS = [
     {
         "name": "S5 执行入口不再用请求体派生的 MaaS 会话键",
         "file": "main.go",
-        "old": 'maasSessionKey := maasSessionKeyFromPayload(bodyObj)',
-        "new": 'maasSessionKey := ""\n\t_ = bodyObj',
+        "old": 'maasSessionKey := prep.SessionKey',
+        "new": 'maasSessionKey := ""',
         "expect": "TestExecutors_UsePayloadDerivedMaasSessionKey",
         "all": True,
     },
@@ -242,11 +243,67 @@ MUTATIONS = [
         "all": False,
     },
     {
-        "name": "S29 会话键改用裁剪后的对象",
+        "name": "S29 会话键不再基于客户端原文派生",
         "file": "payload.go",
-        "old": '\treturn out, origin',
-        "new": '\treturn out, obj',
-        "expect": "TestPrepareUpstreamBody_SessionKeyUnaffectedByTrim",
+        "old": '\tprep.SessionKey = maasSessionKeyFromPayload(origin)',
+        "new": '\tprep.SessionKey = ""',
+        "expect": "TestPrepareUpstreamBody_SessionKeyUnaffectedByHardTrim",
+        "all": False,
+    },
+    {
+        "name": "S30 命中缓存时不再注入 checkpoint 摘要",
+        "file": "context_summary.go",
+        "old": '\ttrimmed = append(trimmed, buildCheckpointMessage(summary))\n',
+        "new": '',
+        "expect": "TestApplyContextSummary_CacheHit_InjectsCheckpoint",
+        "all": False,
+    },
+    {
+        "name": "S31 历史被改写后仍注入旧摘要",
+        "file": "context_summary.go",
+        "old": '\t\tif contextSummaryPrefixHash(norm, entry.covered) == entry.headHash {',
+        "new": '\t\tif true {',
+        "expect": "TestApplyContextSummary_StaleHistory_DiscardsSummary",
+        "all": False,
+    },
+    {
+        "name": "S32 滚动摘要丢掉 <prior-summary> 分支",
+        "file": "context_summary.go",
+        "old": '\t\tsb.WriteString("\\n\\nHere is the summary of the conversation before the <conversation> above:\\n\\n<prior-summary>\\n")\n',
+        "new": '',
+        "expect": "TestBuildContextSummaryPrompt_RollingSummary",
+        "all": False,
+    },
+    {
+        "name": "S33 摘要序列化丢掉官方标记",
+        "file": "context_summary.go",
+        "old": '\t\t\tparts = append(parts, "[Tool result]: "+truncateSummaryText(content))',
+        "new": '\t\t\tparts = append(parts, truncateSummaryText(content))',
+        "expect": "TestSerializeSummaryBlock_Markers",
+        "all": False,
+    },
+    {
+        "name": "S34 摘要缓存不再淘汰超限条目",
+        "file": "context_summary.go",
+        "old": '\tif len(contextSummaryCache) > contextSummaryCacheMaxEntries {',
+        "new": '\tif false {',
+        "expect": "TestStoreContextSummary_EvictsOldest",
+        "all": False,
+    },
+    {
+        "name": "S35 摘要前缀签名不再区分内容",
+        "file": "context_summary.go",
+        "old": '\tfor i := 0; i < n; i++ {\n\t\tm := messages[i]',
+        "new": '\tfor i := 0; i < 0; i++ {\n\t\tm := messages[i]',
+        "expect": "TestContextSummaryPrefixHash",
+        "all": False,
+    },
+    {
+        "name": "S36 执行入口不再登记后台摘要任务",
+        "file": "main.go",
+        "old": '\tmaybeEnqueueContextSummary(prep, sa, upstreamModel, maasSessionKey)',
+        "new": '',
+        "expect": "TestExecutors_EnqueueContextSummary",
         "all": False,
     },
 ]
@@ -266,11 +323,36 @@ def run_gate():
     proc = subprocess.run(
         [sys.executable, os.path.join(ROOT, "scripts", "cgo-shim-build.py"), "qwenwork"],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=dict(os.environ, GOMAXPROCS="1", GOGC="20", GOFLAGS="-p=1"),
     )
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
+ENV_MARKERS = (
+    "paging file is too small",
+    "out of memory",
+    "cannot allocate memory",
+    "fork/exec",
+)
+
+
+def is_env_failure(out):
+    """门禁失败若来自宿主资源耗尽（编译 OOM / 分页文件不足），不是被测代码的回归。
+
+    Windows 上编译器进程被 OOM 杀掉时 go 会把 runtime.throw 的栈打到输出里；
+    这类噪声会让「变异没被断言抓住」被误判成 NO-HIT，必须单独识别并重试。
+    """
+    low = out.lower()
+    return any(m in low for m in ENV_MARKERS)
+
+
 def main():
+    # 控制台默认 GBK：Go 的 panic 栈里可能出现非 GBK 字符，直接 print 会抛
+    # UnicodeEncodeError 把整个哨兵脚本打断（实测发生过一次）。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     only = sys.argv[1:]
     mutations = [m for m in MUTATIONS if not only or any(m["name"].startswith(p) for p in only)]
     if not mutations:
@@ -291,33 +373,47 @@ def main():
     print("baseline all green")
 
     failures = []
-    for m in mutations:
-        src = os.path.join(PKG, m["file"])
-        original = read(src)
-        nl = "\r\n" if "\r\n" in original else "\n"
-        old = m["old"].replace("\n", nl)
-        new = m["new"].replace("\n", nl)
-        if old not in original:
-            print("[SKIP] %s: anchor not found" % m["name"])
-            failures.append(m["name"] + " (anchor)")
-            continue
-        mutated = original.replace(old, new) if m.get("all") else original.replace(old, new, 1)
-        write(src, mutated)
+    try:
+        for m in mutations:
+            src = os.path.join(PKG, m["file"])
+            original = read(src)
+            nl = "\r\n" if "\r\n" in original else "\n"
+            old = m["old"].replace("\n", nl)
+            new = m["new"].replace("\n", nl)
+            if old not in original:
+                print("[SKIP] %s: anchor not found" % m["name"])
+                failures.append(m["name"] + " (anchor)")
+                continue
+            mutated = original.replace(old, new) if m.get("all") else original.replace(old, new, 1)
+            write(src, mutated)
+            try:
+                code, out = run_gate()
+                if code != 0 and is_env_failure(out):
+                    # 宿主资源耗尽（Windows 分页文件极小 ⇒ 提交额度被打满时
+                    # 编译器被系统杀掉）：等提交额度回落后重试，仍失败则判环境问题。
+                    time.sleep(20)
+                    code, out = run_gate()
+                    if code != 0 and is_env_failure(out):
+                        print("[ENV-FAILED] %s: 宿主资源耗尽，编译器被 OOM 杀掉" % m["name"])
+                        write(src, original)
+                        shutil.rmtree(BACKUP, ignore_errors=True)
+                        return 2
+            finally:
+                write(src, original)
+            hit = m["expect"] in out and code != 0
+            print("[%s] %s -> expect %s" % ("FAIL-HIT" if hit else "NO-HIT", m["name"], m["expect"]))
+            if not hit:
+                failures.append(m["name"])
+                print("\n".join(out.strip().splitlines()[-25:]))
+
         code, out = run_gate()
-        write(src, original)
-        hit = m["expect"] in out and code != 0
-        print("[%s] %s -> expect %s" % ("FAIL-HIT" if hit else "NO-HIT", m["name"], m["expect"]))
-        if not hit:
-            failures.append(m["name"])
-            print("\n".join(out.strip().splitlines()[-25:]))
+        print("=== restore recheck ===", "all green" if code == 0 else "STILL FAILING")
+        if code != 0:
+            print("\n".join(out.strip().splitlines()[-40:]))
+            failures.append("restore")
+    finally:
+        shutil.rmtree(BACKUP, ignore_errors=True)
 
-    code, out = run_gate()
-    print("=== restore recheck ===", "all green" if code == 0 else "STILL FAILING")
-    if code != 0:
-        print("\n".join(out.strip().splitlines()[-40:]))
-        failures.append("restore")
-
-    shutil.rmtree(BACKUP, ignore_errors=True)
     if failures:
         print("SENTINEL_FAILURES:", failures)
         return 1

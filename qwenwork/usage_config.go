@@ -222,6 +222,27 @@ func configure(raw []byte) {
 						setContextCharBudget(n)
 					}
 				}
+				if strings.HasPrefix(line, "context_summary_enabled:") {
+					// 「保留摘要」开关：官方同款语义——上下文被裁掉的语义以摘要
+					// （<conversation-checkpoint> 消息）还回模型。默认开启；
+					// 填 false 退回纯裁剪。缺省键保持当前值。
+					v := strings.TrimSpace(strings.TrimPrefix(line, "context_summary_enabled:"))
+					v = strings.Trim(v, "\"'")
+					setContextSummaryEnabled(v == "true" || v == "1" || v == "yes" || v == "on")
+				}
+				if strings.HasPrefix(line, "context_summary_model:") {
+					// 摘要使用的模型；留空表示沿用请求自身的模型。
+					v := strings.TrimSpace(strings.TrimPrefix(line, "context_summary_model:"))
+					setContextSummaryModel(strings.Trim(v, "\"'"))
+				}
+				if strings.HasPrefix(line, "context_summary_max_chars:") {
+					// 注入回请求的摘要字符上限；<=0 忽略（保持当前值）。
+					v := strings.TrimSpace(strings.TrimPrefix(line, "context_summary_max_chars:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						setContextSummaryMaxChars(n)
+					}
+				}
 				if strings.HasPrefix(line, "models:") {
 					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
 					// 交给 parseModelsConfig（显式配置优先于动态获取与

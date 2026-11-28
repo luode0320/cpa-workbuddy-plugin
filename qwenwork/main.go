@@ -330,7 +330,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.2.30"
+var version = "0.2.31"
 
 func wbRegistration() registration {
 	return registration{
@@ -702,10 +702,12 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	// body（QwenWork 模板无此字段位点），仅用于对齐 workbuddy 的用量维度。
 	reasoningEffort := strings.TrimSpace(qwReq.ReasoningEffort)
 	// QwenWork 透传客户端请求体，只强制 stream 并按官方规格自适应 max_tokens。
-	body, bodyObj := prepareUpstreamBody(bodyRaw, upstreamModel)
+	prep := prepareUpstreamBody(bodyRaw, upstreamModel)
+	body := prep.Body
 	// MaaS 会话键与路由会话键分开：前者决定「用哪张上游票据、落到哪个上游
 	// session_id」，必须逐对话隔离；后者只决定「粘哪个账号」。
-	maasSessionKey := maasSessionKeyFromPayload(bodyObj)
+	// 会话键在裁剪之前、基于客户端原文派生（prepareUpstreamBody 内完成）。
+	maasSessionKey := prep.SessionKey
 
 	// Per-request account-failover loop. We try the prepared body against
 	// the configured account first; on an account-level 4xx
@@ -799,6 +801,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		// account that will actually serve the next attempt.
 		usedAuthID = nextID
 	}
+	// 「保留摘要」：本请求已按预算裁剪；把还没被摘要覆盖的区段交给后台补摘要
+	// （不阻塞本请求首字），下一轮同会话请求命中缓存后即可注入。
+	maybeEnqueueContextSummary(prep, curSA, upstreamModel, maasSessionKey)
 	if completionErr != nil {
 		statusCode := parseUpstreamStatusFromErr(completionErr)
 		if isDailyCountExceeded(statusCode, completionErr.Error()) {
@@ -1021,10 +1026,15 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// 客户端请求的推理强度：写入 usage feed 供 dashboard 展示（同非流式路径）。
 	reasoningEffort := strings.TrimSpace(qwReq.ReasoningEffort)
 	// QwenWork 透传客户端请求体，只强制 stream 并按官方规格自适应 max_tokens。
-	body, bodyObj := prepareUpstreamBody(bodyRaw, upstreamModel)
+	prep := prepareUpstreamBody(bodyRaw, upstreamModel)
+	body := prep.Body
 	// MaaS 会话键与路由会话键分开（与 handleExecExecute 同口径）：前者决定
 	// 「用哪张上游票据、落到哪个上游 session_id」，必须逐对话隔离。
-	maasSessionKey := maasSessionKeyFromPayload(bodyObj)
+	maasSessionKey := prep.SessionKey
+	// 「保留摘要」：本请求按预算裁剪后，若还有未被摘要覆盖的区段，登记后台
+	// 摘要任务（不阻塞本请求首字）；下一轮同会话请求命中缓存后，被裁掉的语义
+	// 会以 <conversation-checkpoint> 消息还回模型。
+	maybeEnqueueContextSummary(prep, sa, upstreamModel, maasSessionKey)
 
 	headers := streamHeaders()
 	sseFramed := clientNeedsSSEFrame(req.Metadata)
