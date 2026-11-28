@@ -35,6 +35,79 @@ type loginSession struct {
 
 var loginSessions sync.Map
 
+// publicOrigin 缓存最近一次请求观测到的外部访问 origin。
+var (
+	publicOriginMu sync.RWMutex
+	publicOrigin   string
+)
+
+// rememberPublicOrigin 从请求头记录外部 origin。
+// [参数] h: 请求头。
+// [返回] 无。
+// 最近修改时间：2026-11-28 16:50:00；改动原因：新增，授权入口需拼绝对地址。
+func rememberPublicOrigin(h http.Header) {
+	if h == nil {
+		return
+	}
+	host := firstHeaderValue(h.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = firstHeaderValue(h.Get("Host"))
+	}
+	if host == "" {
+		return
+	}
+	scheme := firstHeaderValue(h.Get("X-Forwarded-Proto"))
+	if scheme == "" {
+		scheme = "https"
+	}
+	publicOriginMu.Lock()
+	if publicOrigin == "" || !isLoopbackHost(host) {
+		publicOrigin = scheme + "://" + host
+	}
+	publicOriginMu.Unlock()
+}
+
+// currentPublicOrigin 返回最近记录的 origin，未观测到时返回空串。
+// [参数] 无。
+// [返回] 形如 https://cpa.example.com 的 origin。
+// 最近修改时间：2026-11-28 16:50:00；改动原因：新增，绝对 URL 生成。
+func currentPublicOrigin() string {
+	publicOriginMu.RLock()
+	defer publicOriginMu.RUnlock()
+	return publicOrigin
+}
+
+// firstHeaderValue 取多级代理头里的第一个值。
+// [参数] raw: 原始头值。
+// [返回] 去空白后的首段。
+// 最近修改时间：2026-11-28 16:50:00；改动原因：新增，兼容逗号分隔转发头。
+func firstHeaderValue(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if idx := strings.Index(raw, ","); idx >= 0 {
+		raw = raw[:idx]
+	}
+	return strings.TrimSpace(raw)
+}
+
+// isLoopbackHost 判断主机名是否为回环 / 通配地址。
+// [参数] host: 可能带端口的 Host 值。
+// [返回] 属于回环地址时为 true。
+// 最近修改时间：2026-11-28 16:50:00；改动原因：新增，防止容器内自测污染外部 origin。
+func isLoopbackHost(host string) bool {
+	name := host
+	if idx := strings.LastIndex(name, ":"); idx > 0 {
+		name = name[:idx]
+	}
+	name = strings.Trim(name, "[]")
+	switch name {
+	case "127.0.0.1", "localhost", "::1", "0.0.0.0":
+		return true
+	}
+	return false
+}
+
 // startLoginSession 创建登录会话。
 // [参数] 无。
 // [返回] 会话 state。
@@ -72,14 +145,19 @@ func handleStartLogin(raw []byte) ([]byte, error) {
 	}
 	state := startLoginSession()
 	bridgePath := "/v0/resource/plugins/" + providerName + "/login?state=" + url.QueryEscape(state)
+	// 宿主弹窗展示的就是这个 URL：必须指向本插件的书签引导页，不能是上游官网。
+	absoluteURL := bridgePath
+	if origin := currentPublicOrigin(); origin != "" {
+		absoluteURL = origin + bridgePath
+	}
 	return okEnvelope(pluginapi.AuthLoginStartResponse{
 		Provider:  providerName,
-		URL:       "https://chatglm.cn/",
+		URL:       absoluteURL,
 		State:     state,
 		ExpiresAt: time.Now().Add(loginStateTTL).UTC(),
 		Metadata: map[string]any{
 			"logo":       pluginLogoURL,
-			"bridge_url": bridgePath,
+			"bridge_url": absoluteURL,
 			"mode":       "bookmark",
 			"prompt":     "在打开的引导页安装一次授权书签；登录 chatglm.cn 后点一下书签，页面会自动回调并完成授权。",
 		},
@@ -208,35 +286,6 @@ h1{font-size:20px;color:%s}p{color:#6d6760}</style></head><body><h1>%s</h1><p>%s
 	return html("授权成功", "账号 "+sa.Label+" 已导入，可以关闭本页回到面板。", true), nil
 }
 
-// buildBookmarkletScript 生成在 chatglm.cn 页面内执行的书签脚本。
-// 脚本只读取 localStorage 里的 chatglm_refresh_token 并回传插件，不读取其它 Cookie。
-// [参数] state: 登录会话标识，空串表示长期可复用书签。
-// [返回] javascript: 书签内容。
-// 最近修改时间：2026-11-28 14:45:00；改动原因：新增书签脚本生成。
-func buildBookmarkletScript(state string) string {
-	callback := "/v0/resource/plugins/" + providerName + callbackPath
-	tokenHeader := jsStringLiteral(callbackTokenHeader)
-	errHeader := jsStringLiteral(callbackErrorHeader)
-
-	var b strings.Builder
-	b.WriteString("javascript:(function(){")
-	b.WriteString("var S=__STATE__;")
-	b.WriteString("var IMPORT=" + jsStringLiteral(callback) + "+(S?('?state='+encodeURIComponent(S)):'');")
-	b.WriteString("var tok='';")
-	b.WriteString("try{var v=localStorage.getItem('chatglm_refresh_token');")
-	b.WriteString("if(v){try{var o=JSON.parse(v);tok=(o&&o.value)?o.value:v}catch(e){tok=v}}}catch(e){}")
-	b.WriteString("if(!tok){try{var m=document.cookie.match(/(?:^|;\\s*)chatglm_refresh_token=([^;]*)/);tok=m?decodeURIComponent(m[1]):''}catch(e){}}")
-	b.WriteString("var h={};")
-	b.WriteString("if(tok){h[" + tokenHeader + "]=tok}else{h[" + errHeader + "]='no-token'}")
-	b.WriteString("fetch(IMPORT,{method:'POST',headers:h,credentials:'omit'})")
-	b.WriteString(".then(function(r){return r.text()})")
-	b.WriteString(".then(function(t){document.open();document.write(t);document.close()})")
-	b.WriteString(".catch(function(e){alert('回调失败: '+e)})")
-	b.WriteString("})();")
-	out := b.String()
-	return strings.ReplaceAll(out, "__STATE__", jsStringLiteral(state))
-}
-
 // jsStringLiteral 把字符串安全编码为 JS 字面量。
 // [参数] s: 原始字符串。
 // [返回] 带引号的 JS 字面量。
@@ -249,51 +298,62 @@ func jsStringLiteral(s string) string {
 	return string(raw)
 }
 
-// handleLoginBridge 返回书签授权引导页。
+// handleLoginBridge 返回 token 录入页（宿主登录弹窗的落地页）。
+// GLM 是 token 授权：用户在 chatglm.cn 登录后复制 chatglm_refresh_token，粘贴到本页即完成授权。
 // [参数] req: 管理请求（含 Query state）。
-// [返回] 引导页响应。
-// 最近修改时间：2026-11-28 14:45:00；改动原因：新增书签授权引导页。
+// [返回] 录入页响应。
+// 最近修改时间：2026-11-28 16:55:00；改动原因：去掉书签，改为纯 token 录入页。
 func handleLoginBridge(req pluginapi.ManagementRequest) ([]byte, error) {
 	state := ""
 	if vals := req.Query["state"]; len(vals) > 0 {
 		state = strings.TrimSpace(vals[0])
 	}
-	bookmark := buildBookmarkletScript(state)
 
 	var b strings.Builder
 	b.WriteString(`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>智谱清言授权</title>
-<style>body{font:15px/1.8 -apple-system,"Segoe UI","PingFang SC",sans-serif;max-width:720px;margin:56px auto;padding:0 24px;color:#2d2a26}
-h1{font-size:21px;margin:0 0 6px}h2{font-size:15px;margin:26px 0 8px}
-p{color:#6d6760;margin:6px 0}.bm{display:inline-block;background:#4c8dff;color:#fff;text-decoration:none;padding:10px 18px;border-radius:9px;font-weight:600;cursor:grab}
-.note{background:#f5f4f0;border-radius:9px;padding:12px 14px;font-size:13px;color:#6d6760;margin-top:18px}
+<style>body{font:15px/1.8 -apple-system,"Segoe UI","PingFang SC",sans-serif;max-width:680px;margin:56px auto;padding:0 24px;color:#2d2a26}
+h1{font-size:21px;margin:0 0 6px}p{color:#6d6760;margin:6px 0}
+label{display:block;font-size:12px;color:#6d6760;margin:18px 0 6px}
+textarea{width:100%;min-height:88px;background:#fff;color:#2d2a26;border:1px solid #e3e1db;border-radius:8px;padding:9px 11px;font:13px/1.5 ui-monospace,monospace;resize:vertical}
+button{background:#4c8dff;color:#fff;border:0;border-radius:8px;padding:9px 18px;cursor:pointer;font-size:13px;margin-top:12px}
+button:disabled{opacity:.5}.msg{margin-top:12px;font-size:13px}.ok{color:#10b981}.err{color:#c65746}
 code{background:#f0eee8;padding:1px 5px;border-radius:4px;font-size:13px}
-pre{background:#f5f4f0;border-radius:8px;padding:12px;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all}</style></head><body>`)
-	b.WriteString(`<h1>智谱清言一键授权</h1><p>插件用 <code>chatglm_refresh_token</code> 换 access_token 调用上游，全程 token 鉴权。</p>`)
-	b.WriteString(`<h2>① 安装授权书签（只做一次）</h2><p>把下面按钮拖到浏览器书签栏（<b>不要直接点击</b>）：</p>`)
-	b.WriteString(`<p><a class="bm" id="bmLink" href="` + htmlEscapeAttr(bookmark) + `">智谱清言一键授权</a></p>`)
-	b.WriteString(`<h2>② 登录 chatglm.cn</h2><p>在同一个浏览器里打开并登录 <a href="https://chatglm.cn/" target="_blank" rel="noopener">chatglm.cn</a>。</p>`)
-	b.WriteString(`<h2>③ 点一下书签</h2><p>回到 chatglm.cn 标签页，点书签栏里的「智谱清言一键授权」，页面会自动回调并完成授权。</p>`)
-	b.WriteString(`<div class="note">书签只做一件事：在 chatglm.cn 页面内读取 <code>chatglm_refresh_token</code> 并交给本插件，不读取其它 Cookie，不含任何密钥，可长期保留。</div>`)
-	b.WriteString(`<details style="margin-top:16px"><summary style="cursor:pointer;color:#6d6760">书签被浏览器策略拦截时：手工复制令牌</summary><p style="margin-top:10px">F12 → Application → Local Storage → 复制 <code>chatglm_refresh_token</code>，回到面板粘贴导入。</p></details>`)
+.note{background:#f5f4f0;border-radius:9px;padding:12px 14px;font-size:13px;color:#6d6760;margin-top:18px;line-height:1.8}
+ol{color:#6d6760;font-size:13px;line-height:1.9;padding-left:20px}</style></head><body>`)
+	b.WriteString(`<h1>智谱清言授权</h1><p>本插件使用 <code>chatglm_refresh_token</code> 换取 access_token 调用上游，全程 token 鉴权。</p>`)
+	b.WriteString(`<div class="note"><b>获取令牌</b><ol>`)
+	b.WriteString(`<li>在同一个浏览器里打开并登录 <a href="https://chatglm.cn/" target="_blank" rel="noopener">chatglm.cn</a></li>`)
+	b.WriteString(`<li>按 F12 打开开发者工具 → Application → Local Storage → 找到 <code>chatglm_refresh_token</code></li>`)
+	b.WriteString(`<li>复制它的值，粘贴到下方并提交</li></ol></div>`)
+	b.WriteString(`<label for="tok">chatglm_refresh_token</label>`)
+	b.WriteString(`<textarea id="tok" placeholder="粘贴 chatglm_refresh_token"></textarea>`)
+	b.WriteString(`<button id="submitBtn">提交授权</button><div id="msg" class="msg"></div>`)
+	b.WriteString(`<script>
+var STATE=__STATE__;
+var CALLBACK="/v0/resource/plugins/` + providerName + callbackPath + `"+(STATE?("?state="+encodeURIComponent(STATE)):"");
+document.getElementById("submitBtn").addEventListener("click",function(){
+  var btn=this,msg=document.getElementById("msg");
+  var tok=(document.getElementById("tok").value||"").trim();
+  if(!tok){msg.className="msg err";msg.textContent="请先粘贴 chatglm_refresh_token";return}
+  btn.disabled=true;msg.className="msg";msg.textContent="校验中…";
+  var h={};h["` + callbackTokenHeader + `"]=tok;
+  fetch(CALLBACK,{method:"POST",headers:h,credentials:"omit"})
+    .then(function(r){return r.text()})
+    .then(function(t){document.open();document.write(t);document.close()})
+    .catch(function(e){btn.disabled=false;msg.className="msg err";msg.textContent="提交失败: "+e});
+});
+</script>`)
 	b.WriteString(`</body></html>`)
 
+	page := strings.ReplaceAll(b.String(), "__STATE__", jsStringLiteral(state))
 	resp := pluginapi.ManagementResponse{
 		StatusCode: http.StatusOK,
 		Headers: http.Header{
 			"Content-Type":  []string{"text/html; charset=utf-8"},
 			"Cache-Control": []string{"no-cache, no-store, must-revalidate"},
 		},
-		Body: []byte(b.String()),
+		Body: []byte(page),
 	}
 	data, _ := okEnvelope(resp)
 	return data, nil
-}
-
-// htmlEscapeAttr 转义 HTML 属性值。
-// [参数] s: 原始字符串。
-// [返回] 转义后字符串。
-// 最近修改时间：2026-11-28 14:45:00；改动原因：书签 href 安全注入。
-func htmlEscapeAttr(s string) string {
-	r := strings.NewReplacer("&", "&amp;", `"`, "&quot;", "<", "&lt;", ">", "&gt;")
-	return r.Replace(s)
 }

@@ -23,16 +23,13 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
   <div class="sub">refresh_token 鉴权 · OpenAI 兼容反代 · 模型前缀 <code>glm/</code></div>
 
   <div class="card">
-    <h2>一键授权</h2>
-    <div class="hint">点下面的按钮打开授权引导页：安装一次书签后，在 chatglm.cn 页面点一下书签即可自动回调完成授权，无需手工复制令牌。</div>
-    <div class="row"><a class="btn" id="authLink" href="/v0/resource/plugins/glm-provider/login" target="_blank" rel="noopener">打开授权引导页</a></div>
-    <details style="margin-top:14px"><summary class="hint" style="cursor:pointer">手工粘贴 chatglm_refresh_token（兜底）</summary>
-      <label for="token">chatglm_refresh_token</label>
-      <textarea id="token" placeholder="F12 → Application → Local Storage → chatglm_refresh_token"></textarea>
-      <label for="label">备注（可选）</label>
-      <input id="label" placeholder="例如：主账号">
-      <div class="row"><button id="importBtn" data-action="import">导入并校验</button><span id="importMsg" class="hint"></span></div>
-    </details>
+    <h2>添加账号</h2>
+    <div class="hint">在 chatglm.cn 登录后，按 F12 → Application → Local Storage 复制 <code>chatglm_refresh_token</code>，粘贴到下方导入。插件用它换 access_token 调用上游，全程 token 鉴权。</div>
+    <label for="token">chatglm_refresh_token</label>
+    <textarea id="token" placeholder="粘贴 chatglm_refresh_token"></textarea>
+    <label for="label">备注（可选）</label>
+    <input id="label" placeholder="例如：主账号">
+    <div class="row"><button id="importBtn" data-action="import">导入并校验</button><span id="importMsg" class="hint"></span></div>
   </div>
 
   <div class="card">

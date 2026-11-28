@@ -80,8 +80,8 @@ func managementRegistration() managementRegistrationResponse {
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "GLM", Description: "智谱清言 Provider 管理面板：账号管理、授权、测试。"},
-			{Path: "/login", Description: "授权引导页：安装一次书签，在 chatglm.cn 页面点一下即可自动回调完成授权。"},
-			{Path: callbackPath, Description: "授权回调页：接收书签回传的 chatglm_refresh_token 并落盘（免管理密钥）。"},
+			{Path: "/login", Description: "授权录入页：粘贴 chatglm_refresh_token 完成授权（宿主登录弹窗落地页）。"},
+			{Path: callbackPath, Description: "授权回调页：接收 chatglm_refresh_token 并落盘（免管理密钥）。"},
 		},
 	}
 }
@@ -158,6 +158,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 	}
 	subPath, urlQuery := normalizeMgmtSubPath(req.Path)
 	method := strings.ToUpper(req.Method)
+	rememberPublicOrigin(req.Headers)
 
 	if method == http.MethodGet && (subPath == "/" || subPath == "/panel") {
 		return handlePanelPage(), nil
