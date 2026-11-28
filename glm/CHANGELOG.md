@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.8 (2026-11-28)
+
+- **修复对话请求同样被上游判 `40004`**：`prepareStreamRequest` 的 `X-Device-Id` 原为随机串，与 0.2.7 修的刷新链路同源问题。上游 `/chatglm/backend-api/assistant/stream` 同样要求该头等于令牌载荷内的 `device_id`。现从 `access_token` 载荷解析后发送；解析失败在发请求前即报「access_token 缺少 device_id」。
+- `deviceIDFromRefreshToken` 泛化为 `deviceIDFromToken`，刷新与对话两条链路共用同一解析；测试夹具 `fakeRefreshToken` 相应泛化为 `fakeToken(deviceID, kind)`。
+- 新增 `TestPrepareStreamRequestUsesTokenDeviceID`（断言 `X-Device-Id` 来自载荷、`Authorization` 与会话头齐备）与 `TestPrepareStreamRequestRejectsTokenWithoutDeviceID`。
+
 ## 0.2.7 (2026-11-28)
 
 - **修复 `refresh_token` 换取 `access_token` 必失败（上游 `40004 bad request`）**：`X-Device-Id` 原先发送随机串，上游要求它必须等于 `refresh_token` 的 JWT 载荷里编码的 `device_id`。新增 `deviceIDFromRefreshToken` 从载荷解析 `device_id` 并用作该请求头；载荷缺失时在请求上游前直接报「refresh_token 缺少 device_id」。

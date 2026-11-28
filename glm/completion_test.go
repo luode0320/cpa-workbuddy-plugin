@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"testing"
@@ -79,5 +80,35 @@ func TestEventErrorEarlyExit(t *testing.T) {
 	}
 	if sseErrorFrame(`{"conversation_id":"x","status":"finish"}`) != "" {
 		t.Fatal("normal frame must not be treated as error")
+	}
+}
+
+// TestPrepareStreamRequestUsesTokenDeviceID 验证对话请求的 X-Device-Id 取自 access_token 载荷，
+// 随机设备标识会被上游判 40004。
+func TestPrepareStreamRequestUsesTokenDeviceID(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.StreamEndpoint = "https://example.invalid/stream"
+	access := fakeToken("chat-device", "access")
+	req, err := prepareStreamRequest(context.Background(), []byte("{}"), cfg, access)
+	if err != nil {
+		t.Fatalf("prepareStreamRequest failed: %v", err)
+	}
+	if got := req.Header.Get("X-Device-Id"); got != "chat-device" {
+		t.Fatalf("X-Device-Id = %q, want chat-device", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer "+access {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if req.Header.Get("X-Sign") == "" || req.Header.Get("X-Timestamp") == "" {
+		t.Fatal("missing sign headers")
+	}
+}
+
+// TestPrepareStreamRequestRejectsTokenWithoutDeviceID 验证缺 device_id 的令牌在发请求前即被拒。
+func TestPrepareStreamRequestRejectsTokenWithoutDeviceID(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.StreamEndpoint = "https://example.invalid/stream"
+	if _, err := prepareStreamRequest(context.Background(), []byte("{}"), cfg, "not-a-jwt"); err == nil {
+		t.Fatal("expected error for access token without device_id")
 	}
 }

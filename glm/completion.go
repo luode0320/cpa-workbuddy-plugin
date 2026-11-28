@@ -151,16 +151,21 @@ func messageText(content any) string {
 }
 
 // prepareStreamRequest 构造带签名与伪装头的上游 HTTP 请求。
+// X-Device-Id 必须取自 access_token 载荷，随机值会被上游判 40004。
 // [参数] ctx: 上下文；raw: 请求体；cfg: 配置；accessToken: 调用令牌。
 // [返回] HTTP 请求、错误。
-// 最近修改时间：2026-11-28 新增, 流式请求头构造。
+// 最近修改时间：2026-11-28 修正 X-Device-Id 来源，对话端点同样校验设备一致性。
 func prepareStreamRequest(ctx context.Context, raw []byte, cfg Config, accessToken string) (*http.Request, error) {
+	deviceID := deviceIDFromToken(accessToken)
+	if deviceID == "" {
+		return nil, fmt.Errorf("access_token 缺少 device_id，请重新授权")
+	}
 	sign := generateSign(cfg.SignSecret, time.Now().UnixMilli(), newNonce())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.StreamEndpoint, bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("build stream request: %w", err)
 	}
-	h := refreshHeaders("", sign, newNonce())
+	h := refreshHeaders("", sign, deviceID)
 	h.Set("Authorization", "Bearer "+accessToken)
 	h.Set("Accept", "text/event-stream")
 	req.Header = h

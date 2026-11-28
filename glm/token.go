@@ -86,12 +86,13 @@ func newNonce() string {
 	return strings.ReplaceAll(fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().UnixMicro()), "-", "")
 }
 
-// deviceIDFromRefreshToken 从 refresh_token 的 JWT 载荷中读取 device_id。
-// [参数] refreshToken: chatglm_refresh_token。
+// deviceIDFromToken 从 JWT 令牌的载荷中读取 device_id。
+// refresh_token 与 access_token 的载荷都带该字段，上游要求 X-Device-Id 与之一致。
+// [参数] token: chatglm JWT 令牌（refresh 或 access）。
 // [返回] device_id；格式不符或取不到时返回空串。
-// 最近修改时间：2026-11-28 新增，上游要求 X-Device-Id 与令牌载荷内的设备标识一致。
-func deviceIDFromRefreshToken(refreshToken string) string {
-	parts := strings.Split(refreshToken, ".")
+// 最近修改时间：2026-11-28 由 deviceIDFromRefreshToken 泛化，对话链路同样需要该头。
+func deviceIDFromToken(token string) string {
+	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return ""
 	}
@@ -140,7 +141,7 @@ func refreshHeaders(refreshToken string, sign signResult, deviceID string) http.
 // [返回] 令牌结果、错误。
 // 最近修改时间：2026-11-28 修正 X-Device-Id 取值，随机设备标识会被上游判 40004。
 func requestToken(refreshToken string, cfg Config) (*tokenResult, error) {
-	deviceID := deviceIDFromRefreshToken(refreshToken)
+	deviceID := deviceIDFromToken(refreshToken)
 	if deviceID == "" {
 		return nil, fmt.Errorf("refresh_token 缺少 device_id，请从 chatglm.cn 重新复制")
 	}

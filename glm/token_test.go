@@ -11,19 +11,19 @@ import (
 	"time"
 )
 
-// fakeRefreshToken 构造带 device_id 的 JWT 形 refresh_token 测试夹具。
-// [参数] deviceID: 写入载荷的设备标识。
+// fakeToken 构造带 device_id 的 JWT 形令牌测试夹具，refresh 与 access 通用。
+// [参数] deviceID: 写入载荷的设备标识；kind: 令牌类型（refresh / access）。
 // [返回] 三段式 JWT 字符串。
-// 最近修改时间：2026-11-28 新增，上游要求 X-Device-Id 与载荷一致，夹具需可解析。
-func fakeRefreshToken(deviceID string) string {
-	payload, _ := json.Marshal(map[string]string{"device_id": deviceID, "type": "refresh"})
+// 最近修改时间：2026-11-28 由 fakeRefreshToken 泛化，对话链路也用同一夹具。
+func fakeToken(deviceID, kind string) string {
+	payload, _ := json.Marshal(map[string]string{"device_id": deviceID, "type": kind})
 	return "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }
 
 // TestRequestTokenMock 验证 mock 刷新端点返回的 access_token 被正确解析，
 // 并断言 X-Device-Id 取自令牌载荷而非随机值。
 func TestRequestTokenMock(t *testing.T) {
-	refresh := fakeRefreshToken("test-device")
+	refresh := fakeToken("test-device", "refresh")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+refresh {
 			t.Errorf("missing bearer token")
@@ -68,7 +68,7 @@ func TestAcquireTokenCacheExpiry(t *testing.T) {
 
 	cfg := defaultConfig()
 	cfg.RefreshEndpoint = srv.URL
-	key := fakeRefreshToken("expiry-device")
+	key := fakeToken("expiry-device", "refresh")
 	invalidateToken(key)
 
 	first, err := acquireToken(key, cfg)
@@ -117,7 +117,7 @@ func TestAcquireTokenConcurrentSingleRefresh(t *testing.T) {
 
 	cfg := defaultConfig()
 	cfg.RefreshEndpoint = srv.URL
-	key := fakeRefreshToken("concurrent-device")
+	key := fakeToken("concurrent-device", "access")
 	invalidateToken(key)
 
 	var wg sync.WaitGroup
@@ -148,20 +148,20 @@ func TestAcquireTokenConcurrentSingleRefresh(t *testing.T) {
 	}
 }
 
-// TestDeviceIDFromRefreshToken 验证从令牌载荷读取 device_id 的四种边界。
-func TestDeviceIDFromRefreshToken(t *testing.T) {
+// TestDeviceIDFromToken 验证从令牌载荷读取 device_id 的四种边界。
+func TestDeviceIDFromToken(t *testing.T) {
 	cases := []struct {
 		name  string
 		token string
 		want  string
 	}{
-		{"合法载荷", fakeRefreshToken("dev-abc"), "dev-abc"},
+		{"合法载荷", fakeToken("dev-abc", "refresh"), "dev-abc"},
 		{"非三段式", "not-a-jwt", ""},
 		{"载荷无 device_id", "eyJhbGciOiJIUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte(`{"type":"refresh"}`)) + ".sig", ""},
 		{"载荷非法 JSON", "eyJhbGciOiJIUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte("{{{")) + ".sig", ""},
 	}
 	for _, tc := range cases {
-		if got := deviceIDFromRefreshToken(tc.token); got != tc.want {
+		if got := deviceIDFromToken(tc.token); got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
 		}
 	}

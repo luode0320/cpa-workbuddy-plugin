@@ -82,7 +82,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.2.7"
+	version      = "0.2.8"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
