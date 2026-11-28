@@ -14,6 +14,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -21,13 +22,17 @@ import (
 	"time"
 )
 
-// TestHostBridgeOpenTimeoutDegradesToDirect 验证 open 超时后降级到直连，
-// 且降级路径返回的是直连结果而不是错误。
+// TestHostBridgeOpenTimeoutDoesNotResend 验证 open 看门狗到点时**不重发**上游请求，
+// 而是把错误如实返回（由换号逻辑收口）。
+//
+// 背景（2026-11-28 生产取证）：旧语义「超时即降级直连并重发一次完整请求」会让
+// 客户端总耗时 = 看门狗预算 + 第二次上游耗时（生产 8/8 降级事件均为此形态，
+// 表现为 33~36s / 123~126s 人造台阶），且同一逻辑请求在上游变成两份。
 //
 // [参数] t: 当前测试。
 // [返回] 无。
-// 最近修改时间：2026-11-28 14:30:00；改动原因：open 看门狗此前零测试覆盖。
-func TestHostBridgeOpenTimeoutDegradesToDirect(t *testing.T) {
+// 最近修改时间：2026-11-28 17:00:00；改动原因：看门狗语义改为不重发。
+func TestHostBridgeOpenTimeoutDoesNotResend(t *testing.T) {
 	origOpenCall := hostStreamOpenCallFn
 	origDirect := hostStreamDirectFn
 	origAvailable := hostBridgeAvailableFn
@@ -52,13 +57,11 @@ func TestHostBridgeOpenTimeoutDegradesToDirect(t *testing.T) {
 		return nil, io.EOF
 	}
 
-	// 3. 直连 seam 返回可用的实时流。
+	// 3. 直连 seam 绝不能被调用：调用即代表发生了重发。
 	directCalled := false
 	hostStreamDirectFn = func(req *http.Request, bodyBytes []byte) (*hostHTTPStream, int, http.Header, error) {
 		directCalled = true
-		return &hostHTTPStream{
-			liveBody: io.NopCloser(strings.NewReader("event: output\ndata: {\"response\":\"ok\"}\n\n")),
-		}, 200, http.Header{}, nil
+		return &hostHTTPStream{liveBody: io.NopCloser(strings.NewReader(""))}, 200, http.Header{}, nil
 	}
 
 	req, err := http.NewRequest(http.MethodPost, "https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat",
@@ -67,27 +70,26 @@ func TestHostBridgeOpenTimeoutDegradesToDirect(t *testing.T) {
 		t.Fatalf("build req: %v", err)
 	}
 
-	// 4. open 应在预算内返回（降级），而不是永久阻塞。
+	// 4. open 应在预算内返回错误，而不是永久阻塞、也不应重发。
 	started := time.Now()
-	stream, statusCode, _, openErr := hostHTTPDoStream(req, "cb-1")
+	stream, _, _, openErr := hostHTTPDoStream(req, "cb-1")
 	elapsed := time.Since(started)
-	if openErr != nil {
-		t.Fatalf("open err = %v; want degraded direct stream", openErr)
+	if openErr == nil {
+		t.Fatalf("open err = nil; want watchdog error (no resend)")
 	}
-	if !directCalled {
-		t.Fatalf("direct seam not called after open timeout")
+	if !errors.Is(openErr, errHostBridgeOpenTimeout) {
+		t.Fatalf("open err = %v; want it to wrap errHostBridgeOpenTimeout", openErr)
 	}
-	if statusCode != 200 {
-		t.Fatalf("statusCode = %d; want 200", statusCode)
+	if directCalled {
+		t.Fatalf("direct seam called on watchdog timeout; must not resend the upstream request")
 	}
-	if stream == nil || stream.liveBody == nil {
-		t.Fatalf("stream = %#v; want live direct body", stream)
+	if stream != nil {
+		t.Fatalf("stream = %#v; want nil on watchdog timeout", stream)
 	}
-	// 5. 降级必须及时返回：预算是 100ms，给足调度余量后仍应远小于 30s。
+	// 5. 必须及时返回：预算是 100ms，给足调度余量后仍应远小于 30s。
 	if elapsed > 5*time.Second {
-		t.Fatalf("degradation took %v; want bounded by open budget", elapsed)
+		t.Fatalf("watchdog took %v; want bounded by open budget", elapsed)
 	}
-	stream.Close()
 }
 
 // TestHostBridgeOpenSuccessKeepsStreamID 验证 open 正常返回时保留 streamID，

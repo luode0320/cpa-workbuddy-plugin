@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -329,9 +330,9 @@ func hostHTTPDoDirect(req *http.Request, bodyBytes []byte) (*hostHTTPResponse, e
 // attempt.
 type hostHTTPStream struct {
 	streamID string
-	liveBody    io.ReadCloser
-	direct      []byte
-	directAt    int
+	liveBody io.ReadCloser
+	direct   []byte
+	directAt int
 
 	// Bridged read-phase degradation state (nil outside bridged mode).
 	req       *http.Request
@@ -346,22 +347,24 @@ type hostHTTPStream struct {
 // hostBridgeOpenTimeoutDefault 是宿主桥 open 看门狗的默认预算。
 //
 // 语义（2026-11-28 生产取证校正）：宿主的 host.http.do_stream 是**同步阻塞到
-// 上游响应头**才返回 stream_id 的 RPC（internal/pluginhost/http_bridge.go 的
-// doHTTP -> client.Do），且宿主侧 ResponseHeaderTimeout 与 client.Timeout 双为 0
-// ——宿主自己不做任何超时，open 可以无限期挂起。因此这个看门狗是**插件侧唯一**
-// 的 open 兜底，它一旦触发就产生两个副作用：
+// 上游响应头**才返回 stream_id 的 RPC，且宿主侧 ResponseHeaderTimeout 与
+// client.Timeout 双为 0 —— 宿主自己不做任何超时，open 会一直等到上游给响应头。
+// 这与官方客户端行为一致，是正确语义。
 //
-//	1) TTFT 出现 30s 量级的硬地板（= 预算 + 一次直连耗时）；
-//	2) 插件会**重新发起一次完整上游请求**（含整个 1.5MB body 重传），
-//	   而宿主侧那条旧 open 仍在等待——同一逻辑请求在上游变成两份。
+// 关键实测（绕过插件与 CPA 直测上游 llm_utils_chat，同账号同 body、每次新建连接）：
 //
-// 取值依据（2026-11-28 直连实测，380k token 大上下文）：上游响应头延迟
-// p50≈5~10s、p90≈19.6s、p99≈103s。可见 30s 会**误伤合法慢请求**：p90~p99
-// 之间的正常请求被强行掐断并重发，于是出现「33~36s 台阶」这种与上游真实耗时
-// 无关的人造延迟。故默认值上调到 120s，与上游实测 p99 同量级，使看门狗只用于
-// 兜住真正的无限挂起，而不再参与正常慢请求的判定。
-// 需要更短（例如想尽快让出慢号）时用配置项 host_bridge_open_timeout_seconds 覆盖。
-const hostBridgeOpenTimeoutDefault = 120 * time.Second
+//	650KB  body：p50=11.35s  max=40.17s   >25s 占 25%
+//	1500KB body：p50=15.97s  max=79.98s   >25s 占 50%
+//	2400KB body：p50=13.29s  max=101.22s  >25s 占 25%
+//
+// 即**上游本身就有 40~101s 的随机长尾**，与 body 大小无单调关系。官方客户端遇到
+// 长尾就是如实等待，不会变成别的数字。
+//
+// 因此本预算的职责只有一个：兜住真正的**永久**挂起（宿主 RPC 无超时，理论上可无限
+// 等）。它必须显著高于上游实测尾部（101s），否则就会把正常长尾判成挂起，触发
+// 调用方的「放弃 + 重发」放大回路（见 hostHTTPDoStreamBridged 注释）。取 180s。
+// 需要更短时用配置项 host_bridge_open_timeout_seconds 覆盖，但要清楚代价。
+const hostBridgeOpenTimeoutDefault = 180 * time.Second
 
 // hostBridgeOpenTimeout 是当前生效的 open 看门狗预算（可被配置覆盖）。
 // 保留为 var 而非 const：测试需要把它缩短到毫秒级来驱动降级路径。
@@ -376,9 +379,8 @@ var errHostBridgeOpenTimeout = fmt.Errorf("host stream bridge open timed out aft
 //
 // [参数] d: 新的看门狗预算，必须 > 0。
 // [返回] 无。
-// 最近修改时间：2026-11-28 15:20:00；改动原因：默认值由 30s 上调到 120s。
-// 实测上游响应头 p90≈19.6s、p99≈103s，30s 会掐断合法慢请求并触发整包重发，
-// 这正是生产 33~36s TTFT 台阶的来源。
+// 最近修改时间：2026-11-28 17:00:00；改动原因：默认值由 120s 上调到 180s。
+// 直测上游实测尾部达 101s，预算低于尾部会把正常长尾判成挂起并触发重发放大。
 func setHostBridgeOpenTimeout(d time.Duration) {
 	if d <= 0 {
 		return
@@ -449,13 +451,26 @@ func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream
 	openStarted := time.Now()
 	raw, err := hostStreamOpenFn(mustJSON(wire))
 	if err != nil {
-		// 宿主流桥打开挂起（cgo 同步调用无超时）：降级到插件直连，保证异步流式
-		// 请求仍能完成，而不是让协调器 goroutine 永久悬挂。
-		// 本分支历史上完全静默，是生产 30s 台阶长期只能靠分布反推的直接原因。
 		elapsed := time.Since(openStarted)
-		log.Printf("[traework] host bridge open degraded to direct: url=%s elapsed_ms=%d budget_ms=%d body_bytes=%d err=%s",
-			req.URL.Redacted(), elapsed.Milliseconds(), loadedHostBridgeOpenTimeout().Milliseconds(),
-			len(bodyBytes), truncateRedacted(err.Error(), 200))
+		// 1. 看门狗到点（errHostBridgeOpenTimeout）表示「宿主 open 等了整个预算
+		//    仍未拿到上游响应头」。这里**不再降级重发**：重发会把同一逻辑请求在
+		//    上游变成两份，并让客户端总耗时 = 预算 + 第二次上游耗时，产生与上游
+		//    真实延迟无关的人造台阶（生产 8/8 降级事件均为此形态）。
+		//    改为如实返回错误，由 executor 的换号逻辑决定下一步——换号会挑一个
+		//    不同的账号重试，而不是在同一个账号上重复排队。
+		if errors.Is(err, errHostBridgeOpenTimeout) {
+			log.Printf("[traework] host bridge open watchdog fired (no resend): url=%s elapsed_ms=%d budget_ms=%d body_bytes=%d",
+				req.URL.Redacted(), elapsed.Milliseconds(), loadedHostBridgeOpenTimeout().Milliseconds(),
+				len(bodyBytes))
+			return nil, 0, nil, fmt.Errorf("%w (upstream did not return response headers within the bridge watchdog; body_bytes=%d)",
+				errHostBridgeOpenTimeout, len(bodyBytes))
+		}
+		// 2. 其余错误（宿主 RPC 本身失败/信封损坏）说明桥这条路走不通，而不是
+		//    上游慢，此时降级直连是合理的：直连只会发一次请求，不构成重发放大。
+		//    本分支历史上完全静默，是生产台阶长期只能靠分布反推的直接原因。
+		log.Printf("[traework] host bridge open failed, degraded to direct: url=%s elapsed_ms=%d body_bytes=%d err=%s",
+			req.URL.Redacted(), elapsed.Milliseconds(), len(bodyBytes),
+			truncateRedacted(err.Error(), 200))
 		return hostStreamDirectFn(req, bodyBytes)
 	}
 	result, err := hostBridgeUnwrap(raw, pluginabi.MethodHostHTTPDoStream)
@@ -496,16 +511,34 @@ var hostStreamOpenCallFn = func(wireJSON []byte) ([]byte, error) {
 	return hostCall(pluginabi.MethodHostHTTPDoStream, wireJSON)
 }
 
-// hostHTTPDoStreamBridged runs the host.http.do_stream RPC with a bounded wait. The
-// RPC itself is a synchronous cgo call that can hang indefinitely; running it
-// in a goroutine and racing it against a timer lets the caller bail out to the
-// direct client. If the goroutine finishes after the timer, its result is
-// discarded — the caller cancels the host-side operation (host.http.cancel) so
-// the abandoned open does not keep a connection and a goroutine alive forever.
+// hostHTTPDoStreamBridged 在有限等待内执行宿主 host.http.do_stream RPC。
+//
+// 背景与语义（2026-11-28 生产取证，本函数是 33~36s / 123~126s TTFT 台阶的直接来源）：
+//
+// 宿主 open 是**同步阻塞到上游响应头**才返回 stream_id 的 RPC，且宿主侧
+// ResponseHeaderTimeout 与 client.Timeout 双为 0。直测上游实测（绕过插件与 CPA）：
+// 同一账号、同一 body、每次新建连接，响应头延迟 p50 仅 11~16s，但会**随机**出现
+// 40s / 80s / 101s 的尾部。也就是说上游本身就有长尾，官方客户端遇到长尾就是
+// 「等 40s」，不会变成别的数字。
+//
+// 而本看门狗一旦到点，调用方会**放弃宿主侧仍在等待的 open 并重发一次完整上游请求**
+// （body 1.2~2.5MB 全量重传）。生产日志逐条对齐证实：
+//
+//	ttft ≈ 看门狗预算 + 第二次直连耗时
+//	（8/8 降级事件：预算 120000ms + 3547~8053ms）
+//
+// 即「上游慢」被放大成「预算 + 又一次上游耗时」的人造延迟，且同一逻辑请求在上游
+// 变成两份。这正是台阶随预算移动的原因（30s 预算 → 33~36s 台阶；120s 预算 →
+// 123~126s 台阶）。
+//
+// 因此这里**不再把超时当作「降级并重发」的触发条件**：超时只作为防永久挂起的
+// 最后兜底，且必须显著大于上游实测尾部（101s），使正常长尾请求走「原样等待」
+// 路径——与官方客户端行为一致。真正的无限挂起仍由调用方的换号逻辑收口。
+//
 // [参数] wireJSON: 已序列化的宿主请求信封。
 // [返回] 宿主原始信封；error 表示 RPC 失败或看门狗超时（errHostBridgeOpenTimeout）。
-// 最近修改时间：2026-11-28 14:30:00；改动原因：看门狗预算改为可配置读取，
-// 最内层调用改走 hostStreamOpenCallFn 注入缝，使看门狗本身可被单测驱动。
+// 最近修改时间：2026-11-28 17:00:00；改动原因：看门狗语义由「到点即降级重发」
+// 改为「仅兜永久挂起」，消除「预算 + 重发」的人造延迟放大回路。
 func hostHTTPDoStreamBridged(wireJSON []byte) ([]byte, error) {
 	type res struct {
 		raw []byte
