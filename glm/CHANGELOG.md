@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.2.6 (2026-11-28)
+
+- 版本三轨统一：`main.go` 的 `version`、`VERSION`、`registry.json` 三处同值 0.2.6，消除 0.2.2/0.2.5 并存导致的发布歧义。
+- 移除已改名的 `glm-web/` 旧目录，仓库只保留 `glm/`，避免双目录并存。
+- 授权入口定型为 token 录入页（移除书签方案后的最终形态），面板内附 chatglm.cn 取 token 三步指引。
+
+## 0.2.5 (2026-11-28)
+
+- 恢复书签一键授权：`/login` 引导页 + 长期可复用书签，在 chatglm.cn 页面点一下即自动回调落盘，无需手工复制令牌。
+- `/login/callback` 支持自定义请求头与 query 参数双通道回传 `chatglm_refresh_token`。
+
+## 0.2.4 (2026-11-28)
+
+- 面板自动解密宿主管理密钥（`cli-proxy-auth` 的 `enc::v1`/`enc::v2` 格式），不再要求用户手填。
+
+## 0.2.3 (2026-11-28)
+
+- 面板按 workbuddy 规格重构：卡片列表、筛选栏、汇总区、模态框、toast 提示，由 100 行扩至 503 行。
+
+## 0.2.2 (2026-11-28)
+
+- 授权入口由上游官网改为本插件落地页绝对地址：新增 `rememberPublicOrigin`/`currentPublicOrigin`，从 `X-Forwarded-Host`/`Host` 与 `X-Forwarded-Proto` 观测外部 origin，回环地址不覆盖。
+- 移除书签方案：`chatglm_refresh_token` 存于 HttpOnly Cookie，网页脚本无法读取，`/login` 改为纯 token 录入页。
+
+## 0.2.1 (2026-11-28)
+
+- 管理接口改用标准 `pluginapi.ManagementResponse`（StatusCode/Headers/Body），修复面板白屏与 `/accounts`、`/models` 返回空 body。
+
 ## 0.2.0 (2026-11-28)
 
 - 改名：插件 id `glm-web-provider` → `glm-provider`，源码目录 `glm-web/` → `glm/`，模型前缀 `glm-web/` → `glm/`。
