@@ -9,6 +9,14 @@
 - 同步修正: `lifecycle_test.go` / `scheduler_test.go` 里「QwenWork 无免费模型」的过时前提注释，避免后续维护被误导。
 - 影响范围: 仅文案与注释，路由逻辑零改动；`panel.html` 经 `//go:embed` 编入二进制，故 bump 版本重发。
 
+### Fix - 5xx 纳入同请求换号（对齐 workbuddy）
+
+- 背景: `shouldRotateOnUpstreamErr` 原先对非 200 状态只走 `isAccountLevel4xx`（401/403/404/405/429），5xx 不换号。上游过载通常只影响部分后端，用户因此直接吃到第一次失败，只能等下一个请求靠冷却层换到别的账号。workbuddy 早在 2026-10-31 就把 5xx 纳入同请求换号，qwenwork 一直缺这一档。
+- 改动: 新增 `shouldRotateOnStatus`（`accountFailover.go`）——账号级 4xx 之外额外纳入 500-599；`shouldRotateOnUpstreamErr` 改走它。三个执行入口（非流式 `main.go`、流式错误帧 `stream.go`、流式 200 业务错误）自动继承。
+- 保持不换号: 0（传输错误）走跨请求冷却；402 硬额度由生命周期写盘禁用接管；400/422 请求形状错误换任何账号都会同样失败，避免白烧重试预算。
+- 零泄漏保护不变: 流式路径已输出分片时仍不换号，避免输出重复或拼接错乱。
+- 测试: `TestShouldRotateOnUpstreamErr` 表驱动扩到 23 例（含 500/502/503/504/599/600 边界）；新增 `TestShouldRotateOnStatus` 19 例锁定状态码全集；哨兵反证命中（移除 5xx 分支 → 两条测试 FAIL → 还原全绿）。
+
 ## 0.2.20 (2026-11-28)
 
 ### Feat - 积分持久化与每小时定时扫描（对齐 workbuddy）

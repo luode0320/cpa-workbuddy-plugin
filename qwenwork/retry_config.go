@@ -12,8 +12,11 @@
 // inside one request. The cross-request cooldown (laddered 60s..10min) also
 // lifts the failing account via recordAccountFailure, so a 429 here both
 // rotates the account AND starts the cooldown clock against the original.
-// 5xx/0/402 are intentionally NOT included — they wait for the cooldown
-// layer instead.
+// 5xx joined same-request rotation on 2026-11-28 (see shouldRotateOnStatus):
+// upstream overload usually affects only some backends, so rotating has a real
+// chance of succeeding instead of making the user eat the first failure.
+// 0 (transport) and 402 (hard credit) stay out — they wait for the cooldown /
+// lifecycle layers instead.
 package main
 
 import (

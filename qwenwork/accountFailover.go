@@ -150,18 +150,39 @@ func isAccountLevel4xx(status int) bool {
 	return false
 }
 
+// shouldRotateOnStatus 判定一个非 2xx 上游状态是否值得在同一请求内换号续试。
+//
+// 与 isAccountLevel4xx 的分工：本函数覆盖同请求换号的全集，即在账号级 4xx
+// 之外额外纳入 5xx。5xx 在高峰期几乎必然发生（上游过载通常只影响部分后端），
+// 过去只在跨请求冷却层级处理，等于让用户直接承受第一次失败。
+//
+// 仍然排除的形态：
+//   - 402 硬额度：换号也可能撞额度墙，且明确由生命周期写盘禁用接管；
+//   - 400/422 请求形状：换任何账号都同样失败，白烧预算。
+//
+// [参数] status：上游 HTTP 状态码。
+// [返回] true 表示应在同请求内换下一个账号。
+// 最近修改时间：2026-11-28；改动原因：新增，把 5xx 纳入同请求换号（对齐 workbuddy）。
+func shouldRotateOnStatus(status int) bool {
+	if isAccountLevel4xx(status) {
+		return true
+	}
+	return status >= 500 && status <= 599
+}
+
 // shouldRotateOnUpstreamErr is the unified same-request rotation gate shared
 // by the execute loop and the stream paths. HTTP 200 means the transport
 // succeeded, but the SSE body may still carry a business-level failure (an
 // OpenAI-convention error frame); those are classified through
-// isAccountFailure (credit / rate-limit markers). Any other status keeps the
-// account-level 4xx heuristic. （同步自 workbuddy：200 SSE 业务错误换号，
-// 2026-09-06）
+// isAccountFailure (credit / rate-limit markers). Any other status goes
+// through shouldRotateOnStatus, which covers account-level 4xx plus 5xx.
+//
+// （同步自 workbuddy：200 SSE 业务错误换号 2026-09-06；5xx 纳入换号 2026-11-28）
 func shouldRotateOnUpstreamErr(status int, errBody string) bool {
 	if status == http.StatusOK {
 		return isAccountFailure(status, errBody)
 	}
-	return isAccountLevel4xx(status)
+	return shouldRotateOnStatus(status)
 }
 
 // normalizeFailoverKey canonicalizes an auth identifier across various representations:

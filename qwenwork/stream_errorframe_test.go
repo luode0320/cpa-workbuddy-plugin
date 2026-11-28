@@ -38,8 +38,8 @@ func TestSSEErrorFrame(t *testing.T) {
 	}
 }
 
-// TestShouldRotateOnUpstreamErr 表驱动锁定换号判定边界：账号级 4xx/429 换号、
-// 200 内错误帧按 body marker 分类、5xx/0/402 维持跨请求冷却不换号、
+// TestShouldRotateOnUpstreamErr 表驱动锁定换号判定边界：账号级 4xx/429/5xx 换号、
+// 200 内错误帧按 body marker 分类、0/402 维持跨请求冷却不换号、
 // 业务 400 不换号。qwenwork 的 hardCreditMarkers 含 "quota exceeded" /
 // "quota exhaust"；traework 式宽文案 "exceeded the quota" 词序不命中，
 // 不换号属预期保守行为。
@@ -63,14 +63,55 @@ func TestShouldRotateOnUpstreamErr(t *testing.T) {
 		{"200 exceeded the quota frame rotates", 200, "upstream 200: Your requests have exceeded the quota.", true},
 		{"200 code 14018 frame rotates", 200, "upstream 200: 14018: quota limit reached", true},
 		{"200 unknown frame does not rotate", 200, "upstream 200: invalid message format", false},
-		{"500 stays cooldown-only", 500, "internal error", false},
+		{"500 rotates", 500, "internal error", true},
+		{"502 rotates", 502, "bad gateway", true},
+		{"503 rotates", 503, "service unavailable", true},
+		{"504 rotates", 504, "gateway timeout", true},
+		{"599 rotates", 599, "edge of 5xx range", true},
+		{"600 out of range does not rotate", 600, "not a 5xx", false},
 		{"0 transport stays cooldown-only", 0, "http_error: dial tcp", false},
 		{"402 stays cooldown-only", 402, "payment required", false},
 		{"400 business stays", 400, "bad request", false},
+		{"422 shape stays", 422, "unprocessable entity", false},
 	}
 	for _, tc := range cases {
 		if got := shouldRotateOnUpstreamErr(tc.status, tc.body); got != tc.want {
 			t.Fatalf("%s: shouldRotateOnUpstreamErr(%d, %q) = %v, want %v", tc.name, tc.status, tc.body, got, tc.want)
+		}
+	}
+}
+
+// TestShouldRotateOnStatus 表驱动锁定同请求换号的状态码全集：
+// 账号级 4xx（401/403/404/405/429）+ 5xx 换号，其余不换。
+func TestShouldRotateOnStatus(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		want   bool
+	}{
+		{"401 rotates", 401, true},
+		{"403 rotates", 403, true},
+		{"404 rotates", 404, true},
+		{"405 rotates", 405, true},
+		{"429 rotates", 429, true},
+		{"500 rotates", 500, true},
+		{"501 rotates", 501, true},
+		{"502 rotates", 502, true},
+		{"503 rotates", 503, true},
+		{"504 rotates", 504, true},
+		{"505 rotates", 505, true},
+		{"599 rotates", 599, true},
+		{"400 does not rotate", 400, false},
+		{"402 does not rotate", 402, false},
+		{"408 does not rotate", 408, false},
+		{"409 does not rotate", 409, false},
+		{"422 does not rotate", 422, false},
+		{"499 does not rotate", 499, false},
+		{"600 does not rotate", 600, false},
+	}
+	for _, tc := range cases {
+		if got := shouldRotateOnStatus(tc.status); got != tc.want {
+			t.Fatalf("%s: shouldRotateOnStatus(%d) = %v, want %v", tc.name, tc.status, got, tc.want)
 		}
 	}
 }
