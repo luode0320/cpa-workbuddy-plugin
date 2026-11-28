@@ -1,5 +1,15 @@
 # TraeWork Plugin Changelog
 
+## 0.5.66 (2026-11-28)
+
+### Fix - 上下文裁剪方向反了，长会话每轮丢弃最近上千条刚完成的工作
+
+- 现象: 0.5.65 上线后 TTFT 尖峰（33~36s 台阶）已从 7.0% 降到 0.4%，但用户反馈「几乎无法使用」反而加重；生产日志出现高频 `context trimmed: dropped_messages=1160 kept=73`、`dropped_messages=1236 kept=65`，即每次请求丢掉上千条消息、只留几十条。
+- 根因: `trimMessagesToBudget` 的中间段保留方向写反了。原实现从 `head` **向尾部**累计 `remaining`，把**最旧**的中间历史塞满预算就停，于是保留的是「会话开头的老上下文」、丢弃的是「紧邻当前轮次的最新历史」。以 `dropped=1160 kept=73` 为例：共 1233 条，头部 2 条 + 尾部 12 条固定保留，中间只留下**最早**的 59 条，**中间 1160 条刚做完的工作全部消失** → 模型每轮都「失忆」，表现为答非所问、反复重做、上下文对不上。
+- 为何 0.5.64/0.5.65 没发现: 首版测试 `TestTrimMessagesDropsOldestKeepsHeadAndTail` 只断言「头尾都在」「总字符不超预算」，没有断言**保留下来的中间段是最新的那一段**——方向写反也能同时满足这两条。0.5.65 把预算从 1.2M 字符收紧到 460k，裁剪从「偶发」变成「几乎每轮触发」，缺陷才被放大到不可用。
+- 改动: 中间段改为从 `keepTail-1` **向前**累计，只保留紧邻尾部的最近一段；`shrinkTailToBudget` 同样改为从最新往回保留。头尾仍固定保留，`dropOrphanToolMessages` 的 tool 配对清理不变。
+- 验证: `cgo-shim-build.py traework` build/vet/test 全绿；新增 `TestTrimMessagesKeepsNewestMiddleHistory` 直接锁定方向（超预算时最新中间消息必须留下、最旧中间消息必须被丢）。**哨兵反证**：把方向改回旧实现后该用例立即 FAIL（`dropped = 0; want > 0 when over budget`），确认新测试真的能抓住这个缺陷；恢复正确实现后全绿。
+
 ## 0.5.64 (2026-11-28)
 
 ### Feat - 新增请求上下文预算，对齐官方 SOLO 客户端的上下文压缩行为
