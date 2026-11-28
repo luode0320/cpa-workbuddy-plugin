@@ -1135,6 +1135,12 @@ func buildExhaustedNonStreamBody(format, modelID, notice string) []byte {
 }
 
 func emitExhaustedNoticeStream(target, callbackID, format, modelID, notice string) {
+	// 同 forwardStream：goroutine 里的 panic 会带走整个宿主进程，这里兜住并关流。
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			closeStream(target, callbackID, fmt.Sprintf("exhausted notice panic: %v", recovered))
+		}
+	}()
 	textJSON, _ := json.Marshal(notice)
 	var sse string
 	if isResponsesFormat(format) {

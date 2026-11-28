@@ -6,7 +6,12 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
+
+// maxClaudeStreamStates 是跨 chunk 状态表的上界。正常路径由 request.complete 清理；宿主漏发
+// 完成回调时，这里保证泄漏不会无界增长。
+const maxClaudeStreamStates = 512
 
 type streamInterceptRequest struct {
 	RequestID    string
@@ -30,6 +35,7 @@ type claudeStreamBlock struct {
 }
 
 type claudeStreamState struct {
+	created  time.Time
 	pending  []byte
 	frame    []byte
 	active   *claudeStreamBlock
@@ -74,15 +80,36 @@ func cleanupClaudeStream(requestID string) {
 	delete(claudeStreams.states, requestID)
 }
 
+// evictClaudeStreamLocked 在状态表达到上界时淘汰创建最早的一条。
+// [返回] 无
+// 最近修改时间 2026-11-28 23:20:00, 新增, 给宿主漏发 request.complete 的情况兜一个上界
+// 调用方需已持有 claudeStreams 的锁。
+func evictClaudeStreamLocked() {
+	if len(claudeStreams.states) < maxClaudeStreamStates {
+		return
+	}
+	oldestID := ""
+	var oldest time.Time
+	for id, state := range claudeStreams.states {
+		if oldestID == "" || state.created.Before(oldest) {
+			oldestID, oldest = id, state.created
+		}
+	}
+	delete(claudeStreams.states, oldestID)
+}
+
 func normalizeClaudeStream(requestID string, body []byte) ([]byte, error) {
 	if requestID == "" {
-		return nil, fmt.Errorf("Claude stream normalization requires a request ID")
+		// 没有 request ID 就无处存放跨 chunk 状态。原样透传比让整条客户端流报错更安全：
+		// 失去的只是事件重编号，而不是这一轮的全部输出。
+		return body, nil
 	}
 	claudeStreams.Lock()
 	defer claudeStreams.Unlock()
 	state, exists := claudeStreams.states[requestID]
 	if !exists {
-		state = &claudeStreamState{}
+		evictClaudeStreamLocked()
+		state = &claudeStreamState{created: time.Now()}
 		claudeStreams.states[requestID] = state
 	}
 	state.pending = append(state.pending, body...)

@@ -2,6 +2,32 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.14 (2026-11-28)
+
+### Fix - 流式转发 goroutine 的 panic 会带走整个宿主进程
+
+- 背景: `forwardStream` 与 `emitExhaustedNoticeStream` 由 `go` 启动，直接在 goroutine 里经 cgo 调用宿主回写客户端流。c-shared 插件没有「只崩自己」的隔离：goroutine 内的任何 panic（JSON 处理、切片越界、宿主返回异常形态等）都会沿 cgo 调用终止整个 CPA 进程，连带所有插件与在途请求。生产 0.1.13 运行 40 分钟未出现，但代价是不可恢复的全局故障。
+- 改动: 两个 goroutine 顶部加 `defer recover()`。命中 panic 时关闭目标客户端流（带 `stream forward panic: ...` / `exhausted notice panic: ...` 错误文本），并释放源上游流，让客户端拿到明确错误而不是半开连接。
+- 验证: 新增 `TestForwardStreamRecoversFromPanic`（stub 让 `host.model.stream_read` panic，断言两条流都被关闭且 panic 不向外传播）；哨兵变异（把 recover 主体改成空操作）KILLED。
+
+### Fix - Claude 流缺少 request ID 时整条流报错
+
+- 背景: `normalizeClaudeStream` 在没有 `requestID` 时直接返回错误，`handleStreamIntercept` 会把它变成插件错误。跨 chunk 状态确实无处存放，但让整条已经生成好的流失败，代价远大于放弃事件重编号。
+- 改动: 缺 `requestID` 时原样透传 body（不建状态、不做重编号），把「无法维护状态」降级为「不做规范化」。
+- 验证: 新增 `TestNormalizeClaudeStreamWithoutRequestIDPassesThrough`（断言输出与输入逐字节一致且状态表不新增条目）；哨兵变异（改回返回错误）KILLED。
+
+### Hardening - Claude 流状态表加上界
+
+- 背景: `claudeStreams.states` 只在宿主回调 `request.complete` 时清理。宿主正常路径一定会回调，但漏发时状态会无界增长（每条含 pending/frame 缓冲与整段 text）。
+- 改动: `claudeStreamState` 记录 `created`，新增 `evictClaudeStreamLocked`：状态数达到 `maxClaudeStreamStates = 512` 时淘汰创建最早的一条。
+- 验证: 新增 `TestClaudeStreamStatesEvictedAtCapacity`（预置 512 条后写入第 513 条，断言总数不超上界且最老一条被淘汰）；哨兵变异（删掉淘汰调用）KILLED。
+
+### Cleanup - staticcheck 全量告警归零（除 C ABI 假象）
+
+- 背景: `staticcheck -checks all` 在 shim 副本上只剩 `stream.go:79 ST1005`（错误串首字母大写）一条真实告警，其余全部是 cgo 被剥离后的 C ABI 符号假象（`//export` 函数、C 结构体名）。
+- 改动: 该错误串随上一条修复一起消失（缺 `requestID` 不再返回错误）。
+- 验证: 修后重跑 `staticcheck -checks all`，非 C ABI 告警为 0。
+
 ## 0.1.13 (2026-11-28)
 
 ### Fix - 过期会话粘性绑定无人清理，groupSessions 只增不减

@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func streamTestFrame(t *testing.T, event map[string]any) []byte {
@@ -507,5 +508,63 @@ func TestRequestCompleteCleansClaudeStream(t *testing.T) {
 	streamTestWantBlocks(t, blocks, []string{"text"})
 	if blocks[0].Text != "fresh" {
 		t.Fatalf("request.complete retained old content: %q", blocks[0].Text)
+	}
+}
+
+// resetClaudeStreams 清空跨 chunk 状态表，避免用例之间串状态。
+func resetClaudeStreams(t *testing.T) {
+	t.Helper()
+	claudeStreams.Lock()
+	claudeStreams.states = make(map[string]*claudeStreamState)
+	claudeStreams.Unlock()
+	t.Cleanup(func() {
+		claudeStreams.Lock()
+		claudeStreams.states = make(map[string]*claudeStreamState)
+		claudeStreams.Unlock()
+	})
+}
+
+// TestNormalizeClaudeStreamWithoutRequestIDPassesThrough 校验没有 request ID 时原样透传：
+// 失去事件重编号好过让整条写好的流报错。
+func TestNormalizeClaudeStreamWithoutRequestIDPassesThrough(t *testing.T) {
+	resetClaudeStreams(t)
+	body := streamTestFrames(t, streamTestText(0, "hello", " world")...)
+	out, err := normalizeClaudeStream("", body)
+	if err != nil {
+		t.Fatalf("normalizeClaudeStream without request ID: %v", err)
+	}
+	if !bytes.Equal(out, body) {
+		t.Fatalf("out = %q, want passthrough %q", out, body)
+	}
+	claudeStreams.Lock()
+	defer claudeStreams.Unlock()
+	if len(claudeStreams.states) != 0 {
+		t.Fatalf("states = %d, want 0 (no request ID must not create state)", len(claudeStreams.states))
+	}
+}
+
+// TestClaudeStreamStatesEvictedAtCapacity 校验状态表到达上界时淘汰最早创建的一条，
+// 让宿主漏发 request.complete 时的泄漏有界。
+func TestClaudeStreamStatesEvictedAtCapacity(t *testing.T) {
+	resetClaudeStreams(t)
+	for i := 0; i < maxClaudeStreamStates; i++ {
+		claudeStreams.Lock()
+		claudeStreams.states[fmt.Sprintf("req-%d", i)] = &claudeStreamState{created: time.Unix(int64(i), 0)}
+		claudeStreams.Unlock()
+	}
+	first := streamTestFrame(t, streamTestStart(0, map[string]any{"type": "text", "text": ""}))
+	if _, err := normalizeClaudeStream("req-new", first); err != nil {
+		t.Fatalf("normalizeClaudeStream: %v", err)
+	}
+	claudeStreams.Lock()
+	defer claudeStreams.Unlock()
+	if len(claudeStreams.states) != maxClaudeStreamStates {
+		t.Fatalf("states = %d, want %d", len(claudeStreams.states), maxClaudeStreamStates)
+	}
+	if _, ok := claudeStreams.states["req-0"]; ok {
+		t.Fatal("req-0 still present, want oldest evicted")
+	}
+	if _, ok := claudeStreams.states["req-new"]; !ok {
+		t.Fatal("req-new missing, want present")
 	}
 }

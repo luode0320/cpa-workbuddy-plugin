@@ -347,6 +347,15 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 
 // forwardStream flushes prefetched chunks and copies the remainder of the target model's stream.
 func forwardStream(source, target, callbackID string, prefetched [][]byte, sourceDone, shiftIndices, stampSafeguards, checkRefusal bool, session string, group modelGroup, model string) {
+	// 这个 goroutine 直接往宿主写客户端流：panic 若不接住会顺着 cgo 调用把整个宿主进程带崩
+	// （c-shared 插件没有「只崩自己」这条路）。接住后把两条流都关掉，客户端拿到明确错误而不是
+	// 一个半开的连接。
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			closeStream(target, callbackID, fmt.Sprintf("stream forward panic: %v", recovered))
+			_, _ = hostCall(methodHostModelStreamClose, hostStreamRef{StreamID: source, HostCallbackID: callbackID})
+		}
+	}()
 	seenToolIDs := make(map[string]bool)
 	for _, payload := range prefetched {
 		payload = processStreamSafeguardChunk(payload, seenToolIDs, stampSafeguards)

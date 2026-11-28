@@ -474,3 +474,30 @@ func b64(s string) string {
 	raw, _ := json.Marshal([]byte(s))
 	return strings.Trim(string(raw), `"`)
 }
+
+// TestForwardStreamRecoversFromPanic 校验转发 goroutine 的 panic 被接住：
+// c-shared 插件里的 goroutine panic 会顺着 cgo 带走整个宿主进程，所以必须关流而不是往上抛。
+func TestForwardStreamRecoversFromPanic(t *testing.T) {
+	var closed []string
+	stubHost(t, func(method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case methodHostModelStreamRead:
+			panic("boom")
+		case methodHostStreamClose:
+			ref, _ := payload.(hostStreamEmit)
+			closed = append(closed, "target:"+ref.StreamID)
+			return json.RawMessage(`{}`), nil
+		case methodHostModelStreamClose:
+			ref, _ := payload.(hostStreamRef)
+			closed = append(closed, "source:"+ref.StreamID)
+			return json.RawMessage(`{}`), nil
+		}
+		t.Fatalf("unexpected host call %s", method)
+		return nil, nil
+	})
+	forwardStream("src", "tgt", "", nil, false, false, false, false, "session", groupConfig().Groups[0], "glm-5.3-uncensored")
+	joined := strings.Join(closed, ",")
+	if !strings.Contains(joined, "target:tgt") || !strings.Contains(joined, "source:src") {
+		t.Fatalf("closed = %v, want both target and source closed", closed)
+	}
+}
