@@ -212,6 +212,16 @@ func configure(raw []byte) {
 						nextSlowMinPool = n
 					}
 				}
+				if strings.HasPrefix(line, "context_char_budget:") {
+					// 请求上下文字符预算：超预算时裁掉最旧历史，把输入压回可控区间。
+					// 对齐官方客户端的上下文压缩行为；填 0 关闭裁剪（全量透传）。
+					// 缺省键保持当前值（kill-switch 安全），负数忽略。
+					v := strings.TrimSpace(strings.TrimPrefix(line, "context_char_budget:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+						setContextCharBudget(n)
+					}
+				}
 				if strings.HasPrefix(line, "models:") {
 					// models 是 YAML 列表：整行冒号后的内容按 JSON 解析后
 					// 交给 parseModelsConfig（显式配置优先于动态获取与

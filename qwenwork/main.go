@@ -330,7 +330,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.2.29"
+var version = "0.2.30"
 
 func wbRegistration() registration {
 	return registration{
@@ -359,6 +359,7 @@ func wbRegistration() registration {
 				{Name: "slow_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速冷却时长（默认 10 分钟）：到期自动恢复，无需探活。"},
 				{Name: "slow_min_ttft_ms", Type: pluginapi.ConfigFieldTypeInteger, Description: "慢速判定的绝对下限毫秒（默认 3000）：低于该值一律不判慢，避免全池都快时相对放大误伤；填 0 表示不设下限。"},
 				{Name: "slow_min_pool_size", Type: pluginapi.ConfigFieldTypeInteger, Description: "账号池准入下限（默认 20）：账号总数（启用 + 停用）须严格大于该值才触发慢速判定。池子太小时下四分位基线退化，两个账号里任一次抖动就会让其中一个被判慢、互相顶替。"},
+				{Name: "context_char_budget", Type: pluginapi.ConfigFieldTypeInteger, Description: "请求上下文字符预算（默认 460000，约 200k token；实测 1 token≈2.30 字符）。官方客户端会在上下文快满时压缩历史，本插件此前全量透传，导致同一会话每轮重发完整历史、输入随轮次线性膨胀（生产实测 p50 44 万 token、最大 88 万）。上游首字随输入线性增长（实测约 43ms/K token ⇒ 70 万 token 的首字约 30s），超预算时裁掉最旧的历史，永远保留 system、首轮与最近 12 条；被裁的 tool 调用会成对清理。填 0 关闭裁剪（全量透传）。"},
 			},
 		},
 		Capabilities: registrationCapability{

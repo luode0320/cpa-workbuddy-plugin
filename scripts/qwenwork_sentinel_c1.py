@@ -233,6 +233,22 @@ MUTATIONS = [
         "expect": "TestUpstreamHeaderSummary_WhitelistOnly",
         "all": False,
     },
+    {
+        "name": "S28 裁剪方向反了（从旧往新累计）",
+        "file": "context_budget.go",
+        "old": '\tfor i := keepTail - 1; i >= head; i-- {',
+        "new": '\tfor i := head; i < keepTail; i++ {',
+        "expect": "TestTrimMessagesToBudget_KeepsHeadAndTail",
+        "all": False,
+    },
+    {
+        "name": "S29 会话键改用裁剪后的对象",
+        "file": "payload.go",
+        "old": '\treturn out, origin',
+        "new": '\treturn out, obj',
+        "expect": "TestPrepareUpstreamBody_SessionKeyUnaffectedByTrim",
+        "all": False,
+    },
 ]
 
 
