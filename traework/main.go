@@ -287,7 +287,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.5.67"
+var version = "0.5.68"
 
 func wbRegistration() registration {
 	return registration{
@@ -325,8 +325,9 @@ func wbRegistration() registration {
 				{Name: "min_routable_credits", Type: pluginapi.ConfigFieldTypeInteger, Description: "保活线（默认 20 点）：剩余积分低于该值但高于禁用线的账号打「保活」标，仍可路由但排在正常号之后。填 0 关闭保活降级。"},
 				{Name: "low_credit_disable_below", Type: pluginapi.ConfigFieldTypeInteger, Description: "积分硬禁用线（默认 10 点）：刷新积分时发现剩余低于该值就写盘停用该账号，积分回升到线上后由下一轮刷新自动解禁。填 0 关闭新增禁用（已禁的号仍会自动解禁）。注意：禁用线高于保活线（min_routable_credits，默认 20）时保活档不再出现——低于禁用线的号直接停用，而不是降级排序；若想保留「禁用线以上、保活线以下」的降级区间，请把禁用线调到保活线之下。"},
 				{Name: "stream_direct_forced", Type: pluginapi.ConfigFieldTypeBoolean, Description: "强制流式请求走插件直连，跳过宿主 host.http.do_stream 桥（默认 false）。仅用于对照实验：生产默认走宿主桥，插件连接池配置对它无效。"},
-				{Name: "host_bridge_open_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "宿主桥 open 看门狗预算（秒，默认 180）。宿主 open 同步阻塞到上游响应头且宿主侧无任何超时，故本项是插件侧唯一兜底：超时后如实报错并交由换号逻辑处理（不重发）。默认 180s 高于上游响应头实测尾部（101s），只兜真正无限挂起；调低会把正常长尾判成挂起。填 0 或缺省保持当前值。"},
-				{Name: "context_char_budget", Type: pluginapi.ConfigFieldTypeInteger, Description: "请求上下文字符预算（默认 460000，约 200k token；实测 1 token≈2.30 字符）。官方 SOLO 客户端会在上下文快满时压缩历史，本插件此前全量透传，导致同一会话每轮重发完整历史、输入随轮次线性膨胀（生产实测 p50=413k token、最大 884k，48% 落在 300k-500k）。超预算时裁掉最旧的历史，永远保留 system、首轮与最近 12 条；被裁的 tool 调用会成对清理。填 0 关闭裁剪（全量透传）。"},
+				{Name: "host_bridge_open_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "open 单次尝试预算（秒，默认 6）。上游自身处理只要 1~1.6s，但响应头会随机被链路压住 20~110s，且卡住是连接级的——换新连接重发几乎立刻恢复（同 body 对照：单次干等 p90/max=80.7s；6~8s 预算+重发 p90/max=11.7s）。因此本项决定「多久判定这条连接废了」，总耗时上界≈预算×stream_open_max_attempts。填 0 或缺省保持当前值。"},
+				{Name: "stream_open_max_attempts", Type: pluginapi.ConfigFieldTypeInteger, Description: "open 重试环的最大尝试次数（默认 3）。第 1 次走宿主桥（保留 request-log），第 2..N 次走插件直连（可被真正中断）；上游已给出 4xx/5xx 结论时不重试。最坏总耗时≈单次预算×本项（默认 6s×3=18s）。填 0 或缺省保持当前值。"},
+				{Name: "context_char_budget", Type: pluginapi.ConfigFieldTypeInteger, Description: "请求上下文字符预算（默认 290000，约 126k token；实测 1 token≈2.30 字符、约 1.775 字节/字符）。超预算时裁掉最旧的历史，永远保留 system、首轮与最近 12 条；被裁的 tool 调用会成对清理。取值受「请求体大小决定首字卡顿暴露面」约束（实测 >10s 占比：128KB 0/9、512KB 1/9、810KB 4/9），默认值对应约 512KB 请求体。填 0 关闭裁剪（全量透传）。"},
 				{Name: "rotation_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "启用连续使用轮换（默认开启）：单个账号连续承流达到 rotation_serve_minutes 后主动让位，进入 rotation_cooldown_minutes 冷却，后续请求改由其它账号承接。已在会话粘性绑定中的会话同样生效；关闭填 false。"},
 				{Name: "rotation_serve_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "单账号连续承流多少分钟后让位（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
 				{Name: "rotation_cooldown_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "轮换让位后停留在冷却的时长（默认 60）。仅在 rotation_enabled 开启时生效；填 0 等同关闭轮换。"},
