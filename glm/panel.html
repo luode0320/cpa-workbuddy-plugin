@@ -186,46 +186,91 @@ label{display:block;font-size:12px;color:var(--mut);margin:12px 0 5px}
 <div class="toasts" id="toasts"></div>
 <script>
 const API = "/v0/management/plugins/glm-provider";
-const SS_KEY = "glm-panel-key";
-const AUTH_PANEL_KEY = "cli-proxy-auth";
+const SS_KEY = "glm-mgmt-key";
+const PANEL_STORE = "cli-proxy-auth";
+const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
+const ENC_PREFIX = "enc::v1::";
+const ENC_PREFIX_V2 = "enc::v2::";
 
-/* ---------- management key 获取（嵌入自动读 / URL 参数 / 手工输入） ---------- */
+/* ---------- management key 获取（嵌入自动读 / URL 参数 / 手工输入） ----------
+   宿主主面板把管理密钥加密后写进 localStorage["cli-proxy-auth"]：
+   XOR(salt|host[|ua]) + base64，带 enc::v1:: / enc::v2:: 前缀。
+   直接 JSON.parse 明文解不出来，必须先 deobfuscate 再取 state.managementKey。 */
 var authFailCount = 0, authFailUntil = 0;
 
+function _enc(t){ return new TextEncoder().encode(t); }
+function _dec(b){ return new TextDecoder().decode(b); }
+function _keyBytes(v2){
+  try{ return _enc(v2 ? SECRET_SALT+"|"+window.location.host : SECRET_SALT+"|"+window.location.host+"|"+navigator.userAgent); }
+  catch(e){ return _enc(SECRET_SALT); }
+}
+function _xor(d,k){ var r=new Uint8Array(d.length); for(var i=0;i<d.length;i++){ r[i]=d[i]^k[i%k.length]; } return r; }
+function _b64e(b){ var s=""; for(var i=0;i<b.length;i++){ s+=String.fromCharCode(b[i]); } return btoa(s); }
+function _b64d(s){ var bin=atob(s); var b=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++){ b[i]=bin.charCodeAt(i); } return b; }
+function deobfuscate(p){
+  if(!p) return p;
+  if(p.indexOf(ENC_PREFIX_V2)===0){ try{ return _dec(_xor(_b64d(p.slice(ENC_PREFIX_V2.length)),_keyBytes(true))); }catch(e){ return p; } }
+  if(p.indexOf(ENC_PREFIX)===0){ try{ return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes(false))); }catch(e){ return p; } }
+  return p;
+}
 function readPanelKey(){
+  // 同源下 iframe 与独立标签页共享 localStorage；不限定 isEmbedded，
+  // 独立打开时同样能读到宿主写入的加密管理密钥，避免无谓地弹输入框。
+  var raw = null;
+  try{ raw = localStorage.getItem(PANEL_STORE); }catch(e){}
+  if(!raw){
+    try{ raw = window.top.localStorage.getItem(PANEL_STORE); }catch(e){}
+  }
+  if(!raw) return null;
   try{
-    var raw = window.top.localStorage.getItem(AUTH_PANEL_KEY) || localStorage.getItem(AUTH_PANEL_KEY);
-    if(!raw) return "";
-    var o = JSON.parse(raw);
-    if(typeof o === "string") return o;
-    return o.key || o.token || o.managementKey || "";
-  }catch(e){ return ""; }
+    var parsed = JSON.parse(deobfuscate(raw));
+    var st = (parsed && parsed.state) || parsed || {};
+    if(typeof st.managementKey === "string" && st.managementKey) return st.managementKey;
+    if(typeof parsed === "string" && parsed) return parsed;
+    return null;
+  }catch(e){ return null; }
 }
 function readUrlKey(){
-  try{
-    var u = new URL(location.href);
-    var k = u.searchParams.get("key") || "";
-    if(k){
-      sessionStorage.setItem(SS_KEY, k);
+  var m = null;
+  try{ m = new URLSearchParams(window.location.search).get("key"); }catch(e){}
+  if(m){
+    try{
+      var u = new URL(window.location.href);
       u.searchParams.delete("key");
-      history.replaceState(null,"",u.toString());
-    }
-    return k;
-  }catch(e){ return ""; }
+      history.replaceState(null,"",u.pathname+u.search+u.hash);
+    }catch(e){}
+  }
+  return m;
+}
+function persistKey(k){
+  if(!k) return k;
+  try{ sessionStorage.setItem(SS_KEY, k); }catch(e){}
+  return k;
 }
 function readSessionKey(){
-  try{ return sessionStorage.getItem(SS_KEY) || ""; }catch(e){ return ""; }
+  var v = null;
+  try{ v = sessionStorage.getItem(SS_KEY); }catch(e){ return null; }
+  if(v && (v.indexOf(ENC_PREFIX)===0 || v.indexOf(ENC_PREFIX_V2)===0)){
+    try{ sessionStorage.removeItem(SS_KEY); }catch(e){}
+    return null;
+  }
+  return v;
 }
-function getKey(){ return readSessionKey() || readPanelKey() || readUrlKey(); }
+function getKey(){
+  return readSessionKey() || persistKey(readPanelKey()) || persistKey(readUrlKey());
+}
 function saveKey(){
   var v = (document.getElementById("keyInput").value || "").trim();
-  if(!v){ toast("请输入管理密钥","err"); return; }
+  if(!v){ return; }
   try{ sessionStorage.setItem(SS_KEY, v); }catch(e){}
   authFailCount = 0; authFailUntil = 0;
   document.getElementById("authBox").style.display = "none";
   load();
 }
-function showAuth(){ document.getElementById("authBox").style.display = "block"; }
+function showAuth(){
+  document.getElementById("authBox").style.display = "block";
+  var i = document.getElementById("keyInput"); if(i){ i.focus(); }
+}
 function authHeaders(k){ return k ? {"Authorization":"Bearer "+k} : {}; }
 
 /* ---------- 通用工具 ---------- */
@@ -262,11 +307,14 @@ async function api(path, opts){
   var silent = !!opts.__silent;
   var fo = Object.assign({}, opts); delete fo.__silent;
   var k = getKey();
-  if(!k){ if(!silent) showAuth(); throw new Error("需要管理密钥"); }
+  // 无 key 也先尝试请求：宿主对同源面板请求可能已注入鉴权，盲目弹框会打断正常使用。
+  // 只有真的 401 才提示输入（见下方分支）。
   if(Date.now() < authFailUntil){ throw new Error("认证多次失败，请稍后重试（防 IP 封禁）"); }
   var r = await fetch(API + path, Object.assign({}, fo, {credentials:"omit", headers:Object.assign({}, opts.headers||{}, authHeaders(k))}));
   if(r.status === 401){
     authFailCount++;
+    // 完全没有 key 时是「未登录」而非「key 错误」，立即提示输入；有 key 才走累计阈值。
+    if(!k && !silent){ showAuth(); throw new Error("需要管理密钥"); }
     if(authFailCount >= 3){
       try{ sessionStorage.removeItem(SS_KEY); }catch(e){}
       authFailUntil = Date.now() + 60000; authFailCount = 0; showAuth();
@@ -294,9 +342,10 @@ var allAccounts = [], currentFilter = "all";
 async function load(btn){
   if(btn) busy(btn, true);
   try{
-    if(!getKey()){ showAuth(); document.getElementById("grid").innerHTML = '<div class="loading">请先填写 management key</div>'; return; }
+    // 先尝试直接请求：宿主同源时管理密钥可自动解密取得，不必先弹输入框。
     var res = await api("/accounts");
     if(res.error){ throw new Error(res.error); }
+    document.getElementById("authBox").style.display = "none";
     allAccounts = res.accounts || [];
     updateFilterCounts();
     renderSummary();
