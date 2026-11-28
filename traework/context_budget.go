@@ -80,7 +80,8 @@ func loadedContextCharBudget() int {
 // 裁剪策略（保守，永不破坏协议结构）：
 //  1. 未超预算直接原样返回，零拷贝开销之外的副作用；
 //  2. 永远保留头部 contextKeepHeadMessages 条与尾部 contextKeepTailMessages 条；
-//  3. 只从「头部之后、尾部之前」的中间段从旧到新删除；
+//  3. 只从「头部之后、尾部之前」的中间段**从旧到新删除**，即保留紧邻尾部的
+//     最近中间历史，丢掉最旧的中间历史；
 //  4. 被删消息若是 assistant 的 tool_calls 而对应 tool 结果仍在，一并删除该 tool 结果，
 //     避免留下无主的 tool 消息（上游会因 tool_call_id 对不上而 400）。
 //
@@ -114,8 +115,13 @@ func trimMessagesToBudget(messages []map[string]any, budget int) ([]map[string]a
 		tailChars = messageChars(messages[keepTail:])
 	}
 
-	// 3. 从头部之后开始，按「删除后仍能装进预算」的最远位置推进。
-	//    目标是删得刚好够，而不是一次删光——保留尽量多的中间历史。
+	// 3. 中间段**从最新往回**累计，只保留最近的那一段。
+	//
+	//    方向必须是从尾部向前：被裁的应是「最旧的中间历史」，保留的应是
+	//    「紧邻尾部的最近中间历史」。反向（从旧往前累计）会把刚做完的工作
+	//    整段丢掉、只留会话开头的老上下文，表现为模型「失忆」——生产实测
+	//    dropped_messages=1160/kept=73 即为此形态（1233 条里只留最早 59 条
+	//    中间消息 + 最近 12 条，中间 1160 条刚完成的工作全部消失）。
 	remaining := budget - headChars - tailChars
 	if remaining < 0 {
 		// 头尾削完仍超预算：退化到只保留尾部（尾部才是当前任务）。
@@ -125,30 +131,27 @@ func trimMessagesToBudget(messages []map[string]any, budget int) ([]map[string]a
 		}
 		return out, len(messages) - len(out)
 	}
-	cut := head
+	cut := keepTail
 	used := 0
-	for i := head; i < keepTail; i++ {
+	for i := keepTail - 1; i >= head; i-- {
 		c := messageChars(messages[i : i+1])
 		if used+c > remaining {
 			break
 		}
 		used += c
-		cut = i + 1
+		cut = i
 	}
-	// shrinkTailToBudget 可能把 keepTail 削到 cut 之前，此时中间段已不存在。
-	if cut > keepTail {
-		cut = keepTail
-	}
+	// 不允许越过头部区间。
 	if cut < head {
 		cut = head
 	}
 
-	// 4. 组装结果：头部 + 中间保留段(head..cut) + 尾部(keepTail..)。
-	//    cut 之后到 keepTail 之前是被丢弃的最旧中间历史。
-	out := make([]map[string]any, 0, head+(cut-head)+(len(messages)-keepTail))
+	// 4. 组装结果：头部 + 中间保留段(cut..keepTail) + 尾部(keepTail..)。
+	//    头部之后到 cut 之前是被丢弃的最旧中间历史。
+	out := make([]map[string]any, 0, head+(keepTail-cut)+(len(messages)-keepTail))
 	out = append(out, messages[:head]...)
-	if cut > head {
-		out = append(out, messages[head:cut]...)
+	if keepTail > cut {
+		out = append(out, messages[cut:keepTail]...)
 	}
 	out = append(out, messages[keepTail:]...)
 	dropped := len(messages) - len(out)
