@@ -166,7 +166,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 	if method == http.MethodGet && subPath == "/login" {
 		return handleLoginBridge(req)
 	}
-	if method == http.MethodPost && subPath == callbackPath {
+	if (method == http.MethodPost || method == http.MethodGet) && subPath == callbackPath {
 		return handleLoginCallback(req)
 	}
 
