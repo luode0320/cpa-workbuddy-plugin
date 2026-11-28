@@ -405,13 +405,14 @@ func closeStream(target, callbackID, errText string) {
 // Protocols that carry the model only in the path (Gemini) have no "model" field and are passed
 // through unchanged.
 func withModel(payload []byte, model string) ([]byte, error) {
-	bodyOut, _, _, _ := sanitizeRequest(payload, nil, currentConfig())
+	// 调用方（executeGroup / executeGroupStream）已按本次请求的配置净化过 body，这里只改 model 字段；
+	// 不再重复净化，也不用可能已热更新的全局配置覆盖本次请求口径。
 	var body map[string]json.RawMessage
-	if errUnmarshal := json.Unmarshal(bodyOut, &body); errUnmarshal != nil {
+	if errUnmarshal := json.Unmarshal(payload, &body); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode group request body: %w", errUnmarshal)
 	}
 	if _, ok := body["model"]; !ok {
-		return bodyOut, nil
+		return payload, nil
 	}
 	encoded, _ := json.Marshal(model)
 	body["model"] = encoded

@@ -2,6 +2,33 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.13 (2026-11-28)
+
+### Fix - 过期会话粘性绑定无人清理，groupSessions 只增不减
+
+- 背景: `pruneSessions` 在 0.1.7 精简后没有任何调用方（`staticcheck -checks all` 命中 `balance.go func pruneSessions is unused (U1000)`）。过期绑定只会在「同一个 key 再次被访问」时由 `groupCandidateOrder` 懒删除，从不再被访问的会话 key（UUID 形态，每条绑定约 200 字节）会一直留在 map 里；而 `GET /state` 每 10 秒轮询会把这些绑定全量回给面板，生产状态体已达 19.5 KB（60 条决策 + 8 条活跃会话）。
+- 改动: ① 新增 `pruneSessionsThrottled`（`sessionPruneInterval = 5 分钟` 节流），挂在绑定写入路径 `bindGroupSession` 上，把清理从「读路径懒删除」改为「写入路径周期清理」，避免逐请求全表扫描；② `buildUIState` 持锁后先 `pruneSessions`，并只回 `IdleExpiresAt` 尚未过期的绑定——粘性失效的会话对路由没有意义，也不该继续占状态体。
+- 语义: 保留 24 小时 `sessionRetention` 不变，`buildGroupNotice` 依赖的「上一轮由哪个模型服务」提示仍可取到历史绑定；变化仅在于超过保留期的记录会被真正删除、面板不再展示已失效会话。
+- 验证: `python scripts/cgo-shim-build.py safeguard-killer` build/vet/test 全绿；新增 `sessions_test.go` 三条用例（节流清理生效且窗口内不重复清理、绑定写入路径触发清理、面板状态过滤过期绑定）；三组哨兵变异（删清理调用 / 清理函数空实现 / 去掉状态过滤）逐条 KILLED 且失败形态均为断言失败。
+
+### Fix - 成员模型名请求 count_tokens 被当成未知分组
+
+- 背景: 宿主对 `executor.count_tokens` 与对话请求走同一条 `model.route` 选择链（`internal/api/handlers/handlers_model_router_test.go` 的 `plugin_executor_count_tokens` 用例即证明），而本插件允许「用分组成员模型名直接进入分组」（`resolveTargetGroup` → `groupServing`）。`countGroupTokens` 却只按分组代号 `cfg.group(req.Model)` 判定，客户端拿成员模型名请求 `/v1/messages/count_tokens` 时会收到 `model group X is not configured`，与对话链路行为不一致。
+- 改动: `countGroupTokens` 改用 `resolveTargetGroup(cfg, req.Model, "")`，与 `routeGroup` / `executeGroup` 同口径。
+- 验证: 新增 `TestCountGroupTokensAcceptsMemberModelName`；哨兵变异（退回 `cfg.group`）KILLED。
+
+### Refactor - 移除本插件零使用的启动错峰助手
+
+- 背景: 0.1.12 的 OOM 治理给 13 个插件统一补了 `memory_limit.go`，其中 `goAfterStartupJitter` / `waitStartupJitter` / `startupJitterMax` 是给「有后台循环的插件」准备的启动错峰助手。safeguard-killer 没有任何后台循环（无 scheduler、无定时器），这三者在本包零调用，`staticcheck -checks all` 直接报 U1000。
+- 改动: 删除两个助手与 `startupJitterMax`，连带不再使用的 `context` / `math/rand` / `time` 导入与两个只测这两个助手的用例；保留 `init()` 的内存软上限与 `CPA_PLUGIN_MEMORY_LIMIT_MB` 覆盖（这部分仍然有效且必需）。
+- 验证: 门禁 build/vet/test 全绿；`memory_limit_test.go` 剩余两条用例仍覆盖默认上限、环境变量覆盖、非法值回落与 runtime 实际生效。
+
+### Refactor - withModel 不再重复净化请求体
+
+- 背景: `executeGroup` / `executeGroupStream` 已用本次请求的 `cfg` 调用过 `sanitizeRequest`，`withModel` 内部又对同一份 body 净化一次，且第二次用的是 `currentConfig()`——配置热更新期间会用新配置覆盖本次请求口径，属重复且不一致的清洗。
+- 改动: `withModel` 只改 `model` 字段，保留无 `model` 字段的协议（Gemini）原样透传。
+- 验证: 既有 `TestWithModelKeepsBodiesWithoutModelField` 与两组 `executeGroup*` 用例全部通过。
+
 ## 0.1.12 (2026-11-27)
 
 ### Fix - 插件自限内存上限并错峰启动，抑制容器 OOM

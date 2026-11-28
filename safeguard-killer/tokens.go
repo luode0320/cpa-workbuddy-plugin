@@ -32,7 +32,8 @@ func countGroupTokens(raw []byte, cfg pluginConfig) ([]byte, error) {
 	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
 		return nil, errUnmarshal
 	}
-	if _, ok := cfg.group(req.Model); !ok {
+	// 与 executor 口径一致：请求既可能用分组代号，也可能直接用分组成员模型名进入分组。
+	if _, ok := resolveTargetGroup(cfg, req.Model, ""); !ok {
 		return nil, fmt.Errorf("model group %s is not configured", req.Model)
 	}
 	count, errCount := countPromptTokens(req.Payload)

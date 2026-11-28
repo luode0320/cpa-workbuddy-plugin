@@ -62,6 +62,16 @@
 
 ## 活动会话进展摘要
 
+- **当前会话（2026-11-28 22:23 - 23:05）：safeguard-killer 0.1.13：会话绑定泄漏修复 + 未使用功能移除（本地已提交，未发布）**（用户「Safeguard Killer插件, 持续监控一下bug和不需要没使用的功能移除。」）：
+  - **巡检手段**：`deadcode`（结论作废：c-shared 插件入口是 `//export cliproxyPluginCall` 而非 `main()`，全量符号报 unreachable 属假象）→ `staticcheck -checks all`（命中 1 条真 U1000 + 1 条 ST1005）→ 生产取证（`docker logs` 6h 无 panic/unknown_method/not_supported/[error]；`/v0/resource/plugins/safeguard-killer/state` 19508 B、60 条决策全 `served`、8 条会话）→ 宿主契约取证（`internal/pluginhost/executor_route.go`、`sdk/api/handlers/handlers_model_router_test.go` 的 `plugin_executor_count_tokens`）。
+  - **BUG-1 过期会话绑定无人清理**：`pruneSessions` 自 0.1.7 精简后零调用（staticcheck U1000 直接命中），过期只在「同 key 再次被访问」时由 `groupCandidateOrder` 懒删 ⇒ 不再被访问的会话 key 永久驻留 map（≈200 B/条），且 `/state` 每 10s 全量返给面板。修法：新增 `sessionPruneInterval=5min` 节流 + `pruneSessionsThrottled`，挂到 `bindGroupSession` 写入路径；`buildUIState` 持锁后先 prune，并只回 `IdleExpiresAt` 未过期的绑定（保留 24h `sessionRetention` 供 `buildGroupNotice` 的「上一轮由谁服务」提示）。
+  - **BUG-2 成员模型名 count_tokens 被判未知分组**：宿主对 count_tokens 与对话共用 `model.route`，路由链 `resolveTargetGroup` 认成员模型名、计数链 `cfg.group` 只认分组代号。修为 `resolveTargetGroup(cfg, req.Model, "")`。
+  - **未使用功能移除**：`goAfterStartupJitter` / `waitStartupJitter` / `startupJitterMax`（本插件无 scheduler、无定时器，三者零调用，staticcheck U1000）+ 两个只测它们的用例；`withModel` 内部重复 `sanitizeRequest`（且用 `currentConfig()` 覆盖本次请求口径）改为只改 `model` 字段。保留 `init()` 内存软上限与 `CPA_PLUGIN_MEMORY_LIMIT_MB` 覆盖（仍必需）。
+  - **验证**：门禁 `cgo-shim-build.py safeguard-killer` build/vet/test 全绿（`PASS=58 FAIL=0`，0.28~0.32s）；gofmt CLEAN（CRLF→LF 临时副本）；**4 条哨兵变异逐条 KILLED**（删清理调用 / 清理空实现 / 去状态过滤 / 退回 `cfg.group`）。
+  - **登记未修**：`claudeStreams.states` 无 TTL（只靠 `request.complete` 回调清理）、`handleStreamIntercept` 在 `ChunkIndex=-1` 不 flush 残余缓冲（流被截断时丢内容）、`stream.go:79` ST1005 错误串首字母大写（既有对外文本，非必要不改）。
+  - **文档**：`doc/4-bugs/2026-11-28_223000_safeguard-killer会话绑定泄漏与count-tokens口径根因与修复.md`、`doc/5-tests/2026-11-28_224500_safeguard-killer0.1.13会话清理与口径收敛代码级验证.md`、`doc/6-review/2026-11-28_230000_safeguard-killer0.1.13_6-review.md`。
+  - **教训**：`Split-Path (Split-Path $shim)` 会落到仓库根 `F:\cpa-plugin`，`Remove-Item -Recurse` 差一步删整仓；删临时目录前必须先断言路径匹配 `\\cpa-shim-[a-z0-9_]+$`。
+
 - **当前会话（2026-11-28 21:58 - 22:20）：glm-provider 0.2.6：版本三轨统一 + 移除 glm-web 旧目录（生产已热重载）**（用户「全部实现, 发布生产」）：
   - **起点纠偏**：探查发现插件早已实现（`glm/` 18 个 Go 文件、`cgo-shim` 全绿），真实问题是**四层版本错配**：`main.go`=0.2.5 / `VERSION`=0.2.2 / registry=0.2.2（指向 v0.2.2）/ 生产实跑 `glm-provider-v0.2.5.so`；且 `glm-web/` 22 文件删除未提交、`CHANGELOG` 只到 0.2.0。故计划改为「收口式」而非重写。
   - **改动（零逻辑）**：`git rm --cached glm-web` 22 文件；`VERSION` 0.2.2→0.2.6；`main.go:85` 0.2.5→0.2.6；`CHANGELOG` 补 `0.2.1`~`0.2.6` 六节。门禁 `cgo-shim-build.py glm` 全绿（15 测试）、面板两 `<script>` `node --check` OK、gofmt 18 文件 PASS。

@@ -134,6 +134,8 @@ func bindGroupSession(cfg pluginConfig, session, groupID, served, prevFromLookup
 	}
 	key := session + "\x00" + groupID
 	stateMu.Lock()
+	// 写入路径顺带节流清理过期绑定，避免 map 只增不减。
+	pruneSessionsThrottled(now)
 	prev := prevFromLookup
 	if existing, ok := groupSessions[key]; ok && prev == "" {
 		prev = existing.AuthID
