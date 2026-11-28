@@ -751,7 +751,7 @@
       "name": "GLM Provider",
       "description": "Zhipu Qingyan (chatglm.cn) provider for CLIProxyAPI: chatglm_refresh_token to access_token with web signing, one-click bookmark authorization with automatic callback, OpenAI-compatible streaming chat with parts-delta conversion and reasoning split, multi-account failover, glm/ model prefix and NDJSON usage feed.",
       "author": "luode0320 (cpa-workbuddy-plugin)",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "repository": "https://github.com/luode0320/cpa-workbuddy-plugin",
       "logo": "https://raw.githubusercontent.com/luode0320/cpa-workbuddy-plugin/main/assets/icons/ZCode.png",
       "homepage": "https://github.com/luode0320/cpa-workbuddy-plugin/tree/main/glm",
@@ -769,37 +769,37 @@
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.3.0/glm-provider_0.3.0_darwin_amd64.zip",
-            "sha256": "bab7a6443ce60d6ae21900d1de3dc63af4d903e83793060fe352a29fa1859097",
-            "size": 2973295
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.3.1/glm-provider_0.3.1_darwin_amd64.zip",
+            "sha256": "4fe63cd03cfe8521d26aab16d054787a1560534ac8a044b7809c8c4361a629e2",
+            "size": 2974241
           },
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.3.0/glm-provider_0.3.0_linux_amd64.zip",
-            "sha256": "1cda2fde3efb9e476373dafa891c3b4e933eb82bdc3b6c717e9b459724fdab66",
-            "size": 3124827
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.3.1/glm-provider_0.3.1_linux_amd64.zip",
+            "sha256": "eedbadbf9b4367b8fe6c02b2fbf0496ad53451b2e566abf5f96ca0ea465ce3c7",
+            "size": 3125099
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.3.0/glm-provider_0.3.0_linux_arm64.zip",
-            "sha256": "f21389b39cecf5956c671ef1ff848f1069e897ebfc71cc9c24a90c6df042f27a",
-            "size": 2839361
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.3.1/glm-provider_0.3.1_linux_arm64.zip",
+            "sha256": "4346efe123798c32f05f98601057292a017cbb1630a1b9ab75bf254e81af18a6",
+            "size": 2838764
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.3.0/glm-provider_0.3.0_windows_amd64.zip",
-            "sha256": "fb92c57706b6cc07ee7e6a1b5be7d8f3a56cd9b7485fe27dd674e188ea85186f",
-            "size": 3044964
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.3.1/glm-provider_0.3.1_windows_amd64.zip",
+            "sha256": "f7e2c03a8a6bec225ff2c649c6d10f33bd72544c1100306f552efe1f95a9c8db",
+            "size": 3046393
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.3.0/glm-provider_0.3.0_windows_arm64.zip",
-            "sha256": "55246d6921b8911c83962cf93cdaf65f276b91dba640568d60530f9af176f95a",
-            "size": 2820069
+            "url": "https://github.com/luode0320/cpa-workbuddy-plugin/releases/download/glm-provider-v0.3.1/glm-provider_0.3.1_windows_arm64.zip",
+            "sha256": "6ee0bb6a6aa6eba1fb6624ac6ea0645efc43d28325693b77d5ae14337585e06c",
+            "size": 2819837
           }
         ]
       }
