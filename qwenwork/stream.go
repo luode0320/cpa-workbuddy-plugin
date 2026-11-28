@@ -438,11 +438,14 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			return
 		}
 		successTTFTNS := collector.ttftNS(started)
-		publishUsage(requestedModel, upstreamModel, curAuthUID, started, collector.detail(), false, 0, "", reasoningEffort, successTTFTNS, curAccountLabel, sessionKey)
+		successDetail := collector.detail()
+		publishUsage(requestedModel, upstreamModel, curAuthUID, started, successDetail, false, 0, "", reasoningEffort, successTTFTNS, curAccountLabel, sessionKey)
 		invalidateAccountCredits(curAuthID, curAuthUID)
 		resetAccountFailover(curAuthID)
 		// 慢速打点：真实成功才记样本，失败换号不计（错误耗时不是首字延迟）。
 		noteSlowObservation(curAuthID, upstreamModel, successTTFTNS)
+		// 首字慢留痕：持续监控用（阈值与用户口径「首字大于 10s」一致）。
+		logSlowRequest(curAuthID, upstreamModel, successTTFTNS, successDetail, time.Since(started))
 		return
 	}
 }

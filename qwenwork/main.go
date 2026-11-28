@@ -330,7 +330,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.2.23"
+var version = "0.2.24"
 
 func wbRegistration() registration {
 	return registration{
@@ -818,6 +818,8 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	resetAccountFailover(usedAuthID)
 	// 慢速打点：真实成功才记样本，失败换号不计（错误耗时不是首字延迟）。
 	noteSlowObservation(usedAuthID, upstreamModel, nonStreamTTFTNS)
+	// 首字慢留痕：持续监控用（阈值与用户口径「首字大于 10s」一致）。
+	logSlowRequest(usedAuthID, upstreamModel, nonStreamTTFTNS, usageDetailFromCompletion(completion), time.Since(started))
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 }
 

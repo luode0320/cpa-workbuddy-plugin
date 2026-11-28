@@ -121,6 +121,30 @@ MUTATIONS = [
         "expect": "TestSharedHTTPClient_HasStagedTimeouts",
         "all": False,
     },
+    {
+        "name": "S14 前缀缓存字段退回只读顶层",
+        "file": "usage.go",
+        "old": '\tif v := nested("prompt_tokens_details", "cached_tokens", "cache_read_input_tokens"); v > 0 {\n\t\td.CachedTokens = v\n\t}\n',
+        "new": '\t_ = nested("prompt_tokens_details", "cached_tokens")\n',
+        "expect": "TestUsageDetailFromMap_ReadsPromptTokensDetails",
+        "all": False,
+    },
+    {
+        "name": "S15 首字慢阈值放大到 1 小时",
+        "file": "slow_request_log.go",
+        "old": 'const slowRequestLogThreshold = 10 * time.Second',
+        "new": 'const slowRequestLogThreshold = 1 * time.Hour',
+        "expect": "TestLogSlowRequest_OnlyAboveThreshold",
+        "all": False,
+    },
+    {
+        "name": "S16 票据签发日志失去节流",
+        "file": "maas.go",
+        "old": '\tif now.Sub(maasMintLastLog) < maasMintLogInterval {',
+        "new": '\tif false {',
+        "expect": "TestLogMaasTicketMint_Throttled",
+        "all": False,
+    },
 ]
 
 

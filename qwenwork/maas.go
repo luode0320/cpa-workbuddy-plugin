@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"runtime"
 	"sort"
@@ -125,6 +126,36 @@ func maasCacheKeyPrefix(sa *storedAuth) string {
 		return uid
 	}
 	return "token:" + fingerprintToken(sa.Auth.AccessToken)
+}
+
+// maasMintLogInterval 是票据签发日志的最小间隔。
+//
+// 票据按「账号×上游会话」分片，正常形态是**每个对话签一次**、后续请求全部命中
+// 缓存；一旦退化成「每请求签一次」，请求关键路径上就会多出一次上游往返。
+// 该日志是这类回归唯一的现场证据，故按间隔节流保留。
+const maasMintLogInterval = 60 * time.Second
+
+var (
+	maasMintLogMu   sync.Mutex
+	maasMintLastLog = time.Time{}
+)
+
+// logMaasTicketMint 记录一次票据签发或轮换（按间隔节流）。
+//
+// [参数] account：账号缓存键前缀；sessionID：上游会话标识（派生 UUID，非凭据）。
+// [返回] true 表示本次真的落了日志（被节流时为 false）。
+// 最近修改时间：2026-11-28；改动原因：新增，票据签发频次的现场证据。
+func logMaasTicketMint(account, sessionID string) bool {
+	now := time.Now()
+	maasMintLogMu.Lock()
+	if now.Sub(maasMintLastLog) < maasMintLogInterval {
+		maasMintLogMu.Unlock()
+		return false
+	}
+	maasMintLastLog = now
+	maasMintLogMu.Unlock()
+	log.Printf("[qwenwork] maas ticket minted: account=%s session=%s", account, sessionID)
+	return true
 }
 
 // maasSessionCacheKey 组装「账号×上游会话」的票据缓存键。
@@ -325,6 +356,8 @@ func ensureMaasSession(sa *storedAuth, sessionID string) (*maasSession, error) {
 	globalMaasCache.inflight[key] = call
 	prev := globalMaasCache.sessions[key]
 	globalMaasCache.mu.Unlock()
+
+	logMaasTicketMint(maasCacheKeyPrefix(sa), maasSessionID(sessionID))
 
 	sess, err := refreshOrMint(sa, prev, sessionID)
 

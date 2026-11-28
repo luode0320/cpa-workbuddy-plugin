@@ -209,6 +209,15 @@ func normalizeUsageDetail(d usage.Detail) usage.Detail {
 
 // usageDetailFromMap converts an OpenAI-style "usage" JSON object into a
 // usage.Detail, tolerating both snake_case naming and numeric jitter.
+//
+// 前缀缓存字段有三处形态，必须都读：
+//  1. OpenAI 兼容：`usage.prompt_tokens_details.cached_tokens`（**上游实际给的就是这个位置**；
+//     只读顶层 `cached_tokens` 会让「命中缓存」恒显示 0，监控口径直接失真——
+//     生产实测 qwenwork 的上游对 minimax 回报 99.6% 缓存命中，插件 feed 却恒为 0）；
+//  2. Anthropic 兼容：`usage.cache_read_input_tokens`（顶层）；
+//  3. 少数实现把 `cached_tokens` 直接挂在 usage 顶层。
+//
+// 最近修改时间：2026-11-28；改动原因：补 OpenAI 形态的 prompt_tokens_details.cached_tokens。
 func usageDetailFromMap(m map[string]any) usage.Detail {
 	if len(m) == 0 {
 		return usage.Detail{}
@@ -229,12 +238,37 @@ func usageDetailFromMap(m map[string]any) usage.Detail {
 		}
 		return 0
 	}
+	// 嵌套字段读取：prompt_tokens_details.cached_tokens 形态。
+	nested := func(container string, keys ...string) int64 {
+		sub, ok := m[container].(map[string]any)
+		if !ok {
+			return 0
+		}
+		for _, k := range keys {
+			switch n := sub[k].(type) {
+			case float64:
+				return int64(n)
+			case int64:
+				return n
+			case json.Number:
+				i, _ := n.Int64()
+				return i
+			}
+		}
+		return 0
+	}
 	d := usage.Detail{
-		InputTokens:     num("prompt_tokens", "input_tokens"),
-		OutputTokens:    num("completion_tokens", "output_tokens"),
-		TotalTokens:     num("total_tokens"),
-		CachedTokens:    num("cached_tokens"),
-		CacheReadTokens: num("cache_read_input_tokens"),
+		InputTokens:  num("prompt_tokens", "input_tokens"),
+		OutputTokens: num("completion_tokens", "output_tokens"),
+		TotalTokens:  num("total_tokens"),
+		CachedTokens: num("cached_tokens", "cache_read_input_tokens"),
+	}
+	// OpenAI 形态优先：上游回报的前缀缓存命中数放在 prompt_tokens_details 里。
+	if v := nested("prompt_tokens_details", "cached_tokens", "cache_read_input_tokens"); v > 0 {
+		d.CachedTokens = v
+	}
+	if d.CacheReadTokens == 0 {
+		d.CacheReadTokens = num("cache_read_input_tokens")
 	}
 	if ct, ok := m["completion_tokens_details"].(map[string]any); ok {
 		if v, ok2 := ct["reasoning_tokens"].(float64); ok2 {
