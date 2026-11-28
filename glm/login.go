@@ -15,7 +15,7 @@ import (
 // loginStateTTL 是登录会话有效期。
 const loginStateTTL = 15 * time.Minute
 
-// callbackPath 是书签回传令牌的接收路径（resource 路由，免管理密钥）。
+// callbackPath 是令牌提交的接收路径（resource 路由，免管理密钥）。
 const callbackPath = "/login/callback"
 
 // callbackTokenHeader 是回传 chatglm_refresh_token 的请求头。
@@ -111,7 +111,7 @@ func isLoopbackHost(host string) bool {
 // startLoginSession 创建登录会话。
 // [参数] 无。
 // [返回] 会话 state。
-// 最近修改时间：2026-11-28 14:45:00；改动原因：新增书签授权会话。
+// 最近修改时间：2026-11-28 16:55:00；改动原因：token 授权会话。
 func startLoginSession() string {
 	state := fmt.Sprintf("glm-%d", time.Now().UnixNano())
 	loginSessions.Store(state, &loginSession{State: state, CreatedAt: time.Now()})
@@ -121,7 +121,7 @@ func startLoginSession() string {
 // getLoginSession 读取登录会话。
 // [参数] state: 会话标识。
 // [返回] 会话指针；不存在返回 nil。
-// 最近修改时间：2026-11-28 14:45:00；改动原因：新增书签授权会话读取。
+// 最近修改时间：2026-11-28 16:55:00；改动原因：token 授权会话读取。
 func getLoginSession(state string) *loginSession {
 	raw, ok := loginSessions.Load(strings.TrimSpace(state))
 	if !ok {
@@ -134,10 +134,10 @@ func getLoginSession(state string) *loginSession {
 	return sess
 }
 
-// handleStartLogin 发起登录：返回桥接页地址，用户在 chatglm 页面点书签即可自动回调。
+// handleStartLogin 发起登录：返回 token 录入页地址，用户粘贴 chatglm_refresh_token 即完成授权。
 // [参数] raw: AuthLoginStartRequest JSON。
 // [返回] 登录启动响应、错误。
-// 最近修改时间：2026-11-28 14:45:00；改动原因：改为书签自动回调授权。
+// 最近修改时间：2026-11-28 16:55:00；改动原因：改为 token 录入授权。
 func handleStartLogin(raw []byte) ([]byte, error) {
 	var req pluginapi.AuthLoginStartRequest
 	if len(raw) > 0 {
@@ -145,7 +145,7 @@ func handleStartLogin(raw []byte) ([]byte, error) {
 	}
 	state := startLoginSession()
 	bridgePath := "/v0/resource/plugins/" + providerName + "/login?state=" + url.QueryEscape(state)
-	// 宿主弹窗展示的就是这个 URL：必须指向本插件的书签引导页，不能是上游官网。
+	// 宿主弹窗展示的就是这个 URL：必须指向本插件的 token 录入页，不能是上游官网。
 	absoluteURL := bridgePath
 	if origin := currentPublicOrigin(); origin != "" {
 		absoluteURL = origin + bridgePath
@@ -158,8 +158,8 @@ func handleStartLogin(raw []byte) ([]byte, error) {
 		Metadata: map[string]any{
 			"logo":       pluginLogoURL,
 			"bridge_url": absoluteURL,
-			"mode":       "bookmark",
-			"prompt":     "在打开的引导页安装一次授权书签；登录 chatglm.cn 后点一下书签，页面会自动回调并完成授权。",
+			"mode":       "token",
+			"prompt":     "在打开的授权页按指引从 chatglm.cn 复制 chatglm_refresh_token 并粘贴提交。",
 		},
 	})
 }
@@ -167,7 +167,7 @@ func handleStartLogin(raw []byte) ([]byte, error) {
 // handlePollLogin 轮询登录结果，回调页落盘后返回成功。
 // [参数] raw: AuthLoginPollRequest JSON。
 // [返回] 登录轮询响应、错误。
-// 最近修改时间：2026-11-28 14:45:00；改动原因：改为轮询书签回调结果。
+// 最近修改时间：2026-11-28 16:55:00；改动原因：轮询 token 录入结果。
 func handlePollLogin(raw []byte) ([]byte, error) {
 	var req pluginapi.AuthLoginPollRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -197,7 +197,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 	if !sess.Completed {
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
 			Status:  pluginapi.AuthLoginStatusPending,
-			Message: "等待在 chatglm.cn 页面点击授权书签",
+			Message: "请在授权页粘贴 chatglm_refresh_token 并提交",
 		})
 	}
 
@@ -228,10 +228,10 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 	})
 }
 
-// handleLoginCallback 接收书签回传的 refresh_token 并落盘。
+// handleLoginCallback 接收授权页提交的 refresh_token 并落盘。
 // [参数] req: 管理请求（含 Headers 与 Query）。
 // [返回] 回调响应。
-// 最近修改时间：2026-11-28 14:45:00；改动原因：新增书签令牌接收与落盘。
+// 最近修改时间：2026-11-28 16:55:00；改动原因：新增 token 接收与落盘。
 func handleLoginCallback(req pluginapi.ManagementRequest) ([]byte, error) {
 	refreshToken := strings.TrimSpace(req.Headers.Get(callbackTokenHeader))
 	upstreamErr := strings.TrimSpace(req.Headers.Get(callbackErrorHeader))
@@ -239,7 +239,7 @@ func handleLoginCallback(req pluginapi.ManagementRequest) ([]byte, error) {
 	if vals := req.Query["state"]; len(vals) > 0 {
 		state = strings.TrimSpace(vals[0])
 	}
-	// 书签用 location.href 跳转，令牌经 query 回传；页面内 fetch 用 header。
+	// 令牌经自定义请求头回传。
 	if refreshToken == "" {
 		if vals := req.Query["token"]; len(vals) > 0 {
 			refreshToken = strings.TrimSpace(vals[0])
@@ -279,7 +279,7 @@ h1{font-size:20px;color:%s}p{color:#6d6760}</style></head><body><h1>%s</h1><p>%s
 		return html("授权失败", "原因："+upstreamErr+"。请回到面板重新发起。", false), nil
 	}
 	if refreshToken == "" {
-		return html("未获取到令牌", "书签没有回传 chatglm_refresh_token。请确认已登录 chatglm.cn 后重新点击书签。", false), nil
+		return html("未获取到令牌", "没有收到 chatglm_refresh_token。请确认已登录 chatglm.cn 并复制正确的令牌。", false), nil
 	}
 
 	sa, err := saveImportedToken(refreshToken, "")
@@ -297,36 +297,10 @@ h1{font-size:20px;color:%s}p{color:#6d6760}</style></head><body><h1>%s</h1><p>%s
 	return html("授权成功", "账号 "+sa.Label+" 已导入，可以关闭本页回到面板。", true), nil
 }
 
-// cpaOriginPlaceholder 是书签脚本里等待替换成插件所在域 origin 的占位符。
-// 书签要在 chatglm.cn 页面执行，回调必须指向 CPA 域；引导页与 CPA 同源，
-// 因此在引导页 JS 里用 location.origin 替换后再写进书签 href。
-const cpaOriginPlaceholder = "__CPA_ORIGIN__"
-
-// buildBookmarkletScript 生成可在 chatglm.cn 页面一键取令牌的书签脚本。
-// 读取 localStorage 的 chatglm_refresh_token（Cookie 兜底），跳转插件回调页完成落盘。
-// [参数] state: 登录会话标识；空串表示长期可复用的固定书签。
-// [返回] javascript: 开头的单行脚本（含待替换的 origin 占位符）。
-// 最近修改时间：2026-11-28 18:55:00；改动原因：恢复书签一键授权。
-func buildBookmarkletScript(state string) string {
-	callback := "/v0/resource/plugins/" + providerName + callbackPath
-	var b strings.Builder
-	b.WriteString("javascript:(function(){")
-	b.WriteString("var S=" + jsStringLiteral(state) + ";")
-	b.WriteString("var CB='" + cpaOriginPlaceholder + callback + "'+(S?('?state='+encodeURIComponent(S)):'?');")
-	b.WriteString("var t='';")
-	b.WriteString("try{var v=localStorage.getItem('chatglm_refresh_token');")
-	b.WriteString("if(v){try{var o=JSON.parse(v);t=(o&&o.value)?o.value:v}catch(e){t=v}}}catch(e){}")
-	b.WriteString("if(!t){try{var m=document.cookie.match(/(?:^|;\\s*)chatglm_refresh_token=([^;]*)/);t=m?decodeURIComponent(m[1]):''}catch(e){}}")
-	b.WriteString("if(!t){location.href=CB+'&err='+encodeURIComponent('未找到 chatglm_refresh_token，请先登录');return}")
-	b.WriteString("location.href=CB+'&token='+encodeURIComponent(t);")
-	b.WriteString("})();")
-	return b.String()
-}
-
 // jsStringLiteral 把字符串安全编码为 JS 字面量。
 // [参数] s: 原始字符串。
 // [返回] 带引号的 JS 字面量。
-// 最近修改时间：2026-11-28 14:45:00；改动原因：脚本注入安全编码。
+// 最近修改时间：2026-11-28 16:50:00；改动原因：引导页 state 安全注入。
 func jsStringLiteral(s string) string {
 	raw, err := json.Marshal(s)
 	if err != nil {
@@ -335,27 +309,16 @@ func jsStringLiteral(s string) string {
 	return string(raw)
 }
 
-// htmlEscapeAttr 转义 HTML 属性值。
-// [参数] s: 原始字符串。
-// [返回] 转义后字符串。
-// 最近修改时间：2026-11-28 18:55:00；改动原因：书签 href 安全注入。
-func htmlEscapeAttr(s string) string {
-	r := strings.NewReplacer("&", "&amp;", `"`, "&quot;", "<", "&lt;", ">", "&gt;")
-	return r.Replace(s)
-}
-
 // handleLoginBridge 返回授权引导页（宿主登录弹窗的落地页）。
-// 主入口是书签一键授权：装一次书签，之后在 chatglm.cn 页面点一下即自动回调完成授权。
-// 保留手工粘贴 chatglm_refresh_token 作为兜底（书签被浏览器策略拦截时用）。
+// chatglm_refresh_token 是 HttpOnly Cookie，网页脚本读不到，因此由用户从开发者工具复制后粘贴提交。
 // [参数] req: 管理请求（含 Query state）。
 // [返回] 引导页响应。
-// 最近修改时间：2026-11-28 18:55:00；改动原因：恢复书签一键授权为主入口。
+// 最近修改时间：2026-11-28 16:50:00；改动原因：改为手工复制令牌提交，移除不可行的书签方案。
 func handleLoginBridge(req pluginapi.ManagementRequest) ([]byte, error) {
 	state := ""
 	if vals := req.Query["state"]; len(vals) > 0 {
 		state = strings.TrimSpace(vals[0])
 	}
-	bookmark := buildBookmarkletScript(state)
 
 	var b strings.Builder
 	b.WriteString(`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>智谱清言授权</title>
@@ -366,26 +329,20 @@ textarea{width:100%;min-height:80px;background:#fff;color:#2d2a26;border:1px sol
 button{background:#4c8dff;color:#fff;border:0;border-radius:8px;padding:9px 18px;cursor:pointer;font-size:13px;margin-top:12px}
 button:disabled{opacity:.5}.msg{margin-top:12px;font-size:13px}.ok{color:#10b981}.err{color:#c65746}
 code{background:#f0eee8;padding:1px 5px;border-radius:4px;font-size:13px}
-.bm{display:inline-block;background:#4c8dff;color:#fff;text-decoration:none;padding:10px 20px;border-radius:9px;font-weight:600;cursor:grab}
+
 .note{background:#f5f4f0;border-radius:9px;padding:12px 14px;font-size:13px;color:#6d6760;margin-top:18px;line-height:1.8}
 ol{color:#6d6760;font-size:13px;line-height:1.9;padding-left:20px}</style></head><body>`)
 	b.WriteString(`<h1>智谱清言授权</h1><p>本插件使用 <code>chatglm_refresh_token</code> 换取 access_token 调用上游，全程 token 鉴权。</p>`)
-	b.WriteString(`<h2>① 安装授权书签（只做一次）</h2><p>把下面按钮拖到浏览器书签栏（<b>不要直接点击</b>）：</p>`)
-	b.WriteString(`<p><a class="bm" id="bmLink" href="` + htmlEscapeAttr(bookmark) + `">智谱清言一键授权</a></p>`)
-	b.WriteString(`<h2>② 登录 chatglm.cn</h2><p>在同一个浏览器里打开并登录 <a href="https://chatglm.cn/" target="_blank" rel="noopener">chatglm.cn</a>。</p>`)
-	b.WriteString(`<h2>③ 点一下书签</h2><p>回到 chatglm.cn 标签页，点书签栏里的「智谱清言一键授权」，页面会自动跳回这里并完成授权。</p>`)
-	b.WriteString(`<div class="note">书签只做一件事：在 chatglm.cn 页面内读取 <code>chatglm_refresh_token</code> 并交给本插件，不读取其它数据，不含任何密钥，可长期保留。</div>`)
-	b.WriteString(`<h2>书签被拦截？手工粘贴</h2><p>F12 → Application → Local Storage → 复制 <code>chatglm_refresh_token</code>，粘贴到下方提交。</p>`)
+	b.WriteString(`<div class="note"><b>为什么需要手工复制：</b>智谱清言把 <code>chatglm_refresh_token</code> 存在 <b>HttpOnly Cookie</b> 里，网页脚本（含书签、扩展）读不到它，因此只能从开发者工具复制一次。插件拿到它之后会自行换取 access_token 调用上游，全程 token 鉴权，无需再手工刷新。</div>`)
+	b.WriteString(`<h2>① 登录 chatglm.cn</h2><p>在同一个浏览器里打开并登录 <a href="https://chatglm.cn/" target="_blank" rel="noopener">chatglm.cn</a>，随便发一条消息确保已登录。</p>`)
+	b.WriteString(`<h2>② 复制 chatglm_refresh_token</h2><p>按 <b>F12</b> 打开开发者工具 → <b>Application</b>（应用）→ <b>Cookies</b> → <code>https://chatglm.cn</code> → 找到 <code>chatglm_refresh_token</code>，复制它的 Value。</p>`)
 	b.WriteString(`<label for="tok">chatglm_refresh_token</label>`)
 	b.WriteString(`<textarea id="tok" placeholder="粘贴 chatglm_refresh_token"></textarea>`)
 	b.WriteString(`<button id="submitBtn">提交授权</button><div id="msg" class="msg"></div>`)
+	b.WriteString(`<div class="note">提交后插件会立即校验：用它换取 access_token，成功即写入账号并完成授权，无需再点其它按钮。</div>`)
 	b.WriteString(`<script>
 var STATE=__STATE__;
 var CALLBACK=location.origin+"/v0/resource/plugins/` + providerName + callbackPath + `"+(STATE?("?state="+encodeURIComponent(STATE)):"");
-(function(){
-  var el=document.getElementById("bmLink");
-  if(el){el.href=el.getAttribute("href").split("` + cpaOriginPlaceholder + `").join(location.origin);}
-})();
 document.getElementById("submitBtn").addEventListener("click",function(){
   var btn=this,msg=document.getElementById("msg");
   var tok=(document.getElementById("tok").value||"").trim();

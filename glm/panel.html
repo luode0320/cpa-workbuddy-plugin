@@ -152,7 +152,7 @@ label{display:block;font-size:12px;color:var(--mut);margin:12px 0 5px}
       <button type="button" class="modal-x" onclick="closeModal('importModal')" aria-label="关闭">×</button>
     </div>
     <div class="modal-bd">
-      <p class="hint"><b>一键授权（推荐）</b>：打开 <a id="authBridgeLink" href="/v0/resource/plugins/glm-provider/login" target="_blank" rel="noopener">授权引导页</a>，安装一次书签后，在 chatglm.cn 页面点一下书签即自动回调完成授权，无需手工复制。</p>
+      <p class="hint"><b>授权方式（token）</b>：打开 <a id="authBridgeLink" href="/v0/resource/plugins/glm-provider/login" target="_blank" rel="noopener">授权页</a>，按页面指引从 chatglm.cn 复制 <code>chatglm_refresh_token</code> 粘贴提交即可。</p>
       <p class="hint"><b>或手工粘贴</b>：在浏览器打开并登录 <a href="https://chatglm.cn/" target="_blank" rel="noopener">chatglm.cn</a> → 按 <code>F12</code> → <code>Application</code> → <code>Local Storage</code> → 找到 <code>chatglm_refresh_token</code> → 复制它的值。</p>
       <label for="importToken">chatglm_refresh_token</label>
       <textarea id="importToken" rows="4" placeholder="粘贴 chatglm_refresh_token"></textarea>
