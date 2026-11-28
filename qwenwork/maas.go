@@ -73,9 +73,18 @@ const maasCacheMaxEntries = 512
 // 请求会退化成无归属流量，表现为上游排队。
 const maasClientRequestSource = "qwenwork_desktop"
 
-// maasDefaultBaseURL 是签发接口未下发 base_url 时的兜底值，与客户端
-// DEFAULT_MAAS_BASE 常量一致。
-const maasDefaultBaseURL = "https://maas.xiaoluozi.cn"
+// maasDefaultBaseURL 是签发接口未下发 base_url 时的兜底值。
+//
+// 取值对齐官方桌面客户端的 DEFAULT_MAAS_BASE_URL（逆向证据：
+// D:\qwork\QwenWorkCN\2.2.1-26112604\resources\app.asar → out/main/main.js 的
+// `const DEFAULT_MAAS_BASE_URL="https://api9.qwenwork.cn"`）。
+//
+// ⚠️ 原先这里写的是 `https://maas.xiaoluozi.cn`——那是官方客户端常量表里的
+// **另一条 route family**（legacy/qwenwork），社区实测该兜底值直接 401
+// （《qwenwork-magpie-affiliate》协议文档「base_url 必须来自签发响应，写死
+// maas.xiaoluozi.cn 实测 401」）。兜底值写错等于「签发响应缺 base_url 时
+// 必然 401」，且与官方客户端的默认入口不一致。
+const maasDefaultBaseURL = "https://api9.qwenwork.cn"
 
 // maasMintResponse 镜像 POST /api/desktop-sessions 的响应。
 type maasMintResponse struct {
@@ -212,6 +221,19 @@ func maasAffinityHeaders(sessionID string) maasAffinity {
 		requestSet:  sid,
 		traceparent: "00-" + traceID + "-" + hex.EncodeToString(span) + "-01",
 	}
+}
+
+// maasDeviceUA 返回出站设备 UA（x-mm-device-ua）。
+//
+// 官方桌面客户端把它列在出站头白名单里（逆向证据：out/main/main.js 的
+// ALLOWED_HEADERS 含 "x-mm-device-ua"），用于标识请求来自哪种客户端环境。
+// 本插件如实标注自身与运行平台，不冒充官方桌面客户端的 UA。
+//
+// [参数] 无。
+// [返回] 形如 "QwenWork-CPA-Plugin/<版本> (<平台>)" 的 UA。
+// 最近修改时间：2026-11-28；改动原因：新增，补齐官方出站头白名单里的设备 UA。
+func maasDeviceUA() string {
+	return "QwenWork-CPA-Plugin/" + version + " (" + runtime.GOOS + ")"
 }
 
 // maasSessionCacheKey 组装「账号×上游会话」的票据缓存键。

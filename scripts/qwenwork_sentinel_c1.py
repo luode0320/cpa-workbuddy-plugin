@@ -193,6 +193,22 @@ MUTATIONS = [
         "expect": "TestPickSessionAuth_RebindsWhenOverSoftCap",
         "all": False,
     },
+    {
+        "name": "S23 兜底 base_url 退回实测 401 的 legacy 入口",
+        "file": "maas.go",
+        "old": 'const maasDefaultBaseURL = "https://api9.qwenwork.cn"',
+        "new": 'const maasDefaultBaseURL = "https://maas.xiaoluozi.cn"',
+        "expect": "TestMaasDefaultBaseURLMatchesOfficialClient",
+        "all": False,
+    },
+    {
+        "name": "S24 不发 x-mm-device-ua",
+        "file": "main.go",
+        "old": '\treq.Header.Set("x-mm-device-ua", maasDeviceUA())\n',
+        "new": '',
+        "expect": "TestApplyMaasHeaders_SendsDeviceUA",
+        "all": False,
+    },
 ]
 
 

@@ -1,5 +1,25 @@
 # QwenWork Plugin Changelog
 
+## 0.2.27 (2026-11-28)
+
+### Fix - 兜底 MaaS 入口对齐官方客户端 + 补齐设备 UA 头
+
+- **缺陷一（真实 bug）**: `maasDefaultBaseURL` 写的是 `https://maas.xiaoluozi.cn`，而官方桌面客户端的 `DEFAULT_MAAS_BASE_URL` 是 **`https://api9.qwenwork.cn`**（逆向证据：`D:\qwork\QwenWorkCN\2.2.1-26112604\resources\app.asar` → `out/main/main.js`）。两者属**不同 route family**（官方常量表里 `maas.xiaoluozi.cn` 属 legacy/qwenwork 族），社区早已记载该兜底值**实测 401**。⇒ 签发响应一旦缺 `base_url`，本插件必然 401，而官方客户端不会。
+- **缺陷二**: 官方出站头白名单（`ALLOWED_HEADERS`）含 `x-mm-device-ua`，主链路也会发；本插件此前不发。补 `x-mm-device-ua`（如实标注自身与运行平台，不冒充官方桌面客户端 UA）。
+- **影响范围**: 仅出站请求头与兜底常量；不改变正常路径（签发响应带 `base_url` 时仍以响应为准）。
+- **验证**: `cgo-shim-build.py qwenwork` build/vet/test 全绿；新增两条断言（兜底入口与官方一致且不得使用实测 401 的 legacy 入口；`x-mm-device-ua` / `x-mm-device-type` 必须发出）。
+
+### 已知未解（本轮排查结论，登记）
+
+用户口径「输入 45~71 万 token 时首字 30s / 160s 不应该出现，正常都在 10s 以下」。本轮把插件侧能控的差异全部核对完，**剩余部分未能在插件侧定位**，已排除：
+- 插件自身对首字的加工：插件侧 TTFT 与客户端首帧时间逐条一致（7.8s vs 8.0s）⇒ 插件只加约 0.2s；
+- 上游重试放大：91 次上游尝试 / 82 次客户端请求 = 1.11×；
+- 上下文规模 / 账号 / 会话 / 前缀缓存命中四个维度与首字均无相关性；
+- 上游入口集群：生产实际外连 163.181.78.145，与官方默认入口同网段 ⇒ **同一组 MaaS 入口**；
+- 账号并发超发（traework 那套槽位排队机制）：本插件三个窗口的**单账号在飞并发恒为 1**，机制不成立。
+
+**剩余最可能的差异（需用户决策是否投入）**：官方客户端按模型目录对 `minimax-m3.1-flash` / `qwen4-max` 走 **`anthropic/messages`** 协议，本插件统一走 `openai/chat-completions`（网关两种都收，但内部路径不同）；另外官方必发 `x-qwenwork-app-mode`（运行模式 id，由服务端 profile 下发、动态），本插件不臆造该值。要验证需要「同 body 双协议 A/B」，属新增能力（响应格式需转译），工程量不小。
+
 ## 0.2.26 (2026-11-28)
 
 ### Fix - 按账号在跑请求数平摊并发（上游槽位排队 → 首字延迟 lottery 的根因）

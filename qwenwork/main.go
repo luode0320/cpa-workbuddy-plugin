@@ -330,7 +330,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.2.26"
+var version = "0.2.27"
 
 func wbRegistration() registration {
 	return registration{
@@ -914,6 +914,7 @@ func applyMaasHeaders(req *http.Request, sess *maasSession) {
 	aff := maasAffinityHeaders(sessionID)
 	req.Header.Set("x-mm-client-request-source", maasClientRequestSource)
 	req.Header.Set("x-mm-device-type", maasDeviceType())
+	req.Header.Set("x-mm-device-ua", maasDeviceUA())
 	req.Header.Set("x-mm-client-request-id", aff.requestID)
 	req.Header.Set("x-mm-client-trace-id", aff.traceID)
 	if aff.requestSet != "" {

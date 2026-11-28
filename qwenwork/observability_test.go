@@ -9,6 +9,8 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,6 +124,35 @@ func TestLogMaasTicketMint_Throttled(t *testing.T) {
 	}
 	if logMaasTicketMint("acct-1", "sess-2") {
 		t.Fatal("票据签发日志必须按间隔节流")
+	}
+}
+
+// TestMaasDefaultBaseURLMatchesOfficialClient 锁定兜底入口与官方客户端一致。
+//
+// 官方桌面客户端的 DEFAULT_MAAS_BASE_URL 是 https://api9.qwenwork.cn；原先本插件
+// 写的是 https://maas.xiaoluozi.cn（另一条 route family，社区实测该兜底值 401）。
+// 兜底值写错等于「签发响应缺 base_url 时必然 401」。
+func TestMaasDefaultBaseURLMatchesOfficialClient(t *testing.T) {
+	if maasDefaultBaseURL != "https://api9.qwenwork.cn" {
+		t.Fatalf("兜底 base_url 必须与官方客户端 DEFAULT_MAAS_BASE_URL 一致，当前 %q", maasDefaultBaseURL)
+	}
+	if strings.Contains(maasDefaultBaseURL, "maas.xiaoluozi.cn") {
+		t.Fatalf("兜底 base_url 不得使用实测 401 的 legacy 入口：%q", maasDefaultBaseURL)
+	}
+}
+
+// TestApplyMaasHeaders_SendsDeviceUA 锁定设备 UA 头（官方出站白名单内）。
+func TestApplyMaasHeaders_SendsDeviceUA(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://maas.example/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	applyMaasHeaders(req, &maasSession{AccessKey: "sk-mm-v1.test", SessionID: "sess-1"})
+	if got := req.Header.Get("x-mm-device-ua"); got == "" {
+		t.Fatal("x-mm-device-ua 必须发出（官方出站头白名单含该字段）")
+	}
+	if got := req.Header.Get("x-mm-device-type"); got == "" {
+		t.Fatal("x-mm-device-type 必须发出")
 	}
 }
 
