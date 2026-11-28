@@ -1,5 +1,16 @@
 # TraeWork Plugin Changelog
 
+## 0.5.62 (2026-11-28)
+
+### Fix - 宿主桥 open 看门狗默认值上调至 120s，消除 33~36s TTFT 人造台阶
+
+- 背景: 生产持续出现 TTFT 锐利集中在 33~36s 的慢推理台阶（监控 60 分钟窗口台阶率 8.97%，`[30000,31000)` 桶恰好 0 命中），而同一账号同一模型在其它时刻仅 4~5s。台阶样本的 `ttft-30000` 残差 p50=4.35s，恰等于一次正常直连耗时，说明它由「30s 固定白等 + 一次直连」构成。
+- 根因: 宿主 `host.http.do_stream` 是**同步阻塞到上游响应头**才返回 `stream_id` 的 RPC（`internal/pluginhost/http_bridge.go` 的 `doHTTP → client.Do`），且宿主侧 `ResponseHeaderTimeout` 与 `client.Timeout` **双为 0**，open 可无限期挂起。插件侧 `hostBridgeOpenTimeout = 30s` 是唯一兜底，一旦触发就：① 产生 30s 量级的 TTFT 硬地板；② **重新发起一次完整上游请求**（整个 1.5MB body 重传），而宿主侧旧 open 仍在等待——同一逻辑请求在上游变成两份。
+- 取证: 直连上游实测（380k token 大上下文）响应头延迟 p50≈5~10s、p90≈19.6s、**p99≈103s**。可见 30s 落在 p90~p99 之间，会掐断正常慢请求并整包重发。另有排除性证据：① 小 body（24KB）下桥/直连 TTFT 完全等价（p50 2.10s vs 2.14s）；② 大 body 下桥反而更快（1500KB 时 0.42x），证明桥接本身无固定开销、也不是瓶颈；③ 30~45s 台阶样本 98.4% 发生在同账号完全空闲时，排除上游槽位排队；④ 上游自报 `timing_cost.queue_timing` 仅 4~19ms、`first_sse_event_time` 3.1s，排除上游排队与 prefill。
+- 改动: `hostBridgeOpenTimeout` 由 `const 30s` 改为可配置 `var`（默认 `hostBridgeOpenTimeoutDefault = 120s`），新增 `setHostBridgeOpenTimeout` / `loadedHostBridgeOpenTimeout`；新增配置项 `host_bridge_open_timeout_seconds`（缺省键保持当前值，非正数忽略）；**open 超时降级分支补显式日志**（原本完全静默，是台阶长期只能靠分布反推的直接原因）。
+- 语义: 看门狗回到「只兜无限挂起」的本职，不再参与正常慢请求判定。上游 p99≈103s 的合法慢请求不再被掐断重发，33~36s 人造台阶消失；真正的无限挂起仍在 120s 处兜住并降级直连。
+- 验证: `cgo-shim-build.py` build+vet+test 全绿；新增 `host_bridge_open_timeout_test.go`（4 个用例）覆盖「超时降级到直连」「成功路径不降级」「预算可配置且非正数忽略」「默认值必须高于上游 p99」——该看门狗此前在全部 `*_test.go` 中**零引用**，是 30s 白等长期无人发现的根因。
+
 ## 0.5.61 (2026-11-27)
 
 ### Fix - 插件自限内存上限并错峰启动，抑制容器 OOM

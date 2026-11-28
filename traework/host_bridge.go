@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"runtime"
@@ -328,9 +329,9 @@ func hostHTTPDoDirect(req *http.Request, bodyBytes []byte) (*hostHTTPResponse, e
 // attempt.
 type hostHTTPStream struct {
 	streamID string
-	liveBody io.ReadCloser
-	direct   []byte
-	directAt int
+	liveBody    io.ReadCloser
+	direct      []byte
+	directAt    int
 
 	// Bridged read-phase degradation state (nil outside bridged mode).
 	req       *http.Request
@@ -342,18 +343,58 @@ type hostHTTPStream struct {
 	releaseAccountLoad func()
 }
 
-// hostBridgeOpenTimeout bounds how long the async streaming path waits for the
-// host's MethodHostHTTPDoStream RPC to open the upstream. The host RPC is a
-// synchronous cgo call that can hang (observed 2026-09-02: stream_id=1664 sat
-// for 4 minutes with no open/pump/pseudo/done logs and the client got 499).
-// When it times out the streaming path degrades to the plugin's own direct
-// HTTP client instead of hanging the coordinator goroutine forever.
-const hostBridgeOpenTimeout = 30 * time.Second
+// hostBridgeOpenTimeoutDefault 是宿主桥 open 看门狗的默认预算。
+//
+// 语义（2026-11-28 生产取证校正）：宿主的 host.http.do_stream 是**同步阻塞到
+// 上游响应头**才返回 stream_id 的 RPC（internal/pluginhost/http_bridge.go 的
+// doHTTP -> client.Do），且宿主侧 ResponseHeaderTimeout 与 client.Timeout 双为 0
+// ——宿主自己不做任何超时，open 可以无限期挂起。因此这个看门狗是**插件侧唯一**
+// 的 open 兜底，它一旦触发就产生两个副作用：
+//
+//	1) TTFT 出现 30s 量级的硬地板（= 预算 + 一次直连耗时）；
+//	2) 插件会**重新发起一次完整上游请求**（含整个 1.5MB body 重传），
+//	   而宿主侧那条旧 open 仍在等待——同一逻辑请求在上游变成两份。
+//
+// 取值依据（2026-11-28 直连实测，380k token 大上下文）：上游响应头延迟
+// p50≈5~10s、p90≈19.6s、p99≈103s。可见 30s 会**误伤合法慢请求**：p90~p99
+// 之间的正常请求被强行掐断并重发，于是出现「33~36s 台阶」这种与上游真实耗时
+// 无关的人造延迟。故默认值上调到 120s，与上游实测 p99 同量级，使看门狗只用于
+// 兜住真正的无限挂起，而不再参与正常慢请求的判定。
+// 需要更短（例如想尽快让出慢号）时用配置项 host_bridge_open_timeout_seconds 覆盖。
+const hostBridgeOpenTimeoutDefault = 120 * time.Second
+
+// hostBridgeOpenTimeout 是当前生效的 open 看门狗预算（可被配置覆盖）。
+// 保留为 var 而非 const：测试需要把它缩短到毫秒级来驱动降级路径。
+var hostBridgeOpenTimeout = hostBridgeOpenTimeoutDefault
 
 // errHostBridgeOpenTimeout reports that the host stream bridge did not open the
 // upstream within hostBridgeOpenTimeout; callers should fall back to the direct
 // HTTP client so the request still completes.
 var errHostBridgeOpenTimeout = fmt.Errorf("host stream bridge open timed out after %s", hostBridgeOpenTimeout)
+
+// setHostBridgeOpenTimeout 设置 open 看门狗预算；非正值忽略，保持既有值。
+//
+// [参数] d: 新的看门狗预算，必须 > 0。
+// [返回] 无。
+// 最近修改时间：2026-11-28 15:20:00；改动原因：默认值由 30s 上调到 120s。
+// 实测上游响应头 p90≈19.6s、p99≈103s，30s 会掐断合法慢请求并触发整包重发，
+// 这正是生产 33~36s TTFT 台阶的来源。
+func setHostBridgeOpenTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	hostBridgeOpenTimeout = d
+	errHostBridgeOpenTimeout = fmt.Errorf("host stream bridge open timed out after %s", d)
+}
+
+// loadedHostBridgeOpenTimeout 读取当前 open 看门狗预算，供测试与日志使用。
+//
+// [参数] 无。
+// [返回] 当前生效的看门狗预算。
+// 最近修改时间：2026-11-28 14:30:00；改动原因：与 setHostBridgeOpenTimeout 配对。
+func loadedHostBridgeOpenTimeout() time.Duration {
+	return hostBridgeOpenTimeout
+}
 
 // hostBridgeReadTimeout bounds how long a single bridged Read RPC may block
 // before the stream degrades to the plugin's own direct HTTP client. The read
@@ -374,8 +415,9 @@ var errHostBridgeReadTimeout = fmt.Errorf("host stream bridge read timed out aft
 // hostHTTPDoStream 通过宿主流桥打开上游请求，并把异步执行的 callback context 传给宿主。
 // [参数] req: 上游 HTTP 请求；hostCallbackID: CPA 为当前异步执行注册的 callback 标识。
 // [返回] hostHTTPStream: 可按块读取的响应流；int: HTTP 状态码；http.Header: 响应头；error: 打开流失败。
-// 最近修改时间：2026-09-02 00:50:00；改动原因：宿主流桥打开可能挂起（cgo 同步无超时），
-// 增加超时保护并在超时后降级到插件直连，避免异步协调器永久悬挂。
+// 最近修改时间：2026-11-28 14:30:00；改动原因：open 超时降级原本完全静默，
+// 生产 30s 台阶只能靠 TTFT 分布反推。补显式降级日志（带耗时、预算与 body 大小），
+// 让「桥 open 卡住」成为可直接观测的事件而不是统计推断。
 func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream, int, http.Header, error) {
 	if req == nil {
 		return nil, 0, nil, fmt.Errorf("nil request")
@@ -390,10 +432,10 @@ func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream
 		bodyBytes = b
 	}
 	// 直连开关：用于实测「插件直连」与「宿主桥」两条路径的 TTFT 差异。
-	// 生产流量默认全部走宿主桥（host.stream.do RPC），插件的连接池配置因此
+	// 生产流量默认全部走宿主桥（host.http.do_stream RPC），插件的连接池配置因此
 	// 对生产无效 —— 这个开关让运维可以在不改代码的前提下做 A/B 对照。
 	if !hostBridgeAvailable() || streamDirectForced() {
-		return hostHTTPDoStreamDirect(req, bodyBytes)
+		return hostStreamDirectFn(req, bodyBytes)
 	}
 	wire := rpcHostHTTPRequestWire{
 		HostCallbackID: hostCallbackID, // 绑定 CPA 异步执行保留到输出流结束的 callback context。
@@ -404,15 +446,25 @@ func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream
 			Body:    bodyBytes,
 		},
 	}
+	openStarted := time.Now()
 	raw, err := hostStreamOpenFn(mustJSON(wire))
 	if err != nil {
 		// 宿主流桥打开挂起（cgo 同步调用无超时）：降级到插件直连，保证异步流式
 		// 请求仍能完成，而不是让协调器 goroutine 永久悬挂。
-		return hostHTTPDoStreamDirect(req, bodyBytes)
+		// 本分支历史上完全静默，是生产 30s 台阶长期只能靠分布反推的直接原因。
+		elapsed := time.Since(openStarted)
+		log.Printf("[traework] host bridge open degraded to direct: url=%s elapsed_ms=%d budget_ms=%d body_bytes=%d err=%s",
+			req.URL.Redacted(), elapsed.Milliseconds(), loadedHostBridgeOpenTimeout().Milliseconds(),
+			len(bodyBytes), truncateRedacted(err.Error(), 200))
+		return hostStreamDirectFn(req, bodyBytes)
 	}
 	result, err := hostBridgeUnwrap(raw, pluginabi.MethodHostHTTPDoStream)
 	if err != nil {
-		return hostHTTPDoStreamDirect(req, bodyBytes)
+		elapsed := time.Since(openStarted)
+		log.Printf("[traework] host bridge open envelope invalid, degraded to direct: url=%s elapsed_ms=%d body_bytes=%d err=%s",
+			req.URL.Redacted(), elapsed.Milliseconds(), len(bodyBytes),
+			truncateRedacted(err.Error(), 200))
+		return hostStreamDirectFn(req, bodyBytes)
 	}
 	var resp rpcHostHTTPStreamResponseWire
 	if err := json.Unmarshal(result, &resp); err != nil {
@@ -434,12 +486,26 @@ func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream
 // simulate a hanging MethodHostHTTPDoStream RPC.
 var hostStreamOpenFn = hostHTTPDoStreamBridged
 
-// hostHTTPDoStreamBridged runs the host.stream.do RPC with a bounded wait. The
+// hostStreamOpenCallFn 是宿主 open RPC 的最内层调用缝，默认执行真实的同步
+// cgo 调用。与 hostStreamOpenFn 的分工：hostStreamOpenFn 替换的是「带看门狗的
+// 包装」，替换它等于连看门狗一起去掉；要验证看门狗本身必须只让最内层挂起。
+// [参数] wireJSON: 已序列化的宿主请求。
+// [返回] 宿主原始信封；error 表示 RPC 失败。
+// 最近修改时间：2026-11-28 14:30:00；改动原因：新增，使 open 看门狗可被单测驱动。
+var hostStreamOpenCallFn = func(wireJSON []byte) ([]byte, error) {
+	return hostCall(pluginabi.MethodHostHTTPDoStream, wireJSON)
+}
+
+// hostHTTPDoStreamBridged runs the host.http.do_stream RPC with a bounded wait. The
 // RPC itself is a synchronous cgo call that can hang indefinitely; running it
 // in a goroutine and racing it against a timer lets the caller bail out to the
 // direct client. If the goroutine finishes after the timer, its result is
-// discarded (the late host-side stream is leaked on the host, but the client
-// request no longer blocks on it).
+// discarded — the caller cancels the host-side operation (host.http.cancel) so
+// the abandoned open does not keep a connection and a goroutine alive forever.
+// [参数] wireJSON: 已序列化的宿主请求信封。
+// [返回] 宿主原始信封；error 表示 RPC 失败或看门狗超时（errHostBridgeOpenTimeout）。
+// 最近修改时间：2026-11-28 14:30:00；改动原因：看门狗预算改为可配置读取，
+// 最内层调用改走 hostStreamOpenCallFn 注入缝，使看门狗本身可被单测驱动。
 func hostHTTPDoStreamBridged(wireJSON []byte) ([]byte, error) {
 	type res struct {
 		raw []byte
@@ -447,13 +513,13 @@ func hostHTTPDoStreamBridged(wireJSON []byte) ([]byte, error) {
 	}
 	done := make(chan res, 1)
 	go func() {
-		raw, err := hostCall(pluginabi.MethodHostHTTPDoStream, wireJSON)
+		raw, err := hostStreamOpenCallFn(wireJSON)
 		done <- res{raw: raw, err: err}
 	}()
 	select {
 	case r := <-done:
 		return r.raw, r.err
-	case <-time.After(hostBridgeOpenTimeout):
+	case <-time.After(loadedHostBridgeOpenTimeout()):
 		return nil, errHostBridgeOpenTimeout
 	}
 }

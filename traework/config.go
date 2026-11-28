@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // traeConfig holds the runtime-tunable knobs for the TraeWork upstream.
@@ -350,6 +351,13 @@ func applyConfigLines(cfg *traeConfig, lines []string) {
 			slowSeen = true
 			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 {
 				nextSlowMinPool = n
+			}
+		case "host_bridge_open_timeout_seconds":
+			// 宿主桥 open 看门狗预算。台阶高度 = 该预算 + 一次直连耗时，
+			// 所以它是唯一能直接压低 30s 级台阶的运行时旋钮。
+			// 缺省键保持当前值（kill-switch 安全），非正数忽略。
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n > 0 {
+				setHostBridgeOpenTimeout(time.Duration(n) * time.Second)
 			}
 		}
 	}
