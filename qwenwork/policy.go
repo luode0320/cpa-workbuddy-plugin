@@ -341,6 +341,23 @@ func isTransientThrottle(status int, body string) bool {
 // queueBusinessCode 是 Qoder 上游「排队 / 容量受限」的专属业务码。
 const queueBusinessCode = "10605"
 
+// modelPoolBusyMarker 是上游「模型池暂时没有实例」的文案特征。
+//
+// 社区口径（dsh-qwenwork-connector src/adapter/stream.ts:167-181 记录
+// 「实测多轮循环第 4 轮就会撞上，而账号额度明明还很充足」）：这类 429 反映
+// 的是模型池容量而不是账号健康，换任何账号都会撞同一堵墙，因此必须归入
+// 排队类——对外 503、不冷却账号、不在同请求内换号。
+// 本插件此前把裸 429 一律计入账号阶梯冷却，24 小时内 27 次 minimax 429
+// 足以把健康号逐个推进冷却，流量被迫集中到更少的账号上，进一步加剧排队。
+const modelPoolBusyMarker = "all models failed"
+
+// serviceUnavailableMarker 是排队帧里 serviceAvailable:false 的键值形态。
+//
+// 社区三份实现一致把 serviceAvailable===false 也当作排队判据
+// （dsh-qwenwork-connector stream.ts:137、dsh-qwenwork-connect errors.ts:194、
+// modelmux upstream.ts:636），本插件此前只匹配 isQueued / queueCount / 10605。
+const serviceUnavailableMarker = "\"serviceAvailable\":false"
+
 // queueFrameHTTPStatus 是排队帧对外呈现的 HTTP 状态码。
 //
 // 选 503 而非 403：宿主 MarkResult 对 403 会给凭据打 30 分钟冷却
@@ -361,14 +378,33 @@ const queueFrameHTTPStatus = httpStatusServiceUnavailable
 //
 // [参数] body：上游错误文本（含 sseErrorFrame 展开后的排队帧）。
 // [返回] 命中排队/容量语义时返回 true。
-// 最近修改时间 2026-10-15（排队帧误判账号级故障致健康号池被逐个冷却）
+// 最近修改时间 2026-11-28（补 serviceAvailable:false 与模型池忙 429 判据）
 func isQueueFrame(body string) bool {
 	if strings.TrimSpace(body) == "" {
 		return false
 	}
-	return strings.Contains(body, "isQueued") ||
+	if strings.Contains(body, "isQueued") ||
 		strings.Contains(body, "queueCount") ||
-		strings.Contains(body, queueBusinessCode)
+		strings.Contains(body, queueBusinessCode) {
+		return true
+	}
+	// serviceAvailable:false 是排队帧的另一种形态；子串匹配要容忍冒号后的空格。
+	if strings.Contains(strings.ReplaceAll(body, " ", ""), serviceUnavailableMarker) {
+		return true
+	}
+	return isModelPoolBusyBody(body)
+}
+
+// isModelPoolBusyBody 判定错误文本是否描述「模型池暂时没有实例」。
+//
+// [参数] body：上游错误文本。
+// [返回] 命中模型池忙语义时返回 true。
+// 最近修改时间：2026-11-28；改动原因：新增，模型池忙归排队类不罚账号。
+func isModelPoolBusyBody(body string) bool {
+	if strings.TrimSpace(body) == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(body), modelPoolBusyMarker)
 }
 
 // envelopeHTTPStatusForError 决定失败信封对外携带的 HTTP 状态码。

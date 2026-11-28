@@ -108,11 +108,11 @@ func pickNextAuth(currentAuthID string, model ...string) (nextAuthID string, nex
 // QwenWork 的鉴权是账号级 MaaS 票据（sk-mm-v1），每个账号一张，所以换号
 // 必须重新签发并替换 Authorization，不能复用上一个账号的头。
 //
-// [参数] sa 目标账号；body 原始请求体；sessionKey 会话标识（可空）；
+// [参数] sa 目标账号；body 原始请求体；maasSessionKey 上游 MaaS 会话键（可空）；
 // ctx 可选上下文。
 // [返回] 可直接发送的请求；签发失败返回错误。
-// 最近修改时间：2026-10-17 23:52:00；改动原因：COSY 签名改为 MaaS 票据。
-func rebuildRequestWithQwenAuth(sa *storedAuth, body []byte, sessionKey string, ctx ...context.Context) (*http.Request, error) {
+// 最近修改时间：2026-11-28；改动原因：会话键语义拆分，换号后仍落同一上游会话。
+func rebuildRequestWithQwenAuth(sa *storedAuth, body []byte, maasSessionKey string, ctx ...context.Context) (*http.Request, error) {
 	if sa == nil {
 		return nil, fmt.Errorf("rebuildRequestWithQwenAuth: nil stored auth")
 	}
@@ -120,7 +120,7 @@ func rebuildRequestWithQwenAuth(sa *storedAuth, body []byte, sessionKey string, 
 	if len(ctx) > 0 && ctx[0] != nil {
 		reqCtx = ctx[0]
 	}
-	sess, err := ensureMaasSession(sa, sessionKey)
+	sess, err := ensureMaasSession(sa, maasSessionKey)
 	if err != nil {
 		return nil, fmt.Errorf("maas: %w", err)
 	}

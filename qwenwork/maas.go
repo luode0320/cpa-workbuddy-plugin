@@ -12,12 +12,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +57,20 @@ const maasRefreshLead = 30 * time.Minute
 // maasRequestTimeout 是签发与轮换单次调用的上限。这两个调用都在请求关键
 // 路径上，不能沿用 sharedHTTPClient 的 120s 兜底。
 const maasRequestTimeout = 15 * time.Second
+
+// maasCacheMaxEntries 是票据缓存的条目上限。
+//
+// 上游会话键改为逐对话派生后，条目基数随对话数增长；不淘汰会让 map 无限膨胀，
+// 而插件堆有 128MiB 软上限（memory_limit.go），GC 压力会直接进请求延迟。
+const maasCacheMaxEntries = 512
+
+// maasClientRequestSource 是上游客户端归因头 x-mm-client-request-source 的取值。
+//
+// 官方桌面客户端固定上报 "qwenwork_desktop"（逆向证据：D:\qwork\QwenWorkCN\
+// 2.2.1-26112604\resources\app.asar → out/main/main.js 的
+// DESKTOP_CLIENT_REQUEST_SOURCE 常量）。上游按该头区分客户端来源，缺失时
+// 请求会退化成无归属流量，表现为上游排队。
+const maasClientRequestSource = "qwenwork_desktop"
 
 // maasDefaultBaseURL 是签发接口未下发 base_url 时的兜底值，与客户端
 // DEFAULT_MAAS_BASE 常量一致。
@@ -109,20 +127,20 @@ func maasCacheKeyPrefix(sa *storedAuth) string {
 	return "token:" + fingerprintToken(sa.Auth.AccessToken)
 }
 
-// maasSessionCacheKey 组装「账号×会话」缓存键。
+// maasSessionCacheKey 组装「账号×上游会话」的票据缓存键。
 // 同一账号的不同会话必须各自持有独立票据：上游把票据绑定到 session_id，
-// 共用一张票会把多个会话折叠成同一个上游会话。会话键为空时归入固定分片，
+// 共用一张票会把多个会话折叠成同一个上游会话。上游会话键为空时归入固定分片，
 // 供探活等无会话场景使用。
 //
-// [参数] sa 账号凭据；sessionKey 调度侧会话键。
+// [参数] sa 账号凭据；maasSessionKey 上游 MaaS 会话键。
 // [返回] 缓存键；sa 为空时返回空串。
-// 最近修改时间：2026-11-27；改动原因：修复跨会话票据混用。
-func maasSessionCacheKey(sa *storedAuth, sessionKey string) string {
+// 最近修改时间：2026-11-28；改动原因：参数语义改为上游会话键，与路由会话键解耦。
+func maasSessionCacheKey(sa *storedAuth, maasSessionKey string) string {
 	base := maasCacheKeyPrefix(sa)
 	if base == "" {
 		return ""
 	}
-	if sid := maasSessionID(sessionKey); sid != "" {
+	if sid := maasSessionID(maasSessionKey); sid != "" {
 		return base + "|" + sid
 	}
 	return base + "|nosession"
@@ -209,10 +227,16 @@ func mintMaasSession(hostToken, sessionID string) (*maasSession, error) {
 	if base == "" {
 		base = maasDefaultBaseURL
 	}
+	// 上游回签的 session_id 必须与请求一致（官方客户端据此判不一致即抛错）；
+	// 上游没回时用本地派生的那一个兜底，保证请求头 x-session-id 永远有值。
+	issuedSessionID := strings.TrimSpace(out.SessionID)
+	if issuedSessionID == "" {
+		issuedSessionID = maasSessionID(sessionID)
+	}
 	return &maasSession{
 		AccessKey:   key,
 		BaseURL:     base,
-		SessionID:   out.SessionID,
+		SessionID:   issuedSessionID,
 		ExpiresAtMs: out.ExpiresAtMs,
 		TTLMs:       out.TTLMs,
 		MintedAtMs:  time.Now().UnixMilli(),
@@ -307,7 +331,7 @@ func ensureMaasSession(sa *storedAuth, sessionID string) (*maasSession, error) {
 	globalMaasCache.mu.Lock()
 	delete(globalMaasCache.inflight, key)
 	if err == nil && sess != nil {
-		globalMaasCache.sessions[key] = sess
+		storeMaasSessionLocked(key, sess)
 	}
 	globalMaasCache.mu.Unlock()
 
@@ -395,4 +419,113 @@ func fingerprintToken(token string) string {
 	}
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])[:12]
+}
+
+// maasDeviceType 返回上游客户端归因头 x-mm-device-type 的取值。
+//
+// 官方客户端在 Windows 上固定上报 "windows"（逆向证据：out/main/main.js 的
+// DESKTOP_DEVICE_TYPE 常量）。本插件随宿主运行在 Linux 上，如实上报运行平台，
+// 不冒充其它平台。
+//
+// [参数] 无。
+// [返回] 运行平台标识。
+// 最近修改时间：2026-11-28；改动原因：新增，客户端归因头。
+func maasDeviceType() string {
+	return runtime.GOOS
+}
+
+// maasUserAgent 返回出站 User-Agent。
+//
+// [参数] 无。
+// [返回] 形如 "QwenWork-CPA-Plugin/<版本>" 的 UA。
+// 最近修改时间：2026-11-28；改动原因：新增，出站 UA 与插件版本对齐。
+func maasUserAgent() string {
+	return "QwenWork-CPA-Plugin/" + version
+}
+
+// newMaasRequestID 生成每请求唯一的 x-mm-client-request-id。
+//
+// [参数] 无。
+// [返回] 16 位随机 hex。
+// 最近修改时间：2026-11-28；改动原因：新增，客户端归因头。
+func newMaasRequestID() string {
+	return newMaasHex(8)
+}
+
+// newMaasTraceID 生成每请求唯一的 x-mm-client-trace-id。
+//
+// 官方客户端用 32 位随机 hex（crypto.randomUUID 去连字符），此处同口径。
+//
+// [参数] 无。
+// [返回] 32 位随机 hex。
+// 最近修改时间：2026-11-28；改动原因：新增，客户端归因头。
+func newMaasTraceID() string {
+	return newMaasHex(16)
+}
+
+// newMaasHex 生成指定字节数的随机 hex 串。
+//
+// 随机源不可用时退化为时间派生，保证归因头永不为空（空头会被上游判成
+// 无归属流量，正是要修的形态）。
+//
+// [参数] n 随机字节数。
+// [返回] hex 字符串。
+// 最近修改时间：2026-11-28；改动原因：新增，随机 hex 的唯一实现。
+func newMaasHex(n int) string {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(buf)
+}
+
+// storeMaasSessionLocked 写入一张票据并顺带淘汰超限条目。
+//
+// 调用方必须持有 globalMaasCache.mu。
+//
+// [参数] key 缓存键；sess 票据。
+// [返回] 无。
+// 最近修改时间：2026-11-28；改动原因：新增，票据写入与淘汰收口到唯一入口。
+func storeMaasSessionLocked(key string, sess *maasSession) {
+	globalMaasCache.sessions[key] = sess
+	pruneMaasSessionsLocked(time.Now())
+}
+
+// pruneMaasSessionsLocked 清理票据缓存：先删已过期条目，仍超上限时按签发时间
+// 从旧到新淘汰到上限内。
+//
+// 上游会话键改为逐对话派生后，缓存条目基数随对话数增长；不淘汰会让 map 无限
+// 膨胀，而插件堆有 128MiB 软上限（memory_limit.go），GC 压力会直接进请求延迟。
+//
+// 调用方必须持有 globalMaasCache.mu。
+//
+// [参数] now 当前时间。
+// [返回] 清理的条目数。
+// 最近修改时间：2026-11-28；改动原因：新增，票据缓存淘汰。
+func pruneMaasSessionsLocked(now time.Time) int {
+	removed := 0
+	for key, sess := range globalMaasCache.sessions {
+		if sess == nil || sess.remaining(now) <= 0 {
+			delete(globalMaasCache.sessions, key)
+			removed++
+		}
+	}
+	if len(globalMaasCache.sessions) <= maasCacheMaxEntries {
+		return removed
+	}
+	type aged struct {
+		key string
+		at  int64
+	}
+	list := make([]aged, 0, len(globalMaasCache.sessions))
+	for key, sess := range globalMaasCache.sessions {
+		list = append(list, aged{key: key, at: sess.MintedAtMs})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].at < list[j].at })
+	overflow := len(list) - maasCacheMaxEntries
+	for i := 0; i < overflow && i < len(list); i++ {
+		delete(globalMaasCache.sessions, list[i].key)
+		removed++
+	}
+	return removed
 }

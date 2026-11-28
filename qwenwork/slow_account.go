@@ -50,7 +50,15 @@ const (
 	// 池内出现单个毛刺账号即可拉低基准。2026-10-25 生产实证——激进参数下
 	// 池内 TTFT 仅 1.26 倍差却持续判慢、冷却主体在两号间反复跳变。
 	// 账号数不足时相对判据只是在放大噪声，故以硬闸门挡住。
-	defaultSlowMinPoolSize = 20
+	//
+	// QwenWork 取 6 而非全仓统一的 20：生产池实测 8 个账号（2026-11-28
+	// 「slow pool size updated: prev=0 now=8」），用 20 会让整套慢速判定永久
+	// 休眠——生产日志里 qwenwork 零条「slow cooldown entered」，而 traework
+	// 同时段有多条。取 6 的依据是 P25 的下标：池子有 N 个账号时取第
+	// int(0.25*(N-1)) 小的中位数，N≥6 时下标 ≥1，基准由「第二慢」而非
+	// 「最慢」定义，单个毛刺账号拉不垮基准；N=4 时下标退化为 0，基准会被
+	// 判成最慢账号，误判风险不可接受。
+	defaultSlowMinPoolSize = 6
 	// slowSampleCap 是每个「账号×模型」保留的样本上限，超出丢弃最早样本。
 	slowSampleCap = 32
 	// slowBaselineQuantile 是基准分位点：取各账号中位数的下四分位。

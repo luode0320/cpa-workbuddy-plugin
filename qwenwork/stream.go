@@ -176,7 +176,7 @@ func parseQoderSSEChunk(line string) (string, bool) {
 // the outbound call and host transport policy applies. The host bridge emits
 // arbitrary 32KB chunks, so we adapt to io.Reader and keep the bufio.Scanner
 // SSE line framing unchanged.
-func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID, reasoningEffort, accountLabel, sessionKey string) {
+func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID, reasoningEffort, accountLabel, sessionKey, maasSessionKey, hostCallbackID string) {
 	// Always close the host stream exactly once on every exit path.
 	closed := false
 	closeOnce := func() {
@@ -218,7 +218,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	// 前置冷却拦截：若初始账号在冷却中，直接切换到健康账号，不发送自杀式请求
 	if encodedBody != "" && (isAccountCoolingDown(curAuthID) || isAccountCoolingDown(curAuthUID)) {
 		if nextID, nextSA, hasNext := pickNextAuth(curAuthID, requestedModel); hasNext && nextSA != nil {
-			if nextReq, rebErr := rebuildRequestWithQwenAuth(nextSA, []byte(encodedBody), sessionKey, curReq.Context()); rebErr == nil {
+			if nextReq, rebErr := rebuildRequestWithQwenAuth(nextSA, []byte(encodedBody), maasSessionKey, curReq.Context()); rebErr == nil {
 				curReq = nextReq
 				curAuthID = nextID
 				curAuthUID = nextSA.Account.UID
@@ -231,7 +231,12 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	}
 
 	for attempt := 0; attempt <= budget; attempt++ {
-		stream, statusCode, _, err := hostHTTPDoStream(curReq)
+		// TTFT 计时基准取本次尝试的发出时刻，而不是请求级 started：
+		// 后者跨重试复用，会把上一个账号的失败耗时算到当前账号头上。
+		// 基准必须早于发请求：晚于发请求就退化成「响应头到首帧」，生产实测
+		// 恒为 0~1ms（慢速冷却样本全部低于绝对下限，慢号永远不让位）。
+		attemptStarted := time.Now()
+		stream, statusCode, _, err := hostHTTPDoStream(curReq, hostCallbackID)
 		if err != nil {
 			publishUsage(requestedModel, upstreamModel, curAuthUID, started, usage.Detail{}, true, 0, err.Error(), reasoningEffort, 0, curAccountLabel, sessionKey)
 			noteAccountFailure(curAuthID, 0, err.Error())
@@ -272,7 +277,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 				streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(errPayload, 200)))
 				return
 			}
-			nextReq, rebErr := rebuildRequestWithQwenAuth(nextSA, []byte(encodedBody), sessionKey, curReq.Context())
+			nextReq, rebErr := rebuildRequestWithQwenAuth(nextSA, []byte(encodedBody), maasSessionKey, curReq.Context())
 			if rebErr != nil {
 				streamEmitError(streamID, fmt.Sprintf("upstream %d: %s (retry rebuild failed: %v)", statusCode, truncateRedacted(errPayload, 200), rebErr))
 				return
@@ -294,9 +299,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		// SAME request; once anything has reached the client the error is
 		// surfaced instead. （同步自 workbuddy 200 错误帧换号）
 		collector := &sseUsageCollector{}
-		// TTFT 计时基准取本次尝试的发出时刻，而不是请求级 started：
-		// 后者跨重试复用，会把上一个账号的失败耗时算到当前账号头上。
-		collector.markAttemptStart(time.Now())
+		collector.markAttemptStart(attemptStarted)
 		var sseErr string
 		emitted := false
 		contentEmitted := false
@@ -354,7 +357,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 				evictSessionBindingsForAuth(curAuthID)
 				nextID, nextSA, hasNext := pickNextAuth(curAuthID, requestedModel)
 				if shouldRotateOnStreamReadError(emitted, contentEmitted, attempt, budget, true, hasNext && nextSA != nil) {
-					nextReq, rebErr := rebuildRequestWithQwenAuth(nextSA, []byte(encodedBody), sessionKey, curReq.Context())
+					nextReq, rebErr := rebuildRequestWithQwenAuth(nextSA, []byte(encodedBody), maasSessionKey, curReq.Context())
 					if rebErr != nil {
 						streamEmitError(streamID, fmt.Sprintf("%s (retry rebuild failed: %v)", readErrMsg, rebErr))
 						return
@@ -407,7 +410,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 				streamEmitError(streamID, sseErr)
 				return
 			}
-			nextReq, rebErr := rebuildRequestWithQwenAuth(nextSA, []byte(encodedBody), sessionKey, curReq.Context())
+			nextReq, rebErr := rebuildRequestWithQwenAuth(nextSA, []byte(encodedBody), maasSessionKey, curReq.Context())
 			if rebErr != nil {
 				streamEmitError(streamID, fmt.Sprintf("%s (retry rebuild failed: %v)", sseErr, rebErr))
 				return
@@ -450,12 +453,13 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 // observes the unwrapped inner chunks for usage extraction.
 // collectUpstreamStreamOpenAI 收集一次流式推理的完整分片，并在账号级失败时换号重试。
 //
-// [参数] encodedBody 已预处理的上游请求体；sa 初始账号；sessionKey 会话标识；
-// sseFramed 是否给分片补 data: 前缀；collector 用量收集器；
-// initialAuthID 初始账号的宿主 auth.ID（调度/冷却/会话绑定共用的唯一 key）。
+// [参数] encodedBody 已预处理的上游请求体；sa 初始账号；maasSessionKey 上游
+// MaaS 会话键（逐对话隔离）；sseFramed 是否给分片补 data: 前缀；collector 用量收集器；
+// initialAuthID 初始账号的宿主 auth.ID（调度/冷却/会话绑定共用的唯一 key）；
+// hostCallbackID 宿主异步执行回调标识（客户端断连时取消上游请求）。
 // [返回] 分片列表、最后一次上游状态码、错误。
-// 最近修改时间：2026-10-18 01:45:00；改动原因：账号身份改用宿主 auth.ID，不再用 accessToken。
-func collectUpstreamStreamOpenAI(encodedBody []byte, sa *storedAuth, sessionKey string, sseFramed bool, collector *sseUsageCollector, initialAuthID, requestedModel string) ([]pluginapi.ExecutorStreamChunk, int, error) {
+// 最近修改时间：2026-11-28；改动原因：会话键语义拆分 + 补 host_callback_id 透传。
+func collectUpstreamStreamOpenAI(encodedBody []byte, sa *storedAuth, maasSessionKey string, sseFramed bool, collector *sseUsageCollector, initialAuthID, requestedModel, hostCallbackID string) ([]pluginapi.ExecutorStreamChunk, int, error) {
 	// Per-request account-failover budget. 0 means no retry (kill switch
 	// via `retry_on_4xx: 0` in plugin.yaml). The request body is
 	// account-independent; each retry re-issues a MaaS ticket for the next
@@ -481,7 +485,7 @@ func collectUpstreamStreamOpenAI(encodedBody []byte, sa *storedAuth, sessionKey 
 	for attempt := 0; attempt <= budget; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		sess, errSess := ensureMaasSession(curSA, sessionKey)
+		sess, errSess := ensureMaasSession(curSA, maasSessionKey)
 		if errSess != nil {
 			return nil, 0, fmt.Errorf("maas: %w", errSess)
 		}
@@ -490,7 +494,7 @@ func collectUpstreamStreamOpenAI(encodedBody []byte, sa *storedAuth, sessionKey 
 			return nil, 0, err
 		}
 		applyMaasHeaders(httpReq, sess)
-		stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+		stream, statusCode, _, err := hostHTTPDoStream(httpReq, hostCallbackID)
 		if err != nil {
 			return nil, 0, fmt.Errorf("http_error: %w", err)
 		}

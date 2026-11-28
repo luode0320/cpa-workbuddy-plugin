@@ -178,7 +178,15 @@ func shouldRotateOnStatus(status int) bool {
 // through shouldRotateOnStatus, which covers account-level 4xx plus 5xx.
 //
 // （同步自 workbuddy：200 SSE 业务错误换号 2026-09-06；5xx 纳入换号 2026-11-28）
+//
+// 模型池忙（上游「All models failed」）是例外：模型池在所有账号之间共享，
+// 换号只会撞同一堵墙并白白烧掉预算（社区口径：dsh-qwenwork-connector
+// src/adapter/qwenwork.ts:353-375「换号无用（同一池子）」）。正确路径是
+// 按 503 排队类快速失败，让宿主跨 provider 轮转。
 func shouldRotateOnUpstreamErr(status int, errBody string) bool {
+	if isModelPoolBusyBody(errBody) {
+		return false
+	}
 	if status == http.StatusOK {
 		return isAccountFailure(status, errBody)
 	}

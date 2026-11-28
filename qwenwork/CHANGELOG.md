@@ -1,5 +1,18 @@
 # QwenWork Plugin Changelog
 
+## 0.2.23 (2026-11-28)
+
+### Fix - 推理请求「慢 + 排队」：会话身份在上游侧落地 + 慢号让位机制复活 + 排队/模型池忙分类纠正
+
+- 现象: 经本插件调用 QwenWork 时部分推理请求很慢且排队；同一客户端直连 QwenWork 官方无此现象。生产取证（2026-11-28）: 用量 feed 里 qwenwork 的 TTFT p50=0ms / p90=1ms（同期 traework 5063ms、workbuddy 11796ms）；latency p99=65s、max=104s；new-api 侧 use_time p99=125s、max=260s，8.9% 的请求 ≥40s；CPA 宿主日志出现 `duration=3m3.755s err=upstream 504: stream timeout`；流量 100% 集中在单一账号；容器 24 小时内零条 `slow cooldown entered`（同期 traework 多条）。
+- 根因一（会话身份在上游侧没落地）: 本插件的 MaaS 票据按「账号×会话」签发，但出站请求只发 `Authorization` + `Content-Type` + `Accept`，**从不发 `x-session-id`，也不发官方客户端的 `x-mm-*` 客户端归因头**。官方桌面客户端（逆向证据：`D:\qwork\QwenWorkCN\2.2.1-26112604\resources\app.asar` → `out/main/main.js` 的 `buildAuthenticatedUpstreamHeaders` / `buildUpstreamHeaders`）必发 `x-session-id` 与 `x-mm-client-request-source` / `x-mm-device-type` / `x-mm-client-request-id` / `x-mm-client-trace-id`。缺会话绑定 ⇒ 请求在上游侧是无归属流量。修复: `applyMaasHeaders` 补齐上述头部，并显式设置 `User-Agent`；票据侧在签发响应缺 `session_id` 时回填本地派生的 UUID，保证 `x-session-id` 永不为空。
+- 根因二（全部对话塌缩成同一个上游会话 + 路由钉死单一账号）: 会话键只取 header/metadata，生产实测恒为 `X-Session-ID: 1`（低熵常量）⇒ ① 上游 MaaS session 被全量对话共用（社区记载该形态即「越聊越慢」）；② 调度侧把全量流量粘在一个账号上，其余账号空转。修复: ① 移植同仓 traework 2026-11-10 的「低熵会话标识剔除」（`minSessionEntropyChars` / `lowEntropySessionID`）；② 新增按请求体派生的上游会话键 `maasSessionKeyFromPayload`（种子优先级 `prompt_cache_key` → `user` → system + 首条 user 消息 sha256，对齐 dsh-qwenwork-connector / dsh-qwenwork-connect / Agent2Providers 三份社区实现），把「路由会话键」与「上游会话键」拆成两套语义，MaaS 票据改按「账号×上游会话」分片。
+- 根因三（慢号让位机制整体休眠）: ① `pumpUpstreamStream` 的 TTFT 基准晚于发请求，测的是「响应头到首帧」⇒ 样本恒 0~1ms，永远低于 `slow_min_ttft_ms` 下限；② 异步流入口把客户端别名当上游模型传下去，慢速样本键与调度侧查询键对不上；③ 准入闸门 `slow_min_pool_size` 默认 20 > 生产池 8 ⇒ 机制永不开。修复: TTFT 基准前移到发请求之前；异步流改传解析后的 `upstreamModel`；QwenWork 专属准入下限调整为 6（依据 P25 下标在 N≥6 时 ≥1，基准由「第二慢」而非「最慢」定义）。
+- 根因四（模型池忙被当账号故障）: 裸 429（如上游 `All models failed`）此前计入账号阶梯冷却，24 小时内 27 次 minimax 429 足以把健康号逐个推进冷却，流量被迫集中到更少账号，进一步加剧排队。修复: 模型池忙归入排队类——对外 503、不冷却账号、不在同请求内换号（模型池在账号间共享，换号无效）；排队判据补 `serviceAvailable:false` 形态（社区三份实现一致口径）。
+- 配套: MaaS 票据缓存增加淘汰（过期清理 + 512 条上限），上游会话键逐对话化后条目基数会涨，不淘汰会撞插件堆 128MiB 软上限；请求体只反序列化一次（`prepareUpstreamBody` 复用解析结果派生会话键）。
+- 影响范围: 仅 qwenwork 插件内部；宿主配置、其它插件、协议与面板均不变。
+- 验证: `cgo-shim-build.py qwenwork` build/vet/test 全绿；新增 4 个测试文件（会话种子、MaaS 出站头与缓存淘汰、排队/模型池忙分类、TTFT 口径与准入闸门）；哨兵反证 10 条逐条改坏全部真实命中（`scripts/qwenwork_sentinel_c1.py`）；gofmt 零差异、UTF-8 无 BOM、零尾随空白。
+
 ## 0.2.22 (2026-11-28)
 
 ### Fix - 进入面板不再刷新账号，积分只读持久化快照

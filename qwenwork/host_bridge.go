@@ -8,9 +8,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"runtime"
 	"time"
@@ -30,9 +32,27 @@ func sharedHTTPClient() *http.Client {
 		// jar would leak upstream set-cookie state across accounts (multi-account
 		// deployments could cross-contaminate sessions). Only the short-lived
 		// login clients get a jar.
+		//
+		// 分阶段超时（对齐 workbuddy 2026-11-07）：只设 Timeout 是不够的 ——
+		// Timeout 是端到端总上限，首字之前的静默期（半开 TCP、服务端排队）
+		// 在总超时内部仍可无限挂起。本客户端承担 MaaS 票据签发（请求关键路径，
+		// ctx 只有 15s），半开连接会把 TTFT 直接顶到签发超时上限。
 		sharedClient = &http.Client{
 			Timeout: 120 * time.Second,
 			Transport: &http.Transport{
+				// 半死连接的第一道闸：默认 Dialer 无上限。
+				DialContext: (&net.Dialer{
+					Timeout:   upstreamDialTimeout,
+					KeepAlive: 15 * time.Second,
+				}).DialContext,
+				// TLS 握手前置上限（此前完全缺失）。
+				TLSHandshakeTimeout: upstreamTLSHandshakeTimeout,
+				// 首字节（响应头）硬上限：SSE 在吐出第一个字节前长时间静默时
+				// 快速失败并交给换号，而不是让客户端干等。
+				ResponseHeaderTimeout: upstreamResponseHeaderTimeout,
+				// 禁 h2：ForceAttemptHTTP2=false 不够，ALPN 仍会协商出 h2；
+				// 置空 TLSNextProto 才能真正禁掉。
+				TLSNextProto:        map[string]func(string, *tls.Conn) http.RoundTripper{},
 				MaxIdleConns:        20,
 				IdleConnTimeout:     90 * time.Second,
 				MaxIdleConnsPerHost: 5,
@@ -41,6 +61,20 @@ func sharedHTTPClient() *http.Client {
 	})
 	return sharedClient
 }
+
+// 上游 HTTP 分阶段超时。语义分工见 sharedHTTPClient 的说明：拨号与 TLS 握手
+// 挡住「连不上」，ResponseHeaderTimeout 挡住「连上了但首字节迟迟不来」，
+// 而 http.Client.Timeout 仍是整体兜底上限。
+const (
+	// upstreamDialTimeout 限制 TCP 建连耗时。
+	upstreamDialTimeout = 10 * time.Second
+	// upstreamTLSHandshakeTimeout 限制 TLS 握手耗时。
+	upstreamTLSHandshakeTimeout = 10 * time.Second
+	// upstreamResponseHeaderTimeout 限制「请求已发出 → 响应头到达」的耗时。
+	// 取值 60s：生产观测到大 input 的正常 TTFB 最坏十几秒，60s 既不误杀健康
+	// 慢请求，又能把分钟级静默快速收敛。
+	upstreamResponseHeaderTimeout = 60 * time.Second
+)
 
 // hostHTTPResponse is the plugin-side view of an HTTP response that came back
 // through the host bridge. Body is fully buffered (matches the historical
@@ -55,8 +89,14 @@ type hostHTTPResponse struct {
 // rpcHostHTTPRequest on the wire. The "request" sub-object is the actual HTTP
 // call; the flat method/url/headers/body fields are an alternate form we don't
 // use (host prefers Request when present).
+//
+// HostCallbackID 位于外层，用于恢复宿主侧的异步请求上下文；Request 承载实际
+// HTTP 请求。缺失该字段时宿主拿不到 callback context，上游请求的 ctx 退化为
+// context.Background()，客户端断连后上游请求不会被取消——上游看到的并发远
+// 大于真实在途请求，上游排队随之加剧（同仓 workbuddy 2026-11-07 已补齐）。
 type rpcHostHTTPRequestWire struct {
-	Request *rpcHostHTTPInner `json:"request,omitempty"`
+	HostCallbackID string            `json:"host_callback_id,omitempty"`
+	Request        *rpcHostHTTPInner `json:"request,omitempty"`
 }
 
 type rpcHostHTTPInner struct {
@@ -222,10 +262,17 @@ type hostHTTPStream struct {
 // hostHTTPDoStream opens a streaming call via the host bridge. The host owns
 // the actual http.Response body; we pull chunks via hostHTTPStreamRead.
 //
+// hostCallbackID 用于把宿主侧的异步请求上下文绑定到这条上游流：客户端断连时
+// 宿主据此取消上游请求。没有它，上游请求会一直挂着，占用上游并发槽位。
+//
 // Falls back to direct http.Client.Do when the bridge is unavailable (tests).
 // In that case the returned hostHTTPStream wraps an in-memory copy of the
 // full response body so Read/Close have the same shape.
-func hostHTTPDoStream(req *http.Request) (*hostHTTPStream, int, http.Header, error) {
+//
+// [参数] req：上游 HTTP 请求；hostCallbackID：宿主异步执行回调标识，可空。
+// [返回] 流句柄、状态码、响应头、传输错误。
+// 最近修改时间：2026-11-28；改动原因：补 host_callback_id 透传。
+func hostHTTPDoStream(req *http.Request, hostCallbackID string) (*hostHTTPStream, int, http.Header, error) {
 	if req == nil {
 		return nil, 0, nil, fmt.Errorf("nil request")
 	}
@@ -241,15 +288,7 @@ func hostHTTPDoStream(req *http.Request) (*hostHTTPStream, int, http.Header, err
 	if !hostBridgeAvailable() {
 		return hostHTTPDoStreamDirect(req, bodyBytes)
 	}
-	wire := rpcHostHTTPRequestWire{
-		Request: &rpcHostHTTPInner{
-			Method:  req.Method,
-			URL:     req.URL.String(),
-			Headers: map[string][]string(req.Header),
-			Body:    bodyBytes,
-		},
-	}
-	raw, err := hostCall(pluginabi.MethodHostHTTPDoStream, mustJSON(wire))
+	raw, err := hostCall(pluginabi.MethodHostHTTPDoStream, buildHostHTTPStreamWire(req, bodyBytes, hostCallbackID))
 	if err != nil {
 		return hostHTTPDoStreamDirect(req, bodyBytes)
 	}
@@ -265,6 +304,31 @@ func hostHTTPDoStream(req *http.Request) (*hostHTTPStream, int, http.Header, err
 		return nil, resp.StatusCode, http.Header(resp.Headers), fmt.Errorf("host stream bridge unavailable")
 	}
 	return &hostHTTPStream{streamID: resp.StreamID}, resp.StatusCode, http.Header(resp.Headers), nil
+}
+
+// buildHostHTTPStreamWire 构造宿主流桥 open 的线上信封（纯函数，便于单测）。
+//
+// 抽成独立函数的原因：hostHTTPDoStream 在单测环境里 hostBridgeAvailable()
+// 恒为 false（没有 cgo host 通道），会直接走直连兜底，导致「调用点是否真的
+// 把 host_callback_id 写进信封」这条最关键的回归无法被测试捕获。
+//
+// [参数] req：上游 HTTP 请求；bodyBytes：已读取的请求体；hostCallbackID：
+//
+//	宿主异步执行回调标识，空串表示不绑定。
+//
+// [返回] 序列化后的 RPC 信封字节。
+// 最近修改时间：2026-11-28；改动原因：新增，承载 callback 透传回归。
+func buildHostHTTPStreamWire(req *http.Request, bodyBytes []byte, hostCallbackID string) []byte {
+	wire := rpcHostHTTPRequestWire{
+		HostCallbackID: hostCallbackID,
+		Request: &rpcHostHTTPInner{
+			Method:  req.Method,
+			URL:     req.URL.String(),
+			Headers: map[string][]string(req.Header),
+			Body:    bodyBytes,
+		},
+	}
+	return mustJSON(wire)
 }
 
 // hostHTTPDoStreamDirect performs the request with the plugin's own http.Client

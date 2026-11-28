@@ -496,24 +496,26 @@ func withSlowPoolSize(t *testing.T, size int) {
 //
 // 判据是 P25 相对基线，池子太小时该统计量退化成「取较小值」，
 // 两个账号里任一次抖动就会让其中一个被判慢、互相顶替。
+//
 // [参数] t：测试上下文。
-// 最近修改时间：2026-10-25；改动原因：新增，覆盖账号池准入闸门的核心语义。
+// 最近修改时间：2026-11-28；改动原因：闸门默认值随生产池规模调整，用例改为按门槛取值。
 func TestSlowAccount_PoolSizeGateBlocksJudgement(t *testing.T) {
 	withSlowConfig(t, true, 25, 2, 500, 60*time.Minute, 10*time.Minute)
 	base := time.Now()
 
-	// 池子只有 20 个账号：闸门要求严格大于 20，此时必须完全不判。
-	withSlowPoolSize(t, 20)
+	// 池子恰好等于门槛：闸门要求严格大于门槛，此时必须完全不判。
+	gate := loadedSlowConfig().minPoolSize
+	withSlowPoolSize(t, gate)
 	feedSlowSamples("slow-a", "m", 20000, 5, base)
 	feedSlowSamples("fast-a", "m", 2000, 5, base)
 	if evaluateSlowAccount("slow-a", "m", base.Add(time.Minute)) {
-		t.Fatal("账号数 = 20 时不应判定：闸门要求严格大于 20")
+		t.Fatalf("账号数 = %d 时不应判定：闸门要求严格大于 %d", gate, gate)
 	}
 
-	// 涨到 21 个账号：闸门放行，同一个慢号必须被判出来。
-	withSlowPoolSize(t, 21)
+	// 涨到门槛 +1：闸门放行，同一个慢号必须被判出来。
+	withSlowPoolSize(t, gate+1)
 	if !evaluateSlowAccount("slow-a", "m", base.Add(2*time.Minute)) {
-		t.Fatal("账号数 = 21 时应放行判定，慢号必须被判慢")
+		t.Fatalf("账号数 = %d 时应放行判定，慢号必须被判慢", gate+1)
 	}
 }
 

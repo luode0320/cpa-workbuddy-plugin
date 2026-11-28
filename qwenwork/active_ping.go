@@ -118,7 +118,8 @@ func sendActivePingQoder(sa *storedAuth, chosenModel string) error {
 	}
 	applyMaasHeaders(httpReq, sess)
 
-	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+	// 面板探活是控制面探测，不绑定任何客户端请求的 callback context。
+	stream, statusCode, _, err := hostHTTPDoStream(httpReq, "")
 	if err != nil {
 		return fmt.Errorf("hostHTTPDoStream: %w", err)
 	}

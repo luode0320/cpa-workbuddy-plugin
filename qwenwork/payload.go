@@ -12,16 +12,19 @@ import (
 
 // prepareUpstreamBody 对客户端请求体做透传前的最小改写。
 //
+// 同时返回已反序列化的请求体对象，供 MaaS 会话键派生复用：生产请求体普遍在
+// 1MB 以上（400K tokens 量级），再解析一次的成本与内存都不小。
+//
 // [参数] bodyRaw: 客户端原始请求体；upstreamModel: 已反解出的上游模型 ID。
-// [返回] 改写后的请求体；解析失败时原样返回，保证请求仍可发出。
-// 最近修改时间：2026-10-18 14:40:00；改动原因：请求体里的 model 必须改写为真实 ID。
-func prepareUpstreamBody(bodyRaw []byte, upstreamModel string) []byte {
+// [返回] 改写后的请求体与解析出的请求体对象；解析失败时原样返回请求体、对象为 nil。
+// 最近修改时间：2026-11-28；改动原因：随 MaaS 会话键派生补出解析结果，避免二次解析。
+func prepareUpstreamBody(bodyRaw []byte, upstreamModel string) ([]byte, map[string]any) {
 	if len(bodyRaw) == 0 {
-		return bodyRaw
+		return bodyRaw, nil
 	}
 	var obj map[string]any
 	if err := json.Unmarshal(bodyRaw, &obj); err != nil {
-		return bodyRaw
+		return bodyRaw, nil
 	}
 	// 1. 上游按 SSE 返回；同步路径同样依赖事件流聚合。
 	obj["stream"] = true
@@ -36,9 +39,9 @@ func prepareUpstreamBody(bodyRaw []byte, upstreamModel string) []byte {
 	normalizeMaxTokensInPlace(obj)
 	out, err := json.Marshal(obj)
 	if err != nil {
-		return bodyRaw
+		return bodyRaw, obj
 	}
-	return out
+	return out, obj
 }
 
 // normalizeMaxTokensInPlace 已迁移至 model_specs.go：

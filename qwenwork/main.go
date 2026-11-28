@@ -330,7 +330,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.2.22"
+var version = "0.2.23"
 
 func wbRegistration() registration {
 	return registration{
@@ -645,8 +645,16 @@ func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi
 
 // -----------------------------------------------------------------------------
 
+// handleExecExecute 处理非流式执行：上游仍走流式，聚合后折叠成 chat.completion。
+// 解析用 executorStreamRequest 而非裸 ExecutorRequest，因为宿主对
+// executor.execute 同样下发 host_callback_id，只解析裸结构会把这个字段丢掉，
+// 客户端断连就无法传播到上游。
+//
+// [参数] raw：宿主 RPC 请求原文。
+// [返回] 折叠后的 completion 响应信封；错误时返回错误。
+// 最近修改时间：2026-11-28；改动原因：补 host_callback_id 接收。
 func handleExecExecute(raw []byte) ([]byte, error) {
-	var req pluginapi.ExecutorRequest
+	var req executorStreamRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
@@ -693,7 +701,10 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	// body（QwenWork 模板无此字段位点），仅用于对齐 workbuddy 的用量维度。
 	reasoningEffort := strings.TrimSpace(qwReq.ReasoningEffort)
 	// QwenWork 透传客户端请求体，只强制 stream 并按官方规格自适应 max_tokens。
-	body := prepareUpstreamBody(bodyRaw, upstreamModel)
+	body, bodyObj := prepareUpstreamBody(bodyRaw, upstreamModel)
+	// MaaS 会话键与路由会话键分开：前者决定「用哪张上游票据、落到哪个上游
+	// session_id」，必须逐对话隔离；后者只决定「粘哪个账号」。
+	maasSessionKey := maasSessionKeyFromPayload(bodyObj)
 
 	// Per-request account-failover loop. We try the prepared body against
 	// the configured account first; on an account-level 4xx
@@ -738,7 +749,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	nonStreamTTFTNS := uint64(0)
 	for attempt := 0; attempt <= budget; attempt++ {
 		var attemptTTFT uint64
-		completion, attemptTTFT, completionErr = doExecuteOnceQwenWork(body, curSA, req.Model, sessionKey)
+		completion, attemptTTFT, completionErr = doExecuteOnceQwenWork(body, curSA, req.Model, maasSessionKey, req.HostCallbackID)
 		nonStreamTTFTNS = attemptTTFT
 		if completionErr == nil {
 			// The account that actually served the request may differ from the
@@ -816,14 +827,16 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 // sk-mm-v1 key 做裸 Bearer，不重建上游 body、不做 COSY 签名、不做自定义
 // 编码，直接把客户端请求体转发上去。
 //
-// [参数] bodyRaw 客户端原始请求体；sa 账号凭据；requestedModel CPA 侧模型名。
+// [参数] bodyRaw 客户端原始请求体；sa 账号凭据；requestedModel CPA 侧模型名；
+// maasSessionKey 上游 MaaS 会话键（逐对话隔离，见 maasSessionKeyFromPayload）；
+// hostCallbackID 宿主异步执行回调标识（客户端断连时取消上游请求）。
 // [返回] 折叠后的 chat.completion 负载；上游 4xx/5xx 时返回 "upstream N: ..."。
-// 最近修改时间：2026-10-17 23:50:00；改动原因：切换 QwenWork MaaS 推理链路。
-func doExecuteOnceQwenWork(bodyRaw []byte, sa *storedAuth, requestedModel, sessionKey string) ([]byte, uint64, error) {
+// 最近修改时间：2026-11-28；改动原因：会话键语义拆分 + 补 host_callback_id 透传。
+func doExecuteOnceQwenWork(bodyRaw []byte, sa *storedAuth, requestedModel, maasSessionKey, hostCallbackID string) ([]byte, uint64, error) {
 	attemptStarted := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	sess, err := ensureMaasSession(sa, sessionKey)
+	sess, err := ensureMaasSession(sa, maasSessionKey)
 	if err != nil {
 		return nil, 0, fmt.Errorf("maas: %w", err)
 	}
@@ -835,7 +848,7 @@ func doExecuteOnceQwenWork(bodyRaw []byte, sa *storedAuth, requestedModel, sessi
 	applyMaasHeaders(httpReq, sess)
 	// Compliance: route via host.http.do_stream so request-log captures the
 	// outbound call. Read entire body via the bridge, then fold SSE → completion.
-	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+	stream, statusCode, _, err := hostHTTPDoStream(httpReq, hostCallbackID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("http_error: %w", err)
 	}
@@ -861,15 +874,33 @@ func doExecuteOnceQwenWork(bodyRaw []byte, sa *storedAuth, requestedModel, sessi
 	return completion, ttftNSBetween(attemptStarted, firstByteAt), nil
 }
 
-// applyMaasHeaders 给推理请求加 MaaS 鉴权与内容类型头。
+// applyMaasHeaders 给推理请求加 MaaS 鉴权、客户端归因与会话绑定头。
+//
+// 头部全集对齐官方桌面客户端的真实出站头（逆向证据：
+// D:\qwork\QwenWorkCN\2.2.1-26112604\resources\app.asar → out/main/main.js
+// 的 buildAuthenticatedUpstreamHeaders / buildUpstreamHeaders /
+// DESKTOP_CLIENT_REQUEST_SOURCE 常量）：
+//   - x-session-id：把本次请求绑定到票据对应的上游会话。缺失时上游拿不到
+//     「这张票属于哪个会话」，请求退化成无归属流量——生产表现为上游排队、
+//     官方客户端不排队。
+//   - x-mm-client-request-source / x-mm-device-type / x-mm-client-request-id /
+//     x-mm-client-trace-id：客户端归因与链路追踪，上游按来源区分流量。
 //
 // [参数] req 待发送请求；sess 已签发的 MaaS 票据。
 // [返回] 无（就地修改请求头）。
-// 最近修改时间：2026-10-17 23:50:00；改动原因：新建 QwenWork MaaS 鉴权。
+// 最近修改时间：2026-11-28；改动原因：补齐客户端归因头与 x-session-id 会话绑定。
 func applyMaasHeaders(req *http.Request, sess *maasSession) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+sess.AccessKey)
+	if sess != nil && strings.TrimSpace(sess.SessionID) != "" {
+		req.Header.Set("x-session-id", sess.SessionID)
+	}
+	req.Header.Set("x-mm-client-request-source", maasClientRequestSource)
+	req.Header.Set("x-mm-device-type", maasDeviceType())
+	req.Header.Set("x-mm-client-request-id", newMaasRequestID())
+	req.Header.Set("x-mm-client-trace-id", newMaasTraceID())
+	req.Header.Set("User-Agent", maasUserAgent())
 }
 
 // accountIdentity 返回账号在调度/冷却/会话绑定/积分缓存中的统一 key。
@@ -964,7 +995,10 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// 客户端请求的推理强度：写入 usage feed 供 dashboard 展示（同非流式路径）。
 	reasoningEffort := strings.TrimSpace(qwReq.ReasoningEffort)
 	// QwenWork 透传客户端请求体，只强制 stream 并按官方规格自适应 max_tokens。
-	body := prepareUpstreamBody(bodyRaw, upstreamModel)
+	body, bodyObj := prepareUpstreamBody(bodyRaw, upstreamModel)
+	// MaaS 会话键与路由会话键分开（与 handleExecExecute 同口径）：前者决定
+	// 「用哪张上游票据、落到哪个上游 session_id」，必须逐对话隔离。
+	maasSessionKey := maasSessionKeyFromPayload(bodyObj)
 
 	headers := streamHeaders()
 	sseFramed := clientNeedsSSEFrame(req.Metadata)
@@ -972,7 +1006,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// No async stream id → fall back to synchronous chunk collection.
 	if req.StreamID == "" {
 		collector := &sseUsageCollector{}
-		chunks, statusCode, errCollect := collectUpstreamStreamOpenAI(body, sa, sessionKey, sseFramed, collector, req.AuthID, req.Model)
+		chunks, statusCode, errCollect := collectUpstreamStreamOpenAI(body, sa, maasSessionKey, sseFramed, collector, req.AuthID, req.Model, req.HostCallbackID)
 		if errCollect != nil {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error(), reasoningEffort, collector.ttftNS(started), accountLabel, sessionKey)
 			// Unlike the workbuddy plugin, collectUpstreamStreamQoder does not
@@ -1005,7 +1039,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// client disconnects — otherwise the pump keeps reading a dead upstream until
 	// sharedHTTPClient's 120s timeout, holding a pool slot the whole time.
 	ctx, cancel := context.WithCancel(context.Background())
-	sess, errSess := ensureMaasSession(sa, sessionKey)
+	sess, errSess := ensureMaasSession(sa, maasSessionKey)
 	if errSess != nil {
 		cancel()
 		streamEmitError(req.StreamID, "maas: "+errSess.Error())
@@ -1020,7 +1054,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		return okEnvelope(streamResponse{Headers: headers})
 	}
 	applyMaasHeaders(httpReq, sess)
-	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, req.Model, authUID, started, req.AuthID, reasoningEffort, accountLabel, sessionKey)
+	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, reasoningEffort, accountLabel, sessionKey, maasSessionKey, req.HostCallbackID)
 	return okEnvelope(streamResponse{Headers: headers})
 }
 
