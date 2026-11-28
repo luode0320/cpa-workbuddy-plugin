@@ -78,6 +78,14 @@
 
 ## 活动会话进展摘要
 
+- **当前会话（2026-11-28 23:45 - 2026-11-29 00:25)：glm-provider 0.2.9/0.2.10：面板测试可选模型 + 账号积分额度展示**（用户「测试没有选择模型, 可以参考workbuddy」「账户没有显示积分」）：
+  - **积分端点取证**：16 个候选路径只有 `GET /chatglm/user-api/user/info` 命中 200（`/user/credit`、`/user/quota`、`/user/point` 及 `backend-api` 同类路径全 404），积分在 `result.member_info.left_score`（`"199.01"`），额度用 `token_left_percent` / `token_usage_percent`。workbuddy 的积分走它自家 billing API（`/v2/billing/meter/get-user-resource`），GLM 没有同一套，只能照搬「懒加载 + 卡片形态」。
+  - **测试选模型**：后端 `handleMgmtTest` 早已支持 `model` 字段，只是面板没传（恒用默认 `glm/glm-5.1`）。卡片加 `.modelsel` 下拉（选项来自 `/models`），`testAccount` 读值随 `/test-active` 提交。
+  - **中途 Bug（0.2.9）**：`/credits?auth_id=...` 恒返回 `auth_id required` —— `normalizeMgmtSubPath` 只从 `url.Parse(req.Path)` 取查询串，而宿主可能只下发纯路径、查询放在 `req.Query`；且原代码有 `_ = urlQuery` / `_ = req.Query` 显式忽略。0.2.10 加 `mergeRequestQuery` 合并两源、宿主优先。
+  - **验证**：真实账号 `/credits` 返回 `left_score:"199.01" · 余量 99% · 免费用户，登录赠送200积分/天`；`test-active` 带 `glm/glm-4-plus` / `glm/glm-think` 均 `ok:true` 并回显模型；面板 HTML 含 `modelsel` / `data-credits` / `loadCredits` / `loadModels`。单测 19→24 全 PASS，gofmt 21 文件 PASS，面板 2 个 script 块 `node --check` OK。
+  - **发布**：0.2.9 → 0.2.10 各一轮 CI，Release 均 success，生产 `hot reloaded active=0.2.10`，容器未重启；四层版本一致 0.2.10。
+  - **注意**：积分每次实时回源 `/user/info`、未缓存；账号多时会并发多次请求，量上来需加短 TTL。
+
 - **当前会话（2026-11-28 23:45 - 2026-11-29 00:10）：safeguard-killer 0.1.15：状态契约审计 + 死字段清理 + 用例补强（已发布生产）**（同一目标第 3 轮）：
   - **审计结论**：配置项 11 个全部有生效点且在面板可见可改；CSS 变量 28 定义 / 25 引用，差集 3 个都是「两套主题各定义 + 一处引用」的活变量；JS 51 个函数全部被调用；`data-action` 6 个值与处理分支完全对称；面板按**响应形状**（`output`/`content`/`choices`）而非格式名注入提示，未知形状原样返回属设计。
   - **唯一死字段**：`sessionBinding.Provider` 只被赋常量 `groupProvider`，`ui.go` 全文检索 `provider` 0 次。已删字段 + 两处赋值 + 注释说明为何不放。生产验证：`/state` 的会话字段变为 `session,auth_id,model,bound_at,last_seen,idle_expires_at`。
@@ -174,13 +182,5 @@
   - **根因**：宿主仅在**启动时**扫描插件目录，热重载只对已加载插件生效；新插件 id 首次安装必须重启才能加载。已探测 `/plugins/reload`、`/plugin-store/reload`、`/plugins/rescan` 等端点均 404，无免重启通道；`PUT /plugins/<id>/config` 同内容不触发加载（符合项目既有结论）。
   - **用户裁定（15:57）**：选择「先不重启，保留现状」——重启留待后续维护窗口。旧 `glm-web-provider` 0.1.0 仍在运行（configured/registered/enabled 全 true），暂未清理。
   - **恢复步骤（重启后即可用）**：重启 `cli-proxy-api` → 日志确认 `plugin loaded + plugin registered plugin_id=glm-provider` → 验证 `GET /v0/resource/plugins/glm-provider/panel` 200 且非白屏 → `GET .../login` 200 → 面板或引导页导入 refresh_token → 真实对话验证。清理旧 id：确认新版可用后 `DELETE /v0/management/plugins/glm-web-provider`（会同时删配置与落盘 .so）。
-- 会话（2026-11-28 04:15 - 05:32）：**glm-web-provider 0.1.0 全量实现并上线生产（用户「安装计划全部实现，然后上线生产」）**：
-  - **实现（全新 `glm-web/` 插件，15 Go 文件 + panel.html + go.mod/sum + VERSION + Makefile + CHANGELOG）**：token 型 `StoredAuth` 落盘（保留未知顶层键）、`generateSign`/`requestToken`/`acquireToken`（md5 签名 + 3600s 缓存 + 并发单飞）、`buildStreamPayload`/`mergeMessages`/`parseGLMFrame`/`pumpGLMStream`（GLM `parts[].content[]` 全量快照增量去重、text/think 分离、[DONE] 立即收尾）、非流式 `convertNonStream`、多账号 scheduler + 故障记账、面板 token 导入（`glm-web/` 模型前缀，`const API` 对齐 id）、NDJSON 用量上报。ABI 骨架复用 zcode。上游 refresh/stream/info/delete 端点全部可配置覆盖。
-  - **门禁**：`python scripts/cgo-shim-build.py glm-web` build+vet+test 全绿（15 测试）；哨兵反证三项有效（签名算法/ SSE 增量/别名前缀，改坏→FAIL→还原全绿）；面板两 script 块 node --check OK；gofmt 15 文件 PASS；污染扫描 glm-web 零命中（11 条均为存量插件）；6-review `STYLE: PASS`。文档：`doc/5-tests/2026-11-28_050000_...`、`doc/6-review/2026-11-28_051000_...`。
-  - **CI workflow 扩展**：`build.yml` 注册 `glm-web-provider`（dispatch options + test matrix + PLUGINS map + release tag 条件 + display name）。
-  - **发布链**：VERSION/main.go=0.1.0 → commit `5b09c1d`（25 文件）→ push → dispatch `plugin=glm-web-provider version=0.1.0 allow_partial=true` → run `46068933609`（head 5b09c1d，Release=success，run conclusion=cancelled 属 darwin/arm64 常态）→ release `461076121`（6 资产）→ `download-release-assets.py 0.1.0 glm-web-provider` ALL CHECKSUMS OK → `publish-assets.py glm-web-provider 0.1.0 --allow-missing`（5 artifacts）→ registry commit `dced117` push → 远端 raw **ALL PASS**（5 artifacts sha256/size 全 OK）。一次发布两次推送，未混入并行改动。
-  - **生产部署（45.207.222.65:8317）**：管理密钥 `cpa_management_key` 经 bcrypt 离线验明（不回显）；install 前取 13 插件快照；`POST /plugin-store/glm-web-provider/install?version=0.1.0&source=source-636fa01121af` → `restart_required:false plugins_enabled:true` → 日志 `plugin loaded + plugin registered version=0.1.0`（新插件首次安装形态）；落盘 .so sha256 `29146ed...12e5b` 与 release zip 内 .so 逐字节一致；面板 200；除新增 glm-web 外 13 插件启用态逐字段不变；容器未重启（started 2026-11-27T17:50 早于 install 05:28）。
-  - **模型目录说明**：`/v1/models` 当前 glm-web 模型为 0，与 zcode/qoder-ai/cursor 等无账号 provider 一致——宿主按已配置账号动态激活模型，用户上线后 OAuth 登录账号即出现，非缺陷。
-  - **TASK-008 待办（用户上线后）**：用户提供 OAuth 登录产物 `chatglm_refresh_token` → 面板导入 → 真实验证 H-01（刷新拿到 access_token）/H-02（SSE 对话出字 + [DONE]）/H-04（SIGN_SECRET 有效）/H-05（getUserInfo 识别账号非访客）；失败按 GAP 回写并最小修正复验。
 
 > 更早的会话明细（2026-11-20 及之前：store-auth PAT、10 插件面板、doubao 0.1.8/0.1.9/0.1.11/0.1.19~0.1.22 等）已归档至 git 提交历史与 doc/ 对应文档，本文件只保留最近 7 条会话摘要以控制体积。
