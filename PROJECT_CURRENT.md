@@ -78,6 +78,17 @@
 
 ## 活动会话进展摘要
 
+- **当前会话（2026-11-28 23:20 - 23:40）：safeguard-killer 0.1.14：流式加固（本地已提交，已发布生产）**（用户「Safeguard Killer插件, 持续监控一下bug和不需要没使用的功能移除。」第 2 轮）：
+  - **巡检手段**：配置项使用面逐字段反查（`pluginConfig`/`featureConfig` 全部有生产读取点，**无死配置**）；生产决策分布（108 决策 / 114 attempt **全部 served**，无 fallback）；`staticcheck -checks all`（除 C ABI 假象只剩 `stream.go:79 ST1005`）；`executeGroup`→`prefetchStream`→`forwardStream`→`emitExhaustedNoticeStream` 逐段读。
+  - **排除的假缺陷**：① `prefetchStream` 每条错误路径都已关源流（`refusal.go:875/880/889/898/905/911`），`continue` 不泄漏；② `request.intercept_before/after` 共用 handler 是宿主语义（`rpc_client.go:719/728` 都映射到 `InterceptRequestAfterAuth`）；③ `ChunkIndex == -1` 是 `StreamChunkHeaderInitIndex`（仅响应头初始化），不是流结束，早退正确。
+  - **BUG-4（P1，未触发但代价最高）**：`forwardStream` / `emitExhaustedNoticeStream` 由 `go` 启动且直接经 cgo 写客户端流；全包 `recover()` 出现 0 次。插件跑在宿主进程内，goroutine panic 会终止整个 CPA 进程（宿主 fuse 只包「宿主→插件」方向）。修：两处各加 `defer recover()`，命中时 `closeStream` 目标流并释放源上游流。
+  - **BUG-5（P2）**：`normalizeClaudeStream` 缺 `requestID` 时返回错误 → 整条已生成的流失败。修为原样透传（不建状态、不重编号），顺带消掉唯一真告警 ST1005。
+  - **加固（P2）**：`claudeStreamState` 加 `created`，`maxClaudeStreamStates=512` 满时 `evictClaudeStreamLocked` 淘汰最早一条，兜住宿主漏发 `request.complete` 的无界泄漏。
+  - **验证**：门禁 `PASS=61 FAIL=0`；gofmt CLEAN；3 条哨兵（recover 改空操作 / 缺 ID 改回报错 / 删淘汰调用）**全部 KILLED**；`staticcheck` 非 C ABI 告警 0。
+  - **发布**：commit `e91a242` → 临时 dispatch 工作流（内置 `GITHUB_TOKEN`，`allow_partial=true`）触发 run `46159257774` → **Release success**（5 平台，darwin_arm64 cancelled）→ 资产 `ALL CHECKSUMS OK` → registry `1c6e7bc` → 生产 install 200 → **`hot reloaded active_version=0.1.14 retired_version=0.1.13`**（23:35:44）→ 落盘 `.so` sha256 `cd258a82…0591` 与本地 zip 一致 → `count_tokens` 成员名回归 200。
+  - **新教训（重要）**：宿主 install 前会 `FetchRegistry`（每次实拉，无本地缓存），但 raw.githubusercontent 的 CDN 有约 5 分钟缓存。刚 push registry 就 install 会命中 `plugin_manifest_invalid: direct plugin version "X" not found`（8-30ms 快速失败，无网络请求特征）。**判据**：`GET /v0/management/plugin-store` 看宿主实际拉到的 `safeguard-killer` 版本；等它变成目标版本再 install，不要盲重试。
+  - **教训**：`Split-Path (Split-Path $shim)` 会落到仓库根 `F:\cpa-plugin`，`Remove-Item -Recurse` 差一步删整仓；删临时目录前必须先断言路径匹配 `\\cpa-shim-[a-z0-9_]+$`。
+
 - **当前会话（2026-11-28 22:54 - 23:40）：glm-provider 0.2.7/0.2.8：修复授权 40004 与提交白屏，真实账号端到端跑通**（用户贴令牌与白屏截图「提交了一个token, 但是没有成功回调」）：
   - **两个串联故障**：① 授权页提交后整页白屏；② 令牌校验失败 `refresh status 400: 40004 bad request`。
   - **根因 1（白屏）**：表单以 `POST` 打 `/v0/resource/plugins/glm-provider/login/callback`，而 resource 路由只注册 GET → 404 空响应体 → 前端 `document.open();document.write("")` 把整页覆盖成空文档。**白屏不是没渲染，是被空体覆盖**。
