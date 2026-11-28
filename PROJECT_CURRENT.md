@@ -92,6 +92,15 @@
 
 ## 活动会话进展摘要
 
+- **当前会话（2026-11-29 00:54 - 02:15）：glm-provider 0.2.12/0.2.13：模型档位改为从历史会话动态发现，补 chat_agent**（用户「模型还是对不上...我们希望的是可以动态获取到准确的模型，未来新增模型不用改插件」）：
+  - **`model` 字段是死路**：九组实验（`meta.model` / 顶层 `model` / 真实名 / `glm-4-air` / `glm-5.1` / `totally-bogus-model`）上游全部回报同一内部路由名 `moe_53f`，**传任何值都被忽略**，含不存在的模型名也不报错。
+  - **真开关是 `chat_mode`**：实测 `""` / `zero` / `chat_agent` / `deep_research` 改变 `think` / `tool_call_name` / `answer_type` 形态。
+  - **发现遗漏档位 `chat_agent`**：`GET /chatglm/backend-api/assistant/conversation/list?assistant_id=...&page=1&page_size=50` 每条会话带 `meta_data.chat_mode`；该账号 46 条历史取值 `chat_agent` / `normal` / `zero`。`chat_agent` 旧代码完全没有（只认 zero 与 deep_research），用户网页用智能体档、插件按默认档发 —— 「对不上」的直接原因。
+  - **动态方案**：`discoverChatModes` 扫历史会话（默认 + 自建智能体，各 3 页）收集 `chat_mode` 去重，缓存 10 分钟；`effectiveChatModes` 与基线求并集；**未知取值原样透传**，上游新增档位无需改码。模型名改为 `glm/<chat_mode>`；`resolveAssistantID` 未知名字不再丢弃。
+  - **0.2.13 补丁**：历史把默认档记成 `normal`、请求侧传 `""`，二者同档导致目录重复；新增 `normalizeChatMode` 把 `normal` 归一到 `""`。
+  - **生产实测**：目录 `glm-4-plus`(标准) / `glm/zero`(思考) / `glm/chat_agent`(智能体) / `glm/deep_research`(深度研究) + 两同档别名；四档端到端均 200。单测 29→34 全 PASS。
+  - **部署踩坑**：① `plugin-store install` 因**源缓存**命中旧 registry 报 `direct plugin version not found`，该缓存不在磁盘；② `PUT /plugins/<id>/config` **只卸载不加载**（`metadata` 变 null），**必须带 `"enabled": true` 才触发加载**；③ body 形状 `{"config_yaml":"<yaml>","enabled":true}`；④ 兜底：curl release zip → `python3 zipfile` 解包 → `docker cp` → `PUT config(enabled:true)`。
+
 - **当前会话（2026-11-29 00:30 - 00:55）：glm-provider 0.2.11：模型目录改为接口动态获取 + 档位核实**（用户「好像模型获取得也不对, 我们现在是通过接口动态获取模型的吗?」）：
   - **答**：此前**不是**动态的，`/models` 只回放 `glm/models.go` 的硬编码数组，从不回源。workbuddy 才是「缓存 → `callModelsAPI` 回源 → 落缓存」。
   - **更严重**：`resolveAssistantID` 对非 ID 的模型名一律返回 `defaultAssistantID`，所以 `glm-5.1` / `glm-4.7` / `glm-4-plus` 打到**同一智能体同一 chat_mode**，行为完全一致；只有 `think`(`zero`) 与 `deepresearch`(`deep_research`) 有真实差异 —— 五个名字其实三档。
@@ -180,19 +189,5 @@
     - **toast 通知栈**：右上滑入，ok/err/warn 三态。
   - **发布**：commit `f6e1ef2` → CI run `46130513004`（Release success）→ 资产 ALL CHECKSUMS OK → registry `a1b94fe` → 生产 install → **`hot reloaded active_version=0.2.3 retired_version=0.2.2`**；落盘 `.so` sha256 `e6884556…ee3b` 与 release zip 一致；容器未重启。
   - **验收**：面板 25330 字节，含标题「智谱清言 账号面板」、filter-bar、summaryBox、toasts、management key 框、导入并校验按钮；两 script 块 node --check 通过。
-- 会话（2026-11-28 16:46 - 17:12）：**glm-provider 0.2.2：授权入口指向插件页 + 去掉书签改纯 token 授权（生产已热重载）**：
-  - **用户反馈**：①宿主「添加账号」弹窗里 GLM 的授权入口显示 `https://chatglm.cn/`，点开只是官网，登录后无反应；②质疑「我们是 token 授权，为什么也要桥接页」。
-  - **根因 1**：`handleStartLogin` 的 `URL` 填了上游官网 `https://chatglm.cn/`，应填**本插件落地页绝对地址**。补 `rememberPublicOrigin`/`currentPublicOrigin`（从 `X-Forwarded-Host`/`Host` + `X-Forwarded-Proto` 观测外部 origin，回环地址不覆盖），`management` 入口每次请求记录，`URL` = origin + `/v0/resource/plugins/glm-provider/login?state=...`。
-  - **根因 2（设计纠偏）**：桥接页不是第二套鉴权，而是**宿主登录弹窗的落地页**——宿主发起登录必须拿到一个可打开的 URL（不给会报 `failed to generate authorization url`），而 `chatglm_refresh_token` 存在浏览器 LocalStorage，宿主读不到，所以必须有页面承接用户粘贴。据此删掉书签方案（`buildBookmarkletScript`/`htmlEscapeAttr` 全删），`/login` 改为纯 token 录入页（步骤说明 + textarea + 提交按钮，提交走 `/login/callback` 落盘后展示结果）；面板「一键授权」改回「添加账号」直贴 token。
-  - **0.2.2 发布**：commit `14835b8` → CI run `46128248012`（Release success）→ 资产 ALL CHECKSUMS OK → registry `e0acff5` → 生产 install → **`hot reloaded active_version=0.2.2 retired_version=0.2.1`**；落盘 `.so` sha256 `773a7e9c…4326` 与 release zip 逐字节一致；容器未重启。
-  - **验收**：`/login` 页面含 `id="tok"` 与「提交授权」、无 `bmLink`；面板含「添加账号」「导入并校验」、无「一键授权」。
-  - **教训**：① `AuthLoginStartResponse.URL` 必须是插件自己的落地页，不能填上游官网；② 插件跑在容器里不知道外部域名，必须从请求头观测 origin 拼绝对地址；③ token 类 provider 的「桥接页」本质是宿主弹窗的 token 录入落地页，不是额外授权体系。
-- 会话（2026-11-28 16:21 - 16:40）：**glm-provider 0.2.1：重启后加载成功 + 管理接口修复 + 旧 id 清理（生产已上线）**：
-  - **用户手动重启后**：`glm-provider` 0.2.0 成功 `plugin loaded + plugin registered`，面板/授权页均 200，白屏已修复（面板返回真实 HTML，含「一键授权」入口与书签兜底）。
-  - **发现新缺陷**：`/accounts`、`/models` 等管理接口返回**空响应**——根因是所有 management 响应也必须包成 `pluginapi.ManagementResponse`（同面板），而原实现用了裸 `okEnvelope(map)`。新增 `jsonResponse()` helper 并批量替换 18 处，修复。
-  - **0.2.1 发布**：commit `cd1d04b` → CI run `46125821167`（Release success）→ 资产 ALL CHECKSUMS OK → registry commit `0057899`（5 artifacts）→ 生产 install → **`plugin hot reloaded active_version=0.2.1 retired_version=0.2.0`**；落盘 `.so` sha256 `8cc682dc…d556` 与 release zip 逐字节一致；容器未重启（rc=0）。
-  - **验收**：`/accounts` 返回 `{"accounts":null}`（无账号属正常）、`/models` 返回 5 个 `glm/*` 模型、panel=200、login=200。
-  - **旧 id 清理（用户确认删除）**：先备份到 `/root/plugin_cleanup_20261128163711`（config.json + 7.6MB .so），再 `DELETE /v0/management/plugins/glm-web-provider` → `configured_removed:true, file_deleted:true`；旧面板页现 404；最终 14 插件，`glm-provider` 全 true，其余状态不变。
-  - **教训**：CPA 插件所有 management/resource 响应都必须用 `pluginapi.ManagementResponse{StatusCode, Headers, Body []byte}` 包装；裸 `okEnvelope(map)` 会返回空体（面板白屏、接口空响应的同一根因）。
 
 > 更早的会话明细（2026-11-20 及之前：store-auth PAT、10 插件面板、doubao 0.1.8/0.1.9/0.1.11/0.1.19~0.1.22 等）已归档至 git 提交历史与 doc/ 对应文档，本文件只保留最近 7 条会话摘要以控制体积。

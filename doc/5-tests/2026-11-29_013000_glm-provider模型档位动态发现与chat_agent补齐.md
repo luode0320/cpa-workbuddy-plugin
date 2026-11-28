@@ -128,7 +128,52 @@ python scripts/cgo-shim-build.py glm → build / vet / test 全绿
 
 模型目录不再依赖任何写死的档位清单：档位从历史会话动态发现，未知档位自动纳入并原样透传。**上游未来新增模型时，插件无需改代码、无需发版**，面板下次刷新（缓存 10 分钟）即可看到。
 
-四层版本一致：代码 = `VERSION` = registry = 生产 `0.2.12`。
+四层版本一致：代码 = `VERSION` = registry = 生产 `0.2.13`。
+
+## 五-B、0.2.13 补丁：默认档归一化
+
+0.2.12 上线后目录出现同档重复：
+
+```
+glm/glm-4-plus   GLM 标准    chat_mode=normal（网页默认档）
+...
+glm/normal       GLM normal  chat_mode=normal
+```
+
+原因：上游会话历史把默认档记成 `chat_mode=normal`，而请求侧传 `""` 与 `normal` 行为一致（0.2.11 实测），于是 `""` 与 `normal` 各自生成一个条目。
+
+修复：新增 `normalizeChatMode`，把 `normal`（含大小写与首尾空白变体）归一到 `""`；`effectiveChatModes` 与 `resolveAssistantID` 同步归一。新增 `TestNormalizeChatModeCollapsesDefault`、`TestEffectiveChatModesDedupesNormal` 锁定。
+
+### 生产实测目录（0.2.13）
+
+| ID | 展示名 | 说明 |
+|---|---|---|
+| `glm/glm-4-plus` | GLM 标准 | `chat_mode=normal`（网页默认档） |
+| `glm/zero` | GLM 思考 | `chat_mode=zero` |
+| `glm/chat_agent` | GLM 智能体 | `chat_mode=chat_agent` |
+| `glm/deep_research` | GLM 深度研究 | `chat_mode=deep_research` |
+| `glm/glm-5.1` | GLM 标准（同档别名） | 兼容别名 |
+| `glm/glm-4.7` | GLM 标准（同档别名） | 兼容别名 |
+
+`warnings: -` 说明回源成功。
+
+### 四个档位端到端实测
+
+| 模型 | HTTP | 结果 |
+|---|---|---|
+| `glm/chat_agent` | 200 | `content="OKOKOK"` |
+| `glm/zero` | 200 | `content` + `reasoning_content` |
+| `glm/deep_research` | 200 | `content="OKOKOK"` |
+| `glm/glm-4-plus` | 200 | `content` + `reasoning_content` |
+
+`chat_agent` 从「插件不认」变为「可正常调用」。
+
+### 部署踩坑（可复用）
+
+1. **`plugin-store install` 会因源缓存命中旧 registry 而报 `direct plugin version "x" not found`**，即使 GitHub raw 已是新版本。该缓存不在磁盘（容器内找不到 registry 文件），只能靠时间或触发刷新。
+2. **`PUT /plugins/<id>/config` 只卸载不加载**：写 `config_yaml` 后日志出现 `plugin unloaded`，但不会 `plugin loaded`，`metadata` 变 `null`、`effective_enabled` 变 `false`。必须同时带 `"enabled": true` 才会触发加载。
+3. `PUT` 的 body 若只用裸 `config_yaml` 字符串会被判 `invalid_body`，正确形状是 `{"config_yaml": "<yaml 文本>", "enabled": true}`。
+4. 源缓存未刷新时的兜底：直接下载 release zip → 解包 → `docker cp` 到 `/CLIProxyAPI/plugins/linux/amd64/` → 再 `PUT config`（带 `enabled:true`）触发加载。
 
 ## 六、说明
 
