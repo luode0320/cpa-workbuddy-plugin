@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 (2026-11-29)
+
+**重大修正：删除全部虚构模型名，只暴露网页真实存在的两个模型。**
+
+此前 0.2.x 暴露的 `glm-4-plus`、`glm-5.1`、`glm-4.7`、`glm/zero`、`glm/chat_agent`、`glm/deep_research` 全部是编造的名字，网页模型菜单里一个都没有 —— 用户反馈「网页只有 2 个模型，插件一个都没对上」，属实质缺陷。
+
+- **确认网页只有两个模型**：`GLM-5.3` 与 `GLM-5.3 Flash`。
+- **确认唯一可用的模型开关是 `if_plus_model`**：注入实验证明 `model`、`model_id`、`chat_model`、`glm_model`、`subscribe_id`、`is_old_model` 等字段被上游完全忽略（传非法值不报错、不记录）；只有 `if_plus_model` 会被回显并写入会话记录，`chat_mode` 会被记录。故 `if_plus_model=true` → GLM-5.3，`false` → GLM-5.3 Flash。
+- **模型与模式分离**：`modelCatalog` 只放两个真实模型；`chatModeCatalog`（标准 / 思考 / 智能体 / 深度研究）是正交的「模式」维度，按后缀拼到模型名上（`glm/glm-5.3-think`），不再把内部取值当模型名暴露。
+- **未知模型名不再透传**：`resolveUpstreamTarget` 对未收录的名字回落到 GLM-5.3，绝不把任意字符串当 `chat_mode` 发出去（旧实现会把 `totally-bogus-model` 原样发送）。
+- **顺带修复强制联网**：`completion.go` 的 `is_networking` 由硬编码 `true` 改为 `false`，与网页默认一致。
+- 新增契约测试：`TestModelCatalogOnlyRealModels`（模型目录只能包含网页那两项）、`TestAllModelEntriesOnlyUseRealModelNames`（展开后的 ID 必须由真实模型派生）、`TestResolveUpstreamTargetUnknownDefaultsToGLM53`（未知名字不得变成 chat_mode）、`TestResolveUpstreamTargetMapsRealModels`（两个模型与模式后缀的映射）。
+
 ## 0.2.15 (2026-11-29)
 
 修复导出文件只有 `refresh_token`、没有 `access_token` 的缺陷：
