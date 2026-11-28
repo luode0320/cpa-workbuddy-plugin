@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.9 (2026-11-28)
+
+- **面板「测试」支持选择模型**：账号卡片新增模型下拉（目录取自 `/models` 的五个别名），测试时把选中值随 `/test-active` 一起提交；后端 `handleMgmtTest` 早已支持 `model` 字段，此前面板未传，恒用默认模型 `glm/glm-5.1`。
+- **面板显示账号积分与额度**：新增 `GET /credits?auth_id=<id>`，用 `access_token` 请求上游 `GET /chatglm/user-api/user/info`，取 `result.member_info` 的 `left_score`（剩余积分）、`token_left_percent` / `token_usage_percent`（额度百分比）、`member_status`、`score_rule`，并附 `fetched_at` 快照时刻。
+- 积分按卡片懒加载（先渲染列表再逐张拉取），账号多时不阻塞首屏；读取失败就地显示原因并挂 `title`，不弹 toast。
+- `Config` 新增 `user_info_endpoint` 可覆盖端点，便于本地 mock；该常量此前已定义但从未被引用，本次接入。
+- 新增 `TestFetchCreditsParsesMemberInfo`、`TestFetchCreditsRejectsTokenWithoutDeviceID`、`TestFetchCreditsUpstreamError`。
+
 ## 0.2.8 (2026-11-28)
 
 - **修复对话请求同样被上游判 `40004`**：`prepareStreamRequest` 的 `X-Device-Id` 原为随机串，与 0.2.7 修的刷新链路同源问题。上游 `/chatglm/backend-api/assistant/stream` 同样要求该头等于令牌载荷内的 `device_id`。现从 `access_token` 载荷解析后发送；解析失败在发请求前即报「access_token 缺少 device_id」。

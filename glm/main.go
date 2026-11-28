@@ -82,7 +82,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.2.8"
+	version      = "0.2.9"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -106,6 +106,8 @@ type Config struct {
 	RefreshEndpoint string `yaml:"refresh_endpoint" json:"refresh_endpoint"`
 	// StreamEndpoint 覆盖对话端点，便于本地 mock 与协议漂移修正。
 	StreamEndpoint string `yaml:"stream_endpoint" json:"stream_endpoint"`
+	// UserInfoEndpoint 覆盖用户信息端点，积分与额度快照由此拉取。
+	UserInfoEndpoint string `yaml:"user_info_endpoint" json:"user_info_endpoint"`
 	// TimeoutSeconds 元数据短请求整体超时（秒）。
 	TimeoutSeconds int `yaml:"timeout_seconds" json:"timeout_seconds"`
 	// StreamTimeoutSeconds 流式请求响应头等待上限（秒）。
@@ -125,6 +127,7 @@ func defaultConfig() Config {
 		SignSecret:           defaultSignSecret,
 		RefreshEndpoint:      refreshEndpoint,
 		StreamEndpoint:       streamEndpoint,
+		UserInfoEndpoint:     userInfoEndpoint,
 		TimeoutSeconds:       30,
 		StreamTimeoutSeconds: 120,
 		AccountMaxInflight:   1,
@@ -416,6 +419,9 @@ func configurePlugin(raw []byte) error {
 		}
 		if strings.TrimSpace(decoded.StreamEndpoint) != "" {
 			cfg.StreamEndpoint = strings.TrimRight(strings.TrimSpace(decoded.StreamEndpoint), "/")
+		}
+		if strings.TrimSpace(decoded.UserInfoEndpoint) != "" {
+			cfg.UserInfoEndpoint = strings.TrimRight(strings.TrimSpace(decoded.UserInfoEndpoint), "/")
 		}
 		if decoded.TimeoutSeconds > 0 {
 			cfg.TimeoutSeconds = decoded.TimeoutSeconds

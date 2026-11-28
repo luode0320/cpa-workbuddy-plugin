@@ -78,6 +78,8 @@ button:disabled{opacity:.5;cursor:default}
 .v{font-weight:600}
 .v.ok{color:var(--ok)}.v.warn{color:var(--warn)}.v.err{color:var(--err)}
 .actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
+.modelsel{background:var(--btn-sec);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-size:13px;max-width:190px;cursor:pointer}
+.modelsel:hover{background:var(--btn-sec-hover)}
 .loading{color:var(--mut);padding:24px 0;text-align:center}
 .field-input{flex:1;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--fg);font-size:13px}
 .toasts{position:fixed;top:16px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:9999;max-width:360px}
@@ -338,7 +340,16 @@ async function api(path, opts){
 }
 
 /* ---------- 账号数据 ---------- */
-var allAccounts = [], currentFilter = "all";
+var allAccounts = [], currentFilter = "all", allModels = [];
+
+// 拉取上游模型目录，供卡片上的「测试」下拉选择；失败时保持空列表，卡片不渲染下拉。
+async function loadModels(){
+  try{
+    var res = await api("/models");
+    var list = (res.models || []).map(function(m){ return m.id || m.ID || ""; }).filter(Boolean);
+    if(list.length){ allModels = list; }
+  }catch(e){ /* 模型目录不可用不影响账号列表 */ }
+}
 
 async function load(btn){
   if(btn) busy(btn, true);
@@ -348,6 +359,7 @@ async function load(btn){
     if(res.error){ throw new Error(res.error); }
     document.getElementById("authBox").style.display = "none";
     allAccounts = res.accounts || [];
+    await loadModels();
     updateFilterCounts();
     renderSummary();
     renderGrid();
@@ -420,12 +432,20 @@ function accountCard(a){
   var toggleText = isDisabled(a) ? "启用" : "停用";
   var rows = "";
   rows += '<div class="row"><span class="k">令牌</span><span class="v">' + esc(a.refresh_token_masked || "-") + '</span></div>';
+  rows += '<div class="row"><span class="k">积分</span><span class="v" data-credits="' + esc(id) + '">读取中…</span></div>';
   rows += '<div class="row"><span class="k">Access 过期</span><span class="v">' + esc(fmtTime(a.expires_at)) + '</span></div>';
   if(a.user_id){ rows += '<div class="row"><span class="k">用户 ID</span><span class="v">' + esc(a.user_id) + '</span></div>'; }
+  // 测试模型下拉：目录可用时渲染，选择值随 /test-active 一起提交。
+  var modelSel = "";
+  if(allModels.length){
+    modelSel = '<select class="modelsel" data-model-for="' + esc(id) + '" title="选择测试使用的模型">' +
+      allModels.map(function(m){ return '<option value="' + esc(m) + '">' + esc(m) + '</option>'; }).join("") +
+      '</select>';
+  }
   return '<div class="card" data-auth-id="' + esc(id) + '">' +
     '<h2><span>' + esc(a.label || id) + '</span>' + badge + '</h2>' +
     '<div class="uid">' + esc(id) + '</div>' + rows +
-    '<div class="actions">' +
+    '<div class="actions">' + modelSel +
       '<button class="sec" data-action="test" data-auth-id="' + esc(id) + '">测试</button>' +
       '<button class="sec" data-action="' + toggleAction + '" data-auth-id="' + esc(id) + '">' + toggleText + '</button>' +
       '<button class="sec" data-action="delete" data-auth-id="' + esc(id) + '">删除</button>' +
@@ -438,6 +458,29 @@ function renderGrid(){
   if(!allAccounts.length){ g.innerHTML = '<div class="loading">暂无账号，点上方「添加账号」导入 chatglm_refresh_token</div>'; return; }
   if(!list.length){ g.innerHTML = '<div class="loading">当前筛选下没有账号</div>'; return; }
   g.innerHTML = list.map(accountCard).join("");
+  // 积分按卡片懒加载：账号越多越不该阻塞列表首屏。
+  list.forEach(function(a){
+    var id = a.auth_id || a.auth_index || "";
+    var el = g.querySelector('[data-credits="' + id + '"]');
+    if(el){ loadCredits(id, el); }
+  });
+}
+
+// 拉取单账号积分快照并写入卡片；失败时把原因就地显示，不弹 toast 打扰。
+async function loadCredits(id, el){
+  try{
+    var res = await api("/credits?auth_id=" + encodeURIComponent(id));
+    if(res.ok && res.credits){
+      var c = res.credits;
+      var txt = (c.left_score || "-") + " 分";
+      if(c.token_left_percent){ txt += " · 余量 " + c.token_left_percent; }
+      el.textContent = txt;
+      el.title = c.score_rule || "";
+    }else{
+      el.textContent = res.error || "读取失败";
+      el.title = res.error || "";
+    }
+  }catch(e){ el.textContent = e.message; el.title = e.message; }
 }
 
 /* ---------- 卡片操作 ---------- */
@@ -453,7 +496,11 @@ document.getElementById("grid").addEventListener("click", function(ev){
 async function testAccount(id, btn){
   busy(btn, true);
   try{
-    var res = await api("/test-active", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({auth_id:id})});
+    // 带上卡片下拉选中的模型；无下拉时交给后端用默认模型。
+    var sel = document.querySelector('[data-model-for="' + id + '"]');
+    var body = {auth_id: id};
+    if(sel && sel.value){ body.model = sel.value; }
+    var res = await api("/test-active", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
     if(res.error) throw new Error(res.error);
     if(res.ok){ toast("测试通过", "ok", res.model || ""); }
     else { toast("测试失败", "err", res.error || "unknown"); }

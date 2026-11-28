@@ -76,6 +76,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/enable", Description: "Enable one account."},
 			{Method: http.MethodPost, Path: base + "/disable", Description: "Disable one account."},
 			{Method: http.MethodGet, Path: base + "/models", Description: "List available models."},
+			{Method: http.MethodGet, Path: base + "/credits", Description: "Fetch credit snapshot of one account."},
 			{Method: http.MethodPost, Path: base + "/test-active", Description: "Active ping one account."},
 		},
 		Resources: []resourceRoute{
@@ -186,6 +187,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return handleMgmtSetStatus(req.Body, subPath == "/disable")
 	case method == http.MethodGet && subPath == "/models":
 		return jsonResponse(map[string]any{"models": allModelInfos()})
+	case method == http.MethodGet && subPath == "/credits":
+		return handleMgmtCredits(urlQuery)
 	case method == http.MethodPost && subPath == "/test-active":
 		return handleMgmtTest(req.Body)
 	default:
