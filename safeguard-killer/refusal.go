@@ -147,7 +147,6 @@ func bindGroupSession(cfg pluginConfig, session, groupID, served, prevFromLookup
 	groupSessions[key] = &sessionBinding{
 		Session:       session,
 		AuthID:        served,
-		Provider:      groupProvider,
 		Model:         groupID,
 		BoundAt:       boundAt,
 		LastSeen:      now,
@@ -179,7 +178,6 @@ func advanceGroupSessionOnRefusal(session string, group modelGroup, failedModel 
 	groupSessions[key] = &sessionBinding{
 		Session:       session,
 		AuthID:        group.Models[nextIdx],
-		Provider:      groupProvider,
 		Model:         group.ID,
 		BoundAt:       now,
 		LastSeen:      now,

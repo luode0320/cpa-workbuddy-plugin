@@ -2,6 +2,20 @@
 
 本文件记录 `safeguard-killer` 插件的版本变更。格式按版本号倒序，每条包含背景、改动、验证与涉及文件。
 
+## 0.1.15 (2026-11-28)
+
+### Cleanup - 移除 sessionBinding.Provider 死字段
+
+- 背景: 第 3 轮巡检把「状态契约 → 面板实际读取」逐字段对了一遍：面板读 `session` / `auth_id` / `model` / `bound_at` / `idle_expires_at`，决策读 `kind` / `auth_id` / `session` / `attempts` / `time`；唯独 `sessionBinding.Provider` 只被赋常量 `groupProvider`（两处），面板从不读、路由也没有任何分支依据它。绑定的执行器恒为 `model-groups`，这个字段进状态体只是每条会话多 30 字节。
+- 改动: 删字段与两处赋值，并在结构体注释里写明「为什么不放 provider」，防止后续被加回来。
+- 验证: 门禁全绿；`ui.go` 对 `provider` 的引用在整个面板里为 0（大小写不敏感检索）。
+
+### Test - 补配置解析/校验与拒答检测用例
+
+- 背景: `go test -coverprofile` 显示 102 个函数里 26 个 0 覆盖，其中 `configurePlugin`（宿主每次 `plugin.reconfigure` 都走它）与 `validateConfig`（热更新唯一守门）完全没测；`inspectClaudeContent`、`isGeminiRefusalFinishReason`、`advanceGroupSessionOnRefusal` 这三处直接决定「要不要换模型」的判定也没测。
+- 改动: 新增 `inspect_test.go`（3 条）与 `config_test.go` 追加 4 条：合法 YAML 落到生效配置、空下发回落默认值、8 类非法配置逐条被挡且**失败时生效配置不变**、外层信封非 JSON 直接报错；检测侧覆盖 Claude 内容三种形态、Gemini 六个安全 finishReason 与四个非拒答值、流中拒答后的绑定推进（含单模型组、末位模型、空会话三种 no-op）。
+- 验证: 语句覆盖率 64.8% → 67.2%，0 覆盖函数 26 → 23（剩余多为 cgo ABI 与 `main`，shim 环境下不可测）。
+
 ## 0.1.14 (2026-11-28)
 
 ### Fix - 流式转发 goroutine 的 panic 会带走整个宿主进程

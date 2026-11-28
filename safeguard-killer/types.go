@@ -16,10 +16,10 @@ type decision struct {
 }
 
 // sessionBinding pins a client session to a model of a group until it goes idle.
+// 这里不放 provider：绑定的执行器恒为 model-groups，面板也不展示它，写进状态体只是每条会话多 30 字节。
 type sessionBinding struct {
 	Session  string    `json:"session"`
 	AuthID   string    `json:"auth_id"`
-	Provider string    `json:"provider"`
 	Model    string    `json:"model"`
 	BoundAt  time.Time `json:"bound_at"`
 	LastSeen time.Time `json:"last_seen"`
