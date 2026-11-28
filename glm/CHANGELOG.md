@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.12 (2026-11-29)
+
+- **模型目录真正动态化，上游新增档位无需改插件**：新增 `discoverChatModes`，从账号历史会话 `POST/GET /chatglm/backend-api/assistant/conversation/list` 的 `meta_data.chat_mode` 中发现上游实际用过的档位。历史里出现过的任何取值都会被纳入目录，未知档位原样透传，因此上游上线新模型时插件下次刷新即自动获得。
+- **补上遗漏的 `chat_agent` 档位**：实测该账号 46 条历史会话里 `chat_mode` 真实取值为 `chat_agent` / `normal` / `zero`，其中 `chat_agent` 是旧代码完全没有的档位（旧代码只认 `zero` 与 `deep_research`），这就是「模型对不上」的直接原因之一。
+- **模型名改为档位直映射**：`glm/<chat_mode>` 成为对外模型名（`glm/chat_agent`、`glm/zero`、`glm/deep_research`、`glm/glm-4-plus` 表示默认档）；`resolveAssistantID` 对未知名字不再丢弃，而是当作 `chat_mode` 透传，避免新档位被静默降级成默认档。
+- 档位发现带 10 分钟缓存（`modeDiscoveryCache`），避免每次打开面板都扫历史；扫描覆盖默认智能体与账号自建智能体。
+- `glm-5.1` / `glm-4.7` 降级为纯兼容别名（`legacyAliasModels`），不再混在真实档位里误导。
+- `Config` 新增 `conversation_list_endpoint`；`baselineModelInfos` 作为无账号或回源失败时的兜底目录。
+- 测试重写为动态语义：`TestDiscoverChatModesFromHistory`（含未知档位）、`TestEffectiveChatModesUnionsBaselineAndDiscovered`、`TestDynamicModelInfosIncludesDiscoveredModes`（新档位自动进目录）、`TestChatModeModelIDRoundTrip`、`TestResolveAssistantIDMapsModes`。
+
 ## 0.2.11 (2026-11-29)
 
 - **模型目录改为接口动态获取**：此前 `/models` 只回放 `defaultModels` 硬编码数组，从不回源。现在 `handleMgmtModels` 取指定（或首个可用）账号的 `access_token`，调 `POST /chatglm/backend-api/assistant/list` 拉取自建智能体并按 `glm/<assistant_id>` 追加；请求需带 `page` / `page_size`（缺省上游返回 400 校验错误）。

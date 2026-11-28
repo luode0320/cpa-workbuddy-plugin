@@ -72,6 +72,8 @@ const (
 	userInfoEndpoint = "https://chatglm.cn/chatglm/user-api/user/info"
 	// assistantListEndpoint 列出用户自建智能体，动态模型目录由此获取。
 	assistantListEndpoint = "https://chatglm.cn/chatglm/backend-api/assistant/list"
+	// conversationListEndpoint 读取历史会话，从中发现上游实际用过的 chat_mode。
+	conversationListEndpoint = "https://chatglm.cn/chatglm/backend-api/assistant/conversation/list"
 	// conversationDeleteEndpoint 流结束后清理会话，避免污染用户对话列表。
 	conversationDeleteEndpoint = "https://chatglm.cn/chatglm/backend-api/assistant/conversation/delete"
 	// defaultAssistantID 是 GLM4 原版智能体 ID。
@@ -84,7 +86,7 @@ const (
 
 var (
 	// version 当前插件版本号。
-	version      = "0.2.11"
+	version      = "0.2.12"
 	hostAPI      *C.cliproxy_host_api
 	hostAPIMu    sync.RWMutex
 	activeConfig atomic.Value
@@ -112,6 +114,8 @@ type Config struct {
 	UserInfoEndpoint string `yaml:"user_info_endpoint" json:"user_info_endpoint"`
 	// AssistantListEndpoint 覆盖智能体列表端点，动态模型目录由此拉取。
 	AssistantListEndpoint string `yaml:"assistant_list_endpoint" json:"assistant_list_endpoint"`
+	// ConversationListEndpoint 覆盖会话列表端点，档位发现由此拉取。
+	ConversationListEndpoint string `yaml:"conversation_list_endpoint" json:"conversation_list_endpoint"`
 	// TimeoutSeconds 元数据短请求整体超时（秒）。
 	TimeoutSeconds int `yaml:"timeout_seconds" json:"timeout_seconds"`
 	// StreamTimeoutSeconds 流式请求响应头等待上限（秒）。
@@ -128,15 +132,16 @@ type Config struct {
 // 最近修改时间：2026-11-28 新增, 智谱清言网页反代插件入口。
 func defaultConfig() Config {
 	return Config{
-		SignSecret:            defaultSignSecret,
-		RefreshEndpoint:       refreshEndpoint,
-		StreamEndpoint:        streamEndpoint,
-		UserInfoEndpoint:      userInfoEndpoint,
-		AssistantListEndpoint: assistantListEndpoint,
-		TimeoutSeconds:        30,
-		StreamTimeoutSeconds:  120,
-		AccountMaxInflight:    1,
-		AccountMinIntervalMs:  2000,
+		SignSecret:               defaultSignSecret,
+		RefreshEndpoint:          refreshEndpoint,
+		StreamEndpoint:           streamEndpoint,
+		UserInfoEndpoint:         userInfoEndpoint,
+		AssistantListEndpoint:    assistantListEndpoint,
+		ConversationListEndpoint: conversationListEndpoint,
+		TimeoutSeconds:           30,
+		StreamTimeoutSeconds:     120,
+		AccountMaxInflight:       1,
+		AccountMinIntervalMs:     2000,
 	}
 }
 
@@ -430,6 +435,9 @@ func configurePlugin(raw []byte) error {
 		}
 		if strings.TrimSpace(decoded.AssistantListEndpoint) != "" {
 			cfg.AssistantListEndpoint = strings.TrimRight(strings.TrimSpace(decoded.AssistantListEndpoint), "/")
+		}
+		if strings.TrimSpace(decoded.ConversationListEndpoint) != "" {
+			cfg.ConversationListEndpoint = strings.TrimRight(strings.TrimSpace(decoded.ConversationListEndpoint), "/")
 		}
 		if decoded.TimeoutSeconds > 0 {
 			cfg.TimeoutSeconds = decoded.TimeoutSeconds

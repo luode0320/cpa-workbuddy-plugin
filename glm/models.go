@@ -20,22 +20,51 @@ type modelEntry struct {
 	Note string
 }
 
-// modelCatalog 是模型的真实目录。
-// GLM 网页版的「模型」只由两维决定：assistant_id 与 chat_mode。
-// if_plus_model 经实测对响应形态无影响（true/false 均返回 text 段），故不单列；
-// glm-5.1 与 glm-4.7 在上游与 glm-4-plus 完全等价，仅作兼容别名保留并如实标注。
-var modelCatalog = []modelEntry{
-	{ID: "glm/glm-4-plus", DisplayName: "GLM 标准", Note: "chat_mode=normal，网页版默认档"},
-	{ID: "glm/glm-think", DisplayName: "GLM 思考", Note: "chat_mode=zero，返回 think 思考段"},
-	{ID: "glm/glm-deepresearch", DisplayName: "GLM 深度研究", Note: "chat_mode=deep_research"},
-	{ID: "glm/glm-5.1", DisplayName: "GLM 标准（glm-4-plus 同档）", Note: "兼容别名，上游与 glm-4-plus 等价"},
-	{ID: "glm/glm-4.7", DisplayName: "GLM 标准（glm-4-plus 同档）", Note: "兼容别名，上游与 glm-4-plus 等价"},
+// legacyAliasModels 是历史兼容别名。
+// glm-5.1 / glm-4.7 在上游与默认档完全等价（同 assistant_id、同 chat_mode），
+// 保留只为不打断既有调用方，面板展示时标明同档。
+var legacyAliasModels = []modelEntry{
+	{ID: "glm/glm-5.1", DisplayName: "GLM 标准（同档别名）", Note: "兼容别名，上游与默认档等价"},
+	{ID: "glm/glm-4.7", DisplayName: "GLM 标准（同档别名）", Note: "兼容别名，上游与默认档等价"},
+}
+
+// baselineModelInfos 返回不回源时的基线目录：上游已知档位 + 兼容别名。
+// 真实目录由 dynamicModelInfos 在拿到 access_token 后动态生成。
+// [参数] 无。
+// [返回] 模型信息列表。
+// 最近修改时间：2026-11-29 改写，基线只作回源失败时的兜底。
+func baselineModelInfos() []pluginapi.ModelInfo {
+	infos := make([]pluginapi.ModelInfo, 0, len(knownChatModes)+len(legacyAliasModels))
+	for _, mode := range knownChatModes {
+		infos = append(infos, pluginapi.ModelInfo{
+			ID:                         chatModeModelID(mode),
+			Object:                     "model",
+			OwnedBy:                    providerName,
+			DisplayName:                chatModeDisplayName(mode),
+			Description:                "chat_mode=" + mode,
+			SupportedGenerationMethods: []string{"chat"},
+		})
+	}
+	for _, entry := range legacyAliasModels {
+		infos = append(infos, pluginapi.ModelInfo{
+			ID:                         entry.ID,
+			Object:                     "model",
+			OwnedBy:                    providerName,
+			DisplayName:                entry.DisplayName,
+			Description:                entry.Note,
+			SupportedGenerationMethods: []string{"chat"},
+		})
+	}
+	return infos
 }
 
 // defaultModels 是静态模型 ID 列表，宿主注册与缺省测试模型使用。
 var defaultModels = func() []string {
-	ids := make([]string, 0, len(modelCatalog))
-	for _, entry := range modelCatalog {
+	ids := make([]string, 0, len(knownChatModes)+len(legacyAliasModels))
+	for _, mode := range knownChatModes {
+		ids = append(ids, chatModeModelID(mode))
+	}
+	for _, entry := range legacyAliasModels {
 		ids = append(ids, entry.ID)
 	}
 	return ids
@@ -64,27 +93,37 @@ var (
 var agentIDPattern = regexp.MustCompile(`^[a-z0-9]{24,}$`)
 
 // resolveAssistantID 根据模型名解析上游 assistant_id 与 chat_mode。
+// 支持三种形式：glm/<chat_mode>（如 glm/chat_agent）、glm/<assistant_id>、历史别名。
 // [参数] model: 请求的模型名。
 // [返回] assistant_id、chat_mode。
-// 最近修改时间：2026-11-28 新增, 智能体 ID 与思考模式映射。
+// 最近修改时间：2026-11-29 改写，档位名直接作为模型名，未知档位原样透传。
 func resolveAssistantID(model string) (string, string) {
 	assistantID := defaultAssistantID
-	chatMode := ""
 	trimmed := strings.TrimSpace(model)
-	// 兼容 glm/<assistant_id> 形式：动态智能体按该形式对外暴露模型名。
+	// 剥离 glm/ 前缀，动态档位与动态智能体都按该形式暴露。
 	if idx := strings.LastIndex(trimmed, "/"); idx >= 0 {
 		trimmed = trimmed[idx+1:]
 	}
+	// 裸智能体 ID：直接当 assistant_id。
 	if agentIDPattern.MatchString(trimmed) {
-		assistantID = trimmed
+		return trimmed, ""
 	}
 	lower := strings.ToLower(trimmed)
-	if strings.Contains(lower, "deepresearch") {
-		chatMode = "deep_research"
-	} else if strings.Contains(lower, "think") || strings.Contains(lower, "zero") {
-		chatMode = "zero"
+	switch {
+	case lower == "glm-think" || lower == "glm-zero" || lower == "zero":
+		return assistantID, "zero"
+	case lower == "glm-deepresearch" || lower == "deep_research":
+		return assistantID, "deep_research"
+	case lower == "glm-4-plus" || lower == "glm-5.1" || lower == "glm-4.7" || lower == "glm-4":
+		// 历史别名与默认档等价。
+		return assistantID, ""
+	case strings.Contains(lower, "deepresearch"):
+		return assistantID, "deep_research"
+	case strings.Contains(lower, "think"):
+		return assistantID, "zero"
 	}
-	return assistantID, chatMode
+	// 其余一律视为上游 chat_mode 取值（含 chat_agent 与未来新增档位）。
+	return assistantID, trimmed
 }
 
 // resolveUpstreamModel 把插件别名模型解析成上游 assistant_id。
@@ -104,21 +143,10 @@ func allConfiguredModels() []string {
 	return append([]string(nil), defaultModels...)
 }
 
-// allModelInfos 返回带元信息的模型列表。
+// allModelInfos 返回不回源时的基线模型列表。
 // [参数] 无。
 // [返回] 模型信息列表。
-// 最近修改时间：2026-11-28 新增, 模型目录。
+// 最近修改时间：2026-11-29 改写，真实目录由 dynamicModelInfos 动态生成。
 func allModelInfos() []pluginapi.ModelInfo {
-	infos := make([]pluginapi.ModelInfo, 0, len(modelCatalog))
-	for _, entry := range modelCatalog {
-		infos = append(infos, pluginapi.ModelInfo{
-			ID:                         entry.ID,
-			Object:                     "model",
-			OwnedBy:                    providerName,
-			DisplayName:                entry.DisplayName,
-			Description:                entry.Note,
-			SupportedGenerationMethods: []string{"chat"},
-		})
-	}
-	return infos
+	return baselineModelInfos()
 }
