@@ -97,6 +97,24 @@ type accountSummary struct {
 	TestFailed    bool   `json:"test_failed"`
 }
 
+// jsonResponse 把任意结果包装成标准的 JSON 管理响应。
+// [参数] v: 要序列化的结果对象。
+// [返回] 管理响应信封字节、错误。
+// 最近修改时间：2026-11-28 16:25:00；改动原因：管理接口必须返回 ManagementResponse，修复返回空响应。
+func jsonResponse(v any) ([]byte, error) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return okEnvelope(pluginapi.ManagementResponse{
+		StatusCode: http.StatusOK,
+		Headers: http.Header{
+			"Content-Type": []string{"application/json; charset=utf-8"},
+		},
+		Body: body,
+	})
+}
+
 // normalizeMgmtSubPath 归一化管理请求子路径，兼容 resource 与 management 两种前缀。
 // [参数] path: 请求路径。
 // [返回] 子路径与 query。
@@ -166,11 +184,11 @@ func handleManagement(raw []byte) ([]byte, error) {
 	case method == http.MethodPost && (subPath == "/enable" || subPath == "/disable"):
 		return handleMgmtSetStatus(req.Body, subPath == "/disable")
 	case method == http.MethodGet && subPath == "/models":
-		return okEnvelope(map[string]any{"models": allModelInfos()})
+		return jsonResponse(map[string]any{"models": allModelInfos()})
 	case method == http.MethodPost && subPath == "/test-active":
 		return handleMgmtTest(req.Body)
 	default:
-		return okEnvelope(map[string]any{"error": "unknown management path: " + subPath})
+		return jsonResponse(map[string]any{"error": "unknown management path: " + subPath})
 	}
 }
 
@@ -200,7 +218,7 @@ func handleListAccounts() ([]byte, error) {
 			TestFailed:    sa.TestFailed,
 		})
 	}
-	return okEnvelope(map[string]any{"accounts": summaries})
+	return jsonResponse(map[string]any{"accounts": summaries})
 }
 
 // handleMgmtImport 导入 refresh_token 账号。
@@ -217,9 +235,9 @@ func handleMgmtImport(body []byte) ([]byte, error) {
 	}
 	sa, err := saveImportedToken(req.RefreshToken, req.Label)
 	if err != nil {
-		return okEnvelope(map[string]any{"error": err.Error()})
+		return jsonResponse(map[string]any{"error": err.Error()})
 	}
-	return okEnvelope(map[string]any{"imported": sa.AuthID})
+	return jsonResponse(map[string]any{"imported": sa.AuthID})
 }
 
 // handleMgmtExport 导出所有凭据。
@@ -231,7 +249,7 @@ func handleMgmtExport() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return okEnvelope(map[string]any{"accounts": accounts})
+	return jsonResponse(map[string]any{"accounts": accounts})
 }
 
 // handleMgmtDelete 删除账号。
@@ -246,9 +264,9 @@ func handleMgmtDelete(body []byte) ([]byte, error) {
 		return nil, err
 	}
 	if err := removeAuthFile(req.AuthID); err != nil {
-		return okEnvelope(map[string]any{"error": err.Error()})
+		return jsonResponse(map[string]any{"error": err.Error()})
 	}
-	return okEnvelope(map[string]any{"deleted": req.AuthID})
+	return jsonResponse(map[string]any{"deleted": req.AuthID})
 }
 
 // handleMgmtSetStatus 设置账号启用状态。
@@ -264,7 +282,7 @@ func handleMgmtSetStatus(body []byte, disabled bool) ([]byte, error) {
 	}
 	sa := findAuthByID(req.AuthID)
 	if sa == nil {
-		return okEnvelope(map[string]any{"error": "account not found"})
+		return jsonResponse(map[string]any{"error": "account not found"})
 	}
 	sa.Disabled = disabled
 	sa.UpdatedAt = time.Now().Format(time.RFC3339)
@@ -273,9 +291,9 @@ func handleMgmtSetStatus(body []byte, disabled bool) ([]byte, error) {
 		path = filepath.Join(getAccountsDir(), sa.AuthID+".json")
 	}
 	if err := writeAuthFileDirect(path, sa); err != nil {
-		return okEnvelope(map[string]any{"error": err.Error()})
+		return jsonResponse(map[string]any{"error": err.Error()})
 	}
-	return okEnvelope(map[string]any{"auth_id": sa.AuthID, "disabled": disabled})
+	return jsonResponse(map[string]any{"auth_id": sa.AuthID, "disabled": disabled})
 }
 
 // handleMgmtTest 对指定账号做流式探活。
@@ -292,12 +310,12 @@ func handleMgmtTest(body []byte) ([]byte, error) {
 	}
 	sa := findAuthByID(req.AuthID)
 	if sa == nil {
-		return okEnvelope(map[string]any{"ok": false, "error": "account not found"})
+		return jsonResponse(map[string]any{"ok": false, "error": "account not found"})
 	}
 	cfg := currentConfig()
 	accessToken, err := acquireToken(sa.RefreshToken, cfg)
 	if err != nil {
-		return okEnvelope(map[string]any{"ok": false, "error": fmt.Sprintf("token: %v", err)})
+		return jsonResponse(map[string]any{"ok": false, "error": fmt.Sprintf("token: %v", err)})
 	}
 	model := req.Model
 	if model == "" {
@@ -305,21 +323,21 @@ func handleMgmtTest(body []byte) ([]byte, error) {
 	}
 	payload, err := buildStreamPayload(completionRequest{Model: model, Messages: []completionMessage{{Role: "user", Content: "hi"}}, Stream: true}, cfg, sa)
 	if err != nil {
-		return okEnvelope(map[string]any{"ok": false, "error": err.Error()})
+		return jsonResponse(map[string]any{"ok": false, "error": err.Error()})
 	}
 	httpReq, err := prepareStreamRequest(context.Background(), payload, cfg, accessToken)
 	if err != nil {
-		return okEnvelope(map[string]any{"ok": false, "error": err.Error()})
+		return jsonResponse(map[string]any{"ok": false, "error": err.Error()})
 	}
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
-		return okEnvelope(map[string]any{"ok": false, "error": err.Error()})
+		return jsonResponse(map[string]any{"ok": false, "error": err.Error()})
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := readLimited(resp.Body)
-		return okEnvelope(map[string]any{"ok": false, "error": fmt.Sprintf("upstream %d: %s", resp.StatusCode, string(bodyBytes))})
+		return jsonResponse(map[string]any{"ok": false, "error": fmt.Sprintf("upstream %d: %s", resp.StatusCode, string(bodyBytes))})
 	}
 	resetAccountFailure(sa.AuthID)
-	return okEnvelope(map[string]any{"ok": true, "model": model})
+	return jsonResponse(map[string]any{"ok": true, "model": model})
 }
