@@ -342,11 +342,16 @@ async function api(path, opts){
 /* ---------- 账号数据 ---------- */
 var allAccounts = [], currentFilter = "all", allModels = [];
 
-// 拉取上游模型目录，供卡片上的「测试」下拉选择；失败时保持空列表，卡片不渲染下拉。
+// 拉取模型目录，供卡片上的「测试」下拉选择；失败时保持空列表，卡片不渲染下拉。
+// 目录由后端合并「预置档位 + 账号自建智能体」，下拉显示 DisplayName、实际提交 ID。
 async function loadModels(){
   try{
     var res = await api("/models");
-    var list = (res.models || []).map(function(m){ return m.id || m.ID || ""; }).filter(Boolean);
+    var list = (res.models || []).map(function(m){
+      var id = m.id || m.ID || "";
+      if(!id){ return null; }
+      return {id: id, label: m.display_name || m.DisplayName || id, note: m.description || m.Description || ""};
+    }).filter(Boolean);
     if(list.length){ allModels = list; }
   }catch(e){ /* 模型目录不可用不影响账号列表 */ }
 }
@@ -439,7 +444,10 @@ function accountCard(a){
   var modelSel = "";
   if(allModels.length){
     modelSel = '<select class="modelsel" data-model-for="' + esc(id) + '" title="选择测试使用的模型">' +
-      allModels.map(function(m){ return '<option value="' + esc(m) + '">' + esc(m) + '</option>'; }).join("") +
+      allModels.map(function(m){
+        var titleAttr = m.note ? ' title="' + esc(m.note) + '"' : "";
+        return '<option value="' + esc(m.id) + '"' + titleAttr + '>' + esc(m.label) + '</option>';
+      }).join("") +
       '</select>';
   }
   return '<div class="card" data-auth-id="' + esc(id) + '">' +

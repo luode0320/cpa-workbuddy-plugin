@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.11 (2026-11-29)
+
+- **模型目录改为接口动态获取**：此前 `/models` 只回放 `defaultModels` 硬编码数组，从不回源。现在 `handleMgmtModels` 取指定（或首个可用）账号的 `access_token`，调 `POST /chatglm/backend-api/assistant/list` 拉取自建智能体并按 `glm/<assistant_id>` 追加；请求需带 `page` / `page_size`（缺省上游返回 400 校验错误）。
+- **如实标注等价别名**：`glm-5.1`、`glm-4.7` 在上游与 `glm-4-plus` 完全等价（同一 `assistant_id` + 同一 `chat_mode`），此前五个名字看起来是五个模型。现改为 `modelCatalog` 结构，DisplayName 直接写「GLM 标准（glm-4-plus 同档）」，面板下拉据此显示；`glm-4-plus` / `glm-think` / `glm-deepresearch` 保留为真实三档。
+- **`if_plus_model` 不单列**：实测 true/false 对响应形态无影响（均返回 `text` 段），真正区分档位的只有 `chat_mode`（`normal` / `zero` / `deep_research`），故不把该布尔当模型维度。
+- `resolveAssistantID` 支持 `glm/<assistant_id>` 形式，先剥离前缀再匹配 ID 正则，使动态智能体可直接作为模型名使用。
+- `Config` 新增 `assistant_list_endpoint` 可覆盖端点；回源失败降级为纯预置目录并返回 `warnings`，不影响面板可用性。
+- 新增 `TestListUpstreamAssistantsParsesList`、`TestDynamicModelInfosAppendsAssistants`、`TestDynamicModelInfosFallsBackOnError`、`TestResolveAssistantIDSplitsGLMPrefix`、`TestModelCatalogMarksEquivalentAliases`。
+
 ## 0.2.10 (2026-11-29)
 
 - **修复 `/credits` 取不到 `auth_id`**：宿主下发管理请求时可能只给纯路径（查询串单独放在 `req.Query`），而 `normalizeMgmtSubPath` 只从 `url.Parse(req.Path)` 取查询，导致 `/credits?auth_id=...` 恒返回 `auth_id required`。新增 `mergeRequestQuery` 合并两个来源，宿主下发的值优先。

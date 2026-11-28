@@ -203,7 +203,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 	case method == http.MethodPost && (subPath == "/enable" || subPath == "/disable"):
 		return handleMgmtSetStatus(req.Body, subPath == "/disable")
 	case method == http.MethodGet && subPath == "/models":
-		return jsonResponse(map[string]any{"models": allModelInfos()})
+		return handleMgmtModels(urlQuery)
 	case method == http.MethodGet && subPath == "/credits":
 		return handleMgmtCredits(urlQuery)
 	case method == http.MethodPost && subPath == "/test-active":
